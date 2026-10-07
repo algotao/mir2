@@ -743,6 +743,11 @@ struct Net {
     /// 连接层给出的结束原因（连不上 / 被断开）。**登录界面靠它弹窗** ——
     /// 少了它，连不上时界面会一直卡在 `CONNECTING ...`（踩过）。
     fail: Option<String>,
+    /// 建 `Net` 的时刻：只为算"连接 → 进世界"用了多久。
+    ///
+    /// ⚠️ 这个数字是有用的：曾经有个 bug 让这一段整整多花 20 秒（`flush_entrance`
+    /// 的说明），当时是**靠翻服务端日志的时间戳**才发现的。现在它直接打在终端上。
+    started: Instant,
     /// 每个实体的**动画状态**（移动的补间进度、动作播放到哪了）。
     ///
     /// ⚠️ 同样只在渲染层：世界模型只存事实（在哪、什么动作），"什么时候发生的"归这里。
@@ -788,6 +793,7 @@ impl Net {
             changes: 0,
             floaters: Vec::new(),
             fail: None,
+            started: Instant::now(),
             anims: HashMap::new(),
         })
     }
@@ -817,6 +823,7 @@ impl Net {
             changes: 0,
             floaters: Vec::new(),
             fail: None,
+            started: Instant::now(),
             anims: HashMap::new(),
         })
     }
@@ -847,11 +854,8 @@ impl Net {
                 }
                 mir2_net::Ev::Envelope(env) => {
                     // 两条线各吃同一条信封：握手状态机管那几步，世界状态机管实体。
-                    if self.entrance.failed().is_none() && !self.entrance.in_world() {
-                        if let Some(b) = self.entrance.next_cmd() {
-                            self.send(&b);
-                        }
-                    }
+                    // ⚠️ 待发命令**不在这里**拉 —— 见 `pump` 末尾的 `flush_entrance`
+                    //（拉在信封里会漏掉"非信封推动的转折"，那是一个实测过的真 bug）。
                     if let Some(b) = self.entrance.on(&env) {
                         self.send(&b);
                     }
@@ -859,6 +863,7 @@ impl Net {
                         self.changes += 1;
                     }
                     if self.entrance.in_world() && self.world.map_name != self.status {
+                        println!("[net] 进世界：连接到现在 {:.2?}", self.started.elapsed());
                         // 进图后把状态行换成"世界摘要"（比"已连接"有用得多）。
                         self.status = format!(
                             "{} @{} ({},{})",
@@ -871,6 +876,23 @@ impl Net {
                 }
             }
         }
+        // 状态机的待发命令：**每帧**排空，与有没有入站包无关。
+        //
+        // ⚠️ 这里曾经是错的：`next_cmd()` 被塞在上面那个 `Ev::Envelope` arm 里拉。
+        // 于是"收到握手 nonce（`Ev::Connected`）⇒ 要发 `LoginSaltRequest`"这一步
+        // 得**等下一个入站包**才出去 —— 而写线程的心跳是 `PING_EVERY = 20s`，
+        // 服务端回 Pong 才构成那个包：表现是**输完账号要等 20 秒才开始开门**
+        // （服务端日志实测：`握手完成` 与 `登录成功` 之间正好 21 秒）。
+        //
+        // e2e 抓不到这个：`worldcmd.rs:150` 是**开局就先拉一次**（不依赖入站包），
+        // 天然不会漏 —— 这也正是它 1 秒、而 app 21 秒的原因。
+        //（先收进一个小 Vec 再发：至多一两条，免得闭包借 `self` 与 `&mut self.entrance` 打架。）
+        let mut pending: Vec<mir2_protocol::envelope::Body> = Vec::new();
+        flush_entrance(&mut self.entrance, &mut |b| pending.push(b.clone()));
+        for b in &pending {
+            self.send(b);
+        }
+
         // 伤害飘字：世界只记账，这里取走并计时。
         for d in self.world.take_damage() {
             let (x, y) = self.pos_of(d.target_id);
@@ -2267,6 +2289,26 @@ fn draw_asset_view<'a, T>(
     Ok(())
 }
 
+/// 把握手状态机的**待发命令排空**（`Entrance::next_cmd`）。
+///
+/// ⚠️ 语义就是"**每帧**调一次"：有的阶段转折不是被信封推动的 —— 最典型的是
+/// `Ev::Connected`（握手 nonce 到了）之后要发 `LoginSaltRequest`。
+/// 只在"收到信封"时拉，这一步就得等下一个入站包（心跳是 20 秒一次）。
+///
+/// 抽成独立函数是为了能单测这条契约（不需要真的网络）。
+fn flush_entrance(
+    entrance: &mut mir2_core::entrance::Entrance,
+    send: &mut impl FnMut(&mir2_protocol::envelope::Body),
+) {
+    if entrance.failed().is_some() || entrance.in_world() {
+        return;
+    }
+    // `next_cmd` 只在 `Stage::Start` 有货（之后就 `None`）⇒ 不会在这里打转。
+    while let Some(b) = entrance.next_cmd() {
+        send(&b);
+    }
+}
+
 /// 把连接层的原因翻成"人话 + 下一步该查什么"。
 ///
 /// ⚠️ `Connection refused` 与"口令错"是**两回事**：前者是 TCP 层没人监听
@@ -2337,6 +2379,30 @@ mod tests {
             dead: false,
             action: None,
         }
+    }
+
+    /// 「待发命令要**每帧**排空，不能只在收到信封时排」——
+    /// 这曾经是个真 bug：`Ev::Connected` 之后要发的 `LoginSaltRequest` 被塞在
+    /// 信封 arm 里拉，于是得等 20 秒后的心跳应答才出去（输完账号等 20 秒才开门）。
+    #[test]
+    fn 待发命令不依赖入站包() {
+        use mir2_protocol::envelope::Body;
+        let mut e =
+            mir2_core::entrance::Entrance::new_with_password("test".into(), "pw".into(), None);
+
+        // 第一帧（还没收到任何信封）就该把"要盐"的请求发出去
+        let mut sent = Vec::new();
+        flush_entrance(&mut e, &mut |b| sent.push(b.clone()));
+        assert_eq!(sent.len(), 1, "第一帧就该发 LoginSaltRequest");
+        match &sent[0] {
+            Body::LoginSaltRequest(r) => assert_eq!(r.account, "test"),
+            other => panic!("第一条应当是 LoginSaltRequest，实得 {other:?}"),
+        }
+
+        // 阶段已前进到 AwaitSalt ⇒ 再排也不能重复发
+        let mut again = Vec::new();
+        flush_entrance(&mut e, &mut |b| again.push(b.clone()));
+        assert!(again.is_empty(), "同一阶段不该重复发命令");
     }
 
     /// 连不上时要给出"下一步查什么"，而且**不能**把人往"密码错"上引。
