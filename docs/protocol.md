@@ -150,21 +150,35 @@ protocol/
 
 ---
 
-## 5. 连接与握手（单连接升级）
+## 5. 连接与握手（客户端单连接）
 
 ```
-TCP 连接
+客户端 ──TCP/单地址──> [gate 无状态转发] ──> [gamesvr（区组）] ──内部 RPC──> accountsvc
+```
+
+```
   → ClientHello { protocol_version, client_build, locale }
   ← ServerHello { protocol_version, server_time, session_key, capabilities }
      版本不匹配 → 立即断开（禁止"尽力而为"，那只会变成静默错乱）
-  → Login {...}                ← LoginResult {...}
-  → SelectCharacter { char_id }← SelectCharacterResult { spawn_state }
-  → EnterWorld                 ← 场景与实体初始快照
-  ⇄ 游戏数据面
+  → Login { account, ... }        ← LoginResult { session_token, ... }
+  → ListCharacters                ← CharacterList
+  → SelectCharacter { char_id }   ← SelectCharacterResult
+       ★ 服务端在此**申请角色租约**（gamesvr → accountsvc 内部 RPC）
+         租约被占（同角色在线）→ **明确拒绝**，不要"顶号"式静默踢人
+  ← EnterWorld { spawn_state, 初始快照 } → 数据面
 ```
 
-一条连接承载全部阶段（D-13）。好处：客户端状态机单一、鉴权与限流集中、
-断线重连语义统一（回落到选角阶段而不是重连三个 gate）。
+**客户端只有一条连接、一个地址、一个状态机**（D-13）。`accountsvc` **不对客户端 Listen**，
+账号能力由 `gamesvr` 通过内部 RPC 访问。
+
+技术要求（单连接方案能否成立的关键）：
+
+- **会话 token 独立于 TCP 连接对象**：`session_token` 由 `LoginResult` 下发，
+  重连时**用它**恢复会话，而不是靠"连接还在"来认定。
+- **租约宽限**：连接断开**不立即**释放角色租约，超时才释放（否则断线重连必失败）。
+- **重连语义**：重新握手 → 用 `session_token` 恢复 → 租约仍在则回到世界，
+  否则回落到选角阶段。**不要**回落到"重连三个 gate"。
+- **换区组 = 换地址重连**（选服界面选中另一区组时）。
 
 ---
 
