@@ -7,7 +7,6 @@ import (
 	"net"
 	"time"
 
-	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/netgate"
 	"github.com/algotao/mir2/server/internal/obs"
 	"github.com/algotao/mir2/server/internal/proto"
@@ -209,15 +208,19 @@ func (s *Server) handleConn(c net.Conn, clientIP string) {
 }
 
 // dispatch 是 handleGameMsg 的 panic 包装。
-func (s *Server) takeoverLocalPlayer(next *Player) bool {
-	if next == nil || next.Char == nil {
+//
+// 参数从"一个占位 Player"改成 (角色名, 会话号)：它只需要这两样，而调用方
+// （legacy 的 authenticate 与新协议的 SelectCharacter，见 join.go）各自手里有的是
+// 这两样、不是同一个 Player —— 传半个壳子出去只会让人以为它别的字段有用。
+func (s *Server) takeoverLocalPlayer(chrName string, sessionID int32) bool {
+	if chrName == "" {
 		return true
 	}
 	s.mu.RLock()
 	var old *Player
 	for _, candidate := range s.world.players {
-		if candidate != next && candidate.sessionID != next.sessionID &&
-			candidate.Char != nil && candidate.Char.Name == next.Char.Name {
+		if candidate.sessionID != sessionID &&
+			candidate.Char != nil && candidate.Char.Name == chrName {
 			old = candidate
 			break
 		}
@@ -276,32 +279,9 @@ func (s *Server) authenticate(tok *wire.LoginToken, ip string) (*Player, error) 
 		return nil, fmt.Errorf("角色不属于该账号")
 	}
 
-	// 同进程内先主动关闭同角色旧连接；跨进程连接通过 account_sessions
-	// generation 失效，在 sessionLeaseLoop 中关闭。两种情况都等旧连接清理完成，
-	// 再让 ClaimGameLease 获取角色写租约。
-	if !s.takeoverLocalPlayer(&Player{Char: chr, sessionID: tok.SessionID}) {
-		return nil, fmt.Errorf("等待本地旧角色连接清理超时")
-	}
-	// 新登录先让旧 gamesvr 发现 account_sessions 的新 SID；旧连接会在租约
-	// 轮询中关闭、完成最终存档并释放 game_leases。只在旧租约释放/过期后才接管。
-	deadline := time.Now().Add(gameLeaseWait)
-	for {
-		claimed, err := s.store.Sessions().ClaimGameLease(
-			ctx, tok.Account, tok.SessionID, tok.ChrName, time.Now(), time.Now().Add(gameLeaseDuration))
-		if err != nil {
-			return nil, fmt.Errorf("取得游戏租约失败: %w", err)
-		}
-		if claimed {
-			break
-		}
-		current, err = s.store.Sessions().IsCurrent(ctx, tok.Account, tok.SessionID, time.Now())
-		if err != nil || !current {
-			return nil, fmt.Errorf("进入游戏凭证已失效")
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("账号仍在其他游戏连接中")
-		}
-		time.Sleep(100 * time.Millisecond)
+	// 接管旧连接 + 申请角色租约（两条入口共用，见 join.go）。
+	if err := s.claimGameLease(ctx, tok.Account, tok.SessionID, tok.ChrName); err != nil {
+		return nil, err
 	}
 
 	// 旧连接释放租约前完成最终存档；取得租约后重新读取角色，避免使用早期快照。
@@ -310,36 +290,7 @@ func (s *Server) authenticate(tok *wire.LoginToken, ip string) (*Player, error) 
 		_ = s.store.Sessions().ReleaseGameLease(ctx, tok.Account, tok.SessionID, tok.ChrName)
 		return nil, fmt.Errorf("角色 %s 不存在或不可用", tok.ChrName)
 	}
-	m := s.world.defaultMap
-	if mm, err := s.world.maps.Get(chr.Data.CurMap); err == nil {
-		m = mm
-	} else {
-		log.Printf("角色 %s 的地图 %s 加载失败（%v），回退到默认地图",
-			chr.Name, chr.Data.CurMap, err)
-	}
-	s.activateSpawnMap(m.Name)
-	x, y := int(chr.Data.CurX), int(chr.Data.CurY)
-	if !m.CanWalk(x, y) {
-		x, y = m.Width()/2, m.Height()/2
-	}
-
-	// ⚠️ `entity.Object` 的可变态不导出（自带锁，见 entity/object.go），
-	// 跨包构造统一走 `entity.NewObject`。
-	obj := entity.NewObject(s.world.actorSeq.Add(1), chr.Name, m, x, y,
-		uint8(chr.Data.Dir), proto.MakeFeature(0, 0, uint8(chr.Data.Hair), 0))
-	return &Player{
-		Obj:         obj,
-		Char:        chr,
-		Limiter:     entity.NewMoveLimiter(),
-		IP:          ip,
-		sessionID:   tok.SessionID,
-		cleanupDone: make(chan struct{}),
-		visible:     entity.NewViewTracker(),
-		// 原版默认值：不允许被加进行会（ObjBase.pas:1271），
-		// 但允许接收行会聊天（ObjBase.pas:1329）。
-		allowGuild:   false,
-		banGuildChat: true,
-	}, nil
+	return s.joinWorld(chr, tok.SessionID, ip), nil
 }
 func (s *Server) removePlayer(p *Player) {
 	if p == nil || !p.cleanupOnce.CompareAndSwap(false, true) {

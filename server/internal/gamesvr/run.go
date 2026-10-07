@@ -20,10 +20,12 @@ import (
 	"github.com/algotao/mir2/server/internal/group"
 	"github.com/algotao/mir2/server/internal/guild"
 	"github.com/algotao/mir2/server/internal/obs"
+	"github.com/algotao/mir2/server/internal/proxyproto"
 	"github.com/algotao/mir2/server/internal/script"
 	"github.com/algotao/mir2/server/internal/storage/sqlite"
 	"github.com/algotao/mir2/server/internal/tscale"
 	"github.com/algotao/mir2/server/internal/world"
+	"github.com/algotao/mir2/server/protocol"
 )
 
 // Main 是游戏服进程的入口：解析 flag → 装配 → 起各条循环 → 收到信号后优雅退出。
@@ -36,9 +38,13 @@ import (
 // 本次只做"搬家 + 改可见性"，不动内部结构。
 func Main() {
 	var (
-		dbPath        = flag.String("db", "./mir2go.db", "SQLite 路径（与 accountsvc 共享）")
-		dataDir       = flag.String("data", "./data", "静态数据目录")
-		gameAddr      = flag.String("addr", ":7200", "监听地址")
+		dbPath    = flag.String("db", "./mir2go.db", "SQLite 路径（与 accountsvc 共享）")
+		dataDir   = flag.String("data", "./data", "静态数据目录")
+		gameAddr  = flag.String("addr", ":7200", "监听地址")
+		protoAddr = flag.String("proto-addr", "",
+			"新协议监听地址（[u32 长度][Envelope]，docs/protocol.md §2/§5）；留空则不监听。\n"+
+				"与 legacy 的 -addr **并存**：现有回归与 mir2cli 走 legacy，新协议客户端走这里。\n"+
+				"v0 只到\"进图 + 看见自己\"（见 internal/gamesvr/netproto.go 的文件头）")
 		proxyProtocol = flag.Bool("proxy-protocol", false,
 			"要求接入连接先带一行 PROXY protocol v1 头（网关 -proxy-protocol 会写），"+
 				"从中取真实客户端 IP（docs/decisions.md D-23）。直连调试时保持关闭；"+
@@ -470,6 +476,33 @@ func Main() {
 			go srv.acceptConn(c)
 		}
 	}()
+
+	// 新协议入口（并存，见 netproto.go 的文件头）。默认关闭：它不是回归路径，
+	// 而是"客户端唯一对端"（D-13）那条线的落点，还没做到能替代 legacy。
+	if *protoAddr != "" {
+		pln, err := net.Listen("tcp", *protoAddr)
+		if err != nil {
+			log.Fatalf("监听新协议 %s: %v", *protoAddr, err)
+		}
+		log.Printf("新协议入口 %s（[u32 长度][Envelope]，版本 %d）", *protoAddr, protocol.Version)
+		go func() {
+			for {
+				c, err := pln.Accept()
+				if err != nil {
+					return
+				}
+				// 真实客户端 IP 的取得与 legacy 入口**同一套**（PROXY 头或 socket 对端）。
+				ec, ip, err := proxyproto.ServerConn(c, srv.cfg.proxyProtocol, proxyHeaderTimeout)
+				if err != nil {
+					log.Printf("%s: 新协议取得客户端地址失败，断开: %v", c.RemoteAddr(), err)
+					_ = c.Close()
+					continue
+				}
+				go srv.serveProtoConn(ec, ip)
+			}
+		}()
+		defer pln.Close()
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
