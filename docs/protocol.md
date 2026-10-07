@@ -240,6 +240,30 @@ TCP 保证送达与顺序，但不保证"语义上的只有一次"。所以按**
 
 ---
 
+## 9.5 动作 id（`EntityAction.action`）
+
+⚠️ 这个值域是**我们定的**：原版把"一个动作"拆成 70 个手写动画类，再加上十几个攻击消息号
+（SM_HIT / SM_HEAVYHIT / …，见 `combat.proto` 表头），既没法照搬也不该照搬。
+
+| 值 | 含义 | 说明 |
+|---|---|---|
+| 0 | 未指定 | |
+| 1..8 | **攻击** | 与 `AttackAction` **同值**（1 砍 / 2 重砍 / 3 大力 / 4 攻杀 / 5 刺杀 / 6 半月 / 7 烈火 / 8 双龙）。于是"我发 `ATTACK_HIT`"与"我看到别人 `action=1`"播的是同一套动作，客户端不必再翻译一层 |
+| 51 | 受击 | 被打了一下（原版 SM_STRUCK 的动画部分） |
+| 52 | 死亡 | 尸骨**留在原地**；"移出视野"是另一条 `EntityDisappear`（`reason=DISAPPEAR_DEAD`）—— 两者是两件事 |
+| 53.. | 保留 | 骑马 / 挖矿 / 施法…按需往上加 |
+
+两条纪律：
+
+1. **1..8 不能改**：它们是"动作"（服务端 → 客户端）与"输入"（客户端 → 服务端）**共用**的值域，
+   动一处等于同时改两处的语义；
+2. **新增不要插在中间**：客户端可能按区间判断（`core::world::action::is_attack` 就是 `1..=8`）。
+
+代码里的两个方向：`gamesvr.attackActionOf`（legacy 消息号 → 动作 id）与
+`gamesvr.attackIdentOf`（`AttackAction` → legacy 消息号）。
+
+---
+
 ## 10. 禁止事项（从原版学到的教训）
 
 | ❌ | 原版的问题 | 本协议的做法 |
@@ -308,8 +332,35 @@ TCP 保证送达与顺序，但不保证"语义上的只有一次"。所以按**
       另加一条**只对新协议玩家**的周期性视野同步（legacy 那半边有同一个缺口：
       `updateVision` 只在移动/进图时触发 ⇒ 站着不动看不见"走近"的实体）；
       不对 legacy 做是因为那会给 mir2cli 的**包序**断言插进额外包（另开一条）。
+- [x] **战斗**（2026-10-07）：`AttackInput`（入站）+ `Damage` / `EntityHealth` / `EntityAction`
+      / `Death` / `LevelUp`（出站）。
+      做法：**在 legacy 的出站漏斗内部分支** —— `sendStruck`（受击，13 处调用点）/
+      `sendHealthChanged`（血量+自己 mp，23 处）/ `sendSwing`（挥砍）/ `sendDeathTo`
+      （死亡，8 个 SM_DEATH 点统一收口）/ `applyLevelUp`。所以"谁看得见什么"的判定
+      仍然只有一处，两条协议共享它。
+      ⚠️ 入站那段是**翻译而不是重写**：`AttackInput{target_entity_id}` → 按 id 找到目标、
+      算出朝向它的方向 → 合成一个 legacy 攻击包交给 `handleAttack`。
+      这样威力/打空/减防/技能模式/挖矿/试刀/宠物跟打/掉落/经验**只有一份实现**（R-7），
+      新协议不会长出一个"少了几条规则"的影子版本。代价是这一层翻译与 legacy 同生共死；
+      legacy 退役时把 `handleAttack` 的入参从 `wire.Packet` 换成 `(dir, mode)` 即可。
+- [x] 换图（回城/传送）也接上了：`switchMap` 对新协议玩家发**一份 `ChangeMap` 快照**，
+      不再走"先 SM_CLEAROBJECTS 再增量补"那三步（客户端拿到新地图名 + 整份实体表就重建了）。
+- [ ] `EntityHealth` **没有 mp 字段**：自己的 mp 目前靠 `sendHealthChanged` 里**捎带一条
+      完整 `AbilityUpdate`**（代价：每次血量变化多发一条）。mp 的同步一旦变频繁就要给它
+      一条专门的消息（或给 `EntityHealth` 加 mp）。
+- [ ] `Death.killer_id` 只在"出手者就在作用域里"的地方填得上（近战/技能/怪致死）；
+      **毒 / 火墙 / 脚本**那几条收尾路径传 0（= 非玩家击杀）。要精确归因，得把出手者
+      一路传进那些路径（它们今天只带 (id, 坐标)）。
+- [ ] `ExperienceGain` **还没发**：legacy 把经验塞在 `SM_ABILITY` 的位域里，而新协议的
+      `Ability` 没有 exp 字段 ⇒ 新协议客户端目前看不到经验条。要么用这条消息，
+      要么给 `Ability` 加 exp（两选一要定）。
+- [ ] `Revive` **还没发**：死亡回城走的是 `ChangeMap` 快照 + `EntityHealth`，
+      所以 `Revive` 暂时没有发送点（要么删掉它，要么把它用在"原地复活"那条路径上）。
+- [ ] 攻击目标不可及（不相邻 / 已死 / 不在视野）时服务端**静默忽略**（只留日志）：
+      IDL 里没有 `AttackRejected` 这类消息。客户端只能靠"没看到动作/伤害"自己判断，
+      要不要补一条拒绝消息等预测逻辑成型再定。
 - [ ] 新协议入口的**剩余边界**（见 [`netproto.go`](../server/internal/gamesvr/netproto.go) 文件头）：
-      攻击/物品/聊天仍走 legacy；`protoDown` 会把那些 legacy 下行丢掉。
+      物品/聊天/技能输入/组队/交易仍走 legacy；`protoDown` 会把那些 legacy 下行丢掉。
 - [ ] `MoveInput` **没有走/跑标志**（legacy 靠 CM_WALK / CM_RUN 两条消息区分）⇒
       新协议客户端目前只能走。补它要改 schema + bump 版本。
 - [ ] **没有独立的"转身"与"动作"消息**：转身目前也用 `EntityMove`（`from == to`）表达，

@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mir2_core::m2pk::Archive;
 use mir2_core::map::{Layer, Lib, Map, TileDraw, LAYERS_ALL, UNIT_X, UNIT_Y};
@@ -108,6 +108,12 @@ const C_ENT_MONSTER: Color = Color::RGB(255, 110, 110);
 const C_ENT_NPC: Color = Color::RGB(255, 220, 120);
 /// 自己（相机跟着它）。
 const C_ENT_SELF: Color = Color::RGB(120, 255, 140);
+/// 尸体（`Death` 之后、`EntityDisappear` 之前 —— 原版里尸骨会留一会儿）。
+const C_ENT_DEAD: Color = Color::RGB(120, 120, 120);
+/// 伤害飘字的三档亮度（8x8 调试字体只有一档颜色 ⇒ 用亮度代替透明度淡出）。
+const C_DMG_HOT: Color = Color::RGB(255, 240, 120);
+const C_DMG_MID: Color = Color::RGB(255, 170, 60);
+const C_DMG_DIM: Color = Color::RGB(190, 90, 40);
 
 // 图层可见性掩码定义在 core（`map::LAYERS_ALL` / `Layer::bit`）——
 // app 与 e2e 都要用它过滤绘制指令，各写一份迟早不一致（plan §4.2 / R-10）。
@@ -718,6 +724,11 @@ struct Net {
     status: String,
     /// 累计世界变更次数（"世界在动"最直接的观测量）。
     changes: u32,
+    /// 伤害飘字：文本 + 格子坐标 + 出生时刻。
+    ///
+    /// ⚠️ 世界模型（`core::world`）是**没有时钟**的纯状态，只负责把 `Damage` 记进
+    /// 一个队列；计时与淡出是渲染层的事（这里才有帧时钟）。
+    floaters: Vec<(String, i32, i32, Instant)>,
 }
 
 impl Net {
@@ -751,6 +762,7 @@ impl Net {
             session,
             status: "连接中…".into(),
             changes: 0,
+            floaters: Vec::new(),
         })
     }
 
@@ -799,6 +811,15 @@ impl Net {
                 }
             }
         }
+        // 伤害飘字：世界只记账，这里取走并计时。
+        for d in self.world.take_damage() {
+            let (x, y) = self.pos_of(d.target_id);
+            self.floaters
+                .push((format!("{}", d.value), x, y, Instant::now()));
+        }
+        self.floaters
+            .retain(|f| f.3.elapsed() < Duration::from_millis(900));
+
         if let Some(why) = self.entrance.failed() {
             if !self.status.starts_with("失败") {
                 self.status = format!("失败：{why}");
@@ -824,6 +845,42 @@ impl Net {
     /// 发一次移动输入（走）。方向用**线上编号**（`core::world` 里也不做 ±1 转换）。
     fn walk(&self, dir: mir2_protocol::Direction) {
         let _ = self.sess.cmds.send(mir2_net::Cmd::Move(dir as i32));
+    }
+
+    /// 某个实体当前所在的格子（用来把飘字摆在它头上）。
+    ///
+    /// 找不到（已经消失）就退回自己的位置 —— 总比不画好。
+    fn pos_of(&self, id: u64) -> (i32, i32) {
+        if id == self.world.self_id {
+            return self.world.self_pos;
+        }
+        self.world
+            .entities
+            .get(&id)
+            .map(|e| (e.x, e.y))
+            .unwrap_or(self.world.self_pos)
+    }
+
+    /// 打一下**紧邻**（八格）的那个实体。
+    ///
+    /// ⚠️ 只认相邻：服务端的 `AttackInput` 也只在相邻八格里才认（见那边的说明），
+    /// 目标太远服务端会静默忽略。返回 false = 身边没有可打的目标。
+    fn attack_adjacent(&self) -> bool {
+        let (sx, sy) = self.world.self_pos;
+        let target = self.world.entities.values().find(|e| {
+            !e.dead && (e.x - sx).abs() <= 1 && (e.y - sy).abs() <= 1 && (e.x != sx || e.y != sy)
+        });
+        match target {
+            Some(e) => {
+                let _ = self.sess.cmds.send(mir2_net::Cmd::Attack {
+                    target_id: e.id,
+                    action: mir2_protocol::AttackAction::AttackHit as i32,
+                });
+                println!("[net] 攻击 {} (ActorId={})", e.name, e.id);
+                true
+            }
+            None => false,
+        }
     }
 
     /// 相机该对着哪一格（居中自身）。没进世界时返回 `None`（保持手动镜头）。
@@ -856,6 +913,14 @@ fn walk_if_online(net: &Option<Net>, dir: mir2_protocol::Direction) -> bool {
 ///
 /// ⚠️ 这张表与服务端 `entity.DirDelta` 是同一份顺序（原版 0..7 各 +1）——
 /// 两处一旦不一致，人物会朝反方向走，而且不会报错。
+/// 格子坐标 → 视口坐标（地图绘制用的同一套换算：`UNIT_X/UNIT_Y` + 顶部信息条）。
+fn cell_to_screen(cam: (i32, i32), cx: i32, cy: i32) -> (f32, f32) {
+    (
+        (cx - cam.0) as f32 * UNIT_X as f32,
+        BAR_TOP + (cy - cam.1) as f32 * UNIT_Y as f32,
+    )
+}
+
 fn dir_delta(dir: i32) -> (f32, f32) {
     match dir {
         1 => (0.0, -1.0),  // 上
@@ -888,8 +953,7 @@ fn draw_entity_marker(
     max_hp: u32,
     dir: i32,
 ) -> Result<(), sdl3::Error> {
-    let sx = (cx - cam.0) as f32 * UNIT_X as f32;
-    let sy = BAR_TOP + (cy - cam.1) as f32 * UNIT_Y as f32;
+    let (sx, sy) = cell_to_screen(cam, cx, cy);
     // 视口外直接跳过（地图比视口大得多）
     if (sx + UNIT_X as f32) < 0.0
         || sx > WIN_W as f32
@@ -1102,6 +1166,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 cam.1 += 2
                             }
                         }
+                        // 空格：打一下身边的目标（A′：走 + 砍 = 能玩）。
+                        Some(Keycode::Space) => {
+                            if let Some(n) = net.as_ref().filter(|n| n.world.in_world()) {
+                                if !n.attack_adjacent() {
+                                    println!("[net] 身边没有可打的目标（八格内）");
+                                }
+                            }
+                        }
                         // C：连接/断开新协议服务端（地址与会话号走环境变量，见 `Net::connect`）。
                         Some(Keycode::C) => {
                             if net.is_some() {
@@ -1263,7 +1335,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // 顶部/底部公共条
         let hint = if mode == 2 {
-            "ARROWS/PAN+WALK  C CONNECT  [ ] MAP  HOME  D DEBUG  CTRL 1/2/3 LAYER  P DUMP  F1 LOGIN  ESC"
+            "ARROWS WALK  SPACE HIT  C CONNECT  [ ] MAP  D DEBUG  1/2/3 LAYER  P DUMP  F1 LOGIN  ESC"
         } else {
             "TAB FIELD   ENTER LOGIN   [ ] LIB   , . IMG   F2 MAP   M MUSIC   ESC QUIT"
         };
@@ -1400,10 +1472,14 @@ fn draw_map_view<'a, T>(
     if let Some(n) = net {
         if n.world.in_world() {
             for e in n.world.entities.values() {
-                let color = match e.kind {
-                    0 => C_ENT_PLAYER,
-                    2 => C_ENT_NPC,
-                    _ => C_ENT_MONSTER,
+                let color = if e.dead {
+                    C_ENT_DEAD // 尸骨：还在视野里（原版能打尸骨），但已经死了
+                } else {
+                    match e.kind {
+                        0 => C_ENT_PLAYER,
+                        2 => C_ENT_NPC,
+                        _ => C_ENT_MONSTER,
+                    }
                 };
                 draw_entity_marker(canvas, cam, e.x, e.y, color, &e.name, e.hp, e.max_hp, e.dir)?;
             }
@@ -1420,6 +1496,21 @@ fn draw_map_view<'a, T>(
                 max_hp,
                 n.world.self_dir,
             )?;
+
+            // 伤害飘字（A′：打怪要看得见数字）。往上飘，三档亮度代替淡出 ——
+            // 8x8 调试字体只有一档颜色，靠 alpha 淡化在 `draw_debug_text` 上不一定生效。
+            for (txt, fx, fy, born) in &n.floaters {
+                let (px, py) = cell_to_screen(cam, *fx, *fy);
+                let age = born.elapsed().as_millis();
+                let col = if age < 300 {
+                    C_DMG_HOT
+                } else if age < 600 {
+                    C_DMG_MID
+                } else {
+                    C_DMG_DIM
+                };
+                text(canvas, txt, px + 18.0, py - 10.0 - age as f32 / 60.0, col)?;
+            }
         }
     }
 

@@ -31,6 +31,26 @@ pub struct Entity {
     pub hp: u32,
     pub max_hp: u32,
     pub status_bits: u64,
+    /// 已经死了（收到 `Death` 之后、`EntityDisappear` 之前的那段时间 = 尸骨）。
+    ///
+    /// ⚠️ 死亡**不等于**消失：原版里尸骨会留一会儿（法师还能打尸骨），
+    /// 所以这里只标记，实体仍在 `entities` 里 —— 由渲染层决定怎么画（半透明/躺下）。
+    pub dead: bool,
+    /// 最近一次动作（见 `protocol.md` §9.5 的动作 id 值域：1..8 攻击 51 受击 52 死亡）。
+    pub action: Option<u32>,
+}
+
+/// 一次伤害事件（`Damage`）。**由调用方取走**（`World::take_damage`）并决定怎么表现。
+///
+/// 为什么不在这里做"飘字计时"：`World` 是纯状态、**没有时钟**（见文件头）。
+/// 计时与淡出是渲染层的事，那里本来就有帧时钟。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DamageEvent {
+    pub attacker_id: u64,
+    pub target_id: u64,
+    /// 伤害值（`flags` 里的位说明暴击/闪避等，见 combat.proto）。
+    pub value: i32,
+    pub flags: u32,
 }
 
 impl Entity {
@@ -47,6 +67,8 @@ impl Entity {
             hp: s.hp,
             max_hp: s.max_hp,
             status_bits: s.status_bits,
+            dead: false,
+            action: None,
         }
     }
 
@@ -99,6 +121,21 @@ pub struct World {
     pub entity_events: u64,
     /// 累计收到多少条**看不懂**的消息（§4.1：记数 + 忽略，不 panic）。
     pub unknown: u64,
+    /// 累计收到多少条伤害事件（"在打架"的观测量）。
+    pub damage_events: u64,
+    /// 累计收到多少条动作（挥砍/受击/死亡）。
+    pub actions: u64,
+    /// 自己的 hp/max_hp（`EntityHealth` 与 `AbilityUpdate` 都会更新它）。
+    ///
+    /// ⚠️ 为什么不复用 `ability.hp`：`EntityHealth` **不带等级/金币**，
+    /// 往 `ability` 里塞会让"等级=0"这种假值冒出来。两个来源各写各的字段。
+    pub self_hp: Option<(u32, u32)>,
+    /// 自己是不是死了（回城 / `Revive` 之后由 `ChangeMap` 那条恢复）。
+    pub self_dead: bool,
+    /// 自己最近一次动作（挥砍…）—— 自己不在 `entities` 里，所以单列。
+    pub self_action: Option<u32>,
+    /// 待消费的伤害事件（调用方 `take_damage()` 取走）。
+    damage: Vec<DamageEvent>,
 }
 
 impl World {
@@ -122,6 +159,7 @@ impl World {
                 self.self_dir = ew.direction;
                 self.server_tick = ew.server_tick;
                 // 初始快照：整份替换（换图/重进都走这里）。
+                self.self_dead = false; // 进图（含复活后重新进）自己一定是活的
                 self.entities.clear();
                 for s in &ew.entities {
                     // ⚠️ 服务端保证快照里没有自己，但客户端也不能因此就假设它一定没有：
@@ -137,6 +175,8 @@ impl World {
             }
             Body::ChangeMap(cm) => {
                 self.map_name = cm.map_name.clone();
+                // 回城/传送（含死亡回城）走的就是这条 ⇒ 自己恢复为活着的。
+                self.self_dead = false;
                 let pos = cm.position.unwrap_or_default();
                 self.self_pos = (pos.x, pos.y);
                 self.entities.clear();
@@ -205,12 +245,107 @@ impl World {
                         max_mp: ab.max_mp,
                         gold: ab.gold,
                     });
+                    self.self_hp = Some((ab.hp, ab.max_hp));
                     return Change::World;
                 }
                 Change::None
             }
+            Body::LevelUp(l) => {
+                // 升级带**完整能力值**（一条消息顶 legacy 的 SM_LEVELUP + SM_ABILITY 两条）。
+                if let Some(ab) = l.ability.as_ref() {
+                    self.ability = Some(Ability {
+                        level: ab.level,
+                        hp: ab.hp,
+                        max_hp: ab.max_hp,
+                        mp: ab.mp,
+                        max_mp: ab.max_mp,
+                        gold: ab.gold,
+                    });
+                    self.self_hp = Some((ab.hp, ab.max_hp));
+                    return Change::World;
+                }
+                Change::None
+            }
+            Body::EntityHealth(h) => {
+                if h.entity_id == self.self_id {
+                    // 自己的血量：**单独存一份**，不往 `ability` 里塞 —— 因为
+                    // `EntityHealth` 不带等级/金币，拿它去凑一个"半个 Ability"会让
+                    // 等级显示成 0。两边都写 `self_hp`，谁先到都不丢。
+                    self.self_hp = Some((h.hp, h.max_hp));
+                } else if let Some(e) = self.entities.get_mut(&h.entity_id) {
+                    e.hp = h.hp;
+                    e.max_hp = h.max_hp;
+                } else {
+                    self.unknown += 1;
+                    return Change::None;
+                }
+                Change::World
+            }
+            Body::Damage(d) => {
+                self.damage.push(DamageEvent {
+                    attacker_id: d.attacker_id,
+                    target_id: d.target_id,
+                    value: d.value,
+                    flags: d.flags,
+                });
+                self.damage_events += 1;
+                Change::World
+            }
+            Body::Death(x) => {
+                if x.entity_id == self.self_id {
+                    // 自己死了：位置与血量由 `ChangeMap`（回城）/`EntityHealth` 收尾，
+                    // 这里只记数，不去动 `entities`。
+                    self.self_dead = true;
+                    return Change::World;
+                }
+                match self.entities.get_mut(&x.entity_id) {
+                    Some(e) => {
+                        // ⚠️ 只标记、**不删**：尸骨会留一会儿（原版还能打尸骨），
+                        // 真正的移除是随后那条 `EntityDisappear`。
+                        e.dead = true;
+                        e.action = Some(action::DEATH);
+                    }
+                    None => {
+                        self.unknown += 1;
+                        return Change::None;
+                    }
+                }
+                Change::World
+            }
+            Body::EntityAction(a) => {
+                self.actions += 1;
+                if let Some(e) = self.entities.get_mut(&a.entity_id) {
+                    e.action = Some(a.action);
+                } else if a.entity_id == self.self_id {
+                    // 自己的动作（挥砍）—— 自己不在 `entities` 里，单独存一份。
+                    self.self_action = Some(a.action);
+                } else {
+                    self.unknown += 1;
+                    return Change::None;
+                }
+                Change::World
+            }
             _ => Change::None,
         }
+    }
+
+    /// 取走累计的伤害事件（渲染层用来弹伤害数字）。
+    ///
+    /// 取走而非"读后保留"，是因为调用方**每帧**都会来取一次，留着只会无限膨胀。
+    pub fn take_damage(&mut self) -> Vec<DamageEvent> {
+        std::mem::take(&mut self.damage)
+    }
+}
+
+/// 动作 id 的值域（与 `protocol.md` §9.5 一致：1..8 与 `AttackAction` 同值）。
+pub mod action {
+    /// 受击。
+    pub const HURT: u32 = 51;
+    /// 死亡。
+    pub const DEATH: u32 = 52;
+    /// 「这个动作是不是攻击」（1..8 都算）。
+    pub fn is_attack(a: u32) -> bool {
+        (1..=8).contains(&a)
     }
 }
 
@@ -397,5 +532,145 @@ mod tests {
             (a.level, a.hp, a.max_hp, a.mp, a.max_mp, a.gold),
             (7, 30, 40, 5, 9, 123)
         );
+    }
+
+    #[test]
+    fn combat_damage_health_death() {
+        let mut w = World::default();
+        w.apply(&env(enter_world()));
+
+        // 伤害：记进待取事件，**取走之后要清空**（否则每帧重复弹字）
+        w.apply(&env(Body::Damage(proto::Damage {
+            attacker_id: 1,
+            target_id: 1_000_001,
+            value: 7,
+            flags: 0,
+        })));
+        let ev = w.take_damage();
+        assert_eq!(ev.len(), 1);
+        assert_eq!(
+            (ev[0].attacker_id, ev[0].target_id, ev[0].value),
+            (1, 1_000_001, 7)
+        );
+        assert!(w.take_damage().is_empty(), "take_damage 必须把队列清空");
+        assert_eq!(w.damage_events, 1);
+
+        // 血量
+        w.apply(&env(Body::EntityHealth(proto::EntityHealth {
+            entity_id: 1_000_001,
+            hp: 8,
+            max_hp: 15,
+        })));
+        assert_eq!(
+            (w.entities[&1_000_001].hp, w.entities[&1_000_001].max_hp),
+            (8, 15)
+        );
+
+        // 死亡：**只标记、不删**（尸骨要留一会儿，真移除是随后的 EntityDisappear）
+        w.apply(&env(Body::Death(proto::Death {
+            entity_id: 1_000_001,
+            killer_id: 1,
+        })));
+        assert!(w.entities[&1_000_001].dead);
+        assert_eq!(w.entities[&1_000_001].action, Some(action::DEATH));
+        assert_eq!(w.entities.len(), 2, "死亡不等于消失");
+
+        // 消失才是移除
+        w.apply(&env(Body::EntityDisappear(proto::EntityDisappear {
+            entity_id: 1_000_001,
+            reason: proto::DisappearReason::DisappearDead as i32,
+        })));
+        assert_eq!(w.entities.len(), 1);
+    }
+
+    #[test]
+    fn self_health_and_action_are_tracked_separately() {
+        let mut w = World::default();
+        w.apply(&env(enter_world()));
+
+        // 自己的血量单独存：不能用 EntityHealth 去凑一个"半个 ability"（会显示 0 级）
+        w.apply(&env(Body::EntityHealth(proto::EntityHealth {
+            entity_id: 1,
+            hp: 30,
+            max_hp: 40,
+        })));
+        assert_eq!(w.self_hp, Some((30, 40)));
+        assert!(w.ability.is_none(), "别为了 hp 造一个等级=0 的能力值");
+
+        // 能力值到达时两边都要更新
+        w.apply(&env(Body::AbilityUpdate(proto::AbilityUpdate {
+            ability: Some(proto::Ability {
+                level: 7,
+                hp: 25,
+                max_hp: 40,
+                ..Default::default()
+            }),
+        })));
+        assert_eq!(w.self_hp, Some((25, 40)));
+        assert_eq!(w.ability.unwrap().level, 7);
+
+        // 自己的动作（挥砍）：自己不在 entities 里 ⇒ 单列
+        w.apply(&env(Body::EntityAction(proto::EntityAction {
+            entity_id: 1,
+            action: 1,
+            server_tick: 9,
+        })));
+        assert_eq!(w.self_action, Some(1));
+        assert_eq!(w.actions, 1);
+    }
+
+    #[test]
+    fn level_up_carries_full_ability() {
+        let mut w = World::default();
+        w.apply(&env(enter_world()));
+        w.apply(&env(Body::LevelUp(proto::LevelUp {
+            level: 8,
+            ability: Some(proto::Ability {
+                level: 8,
+                hp: 50,
+                max_hp: 60,
+                mp: 20,
+                max_mp: 30,
+                gold: 999,
+                ..Default::default()
+            }),
+        })));
+        let ab = w.ability.expect("升级要带完整能力值");
+        assert_eq!((ab.level, ab.max_hp, ab.max_mp, ab.gold), (8, 60, 30, 999));
+        assert_eq!(w.self_hp, Some((50, 60)));
+    }
+
+    #[test]
+    fn health_action_of_unknown_entity_are_counted() {
+        let mut w = World::default();
+        w.apply(&env(enter_world()));
+        let before = w.clone();
+        w.apply(&env(Body::EntityHealth(proto::EntityHealth {
+            entity_id: 999,
+            hp: 1,
+            max_hp: 1,
+        })));
+        w.apply(&env(Body::EntityAction(proto::EntityAction {
+            entity_id: 999,
+            action: 1,
+            server_tick: 1,
+        })));
+        w.apply(&env(Body::Death(proto::Death {
+            entity_id: 999,
+            killer_id: 0,
+        })));
+        assert_eq!(w.unknown, 3, "没见过的实体不该被凭空造出来，但要记数");
+        assert_eq!(w.entities.len(), before.entities.len());
+    }
+
+    #[test]
+    fn action_id_space() {
+        // 1..8 = 攻击（与 AttackAction 同值），51/52 是非攻击 —— 见 protocol.md §9.5
+        for a in 1..=8 {
+            assert!(action::is_attack(a), "动作 {a} 应判为攻击");
+        }
+        assert!(!action::is_attack(action::HURT));
+        assert!(!action::is_attack(action::DEATH));
+        assert_ne!(action::HURT, action::DEATH);
     }
 }

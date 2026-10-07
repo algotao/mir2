@@ -42,6 +42,11 @@ pub enum Cmd {
     /// 走一步。方向用**线上编号**（`proto::Direction` 的值），不在这里做 ±1 转换 ——
     /// 转换只允许在"游戏逻辑 ↔ 协议"的那一处发生，免得来回漂。
     Move(i32),
+    /// 打一下（`AttackInput`）。
+    ///
+    /// ⚠️ `target_id` 是**目标实体的 ActorId**（新协议显式给目标，legacy 靠朝向格）；
+    /// `action` 用线上编号（`proto::AttackAction` 的值）。
+    Attack { target_id: u64, action: i32 },
     /// 心跳（`Ping`）。
     Ping,
     /// 主动关闭。
@@ -172,6 +177,11 @@ fn writer_loop(stream: &mut TcpStream, cmds: Receiver<Cmd>) {
                 direction: dir,
                 client_tick: 0,
                 ..Default::default()
+            }),
+            Cmd::Attack { target_id, action } => Body::AttackInput(proto::AttackInput {
+                target_entity_id: target_id,
+                action,
+                client_tick: 0,
             }),
             Cmd::Ping => Body::Ping(proto::Ping { client_time_ms: 0 }),
             Cmd::Close => return,

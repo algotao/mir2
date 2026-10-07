@@ -36,6 +36,12 @@ struct Args {
     timeout_ms: u64,
     /// 进世界之后再走几步（每步之间要等过服务端的限流窗口）。
     move_steps: u32,
+    /// 进世界之后打这个 ActorId 一下（A′：攻击 → 伤害 → 血量）。
+    attack: Option<u64>,
+    /// 至少收到几条伤害事件。
+    expect_damage: u64,
+    /// 攻击目标打完之后应当死掉（`-attack` 配套）。
+    expect_kill: bool,
     expect_map: Option<String>,
     expect_pos: Option<(i32, i32)>,
     expect_entities: Option<usize>,
@@ -47,6 +53,7 @@ impl Args {
     fn parse(argv: &[String]) -> Result<Self, String> {
         let (mut addr, mut session, mut char_id) = (None, None, None);
         let (mut timeout_ms, mut move_steps) = (8000u64, 0u32);
+        let (mut attack, mut expect_damage, mut expect_kill) = (None, 0u64, false);
         let (mut expect_map, mut expect_pos, mut expect_entities) = (None, None, None);
         let mut expect_entity_at = None;
 
@@ -65,6 +72,9 @@ impl Args {
                 "-char" => char_id = Some(parse(&val("角色 id")?, "-char")?),
                 "-timeout-ms" => timeout_ms = parse(&val("毫秒")?, "-timeout-ms")?,
                 "-move-steps" => move_steps = parse(&val("步数")?, "-move-steps")?,
+                "-attack" => attack = Some(parse(&val("目标 ActorId")?, "-attack")?),
+                "-expect-damage" => expect_damage = parse(&val("条数")?, "-expect-damage")?,
+                "-expect-kill" => expect_kill = true,
                 "-expect-map" => expect_map = Some(val("地图名")?),
                 "-expect-pos" => expect_pos = Some(parse_pos(&val("X,Y")?)?),
                 "-expect-entities" => {
@@ -81,6 +91,9 @@ impl Args {
             char_id,
             timeout_ms,
             move_steps,
+            attack,
+            expect_damage,
+            expect_kill,
             expect_map,
             expect_pos,
             expect_entities,
@@ -144,9 +157,12 @@ fn run(argv: &[String]) -> Result<(), String> {
                 entered_map = Some(world.map_name.clone());
                 print_world(&world);
             }
-            // 进世界之后：走几步（每步等过服务端的限流窗口），然后收工。
+            // 进世界之后：走几步（每步等过服务端的限流窗口），再打一下，然后收工。
             if a.move_steps > 0 {
                 walk(&a, &sess, &mut world, &mut changes)?;
+            }
+            if let Some(target) = a.attack {
+                attack(&a, &sess, target)?;
             }
             break;
         }
@@ -161,14 +177,22 @@ fn run(argv: &[String]) -> Result<(), String> {
     }
 
     // 再收一小会儿：驱动方（Go 契约测试）会在玩家进图后推一条实体事件，
-    // 我们得把它吃进世界模型再断言。
-    let tail = Instant::now() + Duration::from_millis(1200);
+    // 攻击的伤害/血量/死亡应答也是在这一段里到齐的。
+    let mut damages = Vec::new();
+    let tail = Instant::now() + Duration::from_millis(1500);
     while Instant::now() < tail {
         if let Ok(Ev::Envelope(env)) = sess.evs.recv_timeout(Duration::from_millis(50)) {
             if world.apply(&env) == Change::World {
                 changes += 1;
             }
+            damages.extend(world.take_damage());
         }
+    }
+    for d in &damages {
+        println!(
+            "[world] 伤害：ActorId={} 打了 ActorId={} {} 点",
+            d.attacker_id, d.target_id, d.value
+        );
     }
     print_world(&world);
 
@@ -199,6 +223,27 @@ fn run(argv: &[String]) -> Result<(), String> {
             ));
         }
     }
+    if world.damage_events < a.expect_damage {
+        return Err(format!(
+            "伤害事件只有 {} 条，应为至少 {} 条（`-attack` 打了没？）",
+            world.damage_events, a.expect_damage
+        ));
+    }
+    if a.expect_kill {
+        let target = a.attack.unwrap_or(0);
+        match world.entities.get(&target) {
+            Some(e) if e.dead => {}
+            Some(e) => {
+                return Err(format!(
+                    "目标 ActorId={target} 还活着（hp={}/{}）—— 应当被打死",
+                    e.hp, e.max_hp
+                ))
+            }
+            None => {
+                return Err(format!("目标 ActorId={target} 已经不在视野里了"));
+            }
+        }
+    }
     if world.unknown > 0 {
         return Err(format!(
             "有 {} 条消息没看懂（未知消息/无主的移动）—— 那通常意味着两边对不上",
@@ -207,13 +252,14 @@ fn run(argv: &[String]) -> Result<(), String> {
     }
 
     println!(
-        "世界状态通过：地图={} 进图={:?} 现在={:?} 视野={} 个实体 变更={} 次 实体事件={}",
+        "世界状态通过：地图={} 进图={:?} 现在={:?} 视野={} 个实体 变更={} 次 实体事件={} 伤害={}",
         world.map_name,
         entered_pos,
         world.self_pos,
         world.entities.len(),
         changes,
-        world.entity_events
+        world.entity_events,
+        world.damage_events
     );
     Ok(())
 }
@@ -292,6 +338,22 @@ fn walk(a: &Args, sess: &Session, world: &mut World, changes: &mut u32) -> Resul
 ///
 /// 握手消息与世界消息都从**命令通道**走：这样写 socket 的只有那一个写线程，
 /// 顺序天然是对的（也顺带验证了 `Cmd` 这条路是通的）。
+/// 打一下目标：发 `AttackInput`，然后由调用方在收尾那段里收伤害/血量/死亡应答。
+///
+/// ⚠️ 方向不由我们给：新协议给的是**目标 ActorId**，服务端自己算出朝向那一格
+/// （见服务端 `onAttackInput`）。
+fn attack(a: &Args, sess: &Session, target: u64) -> Result<(), String> {
+    sess.cmds
+        .send(Cmd::Attack {
+            target_id: target,
+            action: proto::AttackAction::AttackHit as i32,
+        })
+        .map_err(|_| "命令通道已关闭".to_string())?;
+    println!("[world] 攻击 ActorId={target}（普通砍）");
+    let _ = a;
+    Ok(())
+}
+
 fn send(sess: &Session, session_id: i32, body: &Body) -> Result<(), String> {
     let cmd = match body {
         // v0 的 token 就是会话号 ⇒ 不必从 `session_token` 里解回来（那会把
