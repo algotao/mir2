@@ -38,6 +38,11 @@ pub enum Stage {
     AwaitLogin,
     /// 已发 `ListCharacters`，等 `CharacterList`。
     AwaitList,
+    /// 角色列表到手，**等调用方选**（app 的选角界面）。
+    ///
+    /// ⚠️ 只有开了 [`Entrance::set_manual_pick`] 才会进这个阶段；默认是
+    /// "自动选列表第一个"（e2e / 无头驱动用），那时根本不会停在这里。
+    AwaitPick,
     /// 已发 `SelectCharacter`，等 `SelectCharacterResult`（之后服务端会推 `EnterWorld`）。
     AwaitSelect,
     /// 进世界了（收到 `EnterWorld`）。
@@ -53,6 +58,13 @@ pub struct Entrance {
     want_char: Option<u64>,
     /// 上一次 `CharacterList` 里第一个角色的 id（`want_char` 为空时用它）。
     first_char: Option<u64>,
+    /// 最近一次 `CharacterList` 的**全部**角色（选角界面要显示它）。
+    chars: Vec<proto::CharacterSummary>,
+    /// 要不要**由调用方选**角色（`true` = app 的选角界面；`false` = 自动选第一个）。
+    manual: bool,
+    /// 选角失败的原因（如租约被占）。**不致命**：回到 `AwaitPick` 让用户重选，
+    /// 调用方取走这条消息弹窗（原版也是弹个 `DMessageDlg` 接着选）。
+    pick_err: Option<String>,
     stage: Stage,
     /// 口令登录那一路：账号与口令（`None` = 走 `Reconnect`）。
     ///
@@ -79,6 +91,9 @@ impl Entrance {
             session,
             want_char,
             first_char: None,
+            chars: Vec::new(),
+            manual: false,
+            pick_err: None,
             stage: Stage::Start,
             login: None,
             nonce: Vec::new(),
@@ -94,11 +109,45 @@ impl Entrance {
             session: 0,
             want_char,
             first_char: None,
+            chars: Vec::new(),
+            manual: false,
+            pick_err: None,
             stage: Stage::Start,
             login: Some(LoginState { account, password }),
             nonce: Vec::new(),
             session_token: None,
         }
+    }
+
+    /// 改成"**由调用方选**角色"（app 的选角界面）。
+    ///
+    /// 默认是自动选列表第一个（e2e 与无头驱动不想为选角多写一层）——
+    /// 所以这是一个**显式开关**，而不是"有列表就停"：那样会让 e2e 也停下来等。
+    pub fn set_manual_pick(&mut self, on: bool) {
+        self.manual = on;
+    }
+
+    /// 最近一次角色列表（选角界面显示用）。自动选角模式下也有值。
+    pub fn characters(&self) -> &[proto::CharacterSummary] {
+        &self.chars
+    }
+
+    /// 选角界面的"就是他了"：把用户选的那个告诉状态机。
+    ///
+    /// 只有停在 [`Stage::AwaitPick`] 时才算数（别处的调用是调用方的 bug ⇒ `None`）。
+    pub fn pick(&mut self, character_id: u64) -> Option<Body> {
+        if self.stage != Stage::AwaitPick {
+            return None;
+        }
+        self.stage = Stage::AwaitSelect;
+        Some(Body::SelectCharacter(proto::SelectCharacter {
+            character_id,
+        }))
+    }
+
+    /// 取走"上一次选角失败的原因"（取走后清空）。
+    pub fn take_pick_error(&mut self) -> Option<String> {
+        self.pick_err.take()
     }
 
     /// 记下握手 nonce（`Ev::Connected` 带回来的）。**登录前必须喂进来**，否则发不出证明。
@@ -152,6 +201,9 @@ impl Entrance {
             }
             Stage::AwaitReconnect | Stage::AwaitSalt | Stage::AwaitLogin => None,
             Stage::AwaitList | Stage::AwaitSelect => None,
+            // 停在选角：**没有待发命令** —— 要发什么由调用方 `pick()` 决定
+            //（这就是"手动选角"的全部机制：把选择权交出去）。
+            Stage::AwaitPick => None,
             Stage::InWorld | Stage::Failed(_) => None,
         }
     }
@@ -198,6 +250,13 @@ impl Entrance {
                     return None;
                 }
                 self.first_char = l.characters.first().map(|c| c.character_id);
+                self.chars = l.characters.clone();
+                if self.manual {
+                    // 交给调用方选（列表为空也停在这里：界面上还有"新建角色"一条路，
+                    // 直接判死会把用户堵死 —— 这是有意的行为差异，见 `set_manual_pick`）
+                    self.stage = Stage::AwaitPick;
+                    return None;
+                }
                 let Some(id) = self.want_char.or(self.first_char) else {
                     self.stage = Stage::Failed("这个账号还没有角色".into());
                     return None;
@@ -212,10 +271,18 @@ impl Entrance {
                     return None;
                 }
                 if r.code != proto::SelectCharCode::SelectCharOk as i32 {
-                    self.stage = Stage::Failed(format!(
+                    let why = format!(
                         "选角失败：code={} {}（租约被占时服务端会明确拒绝，不顶号）",
                         r.code, r.message
-                    ));
+                    );
+                    // 手动选角：**不判死**，退回去让用户换一个（原版也是弹个框接着选）。
+                    // 自动选角（e2e）：保持原来的"直接 Failed"，别把错误吞掉。
+                    if self.manual {
+                        self.pick_err = Some(why);
+                        self.stage = Stage::AwaitPick;
+                    } else {
+                        self.stage = Stage::Failed(why);
+                    }
                 }
                 // 成功：等 `EnterWorld`（服务端推），所以这里不发东西。
                 None
@@ -307,6 +374,129 @@ mod tests {
         env(Body::ReconnectResult(proto::ReconnectResult {
             status: status as i32,
         }))
+    }
+
+    /// 一份角色列表（两个角色）。
+    fn char_list(ids: &[u64]) -> Envelope {
+        env(Body::CharacterList(proto::CharacterList {
+            characters: ids
+                .iter()
+                .map(|&id| proto::CharacterSummary {
+                    character_id: id,
+                    name: format!("角色{id}"),
+                    level: 7,
+                    ..Default::default()
+                })
+                .collect(),
+        }))
+    }
+
+    /// 走到"角色列表到手"那一步（口令登录那条路太绕，这里用 Reconnect 那条）。
+    fn to_list(manual: bool) -> Entrance {
+        let mut e = Entrance::new(7, None);
+        if manual {
+            e.set_manual_pick(true);
+        }
+        e.next_cmd().expect("Reconnect");
+        e.on(&reconnect_result(
+            proto::ReconnectStatus::ReconnectBackToSelect,
+        ));
+        e
+    }
+
+    /// **手动选角**：列表到手后停住等用户，`pick` 才发 `SelectCharacter`。
+    ///
+    /// 这是选角界面的地基：没有它，界面上的"选哪个"根本来不及发生
+    /// （状态机会自己把第一个选掉）。
+    #[test]
+    fn 手动选角_停在选角阶段() {
+        let mut e = to_list(true);
+        assert_eq!(e.on(&char_list(&[11, 22])), None, "手动模式不该自己选");
+        assert_eq!(*e.stage(), Stage::AwaitPick);
+        assert_eq!(
+            e.characters()
+                .iter()
+                .map(|c| c.character_id)
+                .collect::<Vec<_>>(),
+            vec![11, 22],
+            "列表要留给界面显示"
+        );
+
+        // 用户选了**第二个**
+        let cmd = e.pick(22).expect("该吐出 SelectCharacter");
+        match cmd {
+            Body::SelectCharacter(sc) => assert_eq!(sc.character_id, 22),
+            other => panic!("期望 SelectCharacter，实得 {other:?}"),
+        }
+        assert_eq!(*e.stage(), Stage::AwaitSelect);
+        // 只能选一次
+        assert!(e.pick(11).is_none(), "已经在等了，不该再发一条");
+    }
+
+    /// 自动模式（e2e / 无头驱动）**不受影响**：还是选列表第一个。
+    #[test]
+    fn 自动选角照旧() {
+        let mut e = to_list(false);
+        let cmd = e.on(&char_list(&[11, 22])).expect("自动模式该自己选");
+        match cmd {
+            Body::SelectCharacter(sc) => assert_eq!(sc.character_id, 11, "自动选第一个"),
+            other => panic!("期望 SelectCharacter，实得 {other:?}"),
+        }
+        assert_eq!(*e.stage(), Stage::AwaitSelect);
+    }
+
+    /// 手动模式下**空列表不判死**：界面上还有"新建角色"一条路，
+    /// 直接 Failed 会把用户堵死在选角界面（而且连弹窗都出不来）。
+    #[test]
+    fn 手动选角_空列表不判死() {
+        let mut e = to_list(true);
+        assert_eq!(e.on(&char_list(&[])), None);
+        assert_eq!(*e.stage(), Stage::AwaitPick);
+        assert!(e.characters().is_empty());
+        assert!(e.failed().is_none(), "空列表在手动模式下不是错误");
+    }
+
+    /// 选角被拒（比如租约被占）⇒ **退回选角**让人换一个，而不是判死。
+    #[test]
+    fn 选角失败退回选角() {
+        let mut e = to_list(true);
+        e.on(&char_list(&[11, 22]));
+        e.pick(11);
+        let rejected = env(Body::SelectCharacterResult(proto::SelectCharacterResult {
+            code: proto::SelectCharCode::SelectCharLeaseHeld as i32,
+            message: "已被占用".into(),
+            character_id: 11,
+        }));
+        assert_eq!(e.on(&rejected), None);
+        assert_eq!(*e.stage(), Stage::AwaitPick, "该退回选角让用户换一个");
+        let why = e.take_pick_error().expect("要说清为什么被拒");
+        assert!(why.contains("租约") || why.contains("选角失败"), "{why}");
+        assert!(e.take_pick_error().is_none(), "取走后就该清空");
+        assert!(e.failed().is_none(), "这不是致命错误");
+
+        // 换一个还能继续（服务端才是权威，这里不该自己拦）
+        assert!(e.pick(22).is_some());
+    }
+
+    /// 自动模式下选角失败**仍然是致命**的（保持原行为，别把错误吞掉）。
+    #[test]
+    fn 自动选角失败仍判死() {
+        let mut e = to_list(false);
+        e.on(&char_list(&[11]));
+        let rejected = env(Body::SelectCharacterResult(proto::SelectCharacterResult {
+            code: proto::SelectCharCode::SelectCharLeaseHeld as i32,
+            message: "已被占用".into(),
+            character_id: 11,
+        }));
+        e.on(&rejected);
+        assert!(e.failed().is_some());
+    }
+
+    /// 没停在选角阶段时 `pick` 无效（调用方的 bug 不该静默发一条怪消息）。
+    #[test]
+    fn 没到选角就_pick_无效() {
+        let mut e = to_list(true);
+        assert!(e.pick(11).is_none(), "列表还没到就 pick");
     }
 
     #[test]

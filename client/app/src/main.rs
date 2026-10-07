@@ -42,7 +42,9 @@ use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod};
 use sdl3::mouse::MouseButton;
 
+mod font;
 mod login;
+mod select;
 mod ui;
 use sdl3::pixels::{Color, PixelFormat};
 use sdl3::rect::Rect;
@@ -743,6 +745,12 @@ struct Net {
     /// 连接层给出的结束原因（连不上 / 被断开）。**登录界面靠它弹窗** ——
     /// 少了它，连不上时界面会一直卡在 `CONNECTING ...`（踩过）。
     fail: Option<String>,
+    /// 是否已经处理过"刚进世界"那一帧。
+    ///
+    /// ⚠️ 必须有这个标志：`entrance.in_world()` **每帧都为真**，而下面那个
+    /// "状态行变了没"的判据在 `map_name` 为空时（重连直接回世界那条路不带
+    /// `ChangeMap`）**也**恒真 ⇒ 直接 `println!` 会变成每帧一行（实测刷了几百行）。
+    entered_once: bool,
     /// 建 `Net` 的时刻：只为算"连接 → 进世界"用了多久。
     ///
     /// ⚠️ 这个数字是有用的：曾经有个 bug 让这一段整整多花 20 秒（`flush_entrance`
@@ -780,19 +788,24 @@ impl Net {
         };
         println!("[net] 连接 {addr}（账号 {account}，口令登录）…");
         let sess = mir2_net::Session::spawn(addr.to_string(), "mir2-app".into(), "zh-CN".into());
+        let mut entrance = mir2_core::entrance::Entrance::new_with_password(
+            account.to_string(),
+            password.to_string(),
+            char_id,
+        );
+        // ⚠️ 把"选哪个角色"交给 app 的选角界面：不设这个，状态机会**自己把列表第一个
+        // 选掉**（那是 e2e / 无头驱动的默认行为，见 `Entrance::set_manual_pick`）。
+        entrance.set_manual_pick(true);
         Ok(Net {
             sess,
-            entrance: mir2_core::entrance::Entrance::new_with_password(
-                account.to_string(),
-                password.to_string(),
-                char_id,
-            ),
+            entrance,
             world: mir2_core::world::World::default(),
             session: 0,
             status: format!("登录 {account} …"),
             changes: 0,
             floaters: Vec::new(),
             fail: None,
+            entered_once: false,
             started: Instant::now(),
             anims: HashMap::new(),
         })
@@ -816,13 +829,19 @@ impl Net {
         let sess = mir2_net::Session::spawn(addr, "mir2-app".into(), "zh-CN".into());
         Ok(Net {
             sess,
-            entrance: mir2_core::entrance::Entrance::new(session, char_id),
+            entrance: {
+                let mut e = mir2_core::entrance::Entrance::new(session, char_id);
+                // 与口令那条路一致：由选角界面来选（见 `connect_with_password` 的说明）
+                e.set_manual_pick(true);
+                e
+            },
             world: mir2_core::world::World::default(),
             session,
             status: "连接中…".into(),
             changes: 0,
             floaters: Vec::new(),
             fail: None,
+            entered_once: false,
             started: Instant::now(),
             anims: HashMap::new(),
         })
@@ -862,7 +881,8 @@ impl Net {
                     if self.world.apply(&env) == mir2_core::world::Change::World {
                         self.changes += 1;
                     }
-                    if self.entrance.in_world() && self.world.map_name != self.status {
+                    if self.entrance.in_world() && !self.entered_once {
+                        self.entered_once = true;
                         println!("[net] 进世界：连接到现在 {:.2?}", self.started.elapsed());
                         // 进图后把状态行换成"世界摘要"（比"已连接"有用得多）。
                         self.status = format!(
@@ -1502,6 +1522,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut login = login::Login::new();
     // 界面素材缓存（`Prguse` / `ChrSel`）—— 与地图图块、actor 精灵的缓存分开
     let mut ui = ui::UiCache::new();
+    // 选角场景（登录成功、状态机停在"等你选"时才建）与真字体绘制器
+    let mut select_scene: Option<select::Select> = None;
+    let mut texts = font::TextCache::new(mir2_core::text::UI_PX);
 
     // 素材浏览器的状态（F3）
     let mut status = String::from("READY");
@@ -1567,6 +1590,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         music_on = !music_on;
                         muted.store(!music_on, Ordering::Relaxed);
                         status = format!("MUSIC {}", if music_on { "ON" } else { "OFF" });
+                    }
+                    // 选角：键盘是**我们的扩展**（原版选角场景只认鼠标）
+                    _ if mode == 4 => {
+                        if let Some(k) = keycode {
+                            let act = match select_scene.as_mut() {
+                                Some(s) => s.on_key(k),
+                                None => select::Action::None,
+                            };
+                            if do_select_action(act, &mut net, &mut select_scene)? {
+                                break 'main;
+                            }
+                        }
                     }
                     // 登录界面：全部交互在 `login` 里（Tab/退格/回车/ESC），这里只把
                     // 它给出的动作翻译成"接下来干什么"。
@@ -1723,6 +1758,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     x,
                     y,
                     ..
+                } if mode == 4 => {
+                    if let (Some(dir), Some(scene)) = (asset_dir.as_ref(), select_scene.as_mut()) {
+                        if let Some(l) =
+                            mir2_core::select_ui::Layout::build((WIN_W, WIN_H), |c, i| {
+                                ui.size(dir, c, i)
+                            })
+                        {
+                            scene.on_down((x, y), &l);
+                        }
+                    }
+                }
+                Event::MouseButtonUp {
+                    mouse_btn: MouseButton::Left,
+                    x,
+                    y,
+                    ..
+                } if mode == 4 => {
+                    let act = match (asset_dir.as_ref(), select_scene.as_mut()) {
+                        (Some(dir), Some(scene)) => {
+                            match mir2_core::select_ui::Layout::build((WIN_W, WIN_H), |c, i| {
+                                ui.size(dir, c, i)
+                            }) {
+                                Some(l) => scene.on_up((x, y), &l),
+                                None => select::Action::None,
+                            }
+                        }
+                        _ => select::Action::None,
+                    };
+                    if do_select_action(act, &mut net, &mut select_scene)? {
+                        break 'main;
+                    }
+                }
+                Event::MouseButtonDown {
+                    mouse_btn: MouseButton::Left,
+                    x,
+                    y,
+                    ..
                 } if mode == 1 => {
                     // 版式每帧现算（尺寸来自容器头，不解压 ⇒ 很便宜），用于命中判定。
                     if let Some(dir) = asset_dir.as_ref() {
@@ -1791,7 +1863,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if n.entrance.in_world() && login.opened_at.is_none() {
                 login.opened_at = Some(Instant::now());
                 login.busy = false;
+                select_scene = None;
                 mode = 1; // 开门动画在登录屏上播（否则会在地图里"看不见地"播完）
+            }
+            // 登录成功后会停在 `AwaitPick`（`set_manual_pick`）⇒ 切到选角场景。
+            //
+            // ⚠️ "停在等你选"是**状态机说的**，不是我们猜的时机：角色列表就在它手上
+            //（`entrance.characters()`），界面只负责显示与选择。
+            // ⚠️ 判据**不能**带上 `mode == 1`：带会话号启动时 mode 会被设成 2（地图，
+            // 见上面的 `if net.is_some()`），而重连回落到选角一样要切过来（实测踩过：
+            // 服务端已经回了"列角色 → 1 个"，界面却还停在地图视图上）。
+            if mode != 4 && n.entrance.stage() == &mir2_core::entrance::Stage::AwaitPick {
+                let chars: Vec<select::CharEntry> = n
+                    .entrance
+                    .characters()
+                    .iter()
+                    .map(select::CharEntry::from_summary)
+                    .collect();
+                println!("[net] 角色列表：{} 个", chars.len());
+                let mut scene = select::Select::new(chars);
+                // `MIR2_CHAR=<id>` 指定初选（手动模式下状态机不看它了，落到界面上）
+                if let Ok(v) = std::env::var("MIR2_CHAR") {
+                    match v.parse::<u64>() {
+                        Ok(id) => scene.pick_id(id),
+                        Err(_) => println!("[net] MIR2_CHAR={v} 不是整数，忽略"),
+                    }
+                }
+                select_scene = Some(scene);
+                mode = 4;
+            }
+            // 选角被拒（例如租约被占）⇒ 弹给用户换一个（状态机会退回 `AwaitPick`）。
+            if let Some(why) = n.entrance.take_pick_error() {
+                if let Some(scene) = select_scene.as_mut() {
+                    scene.say(why);
+                }
+            }
+            // 在选角场景里出了**致命**错（服务端断开…）⇒ 回登录界面，
+            // 用那套已有的弹窗说清楚（否则用户会在选角界面上干等）。
+            if mode == 4 && n.entrance.failed().is_some() {
+                mode = 1;
             }
             if let Some(tok) = n.entrance.session_token() {
                 n.session = tok;
@@ -1838,6 +1948,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ani_count,
                 net.as_ref(),
             )?;
+        } else if mode == 4 {
+            if let Some(scene) = select_scene.as_mut() {
+                scene.draw(
+                    &mut canvas,
+                    &tex_creator,
+                    &mut ui,
+                    &mut texts,
+                    &asset_dir,
+                    (WIN_W, WIN_H),
+                    started,
+                )?;
+            }
         } else if mode == 1 {
             // 开门动画播完 ⇒ 进地图（原版也是"开门 → 换场景"，`IntroScn.pas:907-914`）
             if login.door_done() {
@@ -1872,6 +1994,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "ARROWS WALK  SPACE HIT  C CONNECT  [ ] MAP  D DEBUG  1/2/3 LAYER  P DUMP  F1 LOGIN  ESC"
             }
             1 => "TAB NEXT FIELD   ENTER LOGIN   F2 MAP   F3 ASSETS   M MUSIC   ESC QUIT",
+            4 => "LEFT/RIGHT PICK   ENTER START   F1 LOGIN   F2 MAP   ESC QUIT",
             _ => "F3 ASSETS   [ ] LIB   , . IMG   F1 LOGIN   F2 MAP   M MUSIC   ESC QUIT",
         };
         fill(
@@ -2306,6 +2429,37 @@ fn flush_entrance(
     // `next_cmd` 只在 `Stage::Start` 有货（之后就 `None`）⇒ 不会在这里打转。
     while let Some(b) = entrance.next_cmd() {
         send(&b);
+    }
+}
+
+/// 选角场景做出的动作 → 真的去做。
+///
+/// ⚠️ 抽出来是因为**键盘与鼠标两条路**都会产生它：两处各写一遍迟早漂移
+///（一边发了 `SelectCharacter`、另一边忘了）。返回 `true` = 该退出程序。
+fn do_select_action(
+    act: select::Action,
+    net: &mut Option<Net>,
+    select_scene: &mut Option<select::Select>,
+) -> Result<bool, sdl3::Error> {
+    match act {
+        select::Action::None => Ok(false),
+        select::Action::Exit => Ok(true),
+        select::Action::Enter(id) => {
+            if let Some(n) = net.as_mut() {
+                match n.entrance.pick(id) {
+                    Some(b) => {
+                        n.send(&b);
+                        println!("[net] 选角：进入角色 ActorId={id}");
+                    }
+                    // 状态机不在等选角（比如已经发过一次）⇒ 忽略，别静默发怪消息
+                    None => println!("[net] 选角：状态机不在等选角，忽略这次选择"),
+                }
+            }
+            if let Some(scene) = select_scene.as_mut() {
+                scene.start_clicked = true;
+            }
+            Ok(false)
+        }
     }
 }
 

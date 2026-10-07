@@ -58,7 +58,7 @@ impl<'a> UiCache<'a> {
         Some((r.width as u32, r.height as u32))
     }
 
-    /// 画一张界面图。返回它的尺寸（画不出来 = 素材缺/空壳，返回 `None`）。
+    /// 画一张界面图（不调色）。返回它的尺寸（画不出来 = 素材缺/空壳，返回 `None`）。
     #[allow(clippy::too_many_arguments)]
     pub fn draw<T>(
         &mut self,
@@ -69,6 +69,26 @@ impl<'a> UiCache<'a> {
         idx: u32,
         x: f32,
         y: f32,
+    ) -> Option<(u32, u32)> {
+        self.draw_tint(canvas, tc, dir, lib, idx, x, y, (255, 255, 255))
+    }
+
+    /// 画一张界面图 + **调色**（选角界面靠它把未选中的小人压暗；
+    /// 原版是 `MakeDark`，见 `core::select_ui` 的说明）。
+    ///
+    /// ⚠️ 每次 `copy` 前都**重设**颜色：`set_color_mod` 是**粘在纹理上**的，
+    /// 被调过色的图下一次不重设就会沿用旧颜色 —— 同一张图在两处颜色不同时就露馅。
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_tint<T>(
+        &mut self,
+        canvas: &mut WindowCanvas,
+        tc: &'a TextureCreator<T>,
+        dir: &Path,
+        lib: &'static str,
+        idx: u32,
+        x: f32,
+        y: f32,
+        tint: (u8, u8, u8),
     ) -> Option<(u32, u32)> {
         if !self.texs.contains_key(&(lib, idx)) {
             if self.texs.len() >= UI_CACHE_CAP {
@@ -91,8 +111,10 @@ impl<'a> UiCache<'a> {
             t.update(None::<Rect>, &s.rgba, s.width as usize * 4).ok()?;
             self.texs.insert((lib, idx), UiTex { tex: t });
         }
-        let t = self.texs.get(&(lib, idx))?;
+        let t = self.texs.get_mut(&(lib, idx))?;
         let q = t.tex.query();
+        // ⚠️ 贴之前一定要重设颜色（见上面那条：不设就会沿用上一次的）
+        t.tex.set_color_mod(tint.0, tint.1, tint.2);
         canvas
             .copy(
                 &t.tex,

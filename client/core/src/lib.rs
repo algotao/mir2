@@ -15,6 +15,8 @@ pub mod m2pk;
 pub mod map;
 pub mod palette;
 pub mod paths;
+pub mod select_ui;
+pub mod text;
 /// 会话世界状态：收到一条信封 → 世界变成什么样（纯函数）。
 ///
 /// `client/app` 与 `client/e2e` **共用这一份** —— 见 D-18 与 `world.rs` 的文件头。

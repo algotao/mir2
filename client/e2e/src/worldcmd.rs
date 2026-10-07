@@ -42,6 +42,9 @@ struct Args {
     move_steps: u32,
     /// 进世界之后打这个 ActorId 一下（A′：攻击 → 伤害 → 血量）。
     attack: Option<u64>,
+    /// **手动选角**：角色列表到手后选这个 id（模拟 app 的选角界面点一下）。
+    /// 不给就是老行为（状态机自己选列表第一个）。
+    pick: Option<u64>,
     /// 至少收到几条伤害事件。
     expect_damage: u64,
     /// 攻击目标打完之后应当死掉（`-attack` 配套）。
@@ -59,6 +62,7 @@ impl Args {
         let (mut account, mut password) = (None::<String>, None::<String>);
         let (mut timeout_ms, mut move_steps) = (8000u64, 0u32);
         let (mut attack, mut expect_damage, mut expect_kill) = (None, 0u64, false);
+        let mut pick = None;
         let (mut expect_map, mut expect_pos, mut expect_entities) = (None, None, None);
         let mut expect_entity_at = None;
 
@@ -80,6 +84,7 @@ impl Args {
                 "-timeout-ms" => timeout_ms = parse(&val("毫秒")?, "-timeout-ms")?,
                 "-move-steps" => move_steps = parse(&val("步数")?, "-move-steps")?,
                 "-attack" => attack = Some(parse(&val("目标 ActorId")?, "-attack")?),
+                "-pick" => pick = Some(parse(&val("角色 id")?, "-pick")?),
                 "-expect-damage" => expect_damage = parse(&val("条数")?, "-expect-damage")?,
                 "-expect-kill" => expect_kill = true,
                 "-expect-map" => expect_map = Some(val("地图名")?),
@@ -101,6 +106,7 @@ impl Args {
             timeout_ms,
             move_steps,
             attack,
+            pick,
             expect_damage,
             expect_kill,
             expect_map,
@@ -138,6 +144,10 @@ fn run(argv: &[String]) -> Result<(), String> {
         ),
         _ => return Err("-account 与 -password 要一起给".into()),
     };
+    // `-pick` 给了就**自己选**（模拟 app 的选角界面）；不给就沿用状态机的自动选角
+    if a.pick.is_some() {
+        entrance.set_manual_pick(true);
+    }
     let mut world = World::default();
 
     let deadline = Instant::now() + Duration::from_millis(a.timeout_ms);
@@ -161,6 +171,7 @@ fn run(argv: &[String]) -> Result<(), String> {
                 &mut world,
                 ev,
                 &mut changes,
+                a.pick,
             )?,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -284,6 +295,7 @@ fn run(argv: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_ev(
     sess: &Session,
     session_id: i32,
@@ -291,6 +303,7 @@ fn handle_ev(
     world: &mut World,
     ev: Ev,
     changes: &mut u32,
+    pick: Option<u64>,
 ) -> Result<(), String> {
     match ev {
         Ev::Connected {
@@ -310,6 +323,28 @@ fn handle_ev(
             if entrance.failed().is_none() && !entrance.in_world() {
                 if let Some(b) = entrance.on(&env) {
                     send(sess, session_id, &b)?;
+                }
+            }
+            // **手动选角**：状态机停在"等你选"时，按 `-pick` 选一个。
+            //
+            // 顺手把列表打出来 —— 它同时是"服务端有没有把职业/性别/等级带过来"的
+            // 观测点（`-pick` 的用例就断言这些字段）。
+            if entrance.stage() == &my_stage_pick() {
+                for c in entrance.characters() {
+                    println!(
+                        "[world] 角色 id={} 名={} 等级={} 职业={} 性别={}",
+                        c.character_id, c.name, c.level, c.class, c.gender
+                    );
+                }
+                let id = pick.or_else(|| entrance.characters().first().map(|c| c.character_id));
+                match id {
+                    Some(id) => {
+                        println!("[world] 选角：选 id={id}");
+                        if let Some(b) = entrance.pick(id) {
+                            send(sess, session_id, &b)?;
+                        }
+                    }
+                    None => println!("[world] 选角：这个账号一个角色都没有"),
                 }
             }
             if world.apply(&env) == Change::World {
@@ -376,6 +411,11 @@ fn attack(a: &Args, sess: &Session, target: u64) -> Result<(), String> {
     println!("[world] 攻击 ActorId={target}（普通砍）");
     let _ = a;
     Ok(())
+}
+
+/// 状态机那个"等你选"的阶段（抽一下，省得每个调用点写全路径）。
+fn my_stage_pick() -> mir2_core::entrance::Stage {
+    mir2_core::entrance::Stage::AwaitPick
 }
 
 fn send(sess: &Session, session_id: i32, body: &Body) -> Result<(), String> {

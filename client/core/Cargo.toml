@@ -12,5 +12,6 @@ flate2.workspace = true
 # 见那个文件头"为什么自己实现这两个"）
 sha2 = "0.10"
 brotli-decompressor.workspace = true
+fontdue = { version = "0.9.4", default-features = false, features = ["std"] }
 
 [dev-dependencies]
