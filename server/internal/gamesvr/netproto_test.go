@@ -1129,3 +1129,101 @@ func TestProtoRustLogin(t *testing.T) {
 	}
 	t.Logf("Rust 口令登录输出：\n%s", out)
 }
+
+// TestCharacterSummaryGender：选角界面要靠 `Gender` 挑小人图。
+//
+// 原版选角界面按 (Job, Sex) 各有一套坐标与图号
+// （`IntroScn.pas:1390-1429`；站位/图号 `stand_index = 40+Job*40+Sex*120`）。
+// 这个字段**在协议里、在存档里，就是没接上** —— 于是六个职业/性别组合
+// 全会画成同一个。这里把"照实下发 + 脏数据不猜"钉住。
+func TestCharacterSummaryGender(t *testing.T) {
+	for _, c := range []struct {
+		sex  uint32
+		want protocol.Gender
+		why  string
+	}{
+		{0, protocol.Gender_GENDER_MALE, "存档 0 = 男"},
+		{1, protocol.Gender_GENDER_FEMALE, "存档 1 = 女"},
+		{7, protocol.Gender_GENDER_UNSPECIFIED, "脏数据 ⇒ 未指定（不猜）"},
+	} {
+		sum := characterSummary(&storage.Character{
+			ID: 1, Name: "勇士", Level: 7, Job: 0,
+			Data: &pb.CharacterData{Job: 0, Hair: 3, Sex: c.sex},
+		})
+		if sum.Gender != c.want {
+			t.Errorf("Sex=%d：Gender=%v，期望 %v（%s）", c.sex, sum.Gender, c.want, c.why)
+		}
+		if sum.Class != protocol.CharClass_CHAR_CLASS_WARRIOR {
+			t.Errorf("Sex=%d：Class=%v，期望战士", c.sex, sum.Class)
+		}
+		if sum.GenderHair != 3 {
+			t.Errorf("Sex=%d：GenderHair=%d，期望 3（发型照旧要带上）", c.sex, sum.GenderHair)
+		}
+	}
+	// 没有存档详情也不能崩（损坏/半初始化的数据）
+	if sum := characterSummary(&storage.Character{ID: 2, Name: "空档"}); sum.Gender != protocol.Gender_GENDER_UNSPECIFIED {
+		t.Errorf("无 Data 时 Gender=%v，期望未指定", sum.Gender)
+	}
+}
+
+// TestProtoRustPickCharacter 是**选角**的跨实现验收：
+// Rust 客户端**自己挑**第二个角色（不是让状态机自动选第一个），
+// 并断言服务端把职业/性别/等级都带过来了 —— 那是"选角界面能画对小人"的前提
+// （原版按 (Job,Sex) 各有一套坐标与图号，`IntroScn.pas:1390-1429`）。
+//
+// 为什么这条值得单列：**手动选角是 app 的默认路径**（`set_manual_pick`），
+// 而其它用例走的都是"自动选第一个" —— 那条路测不到界面真正要走的那条。
+func TestProtoRustPickCharacter(t *testing.T) {
+	bin, why := findE2EBin()
+	if bin == "" {
+		t.Skipf("跳过：%s", why)
+	}
+
+	_, store, addr := protoContractServer(t)
+	seedAccount(t, store) // 造出房主"勇士"（男战士，站在 (1,1)）
+
+	// 第二个角色：**女法师**，而且**站在别的格子** —— 于是"进世界的到底是哪一个"
+	// 可以靠位置断言（第一个在 (1,1)，这个在 (3,3)）。
+	second := &storage.Character{
+		Account: "tester", Name: "小法", Job: 1,
+		Data: &pb.CharacterData{
+			Account: "tester", ChrName: "小法",
+			CurMap: "0", CurX: 3, CurY: 3, Dir: uint32(entity.DirDown),
+			Hair: 5, Job: 1, Sex: 1,
+			Abil: &pb.Ability{Level: 9, Hp: 20, MaxHp: 20},
+		},
+	}
+	if err := store.Characters().Create(context.Background(), second); err != nil {
+		t.Fatalf("建第二个角色: %v", err)
+	}
+
+	cmd := exec.Command(bin, "world",
+		"-addr", addr,
+		"-account", "tester",
+		"-password", "pw",
+		"-pick", strconv.FormatInt(second.ID, 10),
+		"-expect-map", "0",
+		"-expect-pos", "3,3", // ← 只有真的进了"被选中的那个"才会是 3,3
+		"-timeout-ms", "8000",
+	)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Rust 选角剧本失败：%v\n%s", err, out.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"名=勇士",     // 列表里有第一个
+		"名=小法",     // 也有第二个
+		"职业=2",     // 法师（协议里 1 战 / 2 法 / 3 道）
+		"性别=2",     // 女 ⇒ 服务端把 `Data.Sex` 带过来了（否则永远是 0/未指定）
+		"选角：选 id=", // 是客户端主动选的，不是状态机自动选的
+		"世界状态通过",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("输出里没有 %q：\n%s", want, text)
+		}
+	}
+	t.Logf("Rust 选角剧本输出：\n%s", text)
+}

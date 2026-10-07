@@ -1189,8 +1189,17 @@ func characterSummary(ch *storage.Character) *protocol.CharacterSummary {
 	if ch.Data != nil {
 		// 职业：存档里是 0/1/2（战/法/道），新协议是 1/2/3。
 		sum.Class = protocol.CharClass(ch.Data.Job + 1)
-		// ⚠️ 1.76 里"性别"由发型编码（`GenderHair` 就是它）⇒ 不单独猜一个 gender 值。
+		// 发型（选角界面不用它，进世界时才用得上）。
 		sum.GenderHair = ch.Data.Hair
+		// 性别：存档里有**独立字段** `Sex`（0 男 / 1 女；accountsvc 建角就写它，
+		// `service.go:542`）—— 不是从发型推的，所以照实下发，不是"猜"。
+		// ⚠️ 客户端**要靠它挑小人图**：原版选角界面按 (Job, Sex) 各有一套
+		// 坐标与图号（`IntroScn.pas:1390-1429`、`stand_index = 40+Job*40+Sex*120`），
+		// 缺了它六个职业/性别组合只能画成同一个。
+		// 超出 0/1 的脏数据按"未指定"下发（宁可让客户端用默认性别，也不下发错的）。
+		if ch.Data.Sex <= 1 {
+			sum.Gender = protocol.Gender(ch.Data.Sex + 1)
+		}
 	}
 	return sum
 }
