@@ -81,6 +81,8 @@ const C_GRID_MID: Color = Color::RGB(60, 170, 170);
 const C_GRID_FRONT: Color = Color::RGB(210, 140, 60);
 const C_CELLBASE: Color = Color::RGB(255, 220, 80);
 const C_CROSS: Color = Color::RGB(255, 255, 255);
+/// 鼠标下那张图**自己那一格**的高亮色（与鼠标格区分开）
+const C_TOPMOST: Color = Color::RGB(255, 90, 220);
 
 // ---------- 程序化音乐 ----------
 const TEMPO_SEC: f32 = 0.34;
@@ -425,27 +427,57 @@ fn draw_debug_overlay(
         });
         let line = match topmost {
             Some(d) => {
-                let (w, h, ay) = match tiles.get(&(d.lib, d.area, d.index)) {
+                let (w, h, ax, ay) = match tiles.get(&(d.lib, d.area, d.index)) {
                     Some(t) => {
                         let q = t.tex.query();
-                        (q.width as i32, q.height as i32, t.anchor_y as i32)
+                        (
+                            q.width as i32,
+                            q.height as i32,
+                            t.anchor_x as i32,
+                            t.anchor_y as i32,
+                        )
                     }
-                    None => (0, 0, 0),
+                    None => (0, 0, 0, 0),
                 };
+                let top = d.top_y(w, h, ay);
+                let left = d.left_x(ax);
+                // ★ 这张图**自己那一格**——大写标注，避免与"鼠标所在格"混淆：
+                //   高精灵（实测最高 582px ≈ 18 格）会向上盖住很多格，
+                //   不标出它的归属格，就会误以为"图被画错了位置"。
+                let cell_x = cam.0 + d.x / UNIT_X;
+                let cell_y = cam.1 + d.y / UNIT_Y;
+                let bx = (cell_x - cam.0) as f32 * UNIT_X as f32;
+                let by = BAR_TOP + (cell_y - cam.1) as f32 * UNIT_Y as f32;
+                // 高亮：它自己的格（亮白）+ 整张图外框（亮白）+ 它的格底线（亮黄）
+                canvas.set_draw_color(C_TOPMOST);
+                canvas.draw_rect(FRect::new(bx, by, UNIT_X as f32, UNIT_Y as f32))?;
+                canvas.draw_rect(FRect::new(
+                    left as f32,
+                    BAR_TOP + top as f32,
+                    w as f32,
+                    h as f32,
+                ))?;
+                canvas.set_draw_color(C_CELLBASE);
+                canvas.draw_line(
+                    FPoint::new(bx, by + UNIT_Y as f32),
+                    FPoint::new(bx + UNIT_X as f32, by + UNIT_Y as f32),
+                )?;
                 format!(
-                    "CELL({},{})  {:<6?}  #{:<5} {}x{}  格顶y={} top_y={}{}  (左键=终端详读)",
+                    "MOUSE({},{}) TOP={:?}#{} {}x{} OWNS({},{}) BOT={} COVERS {}rows{}",
                     cx,
                     cy,
                     d.layer,
                     d.index,
                     w,
                     h,
-                    d.y,
-                    d.top_y(w, h, ay),
-                    if d.blend { " [ALPHA]" } else { "" }
+                    cell_x,
+                    cell_y,
+                    by as i32 + UNIT_Y,
+                    (h + UNIT_Y - 1) / UNIT_Y,
+                    if d.blend { " ALPHA" } else { "" }
                 )
             }
-            None => format!("CELL({cx},{cy})  该像素无图块覆盖"),
+            None => format!("MOUSE({cx},{cy})  NO TILE HERE"),
         };
         let ry = BAR_TOP + VIEW_H - 11.0;
         fill(
