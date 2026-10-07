@@ -119,6 +119,10 @@ func (s *Server) tickPlayers(now time.Time) {
 		s.tickPlayerStatus(p, now)
 		s.tickMapHP(p, now)
 		s.tickDayChanging(p, now)
+		// ⚠️ **只对新协议玩家**：补"站着不动也得看得见走近的实体"这个缺口。
+		// 为什么不对所有人做：legacy 客户端会因此收到额外的 SM_TURN/SM_DISAPPEAR，
+		// 而 mir2cli 的 e2e 是按包序断言的（详见 tickProtoVision 的说明）。
+		s.tickProtoVision(p)
 	}
 }
 

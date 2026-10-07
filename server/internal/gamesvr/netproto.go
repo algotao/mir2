@@ -13,10 +13,12 @@
 //     还没有定论，而它依赖 accountsvc 的接入（D-13 的内部 RPC）。所以 v0 的入口是
 //     `Reconnect`：拿**已有会话号**认领会话 —— 这条路径不会白写，§5 的重连语义就是它，
 //     将来 `LoginResult` 签发的 `session_token` 只会替换掉 v0 这层"会话号即 token"的编码。
-//   - 只做到"进图 + 看见自己"：`EnterWorld` 初始快照 + `AbilityUpdate`。
-//     移动/攻击/物品等一律先走 legacy 入口。
 //   - 进图的身份仍由 **accountsvc 建立的会话**提供（真实口令校验在那里）；
 //     本入口不重复实现登录生命周期，只接管"选角 → 进世界"这一段。
+//   - 已做到：进图快照 + 能力值 + **实时实体事件**（出现/消失/移动，出站）与
+//     `MoveInput`（入站：走一步 / 限流 / 被挡回权威位置）。
+//   - 未做到：攻击 / 物品 / 聊天 / 技能仍走 legacy 入口 —— 那些 legacy 下行会被
+//     `protoDown` 丢掉（新协议客户端暂时看不见背包、聊天与伤害数字）。
 package gamesvr
 
 import (
@@ -29,10 +31,12 @@ import (
 	"io"
 	"log"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/frame"
+	"github.com/algotao/mir2/server/internal/obs"
 	"github.com/algotao/mir2/server/internal/proto"
 	"github.com/algotao/mir2/server/internal/storage"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
@@ -70,6 +74,91 @@ type protoDown struct{ net.Conn }
 
 func (protoDown) Write(b []byte) (int, error) { return len(b), nil }
 
+// protoSink 是"世界 → 新协议玩家"的**唯一出口**（实体事件：出现 / 消失 / 移动）。
+//
+// ⚠️ 为什么走 channel 而不是直接写 socket：
+//
+//  1. 这些调用来自**别人的 goroutine**（怪物 AI 的 ticker、其他玩家的移动路径）。
+//     直接写会与"会话自己的写"交错 ⇒ 帧字节互相插进对方中间，整条流就废了；
+//  2. 慢客户端会把**别人的 goroutine** 按住（正是审计 P1-6 记的那条：
+//     "持世界锁写 socket" 的同类 —— 只不过这里持的是怪物 ticker 的时间）。
+//
+// ⚠️ 容量满时**丢最旧的**（不是丢新的）：按 protocol.md §6 的语义分类，
+// 出现/消失是幂等状态同步、移动是可丢弃的高频位置 —— 两者都是"新值覆盖旧值"，
+// 丢旧保新才能让客户端尽快追上权威状态。丢弃计数进日志，不静默。
+type protoSink struct {
+	ch      chan *protocol.Envelope
+	ps      *protoSession
+	dropped atomic.Uint64
+}
+
+// sinkBuf 是每名新协议玩家的下行缓冲。256 条足够覆盖"一屏实体同时动"，
+// 真填满了说明客户端已经读不动了（那时丢最旧的正是想要的反应）。
+const sinkBuf = 256
+
+func newProtoSink(ps *protoSession) *protoSink {
+	return &protoSink{ch: make(chan *protocol.Envelope, sinkBuf), ps: ps}
+}
+
+// enqueue 投递一条；缓冲满时挤掉最旧的一条。
+func (k *protoSink) enqueue(env *protocol.Envelope) {
+	select {
+	case k.ch <- env:
+		return
+	default:
+	}
+	select { // 腾一格：丢掉最旧的
+	case <-k.ch:
+		if n := k.dropped.Add(1); n == 1 || n%100 == 0 {
+			log.Printf("%s: 新协议下行积压，已丢弃 %d 条旧消息（客户端读得比世界变得慢）",
+				k.ps.clientIP, n)
+		}
+	default:
+	}
+	select {
+	case k.ch <- env:
+	default:
+	}
+}
+
+// appear 发一条实体出现（玩家/怪物/NPC 一律如此）。
+func (k *protoSink) appear(e *protocol.EntityState) {
+	if e == nil {
+		return
+	}
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_EntityAppear{
+		EntityAppear: &protocol.EntityAppear{Entity: e}}})
+}
+
+// disappear 发一条实体消失。
+//
+// ⚠️ 原版的"消失"有几种原因（离开视野/隐身/死亡/下线），但 legacy 的 `sendDisappear`
+// 只带 (id, x, y) ⇒ 这一层**分辨不出来**，统一报 LEFT_VIEW。
+// 要精确原因得把理由从调用点一路传进来（见 protocol.md §11 待办）。
+func (k *protoSink) disappear(id uint32) {
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_EntityDisappear{
+		EntityDisappear: &protocol.EntityDisappear{
+			EntityId: uint64(id),
+			Reason:   protocol.DisappearReason_DISAPPEAR_LEFT_VIEW,
+		}}})
+}
+
+// move 发一条权威移动（含"原地转身"：from == to，只是朝向变了）。
+//
+// ⚠️ 新协议里**没有**独立的"转身"消息，所以转身也用 EntityMove 表达
+// （客户端看到 from == to 就只更新朝向）。补一条专用的动作/转身消息
+// 记在 protocol.md §11。
+func (k *protoSink) move(id uint32, fromX, fromY, toX, toY int, dir uint8) {
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_EntityMove{
+		EntityMove: &protocol.EntityMove{
+			EntityId:   uint64(id),
+			From:       &protocol.Vec2{X: int32(fromX), Y: int32(fromY)},
+			To:         &protocol.Vec2{X: int32(toX), Y: int32(toY)},
+			Direction:  directionOf(dir),
+			ServerTick: uint32(time.Now().UnixMilli()),
+		}}})
+}
+
 // protoSession 是一条新协议连接的状态机。
 type protoSession struct {
 	srv      *Server
@@ -85,6 +174,9 @@ type protoSession struct {
 	// 在**注册进 world.players 之前**挂到 player 上，见 enterWorld。
 	snapReq chan chan *storage.Character
 
+	// sink 是实体事件的下行出口（进世界后挂到 player.protoOut 上）。
+	sink *protoSink
+
 	// unknown 统计"不认识/未实现"的消息条数（§4.1 硬规则 4：记数 + 告警 + 忽略）。
 	unknown int
 }
@@ -98,6 +190,7 @@ func (s *Server) serveProtoConn(c net.Conn, clientIP string) {
 		clientIP: clientIP,
 		snapReq:  make(chan chan *storage.Character, 1),
 	}
+	ps.sink = newProtoSink(ps)
 	defer c.Close()
 	// 进过世界的玩家必须走**同一套**下线收尾（最终存档 + 释放角色租约）。
 	defer func() {
@@ -149,6 +242,12 @@ func (s *Server) serveProtoConn(c net.Conn, clientIP string) {
 		case reply := <-ps.snapReq:
 			// player 尚未进世界时为 nil ⇒ 存档线程跳过（与 legacy 的同一处理）。
 			reply <- saveSnapshotOf(ps.player)
+		case env := <-ps.sink.ch:
+			// 别人（怪物 AI / 其他玩家的 goroutine）投来的实体事件：
+			// **只有本 goroutine 写 socket**，顺序与自己的回应答混在一起也是有序的。
+			if ps.send(env) != nil {
+				return
+			}
 		}
 	}
 }
@@ -207,6 +306,8 @@ func (ps *protoSession) dispatch(env *protocol.Envelope) (keep bool) {
 		return ps.onListCharacters()
 	case *protocol.Envelope_SelectCharacter:
 		return ps.onSelectCharacter(body.SelectCharacter)
+	case *protocol.Envelope_MoveInput:
+		return ps.onMoveInput(body.MoveInput)
 	default:
 		// ClientHello（重复发）也走这里 —— 握手之后它不再有意义，按"不认识"处理。
 		ps.noteUnknown(env)
@@ -380,9 +481,15 @@ func (ps *protoSession) enterWorld(chr *storage.Character) bool {
 	p := s.joinWorld(chr, ps.rec.SessionID, ps.clientIP)
 	// legacy 下行必须被丢弃（见 protoDown）；读/关闭照常。
 	p.conn = protoDown{ps.raw}
-	// ⚠️ 在**注册进 world.players 之前**挂上快照通道：自动存档线程之后会读它
-	// （在 s.mu 下取出玩家列表后再用），这次赋值与那次读之间由 s.mu 建立 happens-before。
+	// ⚠️ 补生成该图的 NPC（与 legacy 的 sendEnterWorld 同一件事：
+	// 存档在图上的玩家**不走切图**，只靠 switchMap 那一处的话，他会登进一张
+	// "没有商人/仓库/铁匠"的地图）。放在注册之前 ⇒ NPC 直接进下面的快照。
+	s.spawnNPCs(p.Obj.MapRef().Name)
+	// ⚠️ 在**注册进 world.players 之前**挂上快照通道与实体事件出口：
+	// 之后怪物 AI ticker / 别人的 goroutine 会读它们（在 s.mu 下取出玩家列表后再用），
+	// 这次赋值与那次读之间由 s.mu 建立 happens-before。
 	p.snapReq = ps.snapReq
+	p.protoOut = ps.sink
 
 	s.mu.Lock()
 	s.world.players[p.Obj.ID] = p
@@ -391,6 +498,7 @@ func (ps *protoSession) enterWorld(chr *storage.Character) bool {
 	ps.player = p
 
 	// 快照：先在锁内/lock-free 读出一份，再发（发包不带世界锁）。
+	states, inView := s.entitySnapshot(p)
 	env := &protocol.Envelope{Body: &protocol.Envelope_EnterWorld{EnterWorld: &protocol.EnterWorld{
 		SelfEntityId: uint64(p.Obj.ID),
 		// ⚠️ `map_id` 暂置 0：地图在本项目是**按名字**索引的（D-22，容器里就是 `<名字>.map`），
@@ -399,7 +507,7 @@ func (ps *protoSession) enterWorld(chr *storage.Character) bool {
 		MapName:    p.Obj.MapRef().Name,
 		Position:   &protocol.Vec2{X: int32(p.Obj.PosX()), Y: int32(p.Obj.PosY())},
 		Direction:  directionOf(p.Obj.Facing()),
-		Entities:   s.entitySnapshot(p),
+		Entities:   states,
 		ServerTick: uint32(time.Now().UnixMilli()),
 	}}}
 	if err := ps.send(env); err != nil {
@@ -411,14 +519,111 @@ func (ps *protoSession) enterWorld(chr *storage.Character) bool {
 		return false
 	}
 
-	// 让 legacy 那半边也知道他来了：世界的可见性账本（`p.visible`）也要填上，
-	// 否则他"看得见的实体"与"后续广播的判据"会是两个集合。
-	// 其中发给**他自己**的那些 legacy 包会被 protoDown 丢掉（正是它存在的理由）。
+	// ⚠️ **快照就是"出现"**：先把这批实体记进视野账本，再让 updateVision 做差集。
+	// 不这么做的话，updateVision 会把同一批实体再当"新进入视野"推一遍 ——
+	// 客户端会收到"快照里已经有它 + 又出现一次"，白流量，而且契约测试会因为
+	// 多出一条消息而红（本轮就是这么发现的）。
+	p.visible.Update(inView)
+
+	// 让 legacy 那半边也知道他来了（别人看他那条腿要发 SM_TURN）：
+	// 发给**他自己**的那些 legacy 包会被 protoDown 丢掉（正是它存在的理由）。
 	s.updateVision(p)
-	log.Printf("%s: %s 进图（新协议 ActorId=%d 地图=%s 坐标=(%d,%d)）",
+	log.Printf("%s: %s 进图（新协议 ActorId=%d 地图=%s 坐标=(%d,%d) 视野实体=%d）",
 		ps.clientIP, p.Char.Name, p.Obj.ID, env.GetEnterWorld().MapName,
-		p.Obj.PosX(), p.Obj.PosY())
+		p.Obj.PosX(), p.Obj.PosY(), len(states))
 	return true
+}
+
+// onMoveInput 处理一次移动输入（§8：服务端权威 + 客户端预测）。
+//
+// 与 legacy 的 `handleMove` 同一条路径（`movePlayer` / `broadcastMove` / `updateVision`），
+// 只是出入两端换成 typed 消息。三条规则照搬，因为它们与协议无关、只与玩法有关：
+//
+//  1. **石化/麻痹期间禁止移动**（服务端补的门：原版不拦，靠客户端自觉 ⇒ 改包就能硬走）；
+//  2. **限速**（`p.Limiter`，防加速外挂）；
+//  3. 被挡要回权威位置（新协议是 `MoveRejected`，legacy 是 `SM_MOVEFAIL`）。
+//
+// ⚠️ 新协议的 `MoveInput` **没有走/跑标志**（legacy 靠 CM_WALK / CM_RUN 两条消息区分），
+// 所以新协议客户端目前只能**走**。补 run 要改 schema + bump 版本，记在 protocol.md §11。
+func (ps *protoSession) onMoveInput(m *protocol.MoveInput) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	// 新枚举 = 原版 + 1（见 directionOf）；0（未指定）与越界一律当"非法输入"忽略。
+	if m.GetDirection() <= protocol.Direction_DIRECTION_UNSPECIFIED ||
+		int32(m.GetDirection()) > int32(entity.DirUpLeft)+1 {
+		return true
+	}
+	dir := uint8(m.GetDirection()) - 1
+
+	if p.Obj.Stoned(time.Now()) {
+		return true
+	}
+	if !p.Limiter.Allow(false, time.Now()) {
+		obs.Event("move_rate_limited", "player", p.Char.Name, "dir", dir, "running", false)
+		// ⚠️ 与 legacy **不同**：这里必须回一条，不能静默忽略。
+		// 新协议的客户端是**预测**移动的（protocol.md §8）：它按了键就已经在本地走了，
+		// 服务端不吭声 ⇒ 它的位置与权威位置就此分叉且永远掰不回来。
+		// legacy 那条路不预测（等 SM_WALK 才动），所以它静默忽略没问题。
+		return ps.rejectMove(1, p.Obj.PosX(), p.Obj.PosY())
+	}
+	obs.Event("move_try", "player", p.Char.Name, "dir", dir, "running", false,
+		"x", p.Obj.PosX(), "y", p.Obj.PosY())
+
+	_, fromX, fromY, _ := p.Obj.Place()
+	newX, newY, newDir, moved := ps.srv.movePlayer(p, dir)
+	if !moved {
+		// 被挡：同样回权威位置（原版 SM_MOVEFAIL 的对应物）。
+		return ps.rejectMove(3, newX, newY)
+	}
+
+	// 自己的权威回显（客户端已经在本地预测过，这条用来对齐/纠偏）。
+	if err := ps.send(&protocol.Envelope{Body: &protocol.Envelope_EntityMove{
+		EntityMove: &protocol.EntityMove{
+			EntityId:   uint64(p.Obj.ID),
+			From:       &protocol.Vec2{X: int32(fromX), Y: int32(fromY)},
+			To:         &protocol.Vec2{X: int32(newX), Y: int32(newY)},
+			Direction:  directionOf(newDir),
+			ServerTick: uint32(time.Now().UnixMilli()),
+		}}}); err != nil {
+		return false
+	}
+	// 看得见他的人（两条协议各取所需，见 view.go 的分支）。
+	ps.srv.broadcastMove(p, proto.SM_WALK, fromX, fromY)
+	obs.Event("move", "player", p.Char.Name, "x", newX, "y", newY, "dir", newDir, "running", false)
+
+	// 换格之后视野差集要重算：新进来的（EntityAppear）/ 走出去的（EntityDisappear）。
+	ps.srv.updateVision(p)
+	// 火墙的第二条伤害路径：踩上去立刻结算一次（ObjBase.pas:20190 Walk）。
+	ps.srv.wallBurnAtCell(p.Obj.MapRef(), newX, newY)
+	return true
+}
+
+// rejectMove 告诉客户端"这一步没成"，并给出权威位置供其纠偏。
+// reason 取值见 scene.proto 的 `MoveRejected.reason`：1=超速 2=越界 3=阻挡。
+func (ps *protoSession) rejectMove(reason uint32, x, y int) bool {
+	return ps.send(&protocol.Envelope{Body: &protocol.Envelope_MoveRejected{
+		MoveRejected: &protocol.MoveRejected{
+			AuthoritativePosition: &protocol.Vec2{X: int32(x), Y: int32(y)},
+			Reason:                reason,
+		}}}) == nil
+}
+
+// tickProtoVision 是**只发给新协议玩家**的周期性视野同步。
+//
+// 为什么需要它：`updateVision` 只在"本人移动 / 换图 / 进游戏 / 脚本刷怪"时触发，
+// 所以**站着不动的人看不见"走近"的实体**（这是 legacy 那半边也有的同一个缺口，
+// 见 spawn.go 里那条"必须主动广播"的注释）。新协议这边要"实时"，就得定期对一次差集。
+//
+// ⚠️ 为什么**只对新协议玩家**做：补 legacy 那半边会给 legacy 客户端插进额外的
+// SM_TURN/SM_DISAPPEAR，而 mir2cli 的 e2e 是按**包序**断言的 ⇒ 会红。
+// legacy 要补的话，得连着把 e2e 的"允许穿插视野包"一起改（另开一条）。
+func (s *Server) tickProtoVision(p *Player) {
+	if p == nil || p.protoOut == nil || p.Obj == nil || p.Obj.MapRef() == nil {
+		return
+	}
+	s.updateVision(p)
 }
 
 // findCharacter 按角色 id 找角色（`CharacterStore` 只有按名字/按账号两个入口）。
@@ -441,7 +646,10 @@ func (ps *protoSession) findCharacter(ctx context.Context, id uint64) (*storage.
 // 怪物还要排除尸体）—— 否则"进图看得见的"与"走一步看得见的"会是两个集合。
 // ⚠️ 字段一律取**对象自带锁**的快照（`Place`/`Appearance`）：它们可能正被对方的
 // goroutine 改（审计 P1-5）。
-func (s *Server) entitySnapshot(p *Player) []*protocol.EntityState {
+//
+// 第二个返回值是这批实体的 id 集合（= 本次进图后的视野集合）：调用方要拿它
+// **先填 `p.visible`**，否则随后的 `updateVision` 会把同一批再当"新出现"推一遍。
+func (s *Server) entitySnapshot(p *Player) ([]*protocol.EntityState, map[uint32]struct{}) {
 	px, py := p.Obj.PosX(), p.Obj.PosY()
 	r := s.cfg.viewRange
 
@@ -469,13 +677,16 @@ func (s *Server) entitySnapshot(p *Player) []*protocol.EntityState {
 	s.mu.RUnlock()
 
 	out := make([]*protocol.EntityState, 0, len(players)+len(monsters))
+	inView := make(map[uint32]struct{}, len(players)+len(monsters))
 	for _, other := range players {
 		out = append(out, playerState(other))
+		inView[other.Obj.ID] = struct{}{}
 	}
 	for _, m := range monsters {
 		out = append(out, monsterState(m))
+		inView[m.ID] = struct{}{}
 	}
-	return out
+	return out, inView
 }
 
 // playerState 取一名玩家的实体快照。

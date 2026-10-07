@@ -47,7 +47,9 @@ func protoContractServer(t *testing.T) (*Server, storage.Store, string) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	m := world.Generate("0", 60, 60, false)
+	// border=true：四周一圈阻挡 ⇒ "撞墙"那条用例有确定的地形可用
+	//（玩家播在 (1,1)，向上是 (1,0) 即边界）。
+	m := world.Generate("0", 60, 60, true)
 	mm := world.NewMapManager("", 4)
 	mm.Put(m)
 	mm.SetNames(map[string]string{"0": "0"})
@@ -96,7 +98,8 @@ func seedAccount(t *testing.T, store storage.Store) (sessionID int32, charID uin
 		Account: "tester", Name: "勇士",
 		Data: &pb.CharacterData{
 			Account: "tester", ChrName: "勇士",
-			CurMap: "0", CurX: 10, CurY: 10, Dir: uint32(entity.DirRight), Hair: 3,
+			// 播在 (1,1)：紧贴边界 ⇒ 向右可走、向上被挡（见 protoContractServer 的地图）
+			CurMap: "0", CurX: 1, CurY: 1, Dir: uint32(entity.DirRight), Hair: 3,
 			Abil: &pb.Ability{Level: 7, Hp: 30, MaxHp: 40, Mp: 5, MaxMp: 9},
 		},
 	}
@@ -193,6 +196,49 @@ func (cl *protoClient) hello() {
 	}
 }
 
+// protoEvents 记录服务端**主动推**来的实体事件。
+//
+// ⚠️ 进世界之后这些消息是**随时**来的（怪物 AI、别人的移动、周期性视野同步）——
+// 真客户端按类型分派，契约测试也得照这个来，否则会因为一条完全正常的
+// EntityMove 判成"顺序不符"而红（本轮真的这么红过一次）。
+type protoEvents struct {
+	appears    []*protocol.EntityState
+	moves      []*protocol.EntityMove
+	disappears []uint64
+}
+
+// note 若这条是实体事件就记下并返回 true（调用方据此跳过它）。
+func (e *protoEvents) note(env *protocol.Envelope) bool {
+	switch b := env.Body.(type) {
+	case *protocol.Envelope_EntityAppear:
+		e.appears = append(e.appears, b.EntityAppear.GetEntity())
+		return true
+	case *protocol.Envelope_EntityMove:
+		e.moves = append(e.moves, b.EntityMove)
+		return true
+	case *protocol.Envelope_EntityDisappear:
+		e.disappears = append(e.disappears, b.EntityDisappear.GetEntityId())
+		return true
+	}
+	return false
+}
+
+// waitFor 一直读到 pred 命中为止；途中遇到的实体事件记进 ev。
+func (cl *protoClient) waitFor(ev *protoEvents, what string, pred func(*protocol.Envelope) bool) *protocol.Envelope {
+	cl.t.Helper()
+	for i := 0; i < 128; i++ {
+		env := cl.recv()
+		if pred(env) {
+			return env
+		}
+		if !ev.note(env) {
+			cl.t.Fatalf("等 %s 时收到无关消息 %s", what, frame.MsgName(env))
+		}
+	}
+	cl.t.Fatalf("等 %s 时读了 128 条都没等到", what)
+	return nil
+}
+
 func hasCap(caps []string, want string) bool {
 	for _, c := range caps {
 		if c == want {
@@ -216,9 +262,10 @@ func TestProtoContractEnterWorld(t *testing.T) {
 	s, store, addr := protoContractServer(t)
 	sessionID, charID := seedAccount(t, store)
 
-	// 视野里放一只怪：进图快照里"看得见的实体"必须包含它。
+	// 视野里放一只怪（玩家在 (1,1)，怪在 (3,2)：距离 2 ⇒ 在视野内）。
+	// 进图快照里"看得见的实体"必须包含它。
 	mon := newTestMonster(1_000_001, "鸡", 15)
-	mon.Object.SetPlace(s.world.defaultMap, 12, 11, entity.DirDown)
+	mon.Object.SetPlace(s.world.defaultMap, 3, 2, entity.DirDown)
 	s.world.monsters[mon.ID] = mon
 	s.world.monsterIdx.Add(mon)
 
@@ -267,11 +314,12 @@ func TestProtoContractEnterWorld(t *testing.T) {
 
 	// ④ 进图快照。**顺序是契约**：EnterWorld 必须在 AbilityUpdate 之前
 	//（客户端在 EnterWorld 里才创建"自己"，而能力值要挂到那个自己身上）。
-	ewEnv := cl.recv()
-	ew, ok := ewEnv.Body.(*protocol.Envelope_EnterWorld)
-	if !ok {
-		t.Fatalf("⑤ 应为 EnterWorld，实得 %T", ewEnv.Body)
-	}
+	ev := &protoEvents{}
+	ewEnv := cl.waitFor(ev, "EnterWorld", func(e *protocol.Envelope) bool {
+		_, ok := e.Body.(*protocol.Envelope_EnterWorld)
+		return ok
+	})
+	ew := ewEnv.Body.(*protocol.Envelope_EnterWorld)
 	enter := ew.EnterWorld
 	if enter.GetSelfEntityId() == 0 {
 		t.Error("EnterWorld 必须带 self_entity_id")
@@ -279,8 +327,8 @@ func TestProtoContractEnterWorld(t *testing.T) {
 	if enter.GetMapName() != "0" {
 		t.Errorf("地图 = %q，应为 %q", enter.GetMapName(), "0")
 	}
-	if p := enter.GetPosition(); p.GetX() != 10 || p.GetY() != 10 {
-		t.Errorf("坐标 = (%d,%d)，应为存档里的 (10,10)", p.GetX(), p.GetY())
+	if p := enter.GetPosition(); p.GetX() != 1 || p.GetY() != 1 {
+		t.Errorf("坐标 = (%d,%d)，应为存档里的 (1,1)", p.GetX(), p.GetY())
 	}
 	// 存档里 Dir=右（原版 2）⇒ 新协议的 DIR_RIGHT(=3)。这是「新枚举 = 原版 + 1」的活证据。
 	if d := enter.GetDirection(); d != protocol.Direction_DIR_RIGHT {
@@ -302,22 +350,22 @@ func TestProtoContractEnterWorld(t *testing.T) {
 	if found.GetKind() != 1 || found.GetName() != "鸡" || found.GetHp() != 15 || found.GetMaxHp() != 15 {
 		t.Errorf("怪的快照 = %+v", found)
 	}
-
-	abEnv := cl.recv()
-	ab, ok := abEnv.Body.(*protocol.Envelope_AbilityUpdate)
-	if !ok {
-		t.Fatalf("⑥ 应为 AbilityUpdate，实得 %T", abEnv.Body)
+	if p := found.GetPosition(); p.GetX() != 3 || p.GetY() != 2 {
+		t.Errorf("怪的快照坐标 = (%d,%d)，应为 (3,2)", p.GetX(), p.GetY())
 	}
+
+	abEnv := cl.waitFor(ev, "AbilityUpdate", func(e *protocol.Envelope) bool {
+		_, ok := e.Body.(*protocol.Envelope_AbilityUpdate)
+		return ok
+	})
+	ab := abEnv.Body.(*protocol.Envelope_AbilityUpdate)
 	if got := ab.AbilityUpdate.GetAbility(); got.GetLevel() != 7 || got.GetHp() != 30 || got.GetMaxHp() != 40 {
 		t.Errorf("能力值 = %+v", got)
 	}
 
 	// ⑤ 心跳
 	cl.send(&protocol.Envelope{Body: &protocol.Envelope_Ping{Ping: &protocol.Ping{ClientTimeMs: 12345}}})
-	pong, ok := cl.recv().Body.(*protocol.Envelope_Pong)
-	if !ok {
-		t.Fatalf("⑦ 应为 Pong，实得 %T", pong)
-	}
+	pong := cl.waitFor(ev, "Pong", isPong).Body.(*protocol.Envelope_Pong)
 	if pong.Pong.GetClientTimeMs() != 12345 {
 		t.Errorf("Pong 应回显 client_time_ms，实得 %d", pong.Pong.GetClientTimeMs())
 	}
@@ -326,13 +374,151 @@ func TestProtoContractEnterWorld(t *testing.T) {
 	cl.send(&protocol.Envelope{}) // 连 oneof case 都没有
 	cl.send(&protocol.Envelope{Body: &protocol.Envelope_Raw{Raw: &protocol.Raw{MsgId: 0x0F01}}})
 	cl.send(&protocol.Envelope{Body: &protocol.Envelope_Ping{Ping: &protocol.Ping{ClientTimeMs: 999}}})
-	pong2, ok := cl.recv().Body.(*protocol.Envelope_Pong)
-	if !ok {
-		t.Fatalf("未知消息之后连接应当还活着，实得 %T", pong2)
-	}
+	pong2 := cl.waitFor(ev, "Pong（未知消息之后）", isPong).Body.(*protocol.Envelope_Pong)
 	if pong2.Pong.GetClientTimeMs() != 999 {
 		t.Errorf("Pong 回显 = %d", pong2.Pong.GetClientTimeMs())
 	}
+
+	// ---------- ⑦ 实时性：服务端**主动推**的实体事件 ----------
+	//
+	// 这一段是本轮的验收点：进图不再是一张静止的快照。
+	player := onlyProtoPlayer(t, s)
+
+	// （a）别的实体走动 ⇒ EntityMove，且必须带 from（客户端靠它插值）。
+	s.broadcastMonsterMove(monsterMove{id: mon.ID, x: 4, y: 2, dir: entity.DirRight,
+		mapRef: s.world.defaultMap, fromX: 3, fromY: 2})
+	mv := waitMoveOf(t, cl, ev, uint64(mon.ID))
+	if f := mv.GetFrom(); f.GetX() != 3 || f.GetY() != 2 {
+		t.Errorf("EntityMove.from = (%d,%d)，应为移动前的 (3,2)", f.GetX(), f.GetY())
+	}
+	if to := mv.GetTo(); to.GetX() != 4 || to.GetY() != 2 {
+		t.Errorf("EntityMove.to = (%d,%d)，应为 (4,2)", to.GetX(), to.GetY())
+	}
+	if d := mv.GetDirection(); d != protocol.Direction_DIR_RIGHT {
+		t.Errorf("EntityMove.direction = %v，应为 DIR_RIGHT", d)
+	}
+
+	// （b）走出视野 ⇒ EntityDisappear（由周期性视野同步发现 ——
+	// 这正是 legacy 那半边缺的那一块：站着不动也得看得见"走近/走远"）。
+	mon.Object.SetPlace(s.world.defaultMap, 40, 40, entity.DirRight)
+	s.world.monsterIdx.Update(mon)
+	s.tickProtoVision(player)
+	waitDisappearOf(t, cl, ev, uint64(mon.ID))
+
+	// （c）再走回视野 ⇒ EntityAppear
+	mon.Object.SetPlace(s.world.defaultMap, 3, 2, entity.DirLeft)
+	s.world.monsterIdx.Update(mon)
+	s.tickProtoVision(player)
+	ap := waitAppearOf(t, cl, ev, uint64(mon.ID))
+	if p := ap.GetPosition(); p.GetX() != 3 || p.GetY() != 2 {
+		t.Errorf("重新出现的怪坐标 = (%d,%d)，应为 (3,2)", p.GetX(), p.GetY())
+	}
+
+	// （d）自己走一步：MoveInput ⇒ 收到**自己的权威回显**（客户端预测的纠偏依据）。
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_MoveInput{
+		MoveInput: &protocol.MoveInput{Direction: protocol.Direction_DIR_RIGHT, ClientTick: 1}}})
+	self := waitMoveOf(t, cl, ev, uint64(player.Obj.ID))
+	if f := self.GetFrom(); f.GetX() != 1 || f.GetY() != 1 {
+		t.Errorf("自己移动的 from = (%d,%d)，应为 (1,1)", f.GetX(), f.GetY())
+	}
+	if to := self.GetTo(); to.GetX() != 2 || to.GetY() != 1 {
+		t.Errorf("自己移动的 to = (%d,%d)，应为 (2,1)", to.GetX(), to.GetY())
+	}
+
+	// （e）**超速**：紧接着再走一次 ⇒ 限流拒绝，**必须回一条** MoveRejected(1)。
+	// 这一条是新协议特有的：客户端已经**预测**着走过去了，服务端不吭声
+	// 它的位置就永久分叉（legacy 不预测，所以那边静默忽略是对的）。
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_MoveInput{
+		MoveInput: &protocol.MoveInput{Direction: protocol.Direction_DIR_RIGHT, ClientTick: 2}}})
+	fast := waitReject(t, cl, ev)
+	if fast.GetReason() != 1 {
+		t.Errorf("紧接着的第二次移动应被限流（reason 1），实得 %d", fast.GetReason())
+	}
+	if p := fast.GetAuthoritativePosition(); p.GetX() != 2 || p.GetY() != 1 {
+		t.Errorf("限流的权威位置 = (%d,%d)，应为原地 (2,1)", p.GetX(), p.GetY())
+	}
+
+	// （f）撞墙：向上是边界 ⇒ MoveRejected(3)，把预测掰回权威位置。
+	// ⚠️ 先等过限流窗口（走路 600ms，见 entity.NewMoveLimiter）——
+	// 否则这一条会先被（e）的限流拦下，验不到"阻挡"。
+	time.Sleep(700 * time.Millisecond)
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_MoveInput{
+		MoveInput: &protocol.MoveInput{Direction: protocol.Direction_DIR_UP, ClientTick: 3}}})
+	rej := waitReject(t, cl, ev)
+	if p := rej.GetAuthoritativePosition(); p.GetX() != 2 || p.GetY() != 1 {
+		t.Errorf("MoveRejected 的权威位置 = (%d,%d)，应为 (2,1)", p.GetX(), p.GetY())
+	}
+	if rej.GetReason() != 3 {
+		t.Errorf("MoveRejected.reason = %d，应为 3（阻挡）", rej.GetReason())
+	}
+	// 全程**不该有任何"多出来"的实体事件**：上面每一步都用带 id 的谓词精确取走了
+	// 它要的那条，剩下的计数只会被"意料之外的重发"顶起来。
+	//
+	// ⚠️ 这条断言不是摆设：本轮它真的抓到过一次 —— 进图时"快照已经给了实体、
+	// `updateVision` 又把它当新进入视野推一遍"，于是这里会多出 1 条 EntityAppear。
+	if n := len(ev.appears); n != 0 {
+		t.Errorf("多出来 %d 条 EntityAppear（快照里的实体不该再当\"新出现\"推一遍）：%+v", n, ev.appears)
+	}
+	if n := len(ev.disappears); n != 0 {
+		t.Errorf("多出来 %d 条 EntityDisappear：%v", n, ev.disappears)
+	}
+	if n := len(ev.moves); n != 0 {
+		t.Errorf("多出来 %d 条 EntityMove：%+v", n, ev.moves)
+	}
+}
+
+func isPong(e *protocol.Envelope) bool {
+	_, ok := e.Body.(*protocol.Envelope_Pong)
+	return ok
+}
+
+// onlyProtoPlayer 取世界里那名新协议玩家（本用例里只有他一个）。
+func onlyProtoPlayer(t *testing.T, s *Server) *Player {
+	t.Helper()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, p := range s.world.players {
+		if p.protoOut != nil {
+			return p
+		}
+	}
+	t.Fatal("世界里没有新协议玩家")
+	return nil
+}
+
+func waitMoveOf(t *testing.T, cl *protoClient, ev *protoEvents, id uint64) *protocol.EntityMove {
+	t.Helper()
+	env := cl.waitFor(ev, fmt.Sprintf("ActorId=%d 的 EntityMove", id), func(e *protocol.Envelope) bool {
+		b, ok := e.Body.(*protocol.Envelope_EntityMove)
+		return ok && b.EntityMove.GetEntityId() == id
+	})
+	return env.Body.(*protocol.Envelope_EntityMove).EntityMove
+}
+
+func waitAppearOf(t *testing.T, cl *protoClient, ev *protoEvents, id uint64) *protocol.EntityState {
+	t.Helper()
+	env := cl.waitFor(ev, fmt.Sprintf("ActorId=%d 的 EntityAppear", id), func(e *protocol.Envelope) bool {
+		b, ok := e.Body.(*protocol.Envelope_EntityAppear)
+		return ok && b.EntityAppear.GetEntity().GetEntityId() == id
+	})
+	return env.Body.(*protocol.Envelope_EntityAppear).EntityAppear.GetEntity()
+}
+
+func waitDisappearOf(t *testing.T, cl *protoClient, ev *protoEvents, id uint64) {
+	t.Helper()
+	cl.waitFor(ev, fmt.Sprintf("ActorId=%d 的 EntityDisappear", id), func(e *protocol.Envelope) bool {
+		b, ok := e.Body.(*protocol.Envelope_EntityDisappear)
+		return ok && b.EntityDisappear.GetEntityId() == id
+	})
+}
+
+func waitReject(t *testing.T, cl *protoClient, ev *protoEvents) *protocol.MoveRejected {
+	t.Helper()
+	env := cl.waitFor(ev, "MoveRejected", func(e *protocol.Envelope) bool {
+		_, ok := e.Body.(*protocol.Envelope_MoveRejected)
+		return ok
+	})
+	return env.Body.(*protocol.Envelope_MoveRejected).MoveRejected
 }
 
 // ---------- 错误路径 ----------
@@ -520,26 +706,58 @@ func TestProtoContractRustClient(t *testing.T) {
 
 	// 与 Go 侧主契约同构：视野里放一只怪，好让两边断言的实体数一致。
 	mon := newTestMonster(1_000_001, "鸡", 15)
-	mon.Object.SetPlace(s.world.defaultMap, 12, 11, entity.DirDown)
+	mon.Object.SetPlace(s.world.defaultMap, 3, 2, entity.DirDown)
 	s.world.monsters[mon.ID] = mon
 	s.world.monsterIdx.Add(mon)
 
 	// `-expect-*` 是"服务端那侧已知的真值"：只有播种数据的一方能下这些断言，
 	// Rust 客户端本身是通用的（不该知道我们的播种）。存档 Dir=2（原版「右」）
-	// ⇒ 线上应当是 3（新枚举 = 原版 + 1）。
+	// ⇒ 线上应当是 3（新枚举 = 原版 + 1）。玩家在 (1,1)，向右走一步到 (2,1)。
 	cmd := exec.Command(bin, "contract",
 		"-addr", addr,
 		"-session", strconv.Itoa(int(sessionID)),
 		"-char", strconv.FormatUint(charID, 10),
 		"-expect-map", "0",
-		"-expect-pos", "10,10",
+		"-expect-pos", "1,1",
 		"-expect-dir", "3",
 		"-expect-entities", "1",
+		"-expect-walk-to", "2,1",
+		"-expect-pushed", "1",
 	)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("启动 Rust 剧本: %v", err)
+	}
+	// 剧本跑起来之后，由**服务端这侧**推一条实体事件 —— 这就是"实时性"那一步的对手方
+	//（客户端在 [9] 等着它）。
+	go func() {
+		// 等到"玩家已进图 **且视野账本里已经有那只怪**"再推。
+		// ⚠️ 这个条件不是"等一会儿"那种赌时间的写法：它正好是
+		// `broadcastMonsterMove` 的投递前提（`p.visible.Contains`），
+		// 抢在它之前推的话那一条会被过滤掉，用例就会偶发地挂。
+		for i := 0; i < 300; i++ {
+			s.mu.RLock()
+			var ready bool
+			for _, p := range s.world.players {
+				if p.protoOut != nil && p.visible.Contains(mon.ID) {
+					ready = true
+					break
+				}
+			}
+			s.mu.RUnlock()
+			if ready {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		s.broadcastMonsterMove(monsterMove{id: mon.ID, x: 4, y: 2, dir: entity.DirRight,
+			mapRef: s.world.defaultMap, fromX: 3, fromY: 2})
+	}()
+
+	if err := cmd.Wait(); err != nil {
 		t.Fatalf("Rust 契约剧本失败：%v\n%s", err, out.String())
 	}
 	if !strings.Contains(out.String(), "契约通过") {

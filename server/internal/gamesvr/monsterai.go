@@ -30,6 +30,27 @@ type monsterMove struct {
 	x, y   int
 	dir    uint8
 	mapRef *world.Map
+	// fromX/fromY 是移动**前**的坐标：新协议的 `EntityMove` 要带 from
+	//（客户端靠它插值），legacy 的 SM_WALK 只带新位置。
+	fromX, fromY int
+}
+
+// broadcastMonsterMove 把一次怪物移动广播给看得见它的人。
+//
+// 从 tickMonsters 里抽出来有两个理由：一是给新协议腾一个分支点（与 view.go 的
+// `broadcastMove` 同构），二是它因此**可测** —— 契约测试直接调它来验证
+// "客户端能实时收到 EntityMove"，而不必去等 AI 的 500ms tick（那会让用例变脆）。
+func (s *Server) broadcastMonsterMove(mv monsterMove) {
+	s.broadcastToViewers(mv.mapRef, mv.x, mv.y, func(p *Player) {
+		if !p.visible.Contains(mv.id) {
+			return
+		}
+		if sink := p.protoOut; sink != nil {
+			sink.move(mv.id, mv.fromX, mv.fromY, mv.x, mv.y, mv.dir)
+			return
+		}
+		s.send(p.conn, proto.SM_WALK, int32(mv.id), uint16(mv.x), uint16(mv.y), uint16(mv.dir), "")
+	})
 }
 
 // tickMonsters 怪物 AI：选目标 → 追击 → 攻击；无目标则游荡。
@@ -152,9 +173,11 @@ func (s *Server) tickMonsters(now time.Time) {
 				continue
 			}
 			m.MarkActed(now)
+			fromX, fromY := m.PosX(), m.PosY()
 			if m.StepToward(target.Obj.PosX(), target.Obj.PosY()) {
 				s.world.monsterIdx.Update(m)
-				moved = append(moved, monsterMove{m.ID, m.PosX(), m.PosY(), m.Facing(), m.MapRef()})
+				moved = append(moved, monsterMove{id: m.ID, x: m.PosX(), y: m.PosY(),
+					dir: m.Facing(), mapRef: m.MapRef(), fromX: fromX, fromY: fromY})
 			}
 			continue
 		}
@@ -164,20 +187,18 @@ func (s *Server) tickMonsters(now time.Time) {
 			continue
 		}
 		m.MarkActed(now)
+		fromX, fromY := m.PosX(), m.PosY()
 		if m.Wonder() {
 			s.world.monsterIdx.Update(m)
-			moved = append(moved, monsterMove{m.ID, m.PosX(), m.PosY(), m.Facing(), m.MapRef()})
+			moved = append(moved, monsterMove{id: m.ID, x: m.PosX(), y: m.PosY(),
+				dir: m.Facing(), mapRef: m.MapRef(), fromX: fromX, fromY: fromY})
 		}
 	}
 	s.mu.Unlock()
 
 	// 锁外发包，避免持锁做网络 IO
 	for _, mv := range moved {
-		s.broadcastToViewers(mv.mapRef, mv.x, mv.y, func(p *Player) {
-			if p.visible.Contains(mv.id) {
-				s.send(p.conn, proto.SM_WALK, int32(mv.id), uint16(mv.x), uint16(mv.y), uint16(mv.dir), "")
-			}
-		})
+		s.broadcastMonsterMove(mv)
 		// 火墙的第二条伤害路径：怪物踩上去也立刻结算（ObjBase.pas:20190）。
 		s.wallBurnAtCell(mv.mapRef, mv.x, mv.y)
 	}

@@ -438,8 +438,13 @@ func (s *Server) tickSlaves(now time.Time, moved *[]monsterMove, hits *[]monster
 		if slaveNeedsTeleport(m, master) {
 			mp := master.Obj.MapRef()
 			if mp != nil && (m.MapRef() != mp || m.PosX() != master.Obj.PosX() || m.PosY() != master.Obj.PosY()) {
+				fx, fy := m.PosX(), m.PosY()
 				s.teleportSlave(m, master, mp, now)
-				*moved = append(*moved, monsterMove{m.ID, m.PosX(), m.PosY(), m.Facing(), m.MapRef()})
+				// ⚠️ 这一条是**瞬移**（可能跨图）：新协议那边 from 会是旧坐标，
+				// 而客户端对"跨度很大的 EntityMove"应当**直接吸附**、不插值
+				//（否则宠物会从旧位置平滑飞过来）。见 protoSink.move 的说明。
+				*moved = append(*moved, monsterMove{id: m.ID, x: m.PosX(), y: m.PosY(),
+					dir: m.Facing(), mapRef: m.MapRef(), fromX: fx, fromY: fy})
 				continue
 			}
 		}
@@ -453,9 +458,11 @@ func (s *Server) tickSlaves(now time.Time, moved *[]monsterMove, hits *[]monster
 			bx, by := slaveBackPosition(master.Obj, m.MapRef().Width(), m.MapRef().Height())
 			if m.Distance(bx, by) > 0 && m.CanAct(now) {
 				m.MarkActed(now)
+				fx, fy := m.PosX(), m.PosY()
 				if m.StepToward(bx, by) {
 					s.world.monsterIdx.Update(m)
-					*moved = append(*moved, monsterMove{m.ID, m.PosX(), m.PosY(), m.Facing(), m.MapRef()})
+					*moved = append(*moved, monsterMove{id: m.ID, x: m.PosX(), y: m.PosY(),
+						dir: m.Facing(), mapRef: m.MapRef(), fromX: fx, fromY: fy})
 					continue
 				}
 			}
@@ -475,9 +482,11 @@ func (s *Server) tickSlaves(now time.Time, moved *[]monsterMove, hits *[]monster
 			}
 			if m.CanAct(now) {
 				m.MarkActed(now)
+				fx, fy := m.PosX(), m.PosY()
 				if m.StepToward(v.Obj.PosX(), v.Obj.PosY()) {
 					s.world.monsterIdx.Update(m)
-					*moved = append(*moved, monsterMove{m.ID, m.PosX(), m.PosY(), m.Facing(), m.MapRef()})
+					*moved = append(*moved, monsterMove{id: m.ID, x: m.PosX(), y: m.PosY(),
+						dir: m.Facing(), mapRef: m.MapRef(), fromX: fx, fromY: fy})
 				}
 			}
 			break
@@ -505,9 +514,11 @@ func (s *Server) tickSlaves(now time.Time, moved *[]monsterMove, hits *[]monster
 			}
 			if m.CanAct(now) {
 				m.MarkActed(now)
+				fx, fy := m.PosX(), m.PosY()
 				if m.StepToward(target.PosX(), target.PosY()) {
 					s.world.monsterIdx.Update(m)
-					*moved = append(*moved, monsterMove{m.ID, m.PosX(), m.PosY(), m.Facing(), m.MapRef()})
+					*moved = append(*moved, monsterMove{id: m.ID, x: m.PosX(), y: m.PosY(),
+						dir: m.Facing(), mapRef: m.MapRef(), fromX: fx, fromY: fy})
 				}
 			}
 			continue

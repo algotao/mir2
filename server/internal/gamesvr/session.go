@@ -573,6 +573,7 @@ func (s *Server) handleMove(c net.Conn, p *Player, pkt wire.Packet, running bool
 		"x", p.Obj.PosX(), "y", p.Obj.PosY())
 	// 改坐标与同步空间索引放在**同一段 s.mu 临界区**里（见 statelock.go 第二节：
 	// 审计 P1-5 记的正是"先 MoveTo 改坐标、再只锁索引"这个跨锁域写法）。
+	_, fromX, fromY, _ := p.Obj.Place() // 移动前的坐标（新协议 EntityMove.from 要用）
 	newX, newY, newDir, moved := s.movePlayer(p, dir)
 	if !moved {
 		s.send(c, proto.SM_MOVEFAIL, int32(p.Obj.ID), uint16(newX), uint16(newY), uint16(newDir), "")
@@ -584,7 +585,7 @@ func (s *Server) handleMove(c net.Conn, p *Player, pkt wire.Packet, running bool
 		ident = proto.SM_RUN
 	}
 	s.send(c, ident, int32(p.Obj.ID), uint16(newX), uint16(newY), uint16(newDir), "")
-	s.broadcastMove(p, ident)
+	s.broadcastMove(p, ident, fromX, fromY)
 	obs.Event("move", "player", p.Char.Name, "x", newX, "y", newY,
 		"dir", newDir, "running", running)
 	s.updateVision(p)
@@ -604,5 +605,6 @@ func (s *Server) handleTurn(c net.Conn, p *Player, pkt wire.Packet) {
 	// 转身与取肉共用一个时间戳（原版 `m_dwTurnTick`，见 ClientGetButchItem 首行）。
 	p.turnAt = time.Now()
 	s.send(c, proto.SM_TURN, int32(p.Obj.ID), uint16(x), uint16(y), uint16(dir), "")
-	s.broadcastMove(p, proto.SM_TURN)
+	// 转身：from == to（新协议没有独立的转身消息，客户端看到"原地改朝向"就只更新朝向）。
+	s.broadcastMove(p, proto.SM_TURN, x, y)
 }

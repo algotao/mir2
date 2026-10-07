@@ -71,6 +71,15 @@ type Player struct {
 	// ⚠️ 只在**注册进 world.players 之前**赋值一次，之后只读（见 handleConn）。
 	snapReq chan chan *storage.Character
 
+	// protoOut 非 nil ⇒ 这名玩家走**新协议**（见 netproto.go）：
+	// 实体事件（出现/消失/移动）从它出去，而不再走 legacy 的 `s.send`。
+	//
+	// 判定点刻意放在**实体事件的出口**（view.go 的四个函数）里，而不是散在调用点：
+	// "谁该看见谁"的判定只有 vision 那套一处，两条协议共享它。
+	// ⚠️ 同样的赋值纪律：注册进 world.players 之前赋值一次，之后多 goroutine 只读
+	// （怪物 AI ticker 会读它，见 protoSink）。
+	protoOut *protoSink
+
 	noticeSent bool
 	logonDone  bool
 	// permission 是 GM 权限等级（0 = 不是 GM），登录时按 Envir/AdminList.txt

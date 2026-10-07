@@ -4,14 +4,19 @@
 //!
 //! ```text
 //! ClientHello → ServerHello → Reconnect → ListCharacters → SelectCharacter
-//!   → EnterWorld → AbilityUpdate → Ping/Pong
+//!   → EnterWorld → AbilityUpdate → Ping/Pong → MoveInput → EntityMove
 //! ```
 //!
 //! 并**断言**每一步的消息类型与关键字段；`-expect-*` 给的是"服务端那侧已知的真值"
 //! （由驱动方传入，如 Go 的契约测试），用来把断言钉到具体数值上。
 //!
-//! ⚠️ 它的价值在于走的是与 `client/app` **完全相同**的协议编解码（`mir2-protocol`）
-//! 与连接层（`mir2-net`）—— D-18 的纪律；否则它检验的就不是真客户端了。
+//! ⚠️ 两条纪律，都是本轮踩出来的：
+//!
+//! 1. **不能假设"下一条就是我等的那条"**：进世界之后实体事件是**随时**来的
+//!    （怪物 AI、别人的移动、周期性视野同步）。真客户端按类型分派，
+//!    所以这里也按类型分派（`recv_ctl` 把推送事件记下来继续读）。
+//! 2. 走的必须是 `client/app` **同一份**协议编解码（`mir2-protocol`）与连接层
+//!    （`mir2-net`）—— D-18；否则它检验的就不是真客户端了。
 
 use mir2_net::Conn;
 use mir2_protocol as proto;
@@ -37,6 +42,10 @@ struct Args {
     expect_pos: Option<(i32, i32)>,
     expect_dir: Option<i32>,
     expect_entities: Option<usize>,
+    /// 走一步的落点（服务端权威回显里应从 `expect_pos` 走到这里）。
+    expect_walk_to: Option<(i32, i32)>,
+    /// 至少要收到几条"服务端主动推"的实体事件（驱动方会在进图后触发）。
+    expect_pushed: usize,
 }
 
 impl Args {
@@ -44,6 +53,7 @@ impl Args {
         let (mut addr, mut session, mut char_id) = (None, None, None);
         let (mut build, mut expect_map, mut expect_pos) = ("mir2-e2e".to_string(), None, None);
         let (mut expect_dir, mut expect_entities) = (None, None);
+        let (mut expect_walk_to, mut expect_pushed) = (None, 0usize);
 
         let mut i = 0;
         while i < argv.len() {
@@ -87,6 +97,12 @@ impl Args {
                             .map_err(|_| "-expect-entities 必须是非负整数".to_string())?,
                     )
                 }
+                "-expect-walk-to" => expect_walk_to = Some(parse_pos(&val("X,Y")?)?),
+                "-expect-pushed" => {
+                    expect_pushed = val("条数")?
+                        .parse::<usize>()
+                        .map_err(|_| "-expect-pushed 必须是非负整数".to_string())?
+                }
                 other => return Err(format!("未知参数 {other}（-h 看用法）")),
             }
             i += 1;
@@ -101,6 +117,8 @@ impl Args {
             expect_pos,
             expect_dir,
             expect_entities,
+            expect_walk_to,
+            expect_pushed,
         })
     }
 }
@@ -120,9 +138,159 @@ fn parse_pos(s: &str) -> Result<(i32, i32), String> {
     Ok((px, py))
 }
 
+// ---------- 服务端主动推来的实体事件 ----------
+
+/// `Pushed` 记账"服务端主动推"的实体事件。
+///
+/// ⚠️ 它们与请求-应答**无关**，随时会来（怪物 AI / 别人的移动 / 周期性视野同步）
+/// ⇒ 收到就记下、继续读，绝不能当成"顺序不符"。
+#[derive(Default)]
+struct Pushed {
+    appears: Vec<String>,
+    moves: Vec<String>,
+    disappears: Vec<String>,
+}
+
+impl Pushed {
+    fn len(&self) -> usize {
+        self.appears.len() + self.moves.len() + self.disappears.len()
+    }
+
+    /// 是实体事件就打印 + 记账，返回 true（调用方据此跳过它继续读）。
+    fn note(&mut self, env: &Envelope) -> bool {
+        match &env.body {
+            Some(Body::EntityAppear(a)) => {
+                let e = a.entity.clone().unwrap_or_default();
+                let s = format!(
+                    "出现 {} id={} 名={} ({},{}) 朝向={} hp={}/{}",
+                    kind_name(e.kind),
+                    e.entity_id,
+                    e.name,
+                    e.position.as_ref().map_or(0, |p| p.x),
+                    e.position.as_ref().map_or(0, |p| p.y),
+                    dir_name(e.direction),
+                    e.hp,
+                    e.max_hp
+                );
+                println!("      推送 · {s}");
+                self.appears.push(s);
+                true
+            }
+            Some(Body::EntityMove(m)) => {
+                let f = m.from.unwrap_or_default();
+                let t = m.to.unwrap_or_default();
+                let s = format!(
+                    "移动 id={} ({},{})→({},{}) 朝向={}",
+                    m.entity_id,
+                    f.x,
+                    f.y,
+                    t.x,
+                    t.y,
+                    dir_name(m.direction)
+                );
+                println!("      推送 · {s}");
+                self.moves.push(s);
+                true
+            }
+            Some(Body::EntityDisappear(d)) => {
+                let s = format!("消失 id={} 原因={}", d.entity_id, d.reason);
+                println!("      推送 · {s}");
+                self.disappears.push(s);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+// ---------- 收包 ----------
+
+/// 收一条**控制类**应答；途中遇到的实体事件记进 `pushed`（见 `Pushed` 的说明）。
+fn recv_ctl(c: &mut Conn, pushed: &mut Pushed) -> Result<Envelope, String> {
+    for _ in 0..256 {
+        let env = c.recv().map_err(|e| e.to_string())?;
+        check_fatal(&env)?;
+        if pushed.note(&env) {
+            continue;
+        }
+        return Ok(env);
+    }
+    Err("连读 256 条都是推送事件，始终没等到应答".into())
+}
+
+/// 一直读到"指定实体的 EntityMove"为止（途中的推送照常记账）。
+fn wait_move_of(c: &mut Conn, pushed: &mut Pushed, id: u64) -> Result<proto::EntityMove, String> {
+    for _ in 0..256 {
+        let env = c.recv().map_err(|e| e.to_string())?;
+        check_fatal(&env)?;
+        if let Some(Body::EntityMove(m)) = &env.body {
+            if m.entity_id == id {
+                return Ok(*m);
+            }
+        }
+        if pushed.note(&env) {
+            continue;
+        }
+        return Err(format!(
+            "等 ActorId={id} 的 EntityMove 时收到 {}",
+            proto::msg_name(&env)
+        ));
+    }
+    Err(format!("等 ActorId={id} 的 EntityMove 超时"))
+}
+
+/// 一直读到 `MoveRejected` 为止。
+fn wait_reject(c: &mut Conn, pushed: &mut Pushed) -> Result<proto::MoveRejected, String> {
+    for _ in 0..256 {
+        let env = c.recv().map_err(|e| e.to_string())?;
+        check_fatal(&env)?;
+        if let Some(Body::MoveRejected(r)) = &env.body {
+            return Ok(*r);
+        }
+        if pushed.note(&env) {
+            continue;
+        }
+        return Err(format!("等 MoveRejected 时收到 {}", proto::msg_name(&env)));
+    }
+    Err("等 MoveRejected 超时".into())
+}
+
+/// 一直读到"至少看过 `want` 条推送事件"为止。
+fn wait_pushed(c: &mut Conn, pushed: &mut Pushed, want: usize) -> Result<(), String> {
+    for _ in 0..256 {
+        if pushed.len() >= want {
+            return Ok(());
+        }
+        let env = c.recv().map_err(|e| e.to_string())?;
+        check_fatal(&env)?;
+        pushed.note(&env);
+    }
+    Err(format!("等推送事件超时（只收到 {} 条）", pushed.len()))
+}
+
+/// `ServerError` / `Disconnect` 在契约测试里都是失败信号。
+fn check_fatal(env: &Envelope) -> Result<(), String> {
+    match &env.body {
+        Some(Body::ServerError(se)) => Err(format!("服务端错误 {}：{}", se.code, se.message)),
+        Some(Body::Disconnect(d)) => Err(format!("被服务端断开 {}：{}", d.code, d.reason)),
+        _ => Ok(()),
+    }
+}
+
+/// 从收到的信封里取期望的那一类；取不到就报"实得什么"。
+fn want<T>(env: &Envelope, f: impl Fn(&Body) -> Option<T>) -> Result<T, String> {
+    env.body
+        .as_ref()
+        .and_then(f)
+        .ok_or_else(|| format!("收到的消息不符：{}", proto::msg_name(env)))
+}
+
+// ---------- 主流程 ----------
+
 fn run(argv: &[String]) -> Result<(), String> {
     let a = Args::parse(argv)?;
     let mut c = Conn::connect(&a.addr, &a.build, "zh-CN").map_err(|e| e.to_string())?;
+    let mut pushed = Pushed::default();
     println!(
         "[1] 握手完成：协议版本 {}，能力 {:?}，nonce {} 字节",
         proto::VERSION,
@@ -136,7 +304,7 @@ fn run(argv: &[String]) -> Result<(), String> {
         last_ack_seq: 0,
     }))
     .map_err(|e| e.to_string())?;
-    let env = recv_ok(&mut c)?;
+    let env = recv_ctl(&mut c, &mut pushed)?;
     let status = want(&env, |b| match b {
         Body::ReconnectResult(r) => Some(r.status),
         _ => None,
@@ -149,7 +317,7 @@ fn run(argv: &[String]) -> Result<(), String> {
         // [3] 列角色
         c.send(Body::ListCharacters(proto::ListCharacters {}))
             .map_err(|e| e.to_string())?;
-        let env = recv_ok(&mut c)?;
+        let env = recv_ctl(&mut c, &mut pushed)?;
         let chars = want(&env, |b| match b {
             Body::CharacterList(l) => Some(l.characters.clone()),
             _ => None,
@@ -175,9 +343,9 @@ fn run(argv: &[String]) -> Result<(), String> {
             character_id: target,
         }))
         .map_err(|e| e.to_string())?;
-        let env = recv_ok(&mut c)?;
+        let env = recv_ctl(&mut c, &mut pushed)?;
         let res = want(&env, |b| match b {
-            Body::SelectCharacterResult(r) => Some(r.clone()),
+            Body::SelectCharacterResult(r) => Some(r.clone()), // 带 String，非 Copy
             _ => None,
         })?;
         if res.code != proto::SelectCharCode::SelectCharOk as i32 {
@@ -191,7 +359,7 @@ fn run(argv: &[String]) -> Result<(), String> {
     }
 
     // [5] 进图快照
-    let env = recv_ok(&mut c)?;
+    let env = recv_ctl(&mut c, &mut pushed)?;
     let ew = want(&env, |b| match b {
         Body::EnterWorld(e) => Some(e.clone()),
         _ => None,
@@ -230,7 +398,7 @@ fn run(argv: &[String]) -> Result<(), String> {
     }
 
     // [6] 自身能力值
-    let env = recv_ok(&mut c)?;
+    let env = recv_ctl(&mut c, &mut pushed)?;
     let ab = want(&env, |b| match b {
         Body::AbilityUpdate(a) => Some(a.ability.unwrap_or_default()),
         _ => None,
@@ -240,14 +408,14 @@ fn run(argv: &[String]) -> Result<(), String> {
         ab.level, ab.hp, ab.max_hp, ab.mp, ab.max_mp, ab.dc_min, ab.dc_max, ab.ac, ab.gold
     );
 
-    // [7] 心跳：`seq` 由连接层维护，回显必须一致
+    // [7] 心跳
     c.send(Body::Ping(proto::Ping {
         client_time_ms: 4242,
     }))
     .map_err(|e| e.to_string())?;
-    let env = recv_ok(&mut c)?;
+    let env = recv_ctl(&mut c, &mut pushed)?;
     let pong = want(&env, |b| match b {
-        Body::Pong(p) => Some(*p),
+        Body::Pong(p) => Some(*p), // Pong 是 Copy
         _ => None,
     })?;
     if pong.client_time_ms != 4242 {
@@ -265,9 +433,9 @@ fn run(argv: &[String]) -> Result<(), String> {
         client_time_ms: 4243,
     }))
     .map_err(|e| e.to_string())?;
-    let env = recv_ok(&mut c)?;
+    let env = recv_ctl(&mut c, &mut pushed)?;
     let pong = want(&env, |b| match b {
-        Body::Pong(p) => Some(*p),
+        Body::Pong(p) => Some(*p), // Pong 是 Copy
         _ => None,
     })?;
     if pong.client_time_ms != 4243 {
@@ -275,11 +443,80 @@ fn run(argv: &[String]) -> Result<(), String> {
     }
     println!("[8] 未知消息被忽略，连接仍在");
 
-    // [9] 把驱动方给的真值对上（由 Go 那边的契约测试传入）
+    // [9] **实时性**：等服务端主动推来的实体事件。
+    // 驱动方（Go 契约测试）在玩家进图后触发一条；它们与请求-应答无关，
+    // 所以上面几步里收到的也算数（`Pushed` 已经在记账）。
+    wait_pushed(&mut c, &mut pushed, a.expect_pushed)?;
+    println!(
+        "[9] 实时推送：收到 {} 条实体事件（出现 {} / 移动 {} / 消失 {}）",
+        pushed.len(),
+        pushed.appears.len(),
+        pushed.moves.len(),
+        pushed.disappears.len()
+    );
+    if pushed.len() < a.expect_pushed {
+        return Err(format!(
+            "推送事件只有 {} 条，应为至少 {} 条",
+            pushed.len(),
+            a.expect_pushed
+        ));
+    }
+
+    // [10] 自己走一步：MoveInput → 收到**自己的权威回显**（客户端预测的纠偏依据）
+    c.send(Body::MoveInput(proto::MoveInput {
+        direction: proto::Direction::DirRight as i32,
+        client_tick: 1,
+        ..Default::default()
+    }))
+    .map_err(|e| e.to_string())?;
+    let mv = wait_move_of(&mut c, &mut pushed, ew.self_entity_id)?;
+    let f = mv.from.unwrap_or_default();
+    let t = mv.to.unwrap_or_default();
+    println!(
+        "[10] 自己走一步：({},{})→({},{}) 朝向={}",
+        f.x,
+        f.y,
+        t.x,
+        t.y,
+        dir_name(mv.direction)
+    );
+    if let (Some((wx, wy)),) = (a.expect_walk_to,) {
+        if t.x != wx || t.y != wy {
+            return Err(format!(
+                "走一步的落点 = ({},{})，应为 ({wx},{wy})",
+                t.x, t.y
+            ));
+        }
+    }
+
+    // [11] 紧接着再走一次 ⇒ 限流拒绝。**必须回一条**：客户端已经预测着走过去了，
+    // 服务端不吭声它的位置就永久分叉（legacy 不预测，那边静默忽略是对的）。
+    c.send(Body::MoveInput(proto::MoveInput {
+        direction: proto::Direction::DirRight as i32,
+        client_tick: 2,
+        ..Default::default()
+    }))
+    .map_err(|e| e.to_string())?;
+    let rej = wait_reject(&mut c, &mut pushed)?;
+    let p = rej.authoritative_position.unwrap_or_default();
+    println!(
+        "[11] 超速被拒：reason={} 权威位置=({},{})",
+        rej.reason, p.x, p.y
+    );
+    if rej.reason != 1 {
+        return Err(format!(
+            "第二次移动应被限流（reason 1），实得 {}",
+            rej.reason
+        ));
+    }
+
+    // [12] 把驱动方给的真值对上
     assert_expectations(&a, expect_char, &ew)?;
     println!(
-        "契约通过：握手 → 认领会话 → 选角 → 进图（{} 个实体）→ 能力值 → 心跳",
-        ew.entities.len()
+        "契约通过：握手 → 认领会话 → 选角 → 进图（{} 个实体）→ 能力值 → 心跳 → \
+         实时推送 {} 条 → 自己走一步 → 超速被拒",
+        ew.entities.len(),
+        pushed.len()
     );
     Ok(())
 }
@@ -293,9 +530,9 @@ fn assert_expectations(
     char_id: Option<u64>,
     ew: &proto::EnterWorld,
 ) -> Result<(), String> {
-    if let (Some(want), Some(got)) = (&a.expect_map, Some(ew.map_name.clone())) {
-        if *want != got {
-            return Err(format!("地图 = {got:?}，应为 {want:?}"));
+    if let Some(want) = &a.expect_map {
+        if *want != ew.map_name {
+            return Err(format!("地图 = {:?}，应为 {want:?}", ew.map_name));
         }
     }
     if let (Some((wx, wy)), Some(p)) = (a.expect_pos, ew.position.as_ref()) {
@@ -324,24 +561,6 @@ fn assert_expectations(
         }
     }
     Ok(())
-}
-
-/// 收一条；`ServerError` / `Disconnect` 直接当失败（契约测试里它们是失败信号）。
-fn recv_ok(c: &mut Conn) -> Result<Envelope, String> {
-    let env = c.recv().map_err(|e| e.to_string())?;
-    match &env.body {
-        Some(Body::ServerError(se)) => Err(format!("服务端错误 {}：{}", se.code, se.message)),
-        Some(Body::Disconnect(d)) => Err(format!("被服务端断开 {}：{}", d.code, d.reason)),
-        _ => Ok(env),
-    }
-}
-
-/// 从收到的信封里取期望的那一类；取不到就报"实得什么"（顺序与类型都是契约）。
-fn want<T>(env: &Envelope, f: impl Fn(&Body) -> Option<T>) -> Result<T, String> {
-    env.body
-        .as_ref()
-        .and_then(f)
-        .ok_or_else(|| format!("收到的消息不符：{}", proto::msg_name(env)))
 }
 
 fn dir_name(v: i32) -> &'static str {

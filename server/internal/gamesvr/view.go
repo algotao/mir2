@@ -124,8 +124,16 @@ func (s *Server) sendAppear(to *Player, id uint32) {
 // ⚠️ `who` 的坐标/外观可能正被**他自己的 goroutine** 改（移动/换装）⇒
 // 用对象自带锁的**一致性快照**（`Place` + `Appearance`，见 entity/object.go）。
 // 这里不需要 `s.mu`。
+//
+// ⚠️ 分支：`to` 若是**新协议**玩家（`protoOut != nil`），发 typed 的 `EntityAppear`
+// 就到此为止 —— 他看不懂 6bit 帧（那些字节会被 `protoDown` 丢掉，等于没收到）。
+// 这样"谁该看见谁"的判定仍然**只有一处**（vision 那套），两条协议共享它。
 func (s *Server) sendPlayerAppear(to, who *Player) {
 	if to == nil || who == nil || who.Obj == nil {
+		return
+	}
+	if to.protoOut != nil {
+		to.protoOut.appear(playerState(who))
 		return
 	}
 	_, x, y, dir := who.Obj.Place()
@@ -141,7 +149,12 @@ func (s *Server) sendMonsterAppear(to *Player, m *entity.Monster) {
 	}
 	// 加入对方视野（否则后续移动广播会被 visible 过滤掉）——
 	// `ViewTracker` 自带锁，不必再拿 `s.mu`。
+	// ⚠️ 两条协议**都要**这一步：账本只有一个。
 	to.visible.Add(m.ID)
+	if to.protoOut != nil {
+		to.protoOut.appear(monsterState(m))
+		return
+	}
 	// 坐标/外观取对象自带锁的快照：怪物由 monsterai 在 ticker 上移动。
 	_, mx, my, dir := m.Place()
 	desc := proto.CharDesc{Feature: m.FeatureBits(), Status: 0}
@@ -156,14 +169,33 @@ func (s *Server) sendMonsterAppear(to *Player, m *entity.Monster) {
 }
 
 func (s *Server) sendDisappear(to *Player, id uint32, x, y int) {
+	if to == nil {
+		return
+	}
+	if to.protoOut != nil {
+		to.protoOut.disappear(id)
+		return
+	}
 	s.send(to.conn, proto.SM_DISAPPEAR, int32(id), uint16(x), uint16(y), 0, "")
 }
 
 // ---------- 消息处理 ----------
-func (s *Server) broadcastMove(p *Player, ident uint16) {
-	s.broadcastToViewers(p.Obj.MapRef(), p.Obj.PosX(), p.Obj.PosY(), func(other *Player) {
-		if other != p && other.visible.Contains(p.Obj.ID) {
-			s.send(other.conn, ident, int32(p.Obj.ID), uint16(p.Obj.PosX()), uint16(p.Obj.PosY()), uint16(p.Obj.Facing()), "")
+
+// broadcastMove 把 p 的移动（或转身）广播给**看得见他**的人。
+//
+// fromX/fromY 是移动**前**的坐标：新协议的 `EntityMove` 要带 `from`（客户端靠它插值），
+// 而 legacy 的 SM_WALK 只带新位置 ⇒ 这个参数是新协议带出来的需要。
+// 转身时调用方传 from == 当前位置（新协议没有独立的转身消息，见 protoSink.move）。
+func (s *Server) broadcastMove(p *Player, ident uint16, fromX, fromY int) {
+	_, x, y, dir := p.Obj.Place() // 一次读全（三次分开读会拿到不自洽的组合）
+	s.broadcastToViewers(p.Obj.MapRef(), x, y, func(other *Player) {
+		if other == p || !other.visible.Contains(p.Obj.ID) {
+			return
 		}
+		if sink := other.protoOut; sink != nil {
+			sink.move(uint32(p.Obj.ID), fromX, fromY, x, y, dir)
+			return
+		}
+		s.send(other.conn, ident, int32(p.Obj.ID), uint16(x), uint16(y), uint16(dir), "")
 	})
 }

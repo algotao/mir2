@@ -201,8 +201,10 @@ mir2/
       服务端新入口 `gamesvr -proto-addr`（`[u32 长度][Envelope]`，默认关）+ Rust 客户端
       （`client/protocol` + `client/net` + `mir2-e2e contract`）+ 契约测试（§9.2）。
       序列 = 握手 → 认领会话 → 列角色 → 选角（**在此申请角色租约**）→ EnterWorld 快照 → 能力值 → 心跳。
-      ⚠️ 未做：**`Login`**（被 [D-24](./decisions.md) 的口令传输挡着）、走路/战斗/物品；
-      新协议玩家暂时收不到 legacy 世界的实时广播（见 [protocol.md §11](./protocol.md)）。
+      已做到**实时**：实体出现/消失/移动 + 自己走一步（`MoveInput`）——
+      视野判定仍只有一处（vision 那套），两条协议共享它。
+      ⚠️ 未做：**`Login`**（被 [D-24](./decisions.md) 的口令传输挡着）、攻击/物品/聊天/技能；
+      走/跑只有"走"（`MoveInput` 缺标志，见 [protocol.md §11](./protocol.md)）。
 - [ ] 聊天显示与发送、背包/装备/状态窗口、技能栏
 - [ ] **`client/e2e` 产物**：crate 已就位（**不依赖 SDL3**），
       **无头渲染（出 PNG）+ 平移自检**已可用（2026-10-07）⇒ 用法见 §4.2；

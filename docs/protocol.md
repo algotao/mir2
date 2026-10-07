@@ -299,7 +299,23 @@ TCP 保证送达与顺序，但不保证"语义上的只有一次"。所以按**
       v0 只取了 `min`，**丢了信息**。等 combat 落地时一并定。
 - [ ] `session_token` 的正式格式与签发者：v0 是"4 字节小端会话号"（可猜测、不可换发），
       正式应由 `LoginResult` 签发一个不可猜的随机值（§5 要求它独立于 TCP 连接）。
-- [ ] 新协议入口的 v0 边界（见 [`netproto.go`](../server/internal/gamesvr/netproto.go) 文件头）：
-      只做到"进图 + 看见自己"；移动/攻击/物品仍走 legacy；
-      新协议玩家**收不到 legacy 世界的实时广播**（`protoDown` 会把那些字节丢掉）。
+- [x] **实时实体事件**（2026-10-07）：进图不再是一张静止快照。
+      出站 `EntityAppear / EntityDisappear / EntityMove`（+ 自己的 `MoveRejected`），
+      入站 `MoveInput`（走一步、限流、被挡）。
+      做法：在**实体事件的出口**（`view.go` 的 `sendPlayerAppear` / `sendMonsterAppear` /
+      `sendDisappear` / `broadcastMove` + 怪物移动）里判 `p.protoOut` ——
+      "谁该看见谁"的判定只有 vision 那一处，两条协议共享它，不必改 239 个调用点。
+      另加一条**只对新协议玩家**的周期性视野同步（legacy 那半边有同一个缺口：
+      `updateVision` 只在移动/进图时触发 ⇒ 站着不动看不见"走近"的实体）；
+      不对 legacy 做是因为那会给 mir2cli 的**包序**断言插进额外包（另开一条）。
+- [ ] 新协议入口的**剩余边界**（见 [`netproto.go`](../server/internal/gamesvr/netproto.go) 文件头）：
+      攻击/物品/聊天仍走 legacy；`protoDown` 会把那些 legacy 下行丢掉。
+- [ ] `MoveInput` **没有走/跑标志**（legacy 靠 CM_WALK / CM_RUN 两条消息区分）⇒
+      新协议客户端目前只能走。补它要改 schema + bump 版本。
+- [ ] **没有独立的"转身"与"动作"消息**：转身目前也用 `EntityMove`（`from == to`）表达，
+      客户端据此只更新朝向。要不要一条 `EntityAction` 语义的专用消息，等动画状态机落地时定。
+- [ ] `EntityDisappear.reason` **分辨不出来**：legacy 的 `sendDisappear` 只带 (id, x, y)，
+      所以离开视野/隐身/死亡/下线一律报 `LEFT_VIEW`。要精确原因得把理由从调用点传进来。
+- [ ] `MapChunk` 目前**用不上**：本项目客户端与服务端读**同一份**地图容器（D-11/D-22），
+      地图数据两端各自本地就有 ⇒ 服务端不必推。它是留给"服务端权威地图"那种形态的。
       需要先完成服务端抽取 ③（换协议）/ ④（`gamesvr` 71 文件替换）。
