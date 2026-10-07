@@ -132,6 +132,7 @@ dependencies = [
 name = "mir2-app"
 version = "0.1.0"
 dependencies = [
+ "mir2-core",
  "sdl3",
 ]
 
