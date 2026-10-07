@@ -259,6 +259,120 @@ impl Map {
     }
 }
 
+// ---------- 视口绘制指令 ----------
+
+/// 逻辑格宽（官方 `Grobal2.pas:45` `UNITX`）。
+pub const UNIT_X: i32 = 48;
+/// 逻辑格高（官方 `Grobal2.pas:45` `UNITY`）。
+pub const UNIT_Y: i32 = 32;
+
+/// 三层各自对应的图库。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Lib {
+    /// 地表层 → `Tiles.wzl`（图块 96×64，覆盖 2×2 格）。
+    Tiles,
+    /// 中间层 → `SmTiles.wzl`（图块 48×32，一格一块）。
+    SmTiles,
+    /// 前景层 → `Objects<N>.wzl`（`N` 由 [`Cell::area`] 决定）。
+    Objects,
+}
+
+impl Lib {
+    /// 图库文件名。`area` 只对 [`Lib::Objects`] 有意义。
+    ///
+    /// 命名规则来自官方 `MShare.pas:790` `GetObjs`：
+    /// `nUnit == 0` ⇒ `Objects`，`nUnit == N` ⇒ `Objects{N+1}`。
+    pub fn file_name(self, area: u8) -> String {
+        match self {
+            Lib::Tiles => "Tiles".to_string(),
+            Lib::SmTiles => "SmTiles".to_string(),
+            Lib::Objects if area == 0 => "Objects".to_string(),
+            Lib::Objects => format!("Objects{}", area as u16 + 1),
+        }
+    }
+}
+
+/// 图层。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layer {
+    Ground,
+    Mid,
+    Front,
+}
+
+/// 一条绘制指令：从哪个库取哪张图，画在视口内的哪个像素位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileDraw {
+    pub layer: Layer,
+    pub lib: Lib,
+    /// 前景层选库用的编号（其余层恒为 0）。
+    pub area: u8,
+    /// 图号（**已转 0 基**）。
+    pub index: u16,
+    /// 相对视口左上角的像素坐标。
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Map {
+    /// 生成视口内的绘制指令（**顺序即绘制顺序**）。
+    ///
+    /// 画序：地表 → 中间 → 前景，每层内部按 `y` 递增 ——
+    /// 于是靠下的前景物件自然覆盖靠上的，**Y 序遮挡不需要额外排序**。
+    ///
+    /// `out` 会被清空后复用（避免每帧分配）。
+    pub fn visible_tiles(
+        &self,
+        cam_x: i32,
+        cam_y: i32,
+        cols: i32,
+        rows: i32,
+        out: &mut Vec<TileDraw>,
+    ) {
+        out.clear();
+        let (w, h) = (self.width as i32, self.height as i32);
+        for layer in [Layer::Ground, Layer::Mid, Layer::Front] {
+            for dy in 0..rows {
+                for dx in 0..cols {
+                    let (x, y) = (cam_x + dx, cam_y + dy);
+                    if x < 0 || y < 0 || x >= w || y >= h {
+                        continue;
+                    }
+                    let c = &self.cells[(y * w + x) as usize];
+                    let (lib, area, index) = match layer {
+                        Layer::Ground => {
+                            // 地块是 96×64、跨 2×2 格 ⇒ 只在偶数格画
+                            if !c.draws_ground_at(x as usize, y as usize) {
+                                continue;
+                            }
+                            match c.bk_tile() {
+                                Some(t) => (Lib::Tiles, 0, t),
+                                None => continue,
+                            }
+                        }
+                        Layer::Mid => match c.mid_tile() {
+                            Some(t) => (Lib::SmTiles, 0, t),
+                            None => continue,
+                        },
+                        Layer::Front => match c.fr_tile() {
+                            Some(t) => (Lib::Objects, c.area, t),
+                            None => continue,
+                        },
+                    };
+                    out.push(TileDraw {
+                        layer,
+                        lib,
+                        area,
+                        index,
+                        x: dx * UNIT_X,
+                        y: dy * UNIT_Y,
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// 由文件长度与格数推断每格字节数；未知布局返回 `None`。
 fn detect_cell_len(len: usize, cells: usize) -> Option<usize> {
     [CELL_LEN_CLASSIC, CELL_LEN_EXTENDED]
@@ -410,6 +524,62 @@ mod tests {
     fn reject_short_and_bad_dims() {
         assert!(Map::parse(&[]).is_err());
         assert!(Map::parse(&[0u8; 52]).is_err(), "0×0 应报错");
+    }
+
+    #[test]
+    fn visible_tiles_three_layers_and_order() {
+        // 4×4，所有格三层都有图：bk=2→图号1、mid=3→2、fr=4→3，area=5
+        let bytes = build(4, 4, CELL_LEN_CLASSIC, |_x, _y| {
+            let mut b = [0u8; 12];
+            b[0..2].copy_from_slice(&2u16.to_le_bytes());
+            b[2..4].copy_from_slice(&3u16.to_le_bytes());
+            b[4..6].copy_from_slice(&4u16.to_le_bytes());
+            b[10] = 5; // area ⇒ Objects 库编号
+            b
+        });
+        let m = Map::parse(&bytes).unwrap();
+        let mut out = Vec::new();
+        m.visible_tiles(0, 0, 4, 4, &mut out);
+
+        let n = |out: &Vec<TileDraw>, l: Layer| out.iter().filter(|d| d.layer == l).count();
+        assert_eq!(n(&out, Layer::Ground), 4, "地表只在偶数格：2×2=4");
+        assert_eq!(n(&out, Layer::Mid), 16);
+        assert_eq!(n(&out, Layer::Front), 16);
+        assert_eq!(out.len(), 36);
+
+        // 顺序即绘制顺序：地表 → 中间 → 前景
+        assert_eq!(out[0].layer, Layer::Ground);
+        assert_eq!(out[4].layer, Layer::Mid);
+        assert_eq!(out[20].layer, Layer::Front);
+
+        // 图库、0 基图号、像素位置
+        assert_eq!(
+            (out[0].lib, out[0].index, out[0].x, out[0].y),
+            (Lib::Tiles, 1, 0, 0)
+        );
+        let mid = out.iter().find(|d| d.layer == Layer::Mid).unwrap();
+        assert_eq!((mid.lib, mid.index), (Lib::SmTiles, 2));
+        // 前景 x=1,y=0 ⇒ 屏幕 (UNIT_X, 0)
+        let fr = out
+            .iter()
+            .find(|d| d.layer == Layer::Front && d.x == UNIT_X && d.y == 0)
+            .unwrap();
+        assert_eq!((fr.lib, fr.index, fr.area), (Lib::Objects, 3, 5));
+
+        // 负镜头：越界格被裁掉，不产生负坐标
+        m.visible_tiles(-1, -1, 3, 3, &mut out);
+        assert!(out.iter().all(|d| d.x >= 0 && d.y >= 0));
+        assert_eq!(n(&out, Layer::Mid), 4, "(-1,-1) 被裁 ⇒ 只剩 2×2");
+    }
+
+    #[test]
+    fn lib_file_name_follows_getobjs() {
+        // 官方 MShare.pas:790：nUnit=0 ⇒ Objects，nUnit=N ⇒ Objects{N+1}
+        assert_eq!(Lib::Tiles.file_name(0), "Tiles");
+        assert_eq!(Lib::SmTiles.file_name(0), "SmTiles");
+        assert_eq!(Lib::Objects.file_name(0), "Objects");
+        assert_eq!(Lib::Objects.file_name(1), "Objects2");
+        assert_eq!(Lib::Objects.file_name(9), "Objects10");
     }
 
     /// 真实数据回归：需要先跑 `tools/m2pk/build.sh`（产物不入库，见 assets.md §6）。

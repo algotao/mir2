@@ -1,47 +1,64 @@
-//! MIR2 1.76 客户端 —— 登录界面 + **真实美术精灵预览**
+//! MIR2 1.76 客户端 —— 开发期查看器（两个模式）
 //!
-//! 两件事：
-//!   1. 登录界面骨架（窗口 / 文本输入 / 按钮 / 程序化音乐）—— M0 的 SDL3 落地验证
-//!   2. **真实 `.wzl` 精灵渲染** —— M1 第一条验收「调色板查表出图**无色差**」
+//! * **登录界面**：窗口 / 文本输入 / 2D 渲染 / 程序化音乐（M0 的 SDL3 落地验证）
+//! * **地图视图**：从 M2PK 容器加载真实 `.map`，绘制**三层**（地表 `Tiles` /
+//!   中间 `SmTiles` / 前景 `Objects<N>`）—— M1「地图加载」的验收
 //!
-//! 精灵来自 `mir2-core` 的 WZL/WZX 解码器（规格见 `docs/assets.md §3.2b`），
-//! 调色板是经典 MIR2 256 色（`mir2_core::palette`），**与 Python 参考实现逐字节一致**
-//! （core 里有黄金哈希测试）。
+//! 渲染几何来自官方客户端 `Grobal2.pas:45`：`UNITX=48`、`UNITY=32`（逻辑格 48×32）。
+//! 实测图块尺寸：`Tiles` = 96×64（**2×2 格** ⇒ 只在 x、y 皆为偶数的格上画）、
+//! `SmTiles` = 48×32、`Objects` = 48×宽×不定高（后两者每格都画）。
 //!
-//! 资产目录按顺序解析：`$MIR2_ASSET_DIR` → `$MIR2C_DATA` → 仓库旁的 `mir2c/data`。
-//! **找不到就降级**：右侧面板显示 `ASSETS NOT FOUND`，其余功能照常。
+//! 资产目录解析：`$MIR2_ASSET_DIR` → `$MIR2C_DATA` → 仓库旁 `mir2c/data`；
+//! 容器路径：`$MIR2_MAP_CONTAINER` → `assets/map/maps.m2pk`。找不到就降级显示，不崩。
 //!
-//! 说明：屏幕文字用 SDL3 内置 8x8 调试字体（正式版换自带点阵字库），**只认 ASCII**。
+//! 屏幕文字用 SDL3 内置 8x8 调试字体，**只认 ASCII**。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use mir2_core::wzl::{Sprite, Wzl};
+use mir2_core::m2pk::Archive;
+use mir2_core::map::{Lib, Map, TileDraw, UNIT_X, UNIT_Y};
+use mir2_core::wzl::Wzl;
 
 use sdl3::audio::{AudioCallback, AudioFormat, AudioSpec, AudioStream};
 use sdl3::event::Event;
 use sdl3::keyboard::Keycode;
 use sdl3::pixels::{Color, PixelFormat};
 use sdl3::rect::Rect;
-use sdl3::render::{BlendMode, FPoint, FRect, ScaleMode, Texture, TextureAccess, WindowCanvas};
+// 注：`WindowContext` 在 sdl3 里是私有类型、不可具名，
+// 故凡是需要纹理创建器的地方一律对类型参数 `T` 泛化。
+use sdl3::render::{
+    BlendMode, FPoint, FRect, ScaleMode, Texture, TextureAccess, TextureCreator, WindowCanvas,
+};
 use sdl3::EventPump;
 
 const WIN_W: u32 = 640;
 const WIN_H: u32 = 480;
 const SAMPLE_RATE: i32 = 44_100;
 
-/// 右侧信息区：每行最大列数（内置字体等宽 8px，面板内容区 224px）与行高
+/// 地图视图的顶部信息条高度。
+const BAR_TOP: f32 = 24.0;
+/// 底部提示条高度。
+const BAR_BOTTOM: f32 = 22.0;
+/// 地图可视区高度。
+const VIEW_H: f32 = WIN_H as f32 - BAR_TOP - BAR_BOTTOM;
+
+/// 右侧信息区每行最大列数（内置字体等宽 8px）。
 const INFO_COLS: usize = 28;
 const INFO_LINE_H: f32 = 16.0;
 
-/// 可浏览的图库（都在 `data/` 下）。按 `[` / `]` 切换。
+/// 图块纹理缓存上限；超出就整批丢掉重建（开发期查看器，够用且简单）。
+const TILE_CACHE_CAP: usize = 4000;
+
+/// 登录模式可浏览的图库。
 const LIBS: &[&str] = &[
     "Prguse", "Hum", "Items", "Mon1", "Tiles", "Magic", "ChrSel", "Effect", "Weapon",
 ];
 
-// ---------- 配色（1.76 的深蓝 / 暗金风格）----------
+// ---------- 配色 ----------
 const C_BG: Color = Color::RGB(10, 14, 28);
 const C_PANEL: Color = Color::RGB(22, 30, 56);
 const C_PANEL_BORDER: Color = Color::RGB(90, 120, 170);
@@ -58,7 +75,7 @@ const C_OK: Color = Color::RGB(120, 220, 150);
 const C_ERR: Color = Color::RGB(232, 120, 120);
 
 // ---------- 程序化音乐 ----------
-const TEMPO_SEC: f32 = 0.34; // 每拍秒数
+const TEMPO_SEC: f32 = 0.34;
 /// (MIDI 音高, 拍数)；音高 0 表示休止
 const MELODY: &[(u8, f32)] = &[
     (72, 1.0),
@@ -116,7 +133,6 @@ impl AudioCallback<f32> for Music {
             let (midi, beats) = MELODY[self.note];
             let dur = (beats * TEMPO_SEC).max(0.05);
             let t = self.elapsed / dur;
-            // 简易包络：快速起音 + 线性衰减（避免爆音）
             let env = if t < 0.03 {
                 t / 0.03
             } else {
@@ -179,49 +195,12 @@ fn text(c: &mut WindowCanvas, s: &str, x: f32, y: f32, col: Color) -> Result<(),
     c.draw_debug_text(s, FPoint::new(x, y))
 }
 
-/// 内置字体固定 8px 宽，用于水平居中
 fn center_x(s: &str, area_x: f32, area_w: f32) -> f32 {
     area_x + (area_w - s.chars().count() as f32 * 8.0) / 2.0
 }
 
-/// 按字符数截断到 `cols` 列（内置字体等宽 8px，防止文字越出面板）
 fn trunc(s: &str, cols: usize) -> String {
     s.chars().take(cols).collect()
-}
-
-// ---------- 资产 ----------
-/// 按 `$MIR2_ASSET_DIR` → `$MIR2C_DATA` → 仓库旁 `mir2c/data` 的顺序解析资产目录。
-fn resolve_asset_dir() -> Option<PathBuf> {
-    for key in ["MIR2_ASSET_DIR", "MIR2C_DATA"] {
-        if let Ok(v) = std::env::var(key) {
-            let p = PathBuf::from(v);
-            if p.is_dir() {
-                return Some(p);
-            }
-        }
-    }
-    // 开发期默认：<repo>/../mir2c/data（client/app → 上跳三级到 $WS）
-    let guess = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mir2c/data");
-    guess.canonicalize().ok().filter(|p| p.is_dir())
-}
-
-fn open_lib(dir: &Path, name: &str) -> Option<Wzl> {
-    Wzl::open(dir.join(name)).ok()
-}
-
-/// 从 `start` 起向后找第一张能解出像素的图（很多库前面是空壳）。
-fn first_decodable(lib: &Wzl, start: usize, tries: usize) -> Option<(usize, Sprite)> {
-    let n = lib.len();
-    if n == 0 {
-        return None;
-    }
-    for k in 0..tries {
-        let i = (start + k) % n;
-        if let Some(s) = lib.decode(i) {
-            return Some((i, s));
-        }
-    }
-    None
 }
 
 /// 在预览面板里画棋盘格底（证明透明区真的透明）。
@@ -244,22 +223,125 @@ fn checkerboard(c: &mut WindowCanvas, x: f32, y: f32, w: f32, h: f32) -> Result<
     Ok(())
 }
 
+// ---------- 路径解析 ----------
+/// `$MIR2_ASSET_DIR` → `$MIR2C_DATA` → 仓库旁 `mir2c/data`。
+fn resolve_asset_dir() -> Option<PathBuf> {
+    for key in ["MIR2_ASSET_DIR", "MIR2C_DATA"] {
+        if let Ok(v) = std::env::var(key) {
+            let p = PathBuf::from(v);
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+    }
+    let guess = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mir2c/data");
+    guess.canonicalize().ok().filter(|p| p.is_dir())
+}
+
+/// `$MIR2_MAP_CONTAINER` → 仓库的 `assets/map/maps.m2pk`。
+fn resolve_container() -> Option<PathBuf> {
+    if let Ok(v) = std::env::var("MIR2_MAP_CONTAINER") {
+        let p = PathBuf::from(v);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let guess = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/map/maps.m2pk");
+    guess.canonicalize().ok().filter(|p| p.is_file())
+}
+
+// ---------- 图块纹理缓存 ----------
+/// 图块缓存键：图库 + `Objects` 的编号 + 图号。
+type TileKey = (Lib, u8, u16);
+
+/// 保证 `cache` 里有该图块的纹理；解不出来就返回 `None`（原版也有大量空壳图）。
+fn ensure_tile<'a, T>(
+    tc: &'a TextureCreator<T>,
+    libs: &mut HashMap<String, Option<Wzl>>,
+    cache: &mut HashMap<TileKey, Texture<'a>>,
+    dir: &Path,
+    lib_kind: Lib,
+    area: u8,
+    idx: u16,
+) -> Option<()> {
+    let key = (lib_kind, area, idx);
+    if cache.contains_key(&key) {
+        return Some(());
+    }
+    if cache.len() >= TILE_CACHE_CAP {
+        cache.clear();
+    }
+    // 文件名规则是游戏知识，放在 core（Lib::file_name，对应 GetObjs）
+    let name = lib_kind.file_name(area);
+    let lib = libs
+        .entry(name.clone())
+        .or_insert_with(|| Wzl::open(dir.join(&name)).ok())
+        .as_ref()?;
+    let sprite = lib.decode(idx as usize)?;
+    if sprite.is_empty() {
+        return None;
+    }
+    let mut t = tc
+        .create_texture(
+            PixelFormat::RGBA32,
+            TextureAccess::Streaming,
+            sprite.width as u32,
+            sprite.height as u32,
+        )
+        .ok()?;
+    t.set_blend_mode(BlendMode::Blend);
+    t.set_scale_mode(ScaleMode::Nearest);
+    t.update(None::<Rect>, &sprite.rgba, sprite.width as usize * 4)
+        .ok()?;
+    cache.insert(key, t);
+    Some(())
+}
+
+/// 按一条 [`TileDraw`] 把图块画出来。
+///
+/// `'a` 把纹理创建器与缓存绑在一起——`Texture<'a>` 借的是创建器，
+/// 少了这层关联编译器就没法确认缓存不会比创建器活得久。
+fn draw_tile<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    libs: &mut HashMap<String, Option<Wzl>>,
+    cache: &mut HashMap<TileKey, Texture<'a>>,
+    dir: &Path,
+    d: &TileDraw,
+    origin_y: f32,
+) -> Result<(), sdl3::Error> {
+    let _ = ensure_tile(tc, libs, cache, dir, d.lib, d.area, d.index);
+    if let Some(t) = cache.get(&(d.lib, d.area, d.index)) {
+        let q = t.query();
+        canvas.copy(
+            t,
+            None::<FRect>,
+            FRect::new(
+                d.x as f32,
+                origin_y + d.y as f32,
+                q.width as f32,
+                q.height as f32,
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
 
     let window = video
-        .window("MIR2 1.76 CLIENT - LOGIN", WIN_W, WIN_H)
+        .window("MIR2 1.76 CLIENT - DEV VIEWER", WIN_W, WIN_H)
         .position_centered()
         .build()
         .map_err(|e| format!("创建窗口失败: {e}"))?;
 
-    // 必须先启用文本输入，再让 window 被 canvas 消费
     video.text_input().start(&window);
     let mut canvas = window.into_canvas();
     let tex_creator = canvas.texture_creator();
 
-    // ---------- 音频：程序化循环旋律 ----------
+    // ---------- 音频 ----------
     let audio = sdl.audio()?;
     let muted = Arc::new(AtomicBool::new(false));
     let spec = AudioSpec {
@@ -273,80 +355,128 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------- 资产 ----------
     let asset_dir = resolve_asset_dir();
+    let container_path = resolve_container();
+    let archive = match &container_path {
+        Some(p) => match Archive::open(p) {
+            Ok(a) => {
+                println!("[mir2-app] 地图容器 = {}（{} 张）", p.display(), a.len());
+                Some(a)
+            }
+            Err(e) => {
+                println!("[mir2-app] 地图容器打不开：{e}");
+                None
+            }
+        },
+        None => {
+            println!("[mir2-app] 未找到地图容器（先跑 tools/m2pk/build.sh）");
+            None
+        }
+    };
     match &asset_dir {
         Some(d) => println!("[mir2-app] 资产目录 = {}", d.display()),
-        None => {
-            println!("[mir2-app] 未找到资产目录：设 MIR2_ASSET_DIR=<mir2c/data> 可启用精灵预览")
-        }
+        None => println!("[mir2-app] 未找到资产目录：设 MIR2_ASSET_DIR=<mir2c/data>"),
     }
-
-    println!("[mir2-app] SDL3 登录界面启动");
     println!("[mir2-app] 音频驱动 = {}", audio.current_audio_driver());
-    println!(
-        "[mir2-app] 操作：TAB 切换输入框 / ENTER 登录 / M 音乐 / [ ] 换图库 / , . 换图 / ESC 退出"
-    );
+    println!("[mir2-app] 操作：F1 登录界面 / F2 地图视图 / M 音乐 / ESC 退出");
 
     let mut events: EventPump = sdl.event_pump()?;
 
+    // 登录模式的状态
     let mut id = String::new();
     let mut pw = String::new();
-    let mut active: usize = 0; // 0 = ID，1 = PASSWORD
+    let mut active: usize = 0;
     let mut status = String::from("READY");
-    let mut music_on = true;
-
-    let started = Instant::now();
-
-    // 精灵浏览状态
     let mut lib_idx: usize = 0;
     let mut img_idx: usize = 0;
-    let mut loaded: Option<(usize, Wzl)> = None; // (lib_idx, lib)
-    let mut sprite_tex: Option<Texture> = None;
+    let mut loaded: Option<(usize, Wzl)> = None;
+    let mut sprite_tex: Option<Texture<'_>> = None;
+
+    // 地图模式的状态
+    let mut mode: u8 = 2; // 1 = 登录，2 = 地图（直接开在地图视图上）
+    let mut map_i: usize = 0;
+    let mut map: Option<Map> = None;
+    let mut map_err = String::new();
+    let mut cam = (0i32, 0i32);
+    let mut libs: HashMap<String, Option<Wzl>> = HashMap::new();
+    let mut tiles: HashMap<TileKey, Texture<'_>> = HashMap::new();
+    let mut draws: Vec<TileDraw> = Vec::new();
+
+    let mut music_on = true;
+    let started = Instant::now();
+
+    // 载入初始地图
+    if let Some(a) = &archive {
+        load_map(a, map_i, &mut map, &mut map_err, &mut cam);
+    }
 
     'main: loop {
         for ev in events.poll_iter() {
             match ev {
                 Event::Quit { .. } => break 'main,
                 Event::KeyDown { keycode, .. } => match keycode {
-                    Some(Keycode::Escape) | Some(Keycode::F4) => break 'main,
-                    Some(Keycode::Tab) => active = 1 - active,
-                    Some(Keycode::Backspace) => {
-                        if active == 0 {
-                            id.pop();
-                        } else {
-                            pw.pop();
-                        }
-                    }
-                    Some(Keycode::Return) => {
-                        let who = if id.is_empty() { "GUEST" } else { id.as_str() };
-                        println!(
-                            "[login] 用户名={:?} 密码长度={} → 桩实现（尚未连接服务端）",
-                            who,
-                            pw.chars().count()
-                        );
-                        status = format!("LOGIN AS {} ... STUB OK", who);
-                    }
+                    Some(Keycode::Escape) => break 'main,
+                    Some(Keycode::F1) => mode = 1,
+                    Some(Keycode::F2) => mode = 2,
                     Some(Keycode::M) => {
                         music_on = !music_on;
                         muted.store(!music_on, Ordering::Relaxed);
                         status = format!("MUSIC {}", if music_on { "ON" } else { "OFF" });
                     }
-                    // ---- 图库切换 ----
-                    Some(Keycode::LeftBracket) => {
-                        lib_idx = (lib_idx + LIBS.len() - 1) % LIBS.len();
-                        img_idx = 0;
-                    }
-                    Some(Keycode::RightBracket) => {
-                        lib_idx = (lib_idx + 1) % LIBS.len();
-                        img_idx = 0;
-                    }
-                    // ---- 图像切换 ----
-                    Some(Keycode::Comma) | Some(Keycode::Left) => {
-                        img_idx = img_idx.saturating_sub(1);
-                    }
-                    Some(Keycode::Period) | Some(Keycode::Right) => img_idx += 1,
+                    _ if mode == 1 => match keycode {
+                        Some(Keycode::Tab) => active = 1 - active,
+                        Some(Keycode::Backspace) => {
+                            if active == 0 {
+                                id.pop();
+                            } else {
+                                pw.pop();
+                            }
+                        }
+                        Some(Keycode::Return) => {
+                            let who = if id.is_empty() { "GUEST" } else { id.as_str() };
+                            println!(
+                                "[login] 用户名={:?} 密码长度={} → 桩实现（尚未连接服务端）",
+                                who,
+                                pw.chars().count()
+                            );
+                            status = format!("LOGIN AS {} ... STUB OK", who);
+                        }
+                        Some(Keycode::LeftBracket) => {
+                            lib_idx = (lib_idx + LIBS.len() - 1) % LIBS.len();
+                            img_idx = 0;
+                        }
+                        Some(Keycode::RightBracket) => {
+                            lib_idx = (lib_idx + 1) % LIBS.len();
+                            img_idx = 0;
+                        }
+                        Some(Keycode::Comma) | Some(Keycode::Left) => {
+                            img_idx = img_idx.saturating_sub(1);
+                        }
+                        Some(Keycode::Period) | Some(Keycode::Right) => img_idx += 1,
+                        _ => {}
+                    },
+                    _ if mode == 2 => match keycode {
+                        Some(Keycode::Left) => cam.0 -= 2,
+                        Some(Keycode::Right) => cam.0 += 2,
+                        Some(Keycode::Up) => cam.1 -= 2,
+                        Some(Keycode::Down) => cam.1 += 2,
+                        Some(Keycode::Home) => cam = (0, 0),
+                        Some(Keycode::LeftBracket) | Some(Keycode::RightBracket) => {
+                            if let Some(a) = &archive {
+                                let step: i64 = if keycode == Some(Keycode::RightBracket) {
+                                    1
+                                } else {
+                                    -1
+                                };
+                                let n = a.len() as i64;
+                                map_i = (((map_i as i64 + step) % n + n) % n) as usize;
+                                load_map(a, map_i, &mut map, &mut map_err, &mut cam);
+                            }
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 },
-                Event::TextInput { text: t, .. } => {
+                Event::TextInput { text: t, .. } if mode == 1 => {
                     for ch in t.chars() {
                         if ch.is_ascii_graphic() || ch == ' ' {
                             if active == 0 && id.chars().count() < 12 {
@@ -361,309 +491,406 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // ---------- 精灵：按需加载 / 解码 / 上传纹理 ----------
-        // 右侧信息区：逐行 (文本, 颜色)
-        let mut info_lines: Vec<(String, Color)> = vec![("NO ASSETS".to_string(), C_ERR)];
-        let mut sprite_dims = (0u32, 0u32);
-        let mut sprite_ready = false;
-
-        if let Some(dir) = &asset_dir {
-            let name = LIBS[lib_idx];
-            if loaded.as_ref().map(|(i, _)| *i) != Some(lib_idx) {
-                match open_lib(dir, name) {
-                    Some(l) => loaded = Some((lib_idx, l)),
-                    None => loaded = None,
-                }
-                sprite_tex = None;
-            }
-
-            if let Some((_, lib)) = &loaded {
-                let total = lib.len();
-                if img_idx >= total {
-                    img_idx = 0;
-                }
-                if let Some((found, s)) = first_decodable(lib, img_idx, 64) {
-                    if found != img_idx {
-                        img_idx = found;
-                    }
-                    sprite_dims = (s.width as u32, s.height as u32);
-                    let is16 = lib.record(img_idx).map(|r| r.is_16bit()).unwrap_or(false);
-                    info_lines = vec![
-                        (format!("{}  #{} / {}", name, img_idx, total), C_TEXT),
-                        (
-                            format!(
-                                "{}x{}   ANCHOR({},{})",
-                                s.width, s.height, s.anchor_x, s.anchor_y
-                            ),
-                            C_DIM,
-                        ),
-                        (
-                            if is16 { "DIRECT 16BIT" } else { "PALETTE 8BIT" }.to_string(),
-                            C_OK,
-                        ),
-                    ];
-                    sprite_ready = true;
-
-                    // 纹理：尺寸变了就重建
-                    let need_new = match &sprite_tex {
-                        Some(t) => {
-                            let q = t.query();
-                            q.width != s.width as u32 || q.height != s.height as u32
-                        }
-                        None => true,
-                    };
-                    if need_new {
-                        sprite_tex = None;
-                    }
-                    if sprite_tex.is_none() {
-                        match tex_creator.create_texture(
-                            PixelFormat::RGBA32,
-                            TextureAccess::Streaming,
-                            s.width as u32,
-                            s.height as u32,
-                        ) {
-                            Ok(mut t) => {
-                                t.set_blend_mode(BlendMode::Blend);
-                                t.set_scale_mode(ScaleMode::Nearest); // 像素风：禁止插值
-                                sprite_tex = Some(t);
-                            }
-                            Err(e) => {
-                                info_lines = vec![(format!("TEXTURE ERR: {e}"), C_ERR)];
-                                sprite_ready = false;
-                            }
-                        }
-                    }
-                    if sprite_ready {
-                        if let Some(t) = sprite_tex.as_mut() {
-                            if let Err(e) = t.update(None::<Rect>, &s.rgba, s.width as usize * 4) {
-                                info_lines = vec![(format!("UPLOAD ERR: {e}"), C_ERR)];
-                                sprite_ready = false;
-                            }
-                        }
-                    }
-                } else {
-                    info_lines = vec![(format!("{}  #{}  (空壳图)", name, img_idx), C_DIM)];
-                }
-            } else {
-                info_lines = vec![(format!("{name}.wzl 打不开"), C_ERR)];
-            }
+        // 地图镜头夹在合理范围内（允许露出边缘一格）
+        if let Some(m) = &map {
+            let max_x = (m.width as i32 - (WIN_W as i32 / UNIT_X) + 2).max(0);
+            let max_y = (m.height as i32 - (VIEW_H as i32 / UNIT_Y) + 2).max(0);
+            cam.0 = cam.0.clamp(-2, max_x);
+            cam.1 = cam.1.clamp(-2, max_y);
         }
 
-        let blink = (started.elapsed().as_millis() / 500).is_multiple_of(2);
-
-        // ---------- 绘制 ----------
         canvas.set_draw_color(C_BG);
         canvas.clear();
 
-        let t1 = "MIR2  1.76  CLIENT";
-        text(
-            &mut canvas,
-            t1,
-            center_x(t1, 0.0, WIN_W as f32),
-            16.0,
-            C_TITLE,
-        )?;
-        let t2 = "SDL3  LOGIN  +  REAL  WZL  SPRITE";
-        text(
-            &mut canvas,
-            t2,
-            center_x(t2, 0.0, WIN_W as f32),
-            34.0,
-            C_DIM,
-        )?;
-
-        // ===== 左：登录面板 =====
-        const LX: f32 = 20.0;
-        const LW: f32 = 336.0;
-        fill(&mut canvas, LX, 60.0, LW, 250.0, C_PANEL)?;
-        frame(&mut canvas, LX, 60.0, LW, 250.0, C_PANEL_BORDER)?;
-
-        text(&mut canvas, "ACCOUNT", LX + 14.0, 96.0, C_TEXT)?;
-        fill(&mut canvas, LX + 14.0, 112.0, LW - 28.0, 22.0, C_FIELD)?;
-        frame(
-            &mut canvas,
-            LX + 14.0,
-            112.0,
-            LW - 28.0,
-            22.0,
-            if active == 0 {
-                C_ACTIVE
-            } else {
-                C_PANEL_BORDER
-            },
-        )?;
-        text(&mut canvas, &id, LX + 20.0, 119.0, C_TEXT)?;
-        if active == 0 && blink {
-            fill(
+        if mode == 2 {
+            draw_map_view(
                 &mut canvas,
-                LX + 20.0 + id.chars().count() as f32 * 8.0,
-                117.0,
-                8.0,
-                12.0,
-                C_ACTIVE,
+                &tex_creator,
+                &mut libs,
+                &mut tiles,
+                &mut draws,
+                &asset_dir,
+                &map,
+                &map_err,
+                cam,
+                map_i,
+                archive.as_ref().map(|a| a.len()).unwrap_or(0),
             )?;
-        }
-
-        text(&mut canvas, "PASSWORD", LX + 14.0, 152.0, C_TEXT)?;
-        fill(&mut canvas, LX + 14.0, 168.0, LW - 28.0, 22.0, C_FIELD)?;
-        frame(
-            &mut canvas,
-            LX + 14.0,
-            168.0,
-            LW - 28.0,
-            22.0,
-            if active == 1 {
-                C_ACTIVE
-            } else {
-                C_PANEL_BORDER
-            },
-        )?;
-        let masked = "*".repeat(pw.chars().count());
-        text(&mut canvas, &masked, LX + 20.0, 175.0, C_TEXT)?;
-        if active == 1 && blink {
-            fill(
-                &mut canvas,
-                LX + 20.0 + masked.chars().count() as f32 * 8.0,
-                173.0,
-                8.0,
-                12.0,
-                C_ACTIVE,
-            )?;
-        }
-
-        // 按钮
-        fill(&mut canvas, LX + 14.0, 210.0, 140.0, 28.0, C_BTN)?;
-        frame(&mut canvas, LX + 14.0, 210.0, 140.0, 28.0, C_BTN_BORDER)?;
-        text(
-            &mut canvas,
-            "LOGIN",
-            LX + 14.0 + (140.0 - 5.0 * 8.0) / 2.0,
-            220.0,
-            C_ACTIVE,
-        )?;
-
-        fill(&mut canvas, LX + 182.0, 210.0, 140.0, 28.0, C_BTN)?;
-        frame(&mut canvas, LX + 182.0, 210.0, 140.0, 28.0, C_BTN_BORDER)?;
-        text(
-            &mut canvas,
-            "EXIT",
-            LX + 182.0 + (140.0 - 4.0 * 8.0) / 2.0,
-            220.0,
-            C_TEXT,
-        )?;
-
-        let mus = format!("MUSIC: {}", if music_on { "ON" } else { "OFF" });
-        text(
-            &mut canvas,
-            &mus,
-            LX + 14.0,
-            256.0,
-            if music_on { C_ACTIVE } else { C_DIM },
-        )?;
-        let up = format!("UPTIME {:.0}s", started.elapsed().as_secs_f32());
-        text(&mut canvas, &up, LX + 200.0, 256.0, C_DIM)?;
-
-        text(
-            &mut canvas,
-            &format!("STATUS: {status}"),
-            LX + 14.0,
-            280.0,
-            C_TEXT,
-        )?;
-
-        // ===== 右：真实精灵预览 =====
-        const RX: f32 = 372.0;
-        const RW: f32 = 248.0;
-        fill(&mut canvas, RX, 60.0, RW, 250.0, C_PANEL)?;
-        frame(&mut canvas, RX, 60.0, RW, 250.0, C_PANEL_BORDER)?;
-        text(&mut canvas, "SPRITE (REAL .WZL)", RX + 12.0, 72.0, C_TITLE)?;
-
-        // 预览区
-        const PX: f32 = RX + 12.0;
-        const PY: f32 = 92.0;
-        const PW: f32 = RW - 24.0;
-        const PH: f32 = 132.0;
-        checkerboard(&mut canvas, PX, PY, PW, PH)?;
-        frame(&mut canvas, PX, PY, PW, PH, C_PANEL_BORDER)?;
-
-        if sprite_ready {
-            if let Some(t) = &sprite_tex {
-                let (sw, sh) = (sprite_dims.0 as f32, sprite_dims.1 as f32);
-                // 整数倍放大，尽量填满，最多 6 倍
-                let scale = (PW / sw).min(PH / sh).floor().clamp(1.0, 6.0);
-                let dw = sw * scale;
-                let dh = sh * scale;
-                let dx = PX + (PW - dw) / 2.0;
-                let dy = PY + (PH - dh) / 2.0;
-                canvas.copy(t, None::<FRect>, FRect::new(dx, dy, dw, dh))?;
-            }
         } else {
-            let msg = if asset_dir.is_none() {
-                "ASSETS NOT FOUND"
-            } else {
-                "NO SPRITE"
-            };
-            text(&mut canvas, msg, center_x(msg, PX, PW), PY + 66.0, C_ERR)?;
-            if asset_dir.is_none() {
-                let h1 = "SET  MIR2_ASSET_DIR";
-                let h2 = "TO  mir2c/data";
-                text(&mut canvas, h1, center_x(h1, PX, PW), PY + 84.0, C_DIM)?;
-                text(&mut canvas, h2, center_x(h2, PX, PW), PY + 96.0, C_DIM)?;
-            }
+            draw_login_view(
+                &mut canvas,
+                &tex_creator,
+                &asset_dir,
+                &mut loaded,
+                &mut sprite_tex,
+                &id,
+                &pw,
+                active,
+                &status,
+                music_on,
+                lib_idx,
+                &mut img_idx,
+                started,
+            )?;
         }
 
-        // 精灵信息：占 3 行（每行硬限 INFO_COLS 列，避免越出面板）
-        for (i, (line, col)) in info_lines.iter().enumerate().take(3) {
-            let y = PY + PH + 8.0 + i as f32 * INFO_LINE_H;
-            text(&mut canvas, &trunc(line, INFO_COLS), PX, y, *col)?;
-        }
-        // 导航区固定在第 4 / 5 行，保持布局稳定
-        let libl = format!("LIB [{}/{}]   IMG {}", lib_idx + 1, LIBS.len(), img_idx);
-        text(
+        // 顶部/底部公共条
+        let hint = if mode == 2 {
+            "ARROWS PAN   [ ] MAP   HOME RESET   F1 LOGIN   M MUSIC   ESC QUIT"
+        } else {
+            "TAB FIELD   ENTER LOGIN   [ ] LIB   , . IMG   F2 MAP   M MUSIC   ESC QUIT"
+        };
+        fill(
             &mut canvas,
-            &libl,
-            PX,
-            PY + PH + 8.0 + 3.0 * INFO_LINE_H,
-            C_TEXT,
+            0.0,
+            WIN_H as f32 - BAR_BOTTOM,
+            WIN_W as f32,
+            BAR_BOTTOM,
+            C_PANEL,
         )?;
-        let nav = "[ ] LIB   , . / ARROWS  IMG";
-        text(
-            &mut canvas,
-            nav,
-            PX,
-            PY + PH + 8.0 + 4.0 * INFO_LINE_H,
-            C_DIM,
-        )?;
-
-        // ===== 底部提示 =====
-        let hint = "TAB SWITCH  ENTER LOGIN  M MUSIC  ESC QUIT";
         text(
             &mut canvas,
             hint,
-            center_x(hint, 0.0, WIN_W as f32),
-            336.0,
-            C_DIM,
-        )?;
-        let note = "SPRITE = CLASSIC MIR2 256-COLOR PALETTE (BYTE-IDENTICAL TO REFERENCE DECODER)";
-        text(
-            &mut canvas,
-            note,
-            center_x(note, 0.0, WIN_W as f32),
-            356.0,
-            C_DIM,
-        )?;
-        let note2 = "MUSIC IS PROCEDURAL PLACEHOLDER (ASSET AUDIO NOT WIRED YET)";
-        text(
-            &mut canvas,
-            note2,
-            center_x(note2, 0.0, WIN_W as f32),
-            372.0,
+            4.0,
+            WIN_H as f32 - BAR_BOTTOM + 6.0,
             C_DIM,
         )?;
 
         let _ = canvas.present();
     }
 
-    println!("[mir2-app] 退出登录界面");
+    println!("[mir2-app] 退出");
+    Ok(())
+}
+
+/// 切换到第 `i` 张地图（按容器内名字升序）。
+fn load_map(a: &Archive, i: usize, map: &mut Option<Map>, err: &mut String, cam: &mut (i32, i32)) {
+    let Some(e) = a.entries().get(i) else {
+        return;
+    };
+    let name = e.name.clone();
+    match Map::load(a, &name) {
+        Ok(m) => {
+            println!(
+                "[map] {} {}x{} {} B/格{}",
+                name,
+                m.width,
+                m.height,
+                m.cell_len,
+                if m.is_extended() {
+                    "（扩展布局）"
+                } else {
+                    ""
+                }
+            );
+            *cam = (m.width as i32 / 2, m.height as i32 / 2);
+            *err = String::new();
+            *map = Some(m);
+        }
+        Err(e) => {
+            // 已知缺口：EM*/T2* 族布局未定（assets.md §3.3b）——这里如实显示，不猜。
+            println!("[map] {name} 解析失败：{e}");
+            *err = e.to_string();
+            *map = None;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_map_view<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    libs: &mut HashMap<String, Option<Wzl>>,
+    tiles: &mut HashMap<TileKey, Texture<'a>>,
+    draws: &mut Vec<TileDraw>,
+    asset_dir: &Option<PathBuf>,
+    map: &Option<Map>,
+    map_err: &str,
+    cam: (i32, i32),
+    map_i: usize,
+    map_count: usize,
+) -> Result<(), sdl3::Error> {
+    fill(canvas, 0.0, 0.0, WIN_W as f32, BAR_TOP, C_PANEL)?;
+
+    let Some(dir) = asset_dir else {
+        text(
+            canvas,
+            "ASSETS NOT FOUND - SET MIR2_ASSET_DIR",
+            4.0,
+            8.0,
+            C_ERR,
+        )?;
+        return Ok(());
+    };
+
+    if map.is_none() {
+        let msg = if map_err.is_empty() {
+            "NO MAP CONTAINER - RUN tools/m2pk/build.sh".to_string()
+        } else {
+            format!("PARSE FAILED: {}", trunc(map_err, 60))
+        };
+        text(canvas, &msg, 4.0, 8.0, C_ERR)?;
+        return Ok(());
+    }
+    let m = map.as_ref().unwrap();
+
+    // 「画什么、按什么顺序画」是游戏知识，放在 core（map::visible_tiles，
+    // 有单测守着三层顺序与隔格规则）；这里只负责取纹理 + 上屏。
+    let cols = WIN_W as i32 / UNIT_X + 3;
+    let rows = VIEW_H as i32 / UNIT_Y + 3;
+    m.visible_tiles(cam.0, cam.1, cols, rows, draws);
+    for d in draws.iter() {
+        draw_tile(canvas, tc, libs, tiles, dir, d, BAR_TOP)?;
+    }
+
+    // 信息条
+    let info = format!(
+        "MAP {} [{}]  {}x{}  {}B/cell  CAM {},{}{}",
+        m.title,
+        map_i + 1,
+        m.width,
+        m.height,
+        m.cell_len,
+        cam.0,
+        cam.1,
+        if map_count == 0 {
+            String::new()
+        } else {
+            format!(" /{map_count}")
+        }
+    );
+    text(canvas, &trunc(&info, 79), 4.0, 8.0, C_TITLE)?;
+    let right = format!("TILES {}", tiles.len());
+    text(canvas, &right, WIN_W as f32 - 96.0, 8.0, C_DIM)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_login_view<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    asset_dir: &Option<PathBuf>,
+    loaded: &mut Option<(usize, Wzl)>,
+    sprite_tex: &mut Option<Texture<'a>>,
+    id: &str,
+    pw: &str,
+    active: usize,
+    status: &str,
+    music_on: bool,
+    lib_idx: usize,
+    img_idx: &mut usize,
+    started: Instant,
+) -> Result<(), sdl3::Error> {
+    // 右侧：真实精灵
+    let mut info_lines: Vec<(String, Color)> = vec![("NO ASSETS".to_string(), C_ERR)];
+    let mut sprite_dims = (0u32, 0u32);
+    let mut ready = false;
+
+    if let Some(dir) = asset_dir {
+        let name = LIBS[lib_idx];
+        if loaded.as_ref().map(|(i, _)| *i) != Some(lib_idx) {
+            *loaded = Wzl::open(dir.join(name)).ok().map(|l| (lib_idx, l));
+            *sprite_tex = None;
+        }
+        if let Some((_, lib)) = loaded.as_ref() {
+            let total = lib.len();
+            if *img_idx >= total {
+                *img_idx = 0;
+            }
+            let mut found = None;
+            for k in 0..64 {
+                let i = (*img_idx + k) % total.max(1);
+                if let Some(s) = lib.decode(i) {
+                    found = Some((i, s));
+                    break;
+                }
+            }
+            if let Some((i, s)) = found {
+                *img_idx = i;
+                let is16 = lib.record(i).map(|r| r.is_16bit()).unwrap_or(false);
+                sprite_dims = (s.width as u32, s.height as u32);
+                info_lines = vec![
+                    (format!("{}  #{} / {}", name, i, total), C_TEXT),
+                    (
+                        format!(
+                            "{}x{}   ANCHOR({},{})",
+                            s.width, s.height, s.anchor_x, s.anchor_y
+                        ),
+                        C_DIM,
+                    ),
+                    (
+                        if is16 { "DIRECT 16BIT" } else { "PALETTE 8BIT" }.to_string(),
+                        C_OK,
+                    ),
+                ];
+                ready = true;
+
+                let need_new = match sprite_tex.as_ref() {
+                    Some(t) => {
+                        let q = t.query();
+                        q.width != s.width as u32 || q.height != s.height as u32
+                    }
+                    None => true,
+                };
+                if need_new {
+                    *sprite_tex = None;
+                }
+                if sprite_tex.is_none() {
+                    if let Ok(mut t) = tc.create_texture(
+                        PixelFormat::RGBA32,
+                        TextureAccess::Streaming,
+                        s.width as u32,
+                        s.height as u32,
+                    ) {
+                        t.set_blend_mode(BlendMode::Blend);
+                        t.set_scale_mode(ScaleMode::Nearest);
+                        *sprite_tex = Some(t);
+                    }
+                }
+                if let Some(t) = sprite_tex.as_mut() {
+                    if t.update(None::<Rect>, &s.rgba, s.width as usize * 4)
+                        .is_err()
+                    {
+                        ready = false;
+                    }
+                }
+            } else {
+                info_lines = vec![(format!("{}  #{}  (空壳图)", name, img_idx), C_DIM)];
+            }
+        } else {
+            info_lines = vec![(format!("{name}.wzl 打不开"), C_ERR)];
+        }
+    }
+
+    let t1 = "MIR2  1.76  CLIENT";
+    text(canvas, t1, center_x(t1, 0.0, WIN_W as f32), 16.0, C_TITLE)?;
+    let t2 = "SDL3  DEV  VIEWER  (F2 = MAP)";
+    text(canvas, t2, center_x(t2, 0.0, WIN_W as f32), 34.0, C_DIM)?;
+
+    const LX: f32 = 20.0;
+    const LW: f32 = 336.0;
+    fill(canvas, LX, 60.0, LW, 250.0, C_PANEL)?;
+    frame(canvas, LX, 60.0, LW, 250.0, C_PANEL_BORDER)?;
+
+    text(canvas, "ACCOUNT", LX + 14.0, 96.0, C_TEXT)?;
+    fill(canvas, LX + 14.0, 112.0, LW - 28.0, 22.0, C_FIELD)?;
+    frame(
+        canvas,
+        LX + 14.0,
+        112.0,
+        LW - 28.0,
+        22.0,
+        if active == 0 {
+            C_ACTIVE
+        } else {
+            C_PANEL_BORDER
+        },
+    )?;
+    text(canvas, id, LX + 20.0, 119.0, C_TEXT)?;
+
+    text(canvas, "PASSWORD", LX + 14.0, 152.0, C_TEXT)?;
+    fill(canvas, LX + 14.0, 168.0, LW - 28.0, 22.0, C_FIELD)?;
+    frame(
+        canvas,
+        LX + 14.0,
+        168.0,
+        LW - 28.0,
+        22.0,
+        if active == 1 {
+            C_ACTIVE
+        } else {
+            C_PANEL_BORDER
+        },
+    )?;
+    let masked = "*".repeat(pw.chars().count());
+    text(canvas, &masked, LX + 20.0, 175.0, C_TEXT)?;
+
+    fill(canvas, LX + 14.0, 210.0, 140.0, 28.0, C_BTN)?;
+    frame(canvas, LX + 14.0, 210.0, 140.0, 28.0, C_BTN_BORDER)?;
+    text(
+        canvas,
+        "LOGIN",
+        LX + 14.0 + (140.0 - 40.0) / 2.0,
+        220.0,
+        C_ACTIVE,
+    )?;
+    fill(canvas, LX + 182.0, 210.0, 140.0, 28.0, C_BTN)?;
+    frame(canvas, LX + 182.0, 210.0, 140.0, 28.0, C_BTN_BORDER)?;
+    text(
+        canvas,
+        "EXIT",
+        LX + 182.0 + (140.0 - 32.0) / 2.0,
+        220.0,
+        C_TEXT,
+    )?;
+
+    let mus = format!("MUSIC: {}", if music_on { "ON" } else { "OFF" });
+    text(
+        canvas,
+        &mus,
+        LX + 14.0,
+        256.0,
+        if music_on { C_ACTIVE } else { C_DIM },
+    )?;
+    text(
+        canvas,
+        &format!("UPTIME {:.0}s", started.elapsed().as_secs_f32()),
+        LX + 200.0,
+        256.0,
+        C_DIM,
+    )?;
+    text(
+        canvas,
+        &format!("STATUS: {status}"),
+        LX + 14.0,
+        280.0,
+        C_TEXT,
+    )?;
+
+    // 右侧精灵面板
+    const RX: f32 = 372.0;
+    const RW: f32 = 248.0;
+    fill(canvas, RX, 60.0, RW, 250.0, C_PANEL)?;
+    frame(canvas, RX, 60.0, RW, 250.0, C_PANEL_BORDER)?;
+    text(canvas, "SPRITE (REAL .WZL)", RX + 12.0, 72.0, C_TITLE)?;
+
+    const PX: f32 = RX + 12.0;
+    const PY: f32 = 92.0;
+    const PW: f32 = RW - 24.0;
+    const PH: f32 = 132.0;
+    checkerboard(canvas, PX, PY, PW, PH)?;
+    frame(canvas, PX, PY, PW, PH, C_PANEL_BORDER)?;
+
+    if ready {
+        if let Some(t) = sprite_tex.as_ref() {
+            let (sw, sh) = (sprite_dims.0 as f32, sprite_dims.1 as f32);
+            let scale = (PW / sw).min(PH / sh).floor().clamp(1.0, 6.0);
+            let (dw, dh) = (sw * scale, sh * scale);
+            canvas.copy(
+                t,
+                None::<FRect>,
+                FRect::new(PX + (PW - dw) / 2.0, PY + (PH - dh) / 2.0, dw, dh),
+            )?;
+        }
+    } else {
+        let msg = if asset_dir.is_none() {
+            "ASSETS NOT FOUND"
+        } else {
+            "NO SPRITE"
+        };
+        text(canvas, msg, center_x(msg, PX, PW), PY + 60.0, C_ERR)?;
+    }
+
+    for (i, (line, col)) in info_lines.iter().enumerate().take(3) {
+        text(
+            canvas,
+            &trunc(line, INFO_COLS),
+            PX,
+            PY + PH + 8.0 + i as f32 * INFO_LINE_H,
+            *col,
+        )?;
+    }
+    let libl = format!("LIB [{}/{}]   IMG {}", lib_idx + 1, LIBS.len(), *img_idx);
+    text(canvas, &libl, PX, PY + PH + 8.0 + 3.0 * INFO_LINE_H, C_TEXT)?;
     Ok(())
 }
