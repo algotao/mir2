@@ -1,0 +1,139 @@
+// MIR2 协议 · 0x04xx 场景 / 0x05xx 实体
+//
+// 对应 docs/protocol.md §7（实体标识）与 §8（移动与预测）。
+// ★ `entity_id` 是 **uint64 全局唯一**，由服务端分配 —— 取代原版 16 位 `Series`
+//   （装不下 ActorId，被迫"坐标优先定位目标"）。
+// ★ 沿用 mir2go 的分段：玩家 < 1_000_000、怪物 ≥ 1_000_000、NPC ≥ 2_000_000。
+syntax = "proto3";
+
+package mir2;
+
+import "common.proto";
+
+option go_package = "github.com/algotao/mir2/server/protocol;protocol";
+
+// ---------- 0x04xx 场景 ----------
+
+// 实体的完整快照（进图初始快照 / 实体出现 用）。
+message EntityState {
+  uint64 entity_id = 1;
+  uint32 kind = 2;              // 0=玩家 1=怪物 2=NPC
+  string name = 3;
+  Vec2 position = 4;
+  Direction direction = 5;
+  EntityFeature feature = 6;
+  uint32 hp = 7;
+  uint32 max_hp = 8;
+  uint64 status_bits = 9;
+  uint32 action = 10;
+}
+
+// 服务端 → 客户端：进世界（选角成功后的初始快照）。
+message EnterWorld {
+  uint64 self_entity_id = 1;
+  uint32 map_id = 2;
+  string map_name = 3;
+  Vec2 position = 4;
+  Direction direction = 5;
+  repeated EntityState entities = 6;
+  uint32 server_tick = 7;
+}
+
+// 服务端 → 客户端：切换地图（重发新图快照）。
+message ChangeMap {
+  uint32 map_id = 1;
+  string map_name = 2;
+  Vec2 position = 3;
+  repeated EntityState entities = 4;
+  uint32 server_tick = 5;
+}
+
+// 大块地图数据 —— 独立分块传输（protocol.md §2：大二进制块单独分帧）。
+message MapChunk {
+  uint32 map_id = 1;
+  uint32 chunk_index = 2;
+  uint32 chunk_count = 3;
+  bytes data = 4;
+}
+
+// 日夜 / 光照（原版 SM_DAYCHANGING / SM_CHANGELIGHT）。
+message TimeOfDay {
+  uint32 hour = 1;
+  uint32 minute = 2;
+  bool dark = 3;
+}
+
+message MapDescription {
+  uint32 map_id = 1;
+  string description = 2;
+}
+
+// ---------- 0x05xx 实体 ----------
+
+message EntityAppear {
+  EntityState entity = 1;
+}
+
+enum DisappearReason {
+  DISAPPEAR_REASON_UNSPECIFIED = 0;
+  DISAPPEAR_LEFT_VIEW = 1;   // 离开视野
+  DISAPPEAR_HIDE = 2;        // 隐身
+  DISAPPEAR_DEAD = 3;        // 死亡移出（尸骨另见 Death）
+  DISAPPEAR_LOGOUT = 4;
+}
+
+message EntityDisappear {
+  uint64 entity_id = 1;
+  DisappearReason reason = 2;
+}
+
+// 服务端权威移动广播（高频位置：可丢弃过期包，按 seq 丢弃）。
+message EntityMove {
+  uint64 entity_id = 1;
+  Vec2 from = 2;
+  Vec2 to = 3;
+  Direction direction = 4;
+  uint32 server_tick = 5;
+}
+
+// 动作切换（走/跑/攻击/受击/死亡/骑马…）。用动作 id + 时间戳，取代原版 70 个手写动画类。
+message EntityAction {
+  uint64 entity_id = 1;
+  uint32 action = 2;
+  uint32 server_tick = 3;
+}
+
+message EntityHealth {
+  uint64 entity_id = 1;
+  uint32 hp = 2;
+  uint32 max_hp = 3;
+}
+
+message EntityStatus {
+  uint64 entity_id = 1;
+  uint64 status_bits = 2;  // 隐身/中毒/石化…（约定见 decisions D-… 待定）
+}
+
+// 自身能力值（`Ability` 定义在 common.proto，scene 与 combat 共用）。
+message AbilityUpdate {
+  Ability ability = 1;
+}
+
+// 客户端 → 服务端：移动输入（★ 有且仅有一次生效：带 request_id 走信封）。
+message MoveInput {
+  Vec2 from = 1;
+  Vec2 to = 2;
+  Direction direction = 3;
+  uint32 client_tick = 4;
+}
+
+// 服务端 → 客户端：移动被拒（越界/超速），回权威位置校正。
+message MoveRejected {
+  Vec2 authoritative_position = 1;
+  uint32 reason = 2; // 1=超速 2=越界 3=阻挡
+}
+
+message EntityFeatureChanged {
+  uint64 entity_id = 1;
+  EntityFeature feature = 2;
+}

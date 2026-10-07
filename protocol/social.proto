@@ -1,0 +1,42 @@
+// MIR2 协议 · 0x09xx 聊天（0x0Axx 社交待定）
+//
+// 原版把聊天拆成 SM_HEAR(40)/SM_SYSMESSAGE(100)/SM_GROUPMESSAGE(101)/SM_CRY(102)/
+// SM_WHISPER(103)/SM_GUILDMESSAGE(104) 六条消息；自研协议合并为
+// **一个 ChatInput + 一个 ChatMessage + 一个 channel 枚举**。
+//
+// ⚠️ 0x0Axx（组队 / 行会 / 好友 / 黑名单 / 邮件 / 备忘录）**尚未定稿**：
+//   docs/messages.md §5 已确认「邮件/好友/黑名单/备忘录」在本版协议里**零消息**、
+//   客户端也零引用 ⇒ 按 plan.md §1「不做遗留客户端里没有的东西」，暂不设计；
+//   组队/行会是 1.76 核心玩法，需单独一轮（用 M0 清单的 T1 可达集驱动）。
+syntax = "proto3";
+
+package mir2;
+
+option go_package = "github.com/algotao/mir2/server/protocol;protocol";
+
+enum ChatChannel {
+  CHAT_CHANNEL_UNSPECIFIED = 0;
+  CHAT_SAY = 1;      // 普通说话（原版 SM_HEAR）
+  CHAT_CRY = 2;      // 喊话（原版 SM_CRY）
+  CHAT_WHISPER = 3;  // 私聊（原版 SM_WHISPER）
+  CHAT_GROUP = 4;    // 组队（原版 SM_GROUPMESSAGE）
+  CHAT_GUILD = 5;    // 行会（原版 SM_GUILDMESSAGE）
+  CHAT_SYSTEM = 6;   // 系统（原版 SM_SYSMESSAGE）
+}
+
+// 客户端 → 服务端
+message ChatInput {
+  ChatChannel channel = 1;
+  string text = 2;
+  string target_name = 3; // 私聊目标（channel = CHAT_WHISPER 时有效）
+  uint32 client_tick = 4;
+}
+
+// 服务端 → 客户端（原版 SM_HEAR 带前景/背景色）
+message ChatMessage {
+  ChatChannel channel = 1;
+  uint64 sender_id = 2;   // 0 = 系统
+  string sender_name = 3;
+  string text = 4;
+  uint32 color = 5;
+}

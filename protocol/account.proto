@@ -1,0 +1,102 @@
+// MIR2 协议 · 0x02xx 账号 / 0x03xx 角色
+//
+// 对应 docs/protocol.md §5：登录 → 列角色 → 选角（★ 服务端在此申请**角色租约**）。
+// ⚠️ 租约被占（同角色在线）⇒ **明确拒绝**，不要"顶号"式静默踢人（D-13）。
+// ⚠️ `accountsvc` 不对客户端 Listen；这些消息由 `gamesvr` 作为唯一对端处理（D-13）。
+syntax = "proto3";
+
+package mir2;
+
+import "common.proto";
+
+option go_package = "github.com/algotao/mir2/server/protocol;protocol";
+
+// ---------- 0x02xx 账号 ----------
+
+message Login {
+  string account = 1;
+  string password_hash = 2;  // 客户端只发哈希，明文不落网络
+  string client_build = 3;
+}
+
+enum LoginCode {
+  LOGIN_CODE_UNSPECIFIED = 0;
+  LOGIN_OK = 1;
+  LOGIN_BAD_CREDENTIALS = 2;
+  LOGIN_ACCOUNT_NOT_FOUND = 3;
+  LOGIN_ALREADY_ONLINE = 4;
+  LOGIN_SERVER_FULL = 5;
+}
+
+message LoginResult {
+  LoginCode code = 1;
+  string message = 2;
+  bytes session_token = 3;   // ★ 独立于 TCP 连接（protocol.md §5）
+}
+
+message ChangePassword {
+  string account = 1;
+  string old_password_hash = 2;
+  string new_password_hash = 3;
+}
+
+message ChangePasswordResult {
+  ActionResult result = 1;
+}
+
+// ---------- 0x03xx 角色 ----------
+
+// 角色摘要（选角列表用；不含完整存档）。
+message CharacterSummary {
+  uint64 character_id = 1;
+  string name = 2;
+  CharClass class = 3;
+  Gender gender = 4;
+  uint32 level = 5;
+  uint32 gender_hair = 6; // 发型外观
+}
+
+message ListCharacters {}
+
+message CharacterList {
+  repeated CharacterSummary characters = 1;
+}
+
+message SelectCharacter {
+  uint64 character_id = 1;
+}
+
+enum SelectCharCode {
+  SELECT_CHAR_CODE_UNSPECIFIED = 0;
+  SELECT_CHAR_OK = 1;
+  SELECT_CHAR_NOT_FOUND = 2;
+  SELECT_CHAR_LEASE_HELD = 3;  // ★ 该角色已被占用（租约）——明确拒绝，不顶号
+  SELECT_CHAR_SERVER_BUSY = 4;
+}
+
+message SelectCharacterResult {
+  SelectCharCode code = 1;
+  string message = 2;
+  uint64 character_id = 3;
+}
+
+message CreateCharacter {
+  string name = 1;
+  CharClass class = 2;
+  Gender gender = 3;
+  uint32 hair = 4;
+}
+
+message CreateCharacterResult {
+  ActionResult result = 1;
+  uint64 character_id = 2; // 成功时返回新角色 id
+}
+
+message DeleteCharacter {
+  uint64 character_id = 1;
+  string password_hash = 2; // 二次确认
+}
+
+message DeleteCharacterResult {
+  ActionResult result = 1;
+}

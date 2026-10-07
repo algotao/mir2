@@ -140,7 +140,9 @@ mir2/
 - [ ] **搭 Mac 开发环境**（D-19 / D-21）：Rust（`aarch64-apple-darwin`）、Go **1.27.x**、
       CMake + Xcode CLT；**建议用大小写敏感的 APFS 卷放工作区**（D-20）
 - [ ] **基准版本**：`Client/` 还是 `MirClient/`（D-10）
-- [ ] **IDL 核心子集**：握手 / 登录 / 选角 / 进图 / 移动 / 攻击 / 聊天 / 物品
+- [x] **IDL 核心子集**（v1）⇒ [`protocol/`](../protocol)：握手 / 登录 / 选角 / 进图 / 移动 / 攻击 / 聊天 / 物品；
+      8 个 `.proto`（含共享 `common.proto`）+ `version.txt` + `gen.sh`；**oneof 共 65 条**，
+      `protoc` 校验通过，Go 产物（`server/protocol/*.pb.go`）生成并**编译通过**
 - [ ] **素材获取**（D-15，**非技术阻塞**，见 §7 R-2）
 - [x] ~~验证 SDL3 在 macOS 的依赖形态~~ ⇒ **已核实 + 落地验证通过**（2026-10-07）：
       `sdl3` 0.20 的 `build-from-source-static`（D-04）；Mac 上 CMake 4.4 构建成功，

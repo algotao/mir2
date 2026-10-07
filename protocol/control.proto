@@ -1,0 +1,63 @@
+// MIR2 协议 · 0x01xx 控制 / 握手 / 心跳 / 错误
+//
+// 对应 docs/protocol.md §5（连接与握手）。
+// 版本不匹配 ⇒ 服务端回 ServerError 后**立即断开**（禁止"尽力而为"，那只会静默错乱）。
+syntax = "proto3";
+
+package mir2;
+
+option go_package = "github.com/algotao/mir2/server/protocol;protocol";
+
+// 客户端 → 服务端：握手首包。
+message ClientHello {
+  uint32 protocol_version = 1; // 与 protocol/version.txt 对应
+  string client_build = 2;
+  string locale = 3;           // 如 "zh-CN"
+}
+
+// 服务端 → 客户端：握手应答。
+message ServerHello {
+  uint32 protocol_version = 1;
+  int64 server_time_ms = 2;
+  bytes session_key = 3;              // 后续会话加密/校验用（可空）
+  repeated string capabilities = 4;   // 能力协商（如 "map-chunk"）
+}
+
+// 心跳（客户端发起，服务端回 Pong）。
+message Ping {
+  uint64 client_time_ms = 1;
+}
+
+message Pong {
+  uint64 client_time_ms = 1;
+  uint64 server_time_ms = 2;
+}
+
+// 服务端 → 客户端：被断开（含原因）。
+message Disconnect {
+  uint32 code = 1;   // 1001=协议版本不符 1002=重复登录 1003=顶号 1004=租约被占 …
+  string reason = 2;
+}
+
+// 通用错误（不致命，连接保留）。
+message ServerError {
+  uint32 code = 1;
+  string message = 2;
+}
+
+// 重连：用 session_token 恢复会话（★ token 独立于 TCP 连接，见 protocol.md §5）。
+message Reconnect {
+  bytes session_token = 1;
+  uint32 last_ack_seq = 2;
+}
+
+enum ReconnectStatus {
+  RECONNECT_STATUS_UNSPECIFIED = 0;
+  RECONNECT_OK_IN_WORLD = 1;    // 租约仍在 ⇒ 直接回到世界
+  RECONNECT_BACK_TO_SELECT = 2; // 租约已释放 ⇒ 回落到选角
+  RECONNECT_FAILED = 3;         // token 失效 ⇒ 需重新登录
+}
+
+message ReconnectResult {
+  ReconnectStatus status = 1;
+}

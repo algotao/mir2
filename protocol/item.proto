@@ -1,0 +1,112 @@
+// MIR2 协议 · 0x08xx 物品
+//
+// 覆盖：背包 / 装备 / 地面物品 / 使用 / 丢弃 / 拾取 / 修理 / 重量 / 金币。
+// ⚠️ 原版地面物品用 `SM_ITEMSHOW`(610)、进背包用 `SM_ADDITEM`(200)（见 docs/messages.md §2.5）；
+//   自研协议用 `GroundItemShow` / `AddItem` 明确区分，**不要**沿用原版那种混用。
+syntax = "proto3";
+
+package mir2;
+
+import "common.proto";
+
+option go_package = "github.com/algotao/mir2/server/protocol;protocol";
+
+// 物品实例（原版 TClientItem）。
+message ItemStack {
+  uint32 index = 1;       // 物品表索引；0 = 空槽
+  string name = 2;
+  uint32 looks = 3;       // 外观
+  uint32 count = 4;       // 叠加数
+  uint32 dura = 5;
+  uint32 dura_max = 6;
+  uint64 attribute_flags = 7;
+  repeated uint32 values = 8; // 属性值（DC/MC/SC/AC/MAC 的 min/max 等，顺序另行约定）
+}
+
+// ---------- 服务端 → 客户端 ----------
+
+// 全量背包（按槽位顺序；空槽为 index=0）。
+message BagItems {
+  repeated ItemStack items = 1;
+}
+
+message AddItem {
+  uint32 slot = 1;
+  ItemStack item = 2;
+}
+
+message RemoveItem {
+  uint32 slot = 1;
+}
+
+message UpdateItem {
+  uint32 slot = 1;
+  ItemStack item = 2;
+}
+
+// 地面物品出现 / 消失（★ 与原版 SM_ITEMSHOW/SM_ITEMHIDE 对应）。
+message GroundItemShow {
+  uint64 ground_id = 1;
+  Vec2 position = 2;
+  ItemStack item = 3;
+}
+
+message GroundItemHide {
+  uint64 ground_id = 1;
+}
+
+// 已穿戴（原版 SM_SENDUSEITEMS）。
+message EquippedItems {
+  repeated ItemStack items = 1;
+}
+
+message WeightChanged {
+  uint32 weight = 1;
+  uint32 max_weight = 2;
+  uint32 wear_weight = 3;
+  uint32 max_wear_weight = 4;
+}
+
+message GoldChanged {
+  uint64 gold = 1;
+}
+
+message RepairCostNotice {
+  uint32 slot = 1;
+  uint32 cost = 2;
+  bool special = 3; // 特修
+}
+
+// ---------- 客户端 → 服务端（一次性事务，走信封 request_id 判重）----------
+
+message UseItem {
+  uint32 slot = 1;
+  uint32 client_tick = 2;
+}
+
+message DropItem {
+  uint32 slot = 1;
+  uint32 count = 2;
+  uint32 client_tick = 3;
+}
+
+message PickupItem {
+  uint64 ground_id = 1;
+  uint32 client_tick = 2;
+}
+
+message EquipItem {
+  uint32 slot = 1;
+  uint32 client_tick = 2;
+}
+
+message UnequipItem {
+  uint32 equip_slot = 1;
+  uint32 client_tick = 2;
+}
+
+message RepairItem {
+  uint32 slot = 1;
+  bool special = 2; // 特修（原版 @s_repair）
+  uint32 client_tick = 3;
+}

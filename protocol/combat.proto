@@ -1,0 +1,104 @@
+// MIR2 协议 · 0x06xx 战斗 / 0x07xx 技能
+//
+// 原版把一次攻击拆成 SM_HIT/SM_HEAVYHIT/SM_BIGHIT/SM_POWERHIT/SM_LONGHIT/SM_WIDEHIT…
+// 十几个消息号；自研协议用 **一个 AttackInput + 一个 action 枚举**表达（protocol.md §10：
+// 一个语义一个字段）。
+syntax = "proto3";
+
+package mir2;
+
+import "common.proto";
+
+option go_package = "github.com/algotao/mir2/server/protocol;protocol";
+
+// 攻击动作（原版 SM_HIT=14 / SM_HEAVYHIT=15 / SM_BIGHIT=16 / SM_POWERHIT=18 /
+// SM_LONGHIT=19 / SM_WIDEHIT=24 / SM_CRSHIT=25 / SM_TWINHIT=26 / SM_FIREHIT=8 …）
+enum AttackAction {
+  ATTACK_ACTION_UNSPECIFIED = 0;
+  ATTACK_HIT = 1;        // 砍
+  ATTACK_HEAVY = 2;      // 重砍
+  ATTACK_BIG = 3;        // 大力
+  ATTACK_POWER = 4;      // 攻杀（战士技能）
+  ATTACK_LONG = 5;       // 刺杀
+  ATTACK_WIDE = 6;       // 半月
+  ATTACK_FIRE = 7;       // 烈火
+  ATTACK_TWIN = 8;
+}
+
+// ---------- 0x06xx 战斗 ----------
+
+// 客户端 → 服务端：攻击输入（★ 有且仅有一次生效）。
+message AttackInput {
+  uint64 target_entity_id = 1;
+  AttackAction action = 2;
+  uint32 client_tick = 3;
+}
+
+message Damage {
+  uint64 attacker_id = 1;
+  uint64 target_id = 2;
+  int32 value = 3;
+  uint32 flags = 4;  // 1=暴击 2=闪避 4=免疫 …
+}
+
+message Death {
+  uint64 entity_id = 1;
+  uint64 killer_id = 2;  // 0 = 非玩家击杀
+}
+
+message Revive {
+  uint64 entity_id = 1;
+  Vec2 position = 2;
+  uint32 hp = 3;
+}
+
+message ExperienceGain {
+  uint64 amount = 1;   // 本次获得
+  uint64 total = 2;    // 累计
+}
+
+message LevelUp {
+  uint32 level = 1;
+  Ability ability = 2;
+}
+
+// ---------- 0x07xx 技能 ----------
+
+// 客户端 → 服务端：施法输入。
+message CastSkillInput {
+  uint32 skill_id = 1;
+  uint64 target_entity_id = 2;
+  Vec2 target_position = 3;
+  uint32 client_tick = 4;
+}
+
+// 服务端 → 客户端：施法特效广播（原版 SM_MAGICFIRE / magiceff 的 15 个特效类 ⇒ 一个 id）。
+message SkillEffect {
+  uint64 caster_id = 1;
+  uint32 skill_id = 2;
+  Vec2 position = 3;
+  uint64 target_id = 4;
+}
+
+message MagicInfo {
+  uint32 skill_id = 1;
+  uint32 level = 2;
+  uint32 exp = 3;
+}
+
+// 服务端 → 客户端：全量技能列表（取代原版 SM_SENDMYMAGIC）。
+message MagicList {
+  repeated MagicInfo magics = 1;
+}
+
+// 增量变更（原版 SM_ADDMAGIC / SM_DELMAGIC 合并）。
+message MagicChanged {
+  bool added = 1;         // true=新增/升级 false=删除
+  MagicInfo magic = 2;
+}
+
+message MagicLevelExp {
+  uint32 skill_id = 1;
+  uint32 level = 2;
+  uint32 exp = 3;
+}

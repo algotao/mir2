@@ -1,0 +1,89 @@
+// MIR2 协议 · 共享类型
+//
+// ⚠️ 硬规则（见 docs/protocol.md §4.1）
+//  1. 字段号**全局唯一、永不复用**；避开 protobuf 保留区 19000–19999。
+//  2. **禁止手写编解码**：两端都由本 schema 生成。
+//  3. `oneof` 字段列表**只能**在 envelope.proto（无法跨文件扩展）。
+//
+// 说明：docs/protocol.md §3 的文件清单未列 common.proto；
+//   共享类型（坐标/方向/实体外观）单独成文件，避免各处重复定义。
+syntax = "proto3";
+
+package mir2;
+
+option go_package = "github.com/algotao/mir2/server/protocol;protocol";
+
+// 服务端权威的 2D 坐标（格）。
+// ⚠️ 视野格数锁死（D-07）：分辨率可变，"看得到多少格"不可变。
+message Vec2 {
+  int32 x = 1;
+  int32 y = 2;
+}
+
+// 8 方向。值沿用原版顺序（0 = 未指定/无方向）。
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  DIR_DOWN = 1;
+  DIR_DOWN_RIGHT = 2;
+  DIR_RIGHT = 3;
+  DIR_UP_RIGHT = 4;
+  DIR_UP = 5;
+  DIR_UP_LEFT = 6;
+  DIR_LEFT = 7;
+  DIR_DOWN_LEFT = 8;
+}
+
+// 三职业（1.76 只有这三个）。
+enum CharClass {
+  CHAR_CLASS_UNSPECIFIED = 0;
+  CHAR_CLASS_WARRIOR = 1; // 战士
+  CHAR_CLASS_WIZARD = 2;  // 法师
+  CHAR_CLASS_TAOIST = 3;  // 道士
+}
+
+enum Gender {
+  GENDER_UNSPECIFIED = 0;
+  GENDER_MALE = 1;
+  GENDER_FEMALE = 2;
+}
+
+// 通用「成功 / 失败」回执。用于一次性事务（丢弃、穿戴、购买…）。
+// 原版把结果拆成 *_OK / *_FAIL 两条消息；自研协议合并为一条 + 一个 code。
+message ActionResult {
+  bool ok = 1;
+  uint32 code = 2;   // 0 = 成功；非 0 见各消息的注释
+  string message = 3;
+}
+
+// 实体外观（原版的 Feature 位打包：raceImg/weapon/hair/dress）。
+// 用显式字段而不是位掩码 —— 位掩码是原版 bug 的来源之一。
+message EntityFeature {
+  uint32 race_img = 1;
+  uint32 weapon = 2;
+  uint32 hair = 3;
+  uint32 dress = 4;
+  uint32 effect = 5;
+}
+
+// 能力值（原版 SM_ABILITY / TAbility）。
+// 放在 common 而非 scene：scene（AbilityUpdate）与 combat（LevelUp）都要用。
+message Ability {
+  uint32 dc_min = 1;
+  uint32 dc_max = 2;
+  uint32 mc_min = 3;
+  uint32 mc_max = 4;
+  uint32 sc_min = 5;
+  uint32 sc_max = 6;
+  uint32 ac = 7;
+  uint32 mac = 8;
+  uint32 hp = 9;
+  uint32 mp = 10;
+  uint32 max_hp = 11;
+  uint32 max_mp = 12;
+  uint32 weight = 13;
+  uint32 max_weight = 14;
+  uint32 wear_weight = 15;
+  uint32 max_wear_weight = 16;
+  uint32 level = 17;
+  uint64 gold = 18;
+}

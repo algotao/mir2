@@ -1,0 +1,124 @@
+// MIR2 协议 · 信封 + oneof 消息总目录（★ 唯一集中点）
+//
+// 设计见 docs/protocol.md §2 / §4。
+//
+// 硬规则
+//  1. **字段号即消息号**（D-16）：不设独立 `msg_id`。
+//  2. 字段号**全局唯一、永不复用**；避开 protobuf 保留区 19000–19999。
+//  3. `oneof` 无法跨文件扩展 ⇒ **所有消息的字段列表只能写在本文件**
+//     （消息体仍按模块拆文件，见 §3）。这份列表就是"消息总目录"。
+//  4. 收到未知消息时 oneof 的 case **未设置** ⇒ 显式处理 None：
+//     记数 + 告警 + 忽略，**禁止 panic**。
+//  5. 分帧：`[u32 length][Envelope]`，小端，length 不含自身，上限 64 KiB。
+syntax = "proto3";
+
+package mir2;
+
+import "control.proto";
+import "account.proto";
+import "scene.proto";
+import "combat.proto";
+import "item.proto";
+import "social.proto";
+
+option go_package = "github.com/algotao/mir2/server/protocol;protocol";
+
+message Envelope {
+  uint32 seq = 1;         // 发送方单调递增
+  uint32 ack_seq = 2;     // 已处理的对端 seq（输入确认）
+  uint64 request_id = 3;  // 一次性事务幂等键，缺省 0（protocol.md §6）
+
+  oneof body {
+    // ---------- 0x01xx 控制 / 握手 / 心跳 / 错误 ----------
+    ClientHello client_hello = 0x0101;
+    ServerHello server_hello = 0x0102;
+    Ping ping = 0x0103;
+    Pong pong = 0x0104;
+    Disconnect disconnect = 0x0105;
+    ServerError server_error = 0x0106;
+    Reconnect reconnect = 0x0107;
+    ReconnectResult reconnect_result = 0x0108;
+
+    // ---------- 0x02xx 账号 ----------
+    Login login = 0x0201;
+    LoginResult login_result = 0x0202;
+    ChangePassword change_password = 0x0203;
+    ChangePasswordResult change_password_result = 0x0204;
+
+    // ---------- 0x03xx 角色 ----------
+    ListCharacters list_characters = 0x0301;
+    CharacterList character_list = 0x0302;
+    SelectCharacter select_character = 0x0303;
+    SelectCharacterResult select_character_result = 0x0304;
+    CreateCharacter create_character = 0x0305;
+    CreateCharacterResult create_character_result = 0x0306;
+    DeleteCharacter delete_character = 0x0307;
+    DeleteCharacterResult delete_character_result = 0x0308;
+
+    // ---------- 0x04xx 场景 ----------
+    EnterWorld enter_world = 0x0401;
+    ChangeMap change_map = 0x0402;
+    MapChunk map_chunk = 0x0403;
+    TimeOfDay time_of_day = 0x0404;
+    MapDescription map_description = 0x0405;
+
+    // ---------- 0x05xx 实体 ----------
+    EntityAppear entity_appear = 0x0501;
+    EntityDisappear entity_disappear = 0x0502;
+    EntityMove entity_move = 0x0503;
+    EntityAction entity_action = 0x0504;
+    EntityHealth entity_health = 0x0505;
+    EntityStatus entity_status = 0x0506;
+    AbilityUpdate ability_update = 0x0507;
+    MoveInput move_input = 0x0508;
+    MoveRejected move_rejected = 0x0509;
+    EntityFeatureChanged entity_feature_changed = 0x050A;
+
+    // ---------- 0x06xx 战斗 ----------
+    AttackInput attack_input = 0x0601;
+    Damage damage = 0x0602;
+    Death death = 0x0603;
+    Revive revive = 0x0604;
+    ExperienceGain experience_gain = 0x0605;
+    LevelUp level_up = 0x0606;
+
+    // ---------- 0x07xx 技能 ----------
+    CastSkillInput cast_skill_input = 0x0701;
+    SkillEffect skill_effect = 0x0702;
+    MagicList magic_list = 0x0703;
+    MagicChanged magic_changed = 0x0704;
+    MagicLevelExp magic_level_exp = 0x0705;
+
+    // ---------- 0x08xx 物品 ----------
+    BagItems bag_items = 0x0801;
+    AddItem add_item = 0x0802;
+    RemoveItem remove_item = 0x0803;
+    UpdateItem update_item = 0x0804;
+    UseItem use_item = 0x0805;
+    DropItem drop_item = 0x0806;
+    PickupItem pickup_item = 0x0807;
+    GroundItemShow ground_item_show = 0x0808;
+    GroundItemHide ground_item_hide = 0x0809;
+    EquipItem equip_item = 0x080A;
+    UnequipItem unequip_item = 0x080B;
+    EquippedItems equipped_items = 0x080C;
+    WeightChanged weight_changed = 0x080D;
+    GoldChanged gold_changed = 0x080E;
+    RepairItem repair_item = 0x080F;
+    RepairCostNotice repair_cost_notice = 0x0810;
+
+    // ---------- 0x09xx 聊天 ----------
+    ChatInput chat_input = 0x0901;
+    ChatMessage chat_message = 0x0902;
+
+    // ---------- 逃生舱（protocol.md §4.1）----------
+    // 仅供 GM 工具 / 调试 / 插件注入；oneof 无法从外部扩展，这是唯一硬限制的出口。
+    Raw raw = 0x0FFF;
+  }
+}
+
+// 逃生舱载荷：绕过 oneof 的直通消息。
+message Raw {
+  uint32 msg_id = 1;
+  bytes body = 2;
+}

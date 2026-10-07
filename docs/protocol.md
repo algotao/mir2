@@ -60,17 +60,22 @@ message Envelope {
 
 ```
 protocol/
-├── envelope.proto        ★ 信封 + oneof 消息总目录（**唯一集中点**）
+├── envelope.proto        ★ 信封 + oneof 消息总目录（**唯一集中点**，65 条）
+├── common.proto          共享类型（Vec2 / Direction / Ability / EntityFeature…）
 ├── control.proto         0x01xx 控制 / 握手 / 心跳
 ├── account.proto         0x02xx 账号、0x03xx 角色
 ├── scene.proto           0x04xx 场景、0x05xx 实体
 ├── combat.proto          0x06xx 战斗、0x07xx 技能
-├── item.proto            0x08xx 物品、0x0Bxx NPC/脚本
-├── social.proto          0x09xx 聊天、0x0Axx 社交
-├── admin.proto           0x0Cxx 管理 / GM
+├── item.proto            0x08xx 物品
+├── social.proto          0x09xx 聊天（0x0Axx 社交待定）
 ├── version.txt           协议版本号（握手用）
 └── gen.sh                两端代码生成脚本
 ```
+
+> **现状（2026-10-07）**：以上文件均已落地，`protoc` 校验通过，
+> Go 产物已生成（`server/protocol/*.pb.go`）并**编译通过**。
+> 尚未开工：`admin.proto`（0x0Cxx GM）、`0x0Bxx` NPC/脚本、`0x0Axx` 社交。
+> `common.proto` 是新增文件（原清单未列）——共享类型集中一处，避免各模块重复定义。
 
 消息**体**按模块拆文件，但 **oneof 字段列表必须集中在 `envelope.proto`**
 （`oneof` 无法跨文件扩展），理由见 §4.1。
@@ -251,10 +256,10 @@ TCP 保证送达与顺序，但不保证"语义上的只有一次"。所以按**
 
 ## 11. 待办
 
-- [ ] D-13（连接模型）定稿，然后搭 `protocol/` 骨架与生成脚本。
-      D-12 / D-16 已定（protobuf 3 + oneof 信封），D-17 已定（gate 不做协议感知）。
-- [ ] **消息清单**：把 216 个 `SM_*` 分「1.76 可达 / 死代码 / 引擎扩展」三档，
-      并与 28 个窗口交叉核对（邮件/好友/黑名单/备忘录的可达性依赖它）。
-      这是 M1 的第一件事，也是排期验收点数的校准器。
-- [ ] 核心子集的 schema 初稿（握手 / 登录 / 选角 / 进图 / 移动 / 攻击 / 聊天 / 物品）。
+- [x] **消息清单** ⇒ [messages.md](./messages.md)：`SM_` 216 + `CM_` 87 双向分档
+      （T1 可达 172 / T2 待定 26 / T3 引擎扩展 18），与 28 窗口交叉核对。
+- [x] **`protocol/` 骨架 + 生成脚本 + 核心子集 schema v1**（握手 / 登录 / 选角 / 进图 / 移动 /
+      攻击 / 聊天 / 物品，oneof 共 65 条）；`protoc` 校验通过，Go 产物生成并编译通过。
+- [ ] D-13（连接模型）定稿。D-12 / D-16 已定（protobuf 3 + oneof 信封），D-17 已定（gate 不做协议感知）。
+- [ ] Rust 侧生成落地：`client/protocol/build.rs` + prost-build（依赖 `protoc`）。
 - [ ] 契约测试与 CI 门禁骨架。
