@@ -79,3 +79,7 @@ Temporary Items
 
 # ===== 编辑器 / 工作区（本地专用，不入库）=====
 mir2.code-workspace
+
+# ===== 资产产物（由 tools/ 生成，原始文件是唯一真源）=====
+# 见 docs/assets.md §6：脚本产物不入库，用 tools/m2pk/build.sh 重建。
+/assets/
