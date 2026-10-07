@@ -81,6 +81,7 @@ find $WS -not -path '*/.git/*' -printf '%p\n' | tr 'A-Z' 'a-z' | sort | uniq -d
 | **[docs/assets.md](./docs/assets.md)** | **资产策略与格式规格**：WIL/WIX/map 规格、自研容器、验证方法 |
 | **[docs/server-extraction.md](./docs/server-extraction.md)** | **从 mir2go 抽取的地图**：哪些搬、哪些重写（量化） |
 | [docs/legacy-analysis.md](./docs/legacy-analysis.md) | 遗留客户端实测：87k 行拆解、216 消息、28 窗口、动画面 |
+| **[docs/messages.md](./docs/messages.md)** | **M0 消息清单**：216 个 `SM_*` 分档、与 mir2go 标杆对拍、28 窗口交叉核对 |
 
 ## 三条最容易踩的
 
