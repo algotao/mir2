@@ -83,6 +83,49 @@ find $WS -not -path '*/.git/*' -printf '%p\n' | tr 'A-Z' 'a-z' | sort | uniq -d
 | [docs/legacy-analysis.md](./docs/legacy-analysis.md) | 遗留客户端实测：87k 行拆解、216 消息、28 窗口、动画面 |
 | **[docs/messages.md](./docs/messages.md)** | **M0 消息清单**：216 个 `SM_*` 分档、与 mir2go 标杆对拍、28 窗口交叉核对 |
 
+## 本地跑起来（登录 → 进图）
+
+四个东西，**共用同一个 `-db`**（账号、会话、角色都在这个 SQLite 里）。
+
+```bash
+# 0) 先编三个二进制 —— 别用 `go run`：kill 它杀不掉它拉起的子进程
+cd server
+go build -o /tmp/mir2dev/bin/accountsvc ./cmd/accountsvc
+go build -o /tmp/mir2dev/bin/mir2cli  ./cmd/mir2cli
+go build -o /tmp/mir2dev/bin/gamesvr  ./cmd/gamesvr
+
+# 1) 账号服务（⚠️ 端口见下面那条坑）
+/tmp/mir2dev/bin/accountsvc -db /tmp/mir2dev/mir2go.db -data ./data \
+    -login-addr :17000 -sel-addr :17100
+
+# 2) 建账号 + 角色（`-new-char`；mir2cli 是**直接写库**建账号，
+#    绕过还没实现的 CM_ADDNEWUSER —— 所以它能给你一个能用的账号）
+/tmp/mir2dev/bin/mir2cli -db /tmp/mir2dev/mir2go.db \
+    -login 127.0.0.1:17000 -sel 127.0.0.1:17100 \
+    -user test -pass pw123 -new-char 勇士 -skip-game
+
+# 3) 游戏服（⚠️ `-proto-addr` **默认为空 = 新协议入口是关的**）
+/tmp/mir2dev/bin/gamesvr -db /tmp/mir2dev/mir2go.db -data ./data -addr :7200 \
+    -proto-addr 127.0.0.1:7500 -map-dir $WS/mir2c/map -map 0
+
+# 4) 客户端（默认开在登录界面，输账号口令回车）
+cd client && MIR2_SERVER=127.0.0.1:7500 MIR2_ASSET_DIR=$WS/mir2c/data cargo run -p mir2-app
+```
+
+不开窗口、走**同一份客户端代码**验一遍：
+
+```bash
+cd client && cargo run -p mir2-e2e -- world -addr 127.0.0.1:7500 \
+    -account test -password pw123 -expect-map 0
+```
+
+| 踩到的样子 | 真正的原因 / 怎么办 |
+|---|---|
+| 登录界面弹 `Connection refused (os error 61)` | **不是鉴权失败**（那会弹"账号或口令不正确"），是 TCP 层没人监听：`gamesvr` 没起，或者起的时候**没带 `-proto-addr`** |
+| `accountsvc` 报 `bind: address already in use`（:7000） | macOS 的 **AirPlay 接收器（ControlCenter）占着 7000**。把 `-login-addr` 换成 `:17000` 之类，mir2cli 跟着改 `-login` |
+| 服务端要 `<地图号>.map` 目录，可仓库里只有 `assets/map/maps.m2pk` | 用**客户端集** `$WS/mir2c/map`（[D-22](./docs/decisions.md)：两套地图以客户端集为准；它里面 `0.map` 就是边界村） |
+| 起 gamesvr 刷一堆 `缺少怪物模板 "红野猪3"` | 刷怪表引用了我们数据里没有的怪，**无害**（那些刷怪点空着） |
+
 ## 三条最容易踩的
 
 1. **协议两端不可手写**。必须在 `protocol/` 有单一真源 + 代码生成，否则 Go 与 Rust

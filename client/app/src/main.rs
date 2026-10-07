@@ -740,6 +740,9 @@ struct Net {
     /// ⚠️ 世界模型（`core::world`）是**没有时钟**的纯状态，只负责把 `Damage` 记进
     /// 一个队列；计时与淡出是渲染层的事（这里才有帧时钟）。
     floaters: Vec<(String, i32, i32, Instant)>,
+    /// 连接层给出的结束原因（连不上 / 被断开）。**登录界面靠它弹窗** ——
+    /// 少了它，连不上时界面会一直卡在 `CONNECTING ...`（踩过）。
+    fail: Option<String>,
     /// 每个实体的**动画状态**（移动的补间进度、动作播放到哪了）。
     ///
     /// ⚠️ 同样只在渲染层：世界模型只存事实（在哪、什么动作），"什么时候发生的"归这里。
@@ -784,6 +787,7 @@ impl Net {
             status: format!("登录 {account} …"),
             changes: 0,
             floaters: Vec::new(),
+            fail: None,
             anims: HashMap::new(),
         })
     }
@@ -812,6 +816,7 @@ impl Net {
             status: "连接中…".into(),
             changes: 0,
             floaters: Vec::new(),
+            fail: None,
             anims: HashMap::new(),
         })
     }
@@ -837,6 +842,7 @@ impl Net {
                 }
                 mir2_net::Ev::Closed(why) => {
                     self.status = format!("断开：{why}");
+                    self.fail = Some(why);
                     println!("[net] {}", self.status);
                 }
                 mir2_net::Ev::Envelope(env) => {
@@ -1752,6 +1758,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     login.busy = false;
                 }
             }
+            // 连接层失败（连不上/被断开）：同样要弹出来并解掉"登录中"，
+            // 否则界面会一直转圈 —— 而原因只在终端里（踩过）。
+            if let Some(why) = n.fail.clone() {
+                if login.error.is_none() {
+                    login.error = Some(connect_hint(&why));
+                    login.busy = false;
+                }
+            }
             if n.entrance.in_world() && login.opened_at.is_none() {
                 login.opened_at = Some(Instant::now());
                 login.busy = false;
@@ -2253,6 +2267,24 @@ fn draw_asset_view<'a, T>(
     Ok(())
 }
 
+/// 把连接层的原因翻成"人话 + 下一步该查什么"。
+///
+/// ⚠️ `Connection refused` 与"口令错"是**两回事**：前者是 TCP 层没人监听
+/// （服务端没起、或者起的时候没带 `-proto-addr`），根本还没走到鉴权。
+/// 这一条就是为这个区分写的 —— 别让人对着"连不上"去怀疑密码。
+fn connect_hint(why: &str) -> String {
+    let w = why.to_ascii_lowercase();
+    if w.contains("connection refused") || w.contains("os error 61") {
+        return format!(
+            "{why}\n\n(服务端没在监听：gamesvr 要带 -proto-addr 127.0.0.1:7500 才开新协议入口)"
+        );
+    }
+    if w.contains("timed out") || w.contains("timeout") {
+        return format!("{why}\n\n(超时：地址/防火墙？服务端卡住了？)");
+    }
+    why.to_string()
+}
+
 /// 提交登录。
 ///
 /// ⚠️ 这里只做**客户端侧**的准备（必填校验、置忙、记日志）：真正的认证要走新协议的
@@ -2305,6 +2337,17 @@ mod tests {
             dead: false,
             action: None,
         }
+    }
+
+    /// 连不上时要给出"下一步查什么"，而且**不能**把人往"密码错"上引。
+    #[test]
+    fn 连接失败的提示() {
+        let h = connect_hint("连接 127.0.0.1:7500 失败：IO: Connection refused (os error 61)");
+        assert!(h.contains("-proto-addr"), "该提示去查新协议入口：{h}");
+        assert!(h.contains("Connection refused"), "原始原因要留着");
+        let t = connect_hint("read tcp: i/o timeout");
+        assert!(t.contains("超时"));
+        assert_eq!(connect_hint("被服务端断开 105"), "被服务端断开 105");
     }
 
     /// 玩家的本体：容器是 `Hum`，图号 = `600*Dress + 站立段 + 方向步长`。

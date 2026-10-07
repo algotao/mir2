@@ -274,7 +274,8 @@ impl Login {
                 l.msgbox.x,
                 l.msgbox.y,
             );
-            for (i, line) in wrap(err, 48).iter().take(4).enumerate() {
+            // 提示可能带"下一步查什么"（`connect_hint`），行数放宽到 6
+            for (i, line) in wrap(err, 48).iter().take(6).enumerate() {
                 text(
                     canvas,
                     line,
