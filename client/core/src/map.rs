@@ -39,6 +39,17 @@ pub const DOOR_OFFSET_BIT: u8 = 0x80;
 /// ⚠️ 名字沿用原版的 `blend`；其语义是**滤色（SCREEN）**而非 alpha —— 见 [`crate::blend`]。
 pub const ANI_BLEND_BIT: u8 = 0x80;
 
+/// 前景区**向下多扫的行数** —— 官方 `LONGHEIGHT_IMAGE = 35`（`PlayScn.pas:18/1137`）。
+///
+/// 地表与中间层只多扫 1 行（`:556/:582`），因为它们的图块不出自己的格；
+/// 而前景是**底边对齐格底**的：一个站在视口下方很远的物件，它那张高图块
+/// （实测最高的树 48×604 ≈ 19 格）照样能**从下往上伸进视口**。
+///
+/// 少了这 35 行，画面会随镜头移动"凭空长出/消失"整棵树：物件在视口下方第 20 行时
+/// 不被扫描，镜头往下挪两行它进入范围就冒出来了 —— 看起来像"贴图变了"，
+/// 其实是**漏画了**。
+pub const FRONT_ROW_MARGIN: i32 = 35;
+
 fn bad(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
 }
@@ -432,10 +443,21 @@ impl Map {
     /// 画序：地表 → 中间 → 前景，每层内部按 `y` 递增 ——
     /// 于是靠下的前景物件自然覆盖靠上的，**Y 序遮挡不需要额外排序**。
     ///
-    /// 范围是 `[-1, cols) × [-1, rows)`：**左上各多画一格**。原因：
-    /// 中间层与前景层是"格底对齐"的，而地表图块（96×64）还会跨 2 格，
-    /// 所以视口边界外的那一格会有可见部分。渲染层负责把这些越界指令裁掉
-    /// （`x`/`y` 因此可能是负数）。
+    /// 扫描范围**逐层不同**（全部照抄官方 `PlayScn.pas` 的循环边界）：
+    ///
+    /// | 层 | 列 | 行 |
+    /// |---|---|---|
+    /// | 地表 / 中间 | `[-1, cols)` | `[-1, rows)` |
+    /// | 前景 | `[-1, cols)` | `[-1, rows + `[`FRONT_ROW_MARGIN`]`)` |
+    ///
+    /// 左/上各多一格：中间层是"格底对齐"、地表图块（96×64）还会跨 2 格，
+    /// 所以边界外那一格会有可见部分。
+    ///
+    /// **前景向下多 35 行是关键**：它的图块底边对齐格底，站在视口下方很远的
+    /// 高物件照样能伸进视口（实测 48×604）。少扫就会随镜头移动凭空长树/掉树
+    /// —— 见 [`FRONT_ROW_MARGIN`]。
+    ///
+    /// 渲染层负责把越界的指令裁掉（`x`/`y` 因此可能是负数）。
     ///
     /// `ani_count` 驱动前景动画（官方那个 50 ms 一格的计数器，见 [`Cell::fr_frame`]）；
     /// 不做动画时传 0 即可，得到的就是静态第 0 帧。
@@ -453,7 +475,14 @@ impl Map {
         out.clear();
         let (w, h) = (self.width as i32, self.height as i32);
         for layer in [Layer::Ground, Layer::Mid, Layer::Front] {
-            for dy in -1..rows {
+            // 上界逐层不同：地表/中间多扫 1 行就够（图块不出格），
+            // 前景必须多扫 [`FRONT_ROW_MARGIN`] 行（高图块会从下方伸进视口）。
+            let dy_end = if layer == Layer::Front {
+                rows + FRONT_ROW_MARGIN
+            } else {
+                rows
+            };
+            for dy in -1..dy_end {
                 for dx in -1..cols {
                     let (x, y) = (cam_x + dx, cam_y + dy);
                     if x < 0 || y < 0 || x >= w || y >= h {
@@ -722,6 +751,43 @@ mod tests {
         m.visible_tiles(-1, -1, 3, 3, 0, &mut out);
         assert!(out.iter().all(|d| d.x >= 0 && d.y >= 0));
         assert_eq!(n(&out, Layer::Mid), 4, "(-1,-1) 被裁 ⇒ 只剩 2×2");
+    }
+
+    /// 官方 `LONGHEIGHT_IMAGE = 35`：前景向下多扫 35 行，地表/中间只多 1 行。
+    ///
+    /// 少了这 35 行，"站在视口下方的高树"不会被生成成绘制指令 ——
+    /// 镜头一挪它进入范围就凭空出现（**实测踩过的坑**）。
+    #[test]
+    fn visible_tiles_scans_extra_front_rows_for_tall_sprites() {
+        let bytes = build(4, 60, CELL_LEN_CLASSIC, |_x, _y| {
+            let mut b = [0u8; 12];
+            b[0..2].copy_from_slice(&2u16.to_le_bytes());
+            b[2..4].copy_from_slice(&3u16.to_le_bytes());
+            b[4..6].copy_from_slice(&4u16.to_le_bytes());
+            b
+        });
+        let m = Map::parse(&bytes).unwrap();
+        let mut out = Vec::new();
+        m.visible_tiles(0, 0, 4, 4, 0, &mut out);
+
+        let max_y = |l: Layer| {
+            out.iter()
+                .filter(|d| d.layer == l)
+                .map(|d| d.y)
+                .max()
+                .unwrap()
+        };
+
+        // 视口只有 4 行 ⇒ 正常到 dy=3。地表/中间到此为止
+        assert_eq!(max_y(Layer::Mid), 3 * UNIT_Y);
+        // 前景要多扫 35 行 ⇒ 最远到 dy = 3 + 35
+        assert_eq!(
+            max_y(Layer::Front),
+            (3 + FRONT_ROW_MARGIN) * UNIT_Y,
+            "前景必须向下多扫 {FRONT_ROW_MARGIN} 行"
+        );
+        // 越界的指令都带正的偏移，交给渲染层裁（不能是负坐标）
+        assert!(out.iter().all(|d| d.x >= 0 && d.y >= 0));
     }
 
     #[test]

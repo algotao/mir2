@@ -556,6 +556,49 @@ fn draw_debug_overlay(
     Ok(())
 }
 
+// ---------- 视口剔除 ----------
+
+/// 地图视口矩形（与 `draw_map_view` 里 `set_clip_rect` 用的是同一块）。
+fn viewport_rect() -> FRect {
+    FRect::new(0.0, BAR_TOP, WIN_W as f32, VIEW_H)
+}
+
+/// 两个矩形是否相交（半个像素也不相交就返回 false ⇒ 可安全跳过）。
+fn intersects(a: &FRect, b: &FRect) -> bool {
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+}
+
+/// [`rect_of`] 的"冷"版本：**只读 WZL 记录、不解码像素**。
+///
+/// 用途：前景层按官方要向下多扫 35 行（`core::map::FRONT_ROW_MARGIN`），
+/// 那批候选里绝大多数是矮图块、落点远在视口下方。先按记录把框算出来判掉，
+/// 就不必为它们做 zlib 解压 + RGBA 转换 + 贴图上传。
+///
+/// 与 [`rect_of`] 不会打架：两者都用 core 的 `top_y` / `left_x` 定位，
+/// 只是尺寸一个取自贴图、一个取自记录（两者必然相同，解码器就按记录建图）。
+fn draw_rect_cold(
+    libs: &mut HashMap<String, Option<Wzl>>,
+    dir: &Path,
+    d: &TileDraw,
+) -> Option<FRect> {
+    let name = d.lib.file_name(d.area);
+    let lib = libs
+        .entry(name.clone())
+        .or_insert_with(|| Wzl::open(dir.join(&name)).ok())
+        .as_ref()?;
+    let rec = lib.record(d.index as usize)?;
+    if rec.width == 0 || rec.height == 0 {
+        return None;
+    }
+    let top = d.top_y(rec.width as i32, rec.height as i32, rec.anchor_y as i32);
+    Some(FRect::new(
+        d.left_x(rec.anchor_x as i32) as f32,
+        BAR_TOP + top as f32,
+        rec.width as f32,
+        rec.height as f32,
+    ))
+}
+
 // ---------- 调试工具（D 叠加层 / P 打印清单 / 左键点哪读哪）----------
 
 /// 一条绘制指令的屏幕矩形（**已计入 `top_y`**，即图块真正落下的位置）。
@@ -1062,9 +1105,15 @@ fn draw_map_view<'a, T>(
     // 裁剪到地图视口：`visible_tiles` 左上会多给一格（坐标可能为负），
     // 且高图块（树/墙）本身上端会超出视口——不裁剪就会画到上下信息条上。
     canvas.set_clip_rect(Some(Rect::new(0, BAR_TOP as i32, WIN_W, VIEW_H as u32)));
+    let view = viewport_rect();
     for d in draws.iter() {
         // 逐层显隐（CTRL+1/2/3 / L）：关掉的层**既不画图块也不画调试框**
         if layers & layer_bit(d.layer) == 0 {
+            continue;
+        }
+        // 视口剔除：前景向下多扫了 35 行，那批候选多半够不着视口。
+        // 先按 WZL 记录（不解码像素）判掉，省下解码与贴图上传。
+        if !draw_rect_cold(libs, dir, d).is_some_and(|r| intersects(&r, &view)) {
             continue;
         }
         draw_tile(canvas, tc, libs, tiles, dir, d, BAR_TOP)?;
