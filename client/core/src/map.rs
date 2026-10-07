@@ -317,6 +317,9 @@ pub struct TileDraw {
     pub y: i32,
     /// 前景层的动画帧数（`ani_frame & 0x7F`）；其余层恒为 0。
     pub ani_frames: u8,
+    /// `ani_frame & 0x80` ⇒ 官方称"**Alpha 物件**"：用**图自身的锚点**定位，
+    /// 并做半透明混合（`PlayScn.pas:1247-1256` 的 `GetObjsEx` + `DrawBlend` 分支）。
+    pub blend: bool,
 }
 
 impl TileDraw {
@@ -348,11 +351,16 @@ impl TileDraw {
     ///
     /// ⚠️ Crystal（`GameScene.cs:10707/10719/10755`）把中间层**改成了格顶**，属它的"修正"。
     /// 本项目按 **C-1「体感与原版一致」** 跟随官方。
-    pub fn top_y(&self, width: i32, height: i32) -> i32 {
+    /// `anchor_y` 只在 Alpha 物件上用到（其余情形传什么都行）。
+    pub fn top_y(&self, width: i32, height: i32, anchor_y: i32) -> i32 {
         match self.layer {
             Layer::Ground => self.y,
             Layer::Mid => self.y + UNIT_Y,
             Layer::Front => {
+                if self.blend {
+                    // 官方 `mmm := m + ay - 68`（m = 格原点 Y）。68 是原版魔数，照抄。
+                    return self.y + anchor_y - 68;
+                }
                 let flat = (width == UNIT_X && height == UNIT_Y)
                     || (width == 2 * UNIT_X && height == 2 * UNIT_Y);
                 if flat && self.ani_frames == 0 {
@@ -361,6 +369,24 @@ impl TileDraw {
                     self.y + UNIT_Y - height
                 }
             }
+        }
+    }
+
+    /// 图块落点的 X —— 只有 Alpha 物件会偏移（官方 `n + ax - 2`，`-2` 同样是原版魔数）。
+    pub fn left_x(&self, anchor_x: i32) -> i32 {
+        if self.layer == Layer::Front && self.blend {
+            self.x + anchor_x - 2
+        } else {
+            self.x
+        }
+    }
+
+    /// Alpha 物件的混合强度（0–255）。官方用 `pmix` 查表做 50% 混色，这里取 128。
+    pub fn alpha(&self) -> u8 {
+        if self.blend {
+            128
+        } else {
+            255
         }
     }
 }
@@ -427,6 +453,7 @@ impl Map {
                         } else {
                             0
                         },
+                        blend: layer == Layer::Front && c.ani_blend(),
                     });
                 }
             }
@@ -688,16 +715,39 @@ mod tests {
             x: 0,
             y: 64,
             ani_frames: 0,
+            blend: false,
         };
         // 地表：格顶，且与图高无关
-        assert_eq!(mk(Layer::Ground).top_y(96, 64), 64);
-        assert_eq!(mk(Layer::Ground).top_y(48, 200), 64);
+        assert_eq!(mk(Layer::Ground).top_y(96, 64, 0), 64);
+        assert_eq!(mk(Layer::Ground).top_y(48, 200, 0), 64);
         // 中间：**格底**（官方 PlayScn.pas:581 比地表少一个 -UNITY）
-        assert_eq!(mk(Layer::Mid).top_y(48, 32), 64 + UNIT_Y);
+        assert_eq!(mk(Layer::Mid).top_y(48, 32, 0), 64 + UNIT_Y);
         assert_eq!(
-            mk(Layer::Mid).top_y(48, 32) - mk(Layer::Ground).top_y(48, 32),
+            mk(Layer::Mid).top_y(48, 32, 0) - mk(Layer::Ground).top_y(48, 32, 0),
             UNIT_Y
         );
+    }
+
+    #[test]
+    fn alpha_object_uses_anchor() {
+        // 官方 PlayScn.pas:1247-1256：$80 物件用锚点定位 + 半透明
+        let d = TileDraw {
+            layer: Layer::Front,
+            lib: Lib::Objects,
+            area: 0,
+            index: 0,
+            x: 100,
+            y: 64,
+            ani_frames: 10,
+            blend: true,
+        };
+        assert_eq!(d.top_y(100, 100, -44), 64 + (-44) - 68);
+        assert_eq!(d.left_x(7), 100 + 7 - 2);
+        assert_eq!(d.alpha(), 128);
+        // 非 Alpha 物件不受锚点影响
+        let plain = TileDraw { blend: false, ..d };
+        assert_eq!(plain.left_x(7), 100);
+        assert_eq!(plain.alpha(), 255);
     }
 
     #[test]
@@ -710,19 +760,20 @@ mod tests {
             x: 0,
             y: 64,
             ani_frames: ani,
+            blend: false,
         };
 
         // "平"图块（48×32）且无动画 ⇒ 左上对齐；两种算法同解
-        assert_eq!(front(0).top_y(48, 32), 64);
+        assert_eq!(front(0).top_y(48, 32, 0), 64);
         // 96×64 的平图块同理走左上对齐
-        assert_eq!(front(0).top_y(96, 64), 64);
+        assert_eq!(front(0).top_y(96, 64, 0), 64);
         // 高图块 ⇒ 底边对齐格的底边（y + 32 - h）
-        assert_eq!(front(0).top_y(48, 86), 64 + 32 - 86);
-        assert_eq!(front(0).top_y(48, 200), 64 + 32 - 200);
+        assert_eq!(front(0).top_y(48, 86, 0), 64 + 32 - 86);
+        assert_eq!(front(0).top_y(48, 200, 0), 64 + 32 - 200);
         // 有动画时即使尺寸是 48×32，结果也不变（因为 h == 32）
-        assert_eq!(front(7).top_y(48, 32), 64);
+        assert_eq!(front(7).top_y(48, 32, 0), 64);
         // 但 96×64 有动画 ⇒ 走底边对齐（与官方第二趟一致）
-        assert_eq!(front(7).top_y(96, 64), 64 + 32 - 64);
+        assert_eq!(front(7).top_y(96, 64, 0), 64 + 32 - 64);
     }
 
     #[test]

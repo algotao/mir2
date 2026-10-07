@@ -193,6 +193,28 @@ dy := (a.m_nRy - Top - 1) * UNITY + m_nDefYY + a.m_nPy;   // m_nDefYY = defy = -
 并把"平的"前景塞进 floor 趟——属它的"修正"。本项目按 **C-1「体感与原版一致」**
 **跟随官方**（中间层格底、前景"平的"也走格底判定）。
 
+#### 3.3a-3 **Alpha 物件**（`btAniFrame & $80`）走**另一条**定位规则
+
+官方第二个物件趟（`PlayScn.pas:1196` 起）里两个分支是分开的：
+
+```pascal
+if not blend then begin                       // 普通物件
+   DSurface := GetObjs (wunit, fridx);
+   mmm := m + UNITY - DSurface.Height;        // 底边对齐格底
+end else begin                                // ★ Alpha 物件
+   DSurface := GetObjsEx (wunit, fridx, ax, ay);   // 顺带取该图的锚点
+   mmm := m + ay - 68;                        //  用锚点定位（68 是原版魔数）
+   DrawBlend (m_ObjSurface, n+ax-2, mmm, DSurface, 1);  // 半透明混色
+end;
+```
+
+- 判定：`btAniFrame and $80 <> 0`（低 7 位仍是动画帧数）。
+- 定位：Y = **格原点 + 锚点 y − 68**；X = **格原点 + 锚点 x − 2**。
+- 混合：走 `DrawBlend`（`pmix` 查表，约 50% 混色）。
+- 实测占比很小但**可见**：`0.map` 里 28,281 个前景格中仅 **45 格**（0.16%），
+  且**全部指向同一个图号 2723**（一块 100×100 的光效 —— 不做混合时会渲染成
+  **不透明黑方块**，位置也错，这就是它看起来"错位"的原因）。
+
 ⚠️ Crystal 另用 `BackImage & 0x1FFFFFFF`（29 位，含 `BackIndex` 选库），是**新格式**；
 1.76 用 16 位 + `0x7FFF` 掩码 + `btArea` 选 `Objects<N>`。**以 1.76 为准**。
 

@@ -262,11 +262,18 @@ fn resolve_container() -> Option<PathBuf> {
 /// 图块缓存键：图库 + `Objects` 的编号 + 图号。
 type TileKey = (Lib, u8, u16);
 
+/// 缓存的一张图块纹理 + 它的锚点（**Alpha 物件**要用锚点定位，见 core 的 `TileDraw`）。
+struct TileTex<'a> {
+    tex: Texture<'a>,
+    anchor_x: i16,
+    anchor_y: i16,
+}
+
 /// 保证 `cache` 里有该图块的纹理；解不出来就返回 `None`（原版也有大量空壳图）。
 fn ensure_tile<'a, T>(
     tc: &'a TextureCreator<T>,
     libs: &mut HashMap<String, Option<Wzl>>,
-    cache: &mut HashMap<TileKey, Texture<'a>>,
+    cache: &mut HashMap<TileKey, TileTex<'a>>,
     dir: &Path,
     lib_kind: Lib,
     area: u8,
@@ -301,7 +308,14 @@ fn ensure_tile<'a, T>(
     t.set_scale_mode(ScaleMode::Nearest);
     t.update(None::<Rect>, &sprite.rgba, sprite.width as usize * 4)
         .ok()?;
-    cache.insert(key, t);
+    cache.insert(
+        key,
+        TileTex {
+            tex: t,
+            anchor_x: sprite.anchor_x,
+            anchor_y: sprite.anchor_y,
+        },
+    );
     Some(())
 }
 
@@ -313,21 +327,23 @@ fn draw_tile<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
     libs: &mut HashMap<String, Option<Wzl>>,
-    cache: &mut HashMap<TileKey, Texture<'a>>,
+    cache: &mut HashMap<TileKey, TileTex<'a>>,
     dir: &Path,
     d: &TileDraw,
     origin_y: f32,
 ) -> Result<(), sdl3::Error> {
     let _ = ensure_tile(tc, libs, cache, dir, d.lib, d.area, d.index);
-    if let Some(t) = cache.get(&(d.lib, d.area, d.index)) {
-        let q = t.query();
-        // 前景要按图块实际高度底边对齐（判定在 core，见 TileDraw::top_y）
-        let top = d.top_y(q.width as i32, q.height as i32);
+    if let Some(t) = cache.get_mut(&(d.lib, d.area, d.index)) {
+        let q = t.tex.query();
+        // 落点与混合都由 core 决定（三层规则 + Alpha 物件用锚点）
+        let top = d.top_y(q.width as i32, q.height as i32, t.anchor_y as i32);
+        let left = d.left_x(t.anchor_x as i32);
+        t.tex.set_alpha_mod(d.alpha());
         canvas.copy(
-            t,
+            &t.tex,
             None::<FRect>,
             FRect::new(
-                d.x as f32,
+                left as f32,
                 origin_y + top as f32,
                 q.width as f32,
                 q.height as f32,
@@ -344,7 +360,7 @@ fn draw_tile<'a, T>(
 fn draw_debug_overlay(
     canvas: &mut WindowCanvas,
     draws: &[TileDraw],
-    tiles: &HashMap<TileKey, Texture<'_>>,
+    tiles: &HashMap<TileKey, TileTex<'_>>,
     cam: (i32, i32),
     mouse: (f32, f32),
     layer_filter: u8,
@@ -409,15 +425,15 @@ fn draw_debug_overlay(
         });
         let line = match topmost {
             Some(d) => {
-                let (w, h) = match tiles.get(&(d.lib, d.area, d.index)) {
+                let (w, h, ay) = match tiles.get(&(d.lib, d.area, d.index)) {
                     Some(t) => {
-                        let q = t.query();
-                        (q.width as i32, q.height as i32)
+                        let q = t.tex.query();
+                        (q.width as i32, q.height as i32, t.anchor_y as i32)
                     }
-                    None => (0, 0),
+                    None => (0, 0, 0),
                 };
                 format!(
-                    "CELL({},{})  {:<6?}  #{:<5} {}x{}  格顶y={} top_y={}  (左键=终端详读)",
+                    "CELL({},{})  {:<6?}  #{:<5} {}x{}  格顶y={} top_y={}{}  (左键=终端详读)",
                     cx,
                     cy,
                     d.layer,
@@ -425,7 +441,8 @@ fn draw_debug_overlay(
                     w,
                     h,
                     d.y,
-                    d.top_y(w, h)
+                    d.top_y(w, h, ay),
+                    if d.blend { " [ALPHA]" } else { "" }
                 )
             }
             None => format!("CELL({cx},{cy})  该像素无图块覆盖"),
@@ -447,12 +464,13 @@ fn draw_debug_overlay(
 // ---------- 调试工具（D 叠加层 / P 打印清单 / 左键点哪读哪）----------
 
 /// 一条绘制指令的屏幕矩形（**已计入 `top_y`**，即图块真正落下的位置）。
-fn rect_of(d: &TileDraw, tiles: &HashMap<TileKey, Texture<'_>>) -> Option<FRect> {
+fn rect_of(d: &TileDraw, tiles: &HashMap<TileKey, TileTex<'_>>) -> Option<FRect> {
     let t = tiles.get(&(d.lib, d.area, d.index))?;
-    let q = t.query();
-    let top = d.top_y(q.width as i32, q.height as i32);
+    let q = t.tex.query();
+    let top = d.top_y(q.width as i32, q.height as i32, t.anchor_y as i32);
+    let left = d.left_x(t.anchor_x as i32);
     Some(FRect::new(
-        d.x as f32,
+        left as f32,
         BAR_TOP + top as f32,
         q.width as f32,
         q.height as f32,
@@ -460,30 +478,37 @@ fn rect_of(d: &TileDraw, tiles: &HashMap<TileKey, Texture<'_>>) -> Option<FRect>
 }
 
 /// 把视口内的绘制清单打到终端（顺序即绘制顺序）——可复制的 debug log。
-fn dump_draws(draws: &[TileDraw], cam: (i32, i32), tiles: &HashMap<TileKey, Texture<'_>>) {
+fn dump_draws(draws: &[TileDraw], cam: (i32, i32), tiles: &HashMap<TileKey, TileTex<'_>>) {
     println!(
         "\n[draws] 视口内 {} 条（顺序即绘制顺序；top_y 是图块真实落点）",
         draws.len()
     );
     for (i, d) in draws.iter().enumerate() {
-        let (w, h) = match tiles.get(&(d.lib, d.area, d.index)) {
+        let (w, h, ax, ay) = match tiles.get(&(d.lib, d.area, d.index)) {
             Some(t) => {
-                let q = t.query();
-                (q.width as i32, q.height as i32)
+                let q = t.tex.query();
+                (
+                    q.width as i32,
+                    q.height as i32,
+                    t.anchor_x as i32,
+                    t.anchor_y as i32,
+                )
             }
-            None => (0, 0),
+            None => (0, 0, 0, 0),
         };
         println!(
-            "  [{i:3}] {:<6?} 格({:4},{:4}) 图号={:5} {:3}x{:<4} 格顶y={:5} top_y={:5} x={:4} 库={}{}",
+            "  [{i:3}] {:<6?} 格({:4},{:4}) 图号={:5} {:3}x{:<4} 锚({:3},{:4}) 格顶y={:5} top_y={:5} x={:4} 库={}{}",
             d.layer,
             cam.0 + d.x / UNIT_X,
             cam.1 + d.y / UNIT_Y,
             d.index,
             w,
             h,
+            ax,
+            ay,
             d.y,
-            d.top_y(w, h),
-            d.x,
+            d.top_y(w, h, ay),
+            d.left_x(ax),
             d.lib.file_name(d.area),
             if d.ani_frames > 0 { " ANI" } else { "" }
         );
@@ -496,7 +521,7 @@ fn probe_at(
     py: f32,
     cam: (i32, i32),
     draws: &[TileDraw],
-    tiles: &HashMap<TileKey, Texture<'_>>,
+    tiles: &HashMap<TileKey, TileTex<'_>>,
 ) {
     let cx = cam.0 + (px / UNIT_X as f32).floor() as i32;
     let cy = cam.1 + ((py - BAR_TOP) / UNIT_Y as f32).floor() as i32;
@@ -600,7 +625,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut map_err = String::new();
     let mut cam = (0i32, 0i32);
     let mut libs: HashMap<String, Option<Wzl>> = HashMap::new();
-    let mut tiles: HashMap<TileKey, Texture<'_>> = HashMap::new();
+    let mut tiles: HashMap<TileKey, TileTex<'_>> = HashMap::new();
     let mut draws: Vec<TileDraw> = Vec::new();
 
     // 调试叠加层（D 开关）：画格网 + 每层落点框 + 鼠标十字线，并"点哪读哪"
@@ -842,7 +867,7 @@ fn draw_map_view<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
     libs: &mut HashMap<String, Option<Wzl>>,
-    tiles: &mut HashMap<TileKey, Texture<'a>>,
+    tiles: &mut HashMap<TileKey, TileTex<'a>>,
     draws: &mut Vec<TileDraw>,
     asset_dir: &Option<PathBuf>,
     map: &Option<Map>,
