@@ -1,0 +1,9 @@
+[package]
+name = "mir2-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MIR2 连接层：TCP + 握手 + 消息泵（不依赖 SDL，见 plan §4.1 / D-18）"
+
+[dependencies]
+mir2-protocol = { path = "../protocol" }

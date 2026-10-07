@@ -1,0 +1,18 @@
+[package]
+name = "mir2-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MIR2 协议：protoc 生成的类型 + [u32 长度][Envelope] 分帧（单一真源见 ../../protocol）"
+
+[lib]
+# 生成的代码里**可能含缩进代码块**（IDL 注释里的对齐表格，如原版方向编号表），
+# 而 rustdoc 会把缩进块当 **doctest** 拿去编译 —— 那是散文，必然编不过。
+# 本 crate 不需要 doctest（它是生成产物 + 分帧），直接关掉。
+doctest = false
+
+[dependencies]
+prost.workspace = true
+
+[build-dependencies]
+prost-build = "0.14.4"

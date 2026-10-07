@@ -10,6 +10,9 @@ path = "src/main.rs"
 
 [dependencies]
 mir2-core = { path = "../core" }
+# 契约测试（`mir2-e2e contract`）走的是与 app **同一份**协议与连接层（D-18）
+mir2-protocol = { path = "../protocol" }
+mir2-net = { path = "../net" }
 # 纯 Rust deflate，用来写 PNG（无头产物要能出图、能被工具与肉眼打开）
 flate2.workspace = true
 

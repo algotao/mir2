@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 # app = SDL3 GUI；e2e = 无头 CLI（**禁依赖 sdl3**，见 plan §4.2 / C-8）；core 两者共用
-members = ["app", "core", "e2e"]
+members = ["app", "core", "e2e", "protocol", "net"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +17,8 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 # 纯 Rust brotli **解压**（客户端从不编码，故不引 brotli 的编码器）——
 # 对应 Go 侧的 andybalholm/brotli，见 docs/assets.md §5.4。同样零 C 依赖（C-7/D-21）。
 brotli-decompressor = { version = "6", default-features = false, features = ["std"] }
+
+prost = "0.14"
 
 # D-01：体积优先的发布配置
 [profile.release]

@@ -14,8 +14,13 @@
 //! 校验**重叠区逐像素相同**。它一次就能抓住"该画却没画"这类**只在镜头移动时暴露**
 //! 的漏画 —— 2026-10-07 的"高树随镜头凭空出现"就是靠人工比对两张截图才发现的，
 //! 本命令把它变成一条自动判据。
+//!
+//! `contract` 是**协议契约**的另一半（docs/protocol.md §9.2）：连上真服务端，
+//! 断言 §5 的握手/选角/进图序列。它走的是与 `client/app` **同一份**
+//! `mir2-protocol` + `mir2-net`，不是测试专用捷径（D-18）。
 
 mod canvas;
+mod contract;
 mod png;
 
 use std::path::{Path, PathBuf};
@@ -38,6 +43,8 @@ fn main() {
     let code = match argv.first().map(String::as_str) {
         Some("render") => run(&argv[1..], cmd_render),
         Some("panself") => run(&argv[1..], cmd_panself),
+        // contract 有自己的参数集（地址/会话/期望值），不走地图那套 Args。
+        Some("contract") => contract::main(&argv[1..]),
         Some("-h" | "--help" | "help") | None => {
             usage();
             0
@@ -351,6 +358,14 @@ fn usage() {
          用法：\n\
          \x20 mir2-e2e render  -map <名字> -cam X,Y -out FILE.png [选项]\n\
          \x20 mir2-e2e panself -map <名字> -cam X,Y             [选项]\n\
+         \x20 mir2-e2e contract -addr HOST:PORT -session N      [选项]\n\
+         \n\
+         contract（协议契约，docs/protocol.md §9.2）：\n\
+         \x20 -addr HOST:PORT   服务端新协议入口（gamesvr -proto-addr）\n\
+         \x20 -session N        会话号（v0 的 session_token；由 accountsvc 建立）\n\
+         \x20 -char N           选哪个角色（默认列表里第一个）\n\
+         \x20 -expect-map/-expect-pos X,Y/-expect-dir N/-expect-entities N\n\
+         \x20                    驱动方已知的真值（由 Go 的契约测试传入并断言）\n\
          \n\
          选项：\n\
          \x20 -w N -h N        视口尺寸（默认 {DEFAULT_W}x{DEFAULT_H}，与 app 的地图区一致）\n\
