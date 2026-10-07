@@ -156,8 +156,14 @@ func (s *Server) applyLevelUp(p *Player, res entity.LevelUpResult) {
 	p.refillHPMP() // 升级回满（持锁）
 
 	// SM_LEVELUP：Param=LoWord(等级)，Tag=HiWord(等级)
-	s.send(c, proto.SM_LEVELUP, int32(p.Obj.ID),
-		proto.LoWord(int32(res.NewLevel)), proto.HiWord(int32(res.NewLevel)), 0, "")
+	if sink := p.protoOut; sink != nil {
+		// 新协议：一条 LevelUp 就把等级 + **完整能力值**都带过去了
+		//（legacy 那条要 SM_LEVELUP + SM_ABILITY 两条包）。
+		sink.levelUp(res.NewLevel, abil, p.gold())
+	} else {
+		s.send(c, proto.SM_LEVELUP, int32(p.Obj.ID),
+			proto.LoWord(int32(res.NewLevel)), proto.HiWord(int32(res.NewLevel)), 0, "")
+	}
 	// 属性变化需要重新下发
 	// 下发前重算负重：背包/装备的任何变动都会改 Weight，而它只能靠这条包告诉客户端
 	s.applyWeights(p)

@@ -278,7 +278,7 @@ func (s *Server) poisonTick(now time.Time) {
 		s.sendHealthChanged(h.p, h.p.Obj.ID, h.hp, h.mp, h.maxHP)
 		s.broadcastToViewers(h.p.Obj.MapRef(), h.p.Obj.PosX(), h.p.Obj.PosY(), func(o *Player) {
 			if o.visible.Contains(h.p.Obj.ID) || o == h.p {
-				s.sendStruck(o, h.p.Obj.ID, h.hp, h.maxHP, h.dmg)
+				s.sendStruck(o, playerIDOf(h.src), h.p.Obj.ID, h.hp, h.maxHP, h.dmg)
 			}
 		})
 		s.sysMsg(h.p.conn, fmt.Sprintf("你受到毒伤 %d 点", h.dmg))
@@ -290,7 +290,7 @@ func (s *Server) poisonTick(now time.Time) {
 	for _, h := range monHits {
 		s.broadcastToViewers(h.m.MapRef(), h.m.PosX(), h.m.PosY(), func(o *Player) {
 			if o.visible.Contains(h.id) {
-				s.sendStruck(o, h.id, h.hp, h.maxHP, h.dmg)
+				s.sendStruck(o, playerIDOf(h.src), h.id, h.hp, h.maxHP, h.dmg)
 			}
 		})
 		log.Printf("%s 受到毒伤 %d（HP %d/%d）", h.m.Name, h.dmg, h.hp, h.maxHP)
@@ -328,8 +328,7 @@ func (s *Server) killPlayerByPoison(p *Player, src *Player) {
 	}
 	s.broadcastToViewers(p.Obj.MapRef(), p.Obj.PosX(), p.Obj.PosY(), func(o *Player) {
 		if o.visible.Remove(p.Obj.ID) {
-			s.send(o.conn, proto.SM_DEATH, int32(p.Obj.ID),
-				uint16(p.Obj.PosX()), uint16(p.Obj.PosY()), uint16(p.Obj.Facing()), "")
+			s.sendDeathTo(o, p.Obj.ID, p.Obj.PosX(), p.Obj.PosY(), p.Obj.Facing(), 0)
 		}
 	})
 	s.send(p.conn, proto.SM_NOWDEATH, int32(p.Obj.ID),

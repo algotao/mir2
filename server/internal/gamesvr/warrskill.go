@@ -514,7 +514,7 @@ func (s *Server) hitMonster(p *Player, m *entity.Monster, dmg uint32) {
 	died := m.Damage(dmg)
 	s.broadcastToViewers(m.MapRef(), m.PosX(), m.PosY(), func(other *Player) {
 		if other.visible.Contains(m.ID) {
-			s.sendStruck(other, m.ID, m.HP, m.MaxHP, dmg)
+			s.sendStruck(other, p.Obj.ID, m.ID, m.HP, m.MaxHP, dmg)
 			obs.Event("attack_hit", "player", p.Char.Name, "monster", m.ID,
 				"monster_name", m.Name, "dmg", dmg, "hp", m.HP, "max_hp", m.MaxHP)
 		}
@@ -524,8 +524,7 @@ func (s *Server) hitMonster(p *Player, m *entity.Monster, dmg uint32) {
 	}
 	s.broadcastToViewers(m.MapRef(), m.PosX(), m.PosY(), func(other *Player) {
 		if other.visible.Remove(m.ID) {
-			s.send(other.conn, proto.SM_DEATH, int32(m.ID), uint16(m.PosX()), uint16(m.PosY()),
-				uint16(m.Facing()), "")
+			s.sendDeathTo(other, m.ID, m.PosX(), m.PosY(), m.Facing(), p.Obj.ID)
 		}
 	})
 	s.mu.Lock()
@@ -1032,7 +1031,8 @@ func (s *Server) selfDamage(c net.Conn, p *Player, raw int) {
 	maxHP := p.maxHP()
 	s.broadcastToViewers(p.Obj.MapRef(), p.Obj.PosX(), p.Obj.PosY(), func(o *Player) {
 		if o == p || o.visible.Contains(p.Obj.ID) {
-			s.sendStruck(o, p.Obj.ID, hp, maxHP, dmg)
+			// 自伤：出手方就是受击者自己
+			s.sendStruck(o, p.Obj.ID, p.Obj.ID, hp, maxHP, dmg)
 		}
 	})
 	log.Printf("%s 野蛮冲撞冲劲不足，自伤 %d（HP %d/%d）", p.Char.Name, dmg, hp, maxHP)

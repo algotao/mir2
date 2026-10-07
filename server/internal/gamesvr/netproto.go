@@ -40,6 +40,7 @@ import (
 	"github.com/algotao/mir2/server/internal/proto"
 	"github.com/algotao/mir2/server/internal/storage"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
+	"github.com/algotao/mir2/server/internal/wire"
 	"github.com/algotao/mir2/server/protocol"
 )
 
@@ -141,6 +142,105 @@ func (k *protoSink) disappear(id uint32) {
 			EntityId: uint64(id),
 			Reason:   protocol.DisappearReason_DISAPPEAR_LEFT_VIEW,
 		}}})
+}
+
+// ---------- 动作 id（`EntityAction.action` 的值域）----------
+//
+// ⚠️ 这个值域是**我们定的**：原版把它拆成 70 个手写动画类 + 十几个消息号
+// （SM_HIT/SM_HEAVYHIT/…），没法照搬。取值规则两条：
+//
+//  1. **1..8 与 `AttackAction` 同值**：客户端收到 `EntityAction{action: 1}` 与
+//     自己发 `AttackInput{action: ATTACK_HIT}` 播的是同一套动作，不必再翻译一次；
+//  2. 其余从 **51** 起（避开 0 与 kind 那种 0..2 的小值域，一眼能看出不是攻击）。
+//
+// 表见 docs/protocol.md §9.5。
+const (
+	// actionHurt 是"受击"（被打了一下）。
+	actionHurt = 51
+	// actionDeath 是"死亡"（尸骨留在原地；移出视野另有一条 EntityDisappear）。
+	actionDeath = 52
+)
+
+// attackActionOf 把 legacy 的挥砍消息号翻成动作 id（见上面的值域说明）。
+func attackActionOf(ident uint16) uint32 {
+	switch ident {
+	case proto.SM_HEAVYHIT:
+		return 2
+	case proto.SM_BIGHIT:
+		return 3
+	case proto.SM_POWERHIT:
+		return 4
+	case proto.SM_LONGHIT:
+		return 5
+	case proto.SM_WIDEHIT:
+		return 6
+	case proto.SM_FIREHIT:
+		return 7
+	case proto.SM_TWINHIT:
+		return 8
+	}
+	return 1 // SM_HIT
+}
+
+// action 发一条动作（挥砍/受击/死亡…）。
+func (k *protoSink) action(id uint32, what uint32) {
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_EntityAction{
+		EntityAction: &protocol.EntityAction{
+			EntityId:   uint64(id),
+			Action:     what,
+			ServerTick: uint32(time.Now().UnixMilli()),
+		}}})
+}
+
+// damage 发一条伤害（客户端据此弹伤害数字）。
+//
+// `attackerID` 允许为 0（火墙/毒/脚本这类"没有具体出手者"的伤害）——
+// 与 `Death.killer_id` 的约定一致。
+func (k *protoSink) damage(attackerID, targetID uint32, value int32, flags uint32) {
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_Damage{
+		Damage: &protocol.Damage{
+			AttackerId: uint64(attackerID),
+			TargetId:   uint64(targetID),
+			Value:      value,
+			Flags:      flags,
+		}}})
+}
+
+// health 同步一条血量（自己或视野内的实体）。
+func (k *protoSink) health(id uint32, hp, maxHP uint32) {
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_EntityHealth{
+		EntityHealth: &protocol.EntityHealth{
+			EntityId: uint64(id),
+			Hp:       hp,
+			MaxHp:    maxHP,
+		}}})
+}
+
+// death 发一条死亡。
+func (k *protoSink) death(id, killerID uint32) {
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_Death{
+		Death: &protocol.Death{EntityId: uint64(id), KillerId: uint64(killerID)}}})
+}
+
+// ability 发一条完整能力值（自己的 hp/mp/等级/金币）。
+//
+// 用途：`EntityHealth` 只覆盖 hp/max_hp（见 `sendHealthChanged` 的说明），
+// 所以自己的 mp 变化靠这条捎带。
+func (k *protoSink) ability(ab *pb.Ability, gold int64) {
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_AbilityUpdate{
+		AbilityUpdate: &protocol.AbilityUpdate{Ability: protocolAbility(ab, gold)}}})
+}
+
+// exp 发一条经验获得（只有自己会收到）。
+func (k *protoSink) exp(amount, total uint64) {
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_ExperienceGain{
+		ExperienceGain: &protocol.ExperienceGain{Amount: amount, Total: total}}})
+}
+
+// levelUp 发一条升级（带升级后的完整能力值 —— 客户端据此重算血条/负重）。
+func (k *protoSink) levelUp(level uint32, ab *pb.Ability, gold int64) {
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_LevelUp{
+		LevelUp: &protocol.LevelUp{Level: level, Ability: protocolAbility(ab, gold)}}})
 }
 
 // move 发一条权威移动（含"原地转身"：from == to，只是朝向变了）。
@@ -308,6 +408,8 @@ func (ps *protoSession) dispatch(env *protocol.Envelope) (keep bool) {
 		return ps.onSelectCharacter(body.SelectCharacter)
 	case *protocol.Envelope_MoveInput:
 		return ps.onMoveInput(body.MoveInput)
+	case *protocol.Envelope_AttackInput:
+		return ps.onAttackInput(body.AttackInput)
 	default:
 		// ClientHello（重复发）也走这里 —— 握手之后它不再有意义，按"不认识"处理。
 		ps.noteUnknown(env)
@@ -490,6 +592,12 @@ func (ps *protoSession) enterWorld(chr *storage.Character) bool {
 	// 这次赋值与那次读之间由 s.mu 建立 happens-before。
 	p.snapReq = ps.snapReq
 	p.protoOut = ps.sink
+	// ⚠️ `logonDone` 是 legacy 那套"进游戏收尾完成、可以行动"的标志位。
+	// 新协议玩家**没有**legacy 的进游戏包序列，但对服务端来说"进了世界"是同一件事：
+	// 共享的行动路径（`handleAttack` 的第一道门、`handleMove`/`handleTurn`）都要它。
+	// 设它的副作用是"legacy 那些 handle* 会对这名玩家生效"——但那些只在收到
+	// **legacy 包**时才被调用，而新协议会话永远不会喂 legacy 包进 handleGameMsg。
+	p.logonDone = true
 
 	s.mu.Lock()
 	s.world.players[p.Obj.ID] = p
@@ -608,6 +716,147 @@ func (ps *protoSession) rejectMove(reason uint32, x, y int) bool {
 			AuthoritativePosition: &protocol.Vec2{X: int32(x), Y: int32(y)},
 			Reason:                reason,
 		}}}) == nil
+}
+
+// ---------- 战斗 ----------
+
+// attackIdentOf 把新协议的 `AttackAction` 翻成 legacy 的攻击包消息号。
+//
+// ⚠️ 这张表与新协议的 `AttackAction` 值域**必须一一对应**（combat.proto）：
+// 反过来 `attackActionOf` 又把消息号翻回动作 id 发给客户端 —— 两者是同一套语义的
+// 两个方向，改一个必须改另一个。
+func attackIdentOf(action protocol.AttackAction) uint16 {
+	switch action {
+	case protocol.AttackAction_ATTACK_HEAVY:
+		return proto.CM_HEAVYHIT
+	case protocol.AttackAction_ATTACK_BIG:
+		return proto.CM_BIGHIT
+	case protocol.AttackAction_ATTACK_POWER:
+		return proto.CM_POWERHIT
+	case protocol.AttackAction_ATTACK_LONG:
+		return proto.CM_LONGHIT
+	case protocol.AttackAction_ATTACK_WIDE:
+		return proto.CM_WIDEHIT
+	case protocol.AttackAction_ATTACK_FIRE:
+		return proto.CM_FIREHIT
+	}
+	return proto.CM_HIT
+}
+
+// onAttackInput 处理一次攻击输入。
+//
+// # 为什么这里"合成一个 legacy 攻击包"
+//
+// legacy 的攻击路径（`handleAttack`）是**按朝向格**定位目标的，而新协议是
+// "我要打**这个**实体"（`target_entity_id`）。两者的差别只在"怎么找到目标那格"：
+// 找到之后，威力判定/打空/减防/受击/死亡/经验/掉落**完全同一条路**。
+//
+// 所以这里做的是**翻译**而不是重写：
+//
+//	按 id 找到目标 → 算出朝向它的方向 → 合成一个 CM_* 包 → 交给 handleAttack
+//
+// 好处（这是选它而不是抽取 `resolveMonsterMelee` 的理由）：
+// 技能模式（攻杀/刺杀/半月/烈火）、挖矿、武器升级试刀、宠物跟打、掉落与经验
+// 全都只有**一份**实现（R-7），新协议不会长出一个"少了几条规则"的影子版本。
+// 代价是这一层翻译与 legacy 同生共死；legacy 退役时把 `handleAttack` 的入参
+// 从 `wire.Packet` 换成 `(dir, mode)` 即可，那一步很小。
+//
+// ⚠️ 因此 `p.logonDone` 必须为 true（`handleAttack` 的第一道门），见 `enterWorld`。
+func (ps *protoSession) onAttackInput(m *protocol.AttackInput) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	// 石化/麻痹期间不能出手（服务端补的门，与 legacy 那处同一句）。
+	if p.Obj.Stoned(time.Now()) {
+		return true
+	}
+	id := uint32(m.GetTargetEntityId())
+	dir, ok := ps.srv.attackTargetDir(p, id)
+	if !ok {
+		// 目标不在相邻八格（或已经死了/不在视野）⇒ **静默忽略**：客户端可能只是
+		// 本地预测着挥了一刀。IDL 里没有"攻击被拒"的消息，所以这里只留一条日志。
+		log.Printf("%s: 新协议攻击目标 ActorId=%d 不可及（忽略）", p.Char.Name, id)
+		return true
+	}
+	ident := attackIdentOf(m.GetAction())
+	pkt := wire.Packet{Head: proto.MakeDefaultMsg(ident, 0, 0, uint16(dir), 0)}
+	ps.srv.handleAttack(p.conn, p, pkt)
+
+	// ⚠️ 攻击的第一件事是**转身**（`handleAttack` 里的 `turnPlayer`），而新协议的客户端
+	// 不知道这件事 —— 它的朝向由服务端权威决定。不回显的话，它那一刀会朝着**旧方向**播
+	//（标记/动画都偏 90°）。所以这里补一条"原地改朝向"（`from == to`，见 protoSink.move）。
+	_, x, y, facing := p.Obj.Place()
+	return ps.send(&protocol.Envelope{Body: &protocol.Envelope_EntityMove{
+		EntityMove: &protocol.EntityMove{
+			EntityId:   uint64(p.Obj.ID),
+			From:       &protocol.Vec2{X: int32(x), Y: int32(y)},
+			To:         &protocol.Vec2{X: int32(x), Y: int32(y)},
+			Direction:  directionOf(facing),
+			ServerTick: uint32(time.Now().UnixMilli()),
+		}}}) == nil
+}
+
+// attackTargetDir 按 ActorId 找目标，并返回**从 p 指向它的方向**；不可及时 ok=false。
+//
+// 只认相邻八格：单格近战就是"朝向那一格"的语义（新协议的 `target_entity_id`
+// 只是把"哪一格"说得更明确，并没有改变攻击的射程）。
+func (s *Server) attackTargetDir(p *Player, targetID uint32) (uint8, bool) {
+	if targetID == 0 {
+		return 0, false
+	}
+	px, py := p.Obj.PosX(), p.Obj.PosY()
+	mapRef := p.Obj.MapRef()
+
+	s.mu.RLock()
+	var tx, ty int
+	found := false
+	// 玩家与怪物都可能被打（PvP 与打怪共用一条路径）。
+	if other := s.world.players[targetID]; other != nil && other != p {
+		if other.Obj.MapRef() == mapRef {
+			tx, ty, found = other.Obj.PosX(), other.Obj.PosY(), true
+		}
+	} else if mon := s.world.monsters[targetID]; mon != nil {
+		if mon.MapRef() == mapRef && !mon.IsDead() {
+			tx, ty, found = mon.PosX(), mon.PosY(), true
+		}
+	}
+	s.mu.RUnlock()
+	if !found {
+		return 0, false
+	}
+
+	for d := uint8(0); d <= entity.DirUpLeft; d++ {
+		if px+entity.DirDelta[d][0] == tx && py+entity.DirDelta[d][1] == ty {
+			return d, true
+		}
+	}
+	return 0, false
+}
+
+// sendMapSnapshotTo 给新协议玩家发一份"当前地图快照"（`ChangeMap`）。
+//
+// 进图（`EnterWorld`）与换图（回城/传送/脚本传送）是同一件事的两种时机，
+// 所以两者共用 `entitySnapshot` 与同一套"快照即出现"的账本规则。
+func (s *Server) sendMapSnapshotTo(p *Player, mapID string) {
+	if p.protoOut == nil {
+		return
+	}
+	states, inView := s.entitySnapshot(p)
+	// ⚠️ 快照就是"出现"：先填视野账本，否则随后的 updateVision 会把同一批实体
+	// 再当"新进入视野"推一遍（与 enterWorld 同一个坑，见那里的注释）。
+	p.visible.Update(inView)
+	p.protoOut.enqueue(&protocol.Envelope{Body: &protocol.Envelope_ChangeMap{
+		ChangeMap: &protocol.ChangeMap{
+			MapId:      0, // ⚠️ 语义未定（v0 恒 0，以 map_name 为准），见 protocol.md §11
+			MapName:    mapID,
+			Position:   &protocol.Vec2{X: int32(p.Obj.PosX()), Y: int32(p.Obj.PosY())},
+			Entities:   states,
+			ServerTick: uint32(time.Now().UnixMilli()),
+		}}})
+	if p.Char != nil && p.Char.Data != nil {
+		p.protoOut.ability(p.Char.Data.Abil, p.Char.Data.Gold)
+	}
 }
 
 // tickProtoVision 是**只发给新协议玩家**的周期性视野同步。

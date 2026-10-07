@@ -64,7 +64,7 @@ func (s *Server) handleAttack(c net.Conn, p *Player, pkt wire.Packet) {
 	// 刺杀剑术(mode 4)：目标 = **正前方第二格**（第一格有没有东西不影响）。
 	// 原版只要第二格有对象就算"打出去了"（不降级），所以这里没有落空惩罚。
 	if mode == hitLong && hasErgum {
-		s.broadcastSwing(c, p, proto.SM_LONGHIT, dir)
+		s.broadcastSwing(p, proto.SM_LONGHIT, dir)
 		minAtk, maxAtk := s.attackPower(p)
 		if !s.attackSwordLong(p, userMagicOf(p, 12), dir, minAtk, maxAtk) {
 			log.Printf("%s 刺杀剑术落空（正前方第二格为空）方向=%d", p.Char.Name, dir)
@@ -76,7 +76,7 @@ func (s *Server) handleAttack(c net.Conn, p *Player, pkt wire.Packet) {
 	if mode == hitWide && hasBanwol {
 		minAtk, maxAtk := s.attackPower(p)
 		if s.attackSwordWide(p, userMagicOf(p, 25), dir, minAtk, maxAtk) {
-			s.broadcastSwing(c, p, proto.SM_WIDEHIT, dir)
+			s.broadcastSwing(p, proto.SM_WIDEHIT, dir)
 			return
 		}
 		mode = hitNormal
@@ -84,7 +84,7 @@ func (s *Server) handleAttack(c net.Conn, p *Player, pkt wire.Packet) {
 
 	// 广播攻击动作（让周围玩家看到挥砍）。重击/大力只是动画不同，伤害同普通；
 	// 攻杀(3)/烈火(7) 在充能时换成对应的强化动画。
-	s.broadcastSwing(c, p, swingIdent(mode, hasErgum, hasBanwol, powerHit, fireHit), dir)
+	s.broadcastSwing(p, swingIdent(mode, hasErgum, hasBanwol, powerHit, fireHit), dir)
 
 	// 找前方一格的实体：玩家与怪物都算（PvP 与打怪共用一个目标格）。
 	tx, ty := p.Obj.PosX()+int(entity.DirDelta[dir][0]), p.Obj.PosY()+int(entity.DirDelta[dir][1])
@@ -153,7 +153,7 @@ func (s *Server) handleAttack(c net.Conn, p *Player, pkt wire.Packet) {
 	//    易错点：伤害在 Series 而非 Tag。
 	s.broadcastToViewers(target.MapRef(), target.PosX(), target.PosY(), func(other *Player) {
 		if other.visible.Contains(target.ID) {
-			s.sendStruck(other, target.ID, target.HP, target.MaxHP, dmg)
+			s.sendStruck(other, p.Obj.ID, target.ID, target.HP, target.MaxHP, dmg)
 			obs.Event("attack_hit", "player", p.Char.Name, "monster", target.ID,
 				"monster_name", target.Name, "dmg", dmg, "hp", target.HP,
 				"max_hp", target.MaxHP)
@@ -167,7 +167,7 @@ func (s *Server) handleAttack(c net.Conn, p *Player, pkt wire.Packet) {
 	// 死亡：广播 SM_DEATH，结算经验
 	s.broadcastToViewers(target.MapRef(), target.PosX(), target.PosY(), func(other *Player) {
 		if other.visible.Remove(target.ID) {
-			s.send(other.conn, proto.SM_DEATH, int32(target.ID), uint16(target.PosX()), uint16(target.PosY()), uint16(target.Facing()), "")
+			s.sendDeathTo(other, target.ID, target.PosX(), target.PosY(), target.Facing(), p.Obj.ID)
 		}
 	})
 	s.mu.Lock()
@@ -187,37 +187,118 @@ func (s *Server) handleAttack(c net.Conn, p *Player, pkt wire.Packet) {
 	s.scatterKillGold(target, p.Obj.ID)
 }
 
+// sendSwing 把一次挥砍动画发给**一个**玩家（两条协议各取所需）。
+//
+// legacy：挥砍消息号本身（SM_HIT/SM_HEAVYHIT/…，Recog=出手者）。
+// 新协议：`EntityAction{action = 1..8}`——**与 `AttackAction` 同值**，
+// 客户端不必再翻译一层（见 netproto.go 的动作 id 值域说明）。
+func (s *Server) sendSwing(to, actor *Player, ident uint16, dir uint8) {
+	if to == nil || actor == nil {
+		return
+	}
+	if sink := to.protoOut; sink != nil {
+		sink.action(actor.Obj.ID, attackActionOf(ident))
+		return
+	}
+	s.send(to.conn, ident, int32(actor.Obj.ID),
+		uint16(actor.Obj.PosX()), uint16(actor.Obj.PosY()), uint16(dir), "")
+}
+
 // broadcastSwing 广播一次挥砍动作（给自己 + 视野内的人）。
 //
 // ⚠️ 我们**先**发挥砍再结算伤害，而原版 `AttackDir` 是先 `_Attack` 再
 // `SendAttackMsg`。客户端对两者都只是"收到了就播动画"，包序不影响表现；
 // 保持现状以免动到既有的 attack/peer 用例包序断言。
-func (s *Server) broadcastSwing(c net.Conn, p *Player, ident uint16, dir uint8) {
+//
+// ⚠️ 自己那一份是**单独发**的、不能并进上面那段广播：`p.visible` 只装**别人**
+// （不含自己），所以广播里那个 `visible.Contains` 判据天然把自己滤掉了。
+func (s *Server) broadcastSwing(p *Player, ident uint16, dir uint8) {
 	s.broadcastToViewers(p.Obj.MapRef(), p.Obj.PosX(), p.Obj.PosY(), func(other *Player) {
 		if other.visible.Contains(p.Obj.ID) {
-			s.send(other.conn, ident, int32(p.Obj.ID),
-				uint16(p.Obj.PosX()), uint16(p.Obj.PosY()), uint16(dir), "")
+			s.sendSwing(other, p, ident, dir)
 		}
 	})
-	s.send(c, ident, int32(p.Obj.ID), uint16(p.Obj.PosX()), uint16(p.Obj.PosY()), uint16(dir), "")
+	s.sendSwing(p, p, ident, dir)
 }
 
-// sendStruck 发送受击消息。
+// playerIDOf 取玩家的 ActorId（nil 安全：毒源/出手者允许"没有具体的人"）。
+func playerIDOf(p *Player) uint32 {
+	if p == nil || p.Obj == nil {
+		return 0
+	}
+	return p.Obj.ID
+}
+
+// sendStruck 发送受击消息（两条协议各取所需）。
 //
-// Recog=ActorId, Param=HP, Tag=MaxHP, Series=伤害（ClMain.pas:4964）。
+// legacy：SM_STRUCK。Recog=受击者, Param=HP, Tag=MaxHP, Series=伤害（ClMain.pas:4964）。
 // body 是 TMessageBodyWL，承载攻击者与状态，客户端据此播放受击动作。
-func (s *Server) sendStruck(to *Player, actorID uint32, hp, maxHP, dmg uint32) {
+// 新协议：`Damage{出手方, 受击者, 伤害}` + `EntityHealth` + `EntityAction(受击)`。
+//
+// `attackerID` 允许为 0（火墙/毒/脚本这类"没有具体出手者"的伤害）——
+// 与 `Death.killer_id` 的约定一致。
+func (s *Server) sendStruck(to *Player, attackerID, victimID uint32, hp, maxHP, dmg uint32) {
+	if to == nil {
+		return
+	}
+	if sink := to.protoOut; sink != nil {
+		sink.damage(attackerID, victimID, int32(dmg), 0)
+		sink.health(victimID, hp, maxHP)
+		sink.action(victimID, actionHurt)
+		return
+	}
 	wl := proto.MessageBodyWL{Param1: 0, Param2: 0, Tag1: 0, Tag2: int32(dmg)}
-	s.send(to.conn, proto.SM_STRUCK, int32(actorID), uint16(hp), uint16(maxHP),
+	s.send(to.conn, proto.SM_STRUCK, int32(victimID), uint16(hp), uint16(maxHP),
 		uint16(dmg), string(wl.Append(nil)))
 }
 
 // sendHealthChanged 同步血量/蓝量（SM_HEALTHSPELLCHANGED）。
 //
 // Recog=ActorId, Param=HP, Tag=MP, Series=MaxHP（ClMain.pas SM_HEALTHSPELLCHANGED）。
+//
+// ⚠️ 新协议的 `EntityHealth` **只有 hp/max_hp，没有 mp**。所以：
+//
+//   - 血量照样发 `EntityHealth`；
+//   - 若是**自己**，额外补一条完整 `AbilityUpdate`（客户端本来就要它来画血/蓝条）——
+//     否则用完技能后蓝条永远不动（`sendHealthChanged` 是所有 mp 变化的唯一出口，
+//     见 monsterai/loops/spell 等 23 处调用点）。
+//     代价是"每次血量变化多发一条完整能力值"（回血每秒两次），本地开发可以接受。
 func (s *Server) sendHealthChanged(to *Player, actorID uint32, hp, mp, maxHP uint32) {
+	if to == nil {
+		return
+	}
+	if sink := to.protoOut; sink != nil {
+		sink.health(actorID, hp, maxHP)
+		if to.Obj != nil && actorID == to.Obj.ID {
+			if ab := to.abilCopy(); ab != nil {
+				sink.ability(ab, to.gold())
+			}
+		}
+		_ = mp
+		return
+	}
 	s.send(to.conn, proto.SM_HEALTHSPELLCHANGED, int32(actorID),
 		uint16(hp), uint16(mp), uint16(maxHP), "")
+}
+
+// sendDeathTo 把"某实体死亡"发给**一个**玩家（两条协议各取所需）。
+//
+// legacy：SM_DEATH（Recog=ActorId，坐标+朝向供客户端就地播死亡动画）。
+// 新协议：`EntityAction(死亡)` + `Death{实体, 击杀者}`。
+//
+// ⚠️ 做成一个函数而不是每处各写一遍分支：SM_DEATH 有 8 个发送点
+// （近战/半月/技能/毒/火墙/脚本/宠物/玩家死亡），散着写迟早漏一个，
+// 而漏的那个表现为"新协议客户端看见怪凭空消失"（怪没了、死亡动画没有）。
+func (s *Server) sendDeathTo(to *Player, id uint32, x, y int, dir uint8, killerID uint32) {
+	if to == nil {
+		return
+	}
+	if sink := to.protoOut; sink != nil {
+		sink.action(id, actionDeath)
+		sink.death(id, killerID)
+		return
+	}
+	s.send(to.conn, proto.SM_DEATH, int32(id), uint16(x), uint16(y), uint16(dir), "")
 }
 
 // playerAC 返回玩家防御（装备 AC 累加，打包为 DWord）。

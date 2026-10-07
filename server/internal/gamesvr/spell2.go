@@ -156,8 +156,8 @@ func (s *Server) castKillUndead(c net.Conn, p *Player, info *data.MagicInfo,
 
 	s.broadcastToViewers(mon.MapRef(), mon.PosX(), mon.PosY(), func(o *Player) {
 		if o.visible.Contains(monID) {
-			s.send(o.conn, proto.SM_DEATH, int32(monID),
-				uint16(mon.PosX()), uint16(mon.PosY()), uint16(info.MagicID), "")
+			// 击杀者不在这条路径的签名里 ⇒ killer 传 0（见 protocol.md §11 的归因待办）
+			s.sendDeathTo(o, monID, mon.PosX(), mon.PosY(), 0, 0)
 		}
 	})
 	s.killMonsterBy(p, mon, info.MagicID, mon.PosX(), mon.PosY())

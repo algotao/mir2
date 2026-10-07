@@ -426,7 +426,7 @@ func (s *Server) wallBurn(k wallKey, owner *Player, dmg uint32, now time.Time) {
 	for _, h := range monHits {
 		s.broadcastToViewers(k.m, k.x, k.y, func(other *Player) {
 			if other.visible.Contains(h.id) {
-				s.sendStruck(other, h.id, h.hp, h.maxHP, h.dmg)
+				s.sendStruck(other, owner.Obj.ID, h.id, h.hp, h.maxHP, h.dmg)
 			}
 		})
 		if !h.died {
@@ -440,7 +440,7 @@ func (s *Server) wallBurn(k wallKey, owner *Player, dmg uint32, now time.Time) {
 		s.broadcastToViewers(k.m, k.x, k.y, func(o *Player) {
 			// ⚠️ 受击者自己也要收到：自己的 visible 集合不含自己
 			if o.visible.Contains(h.victim.Obj.ID) || o == h.victim {
-				s.sendStruck(o, h.victim.Obj.ID, h.hp, h.maxHP, h.dmg)
+				s.sendStruck(o, owner.Obj.ID, h.victim.Obj.ID, h.hp, h.maxHP, h.dmg)
 			}
 		})
 		s.sendHealthChanged(h.victim, h.victim.Obj.ID, h.hp, h.mp, h.maxHP)

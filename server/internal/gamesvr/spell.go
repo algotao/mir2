@@ -398,14 +398,14 @@ func (s *Server) castDamageSpell(c net.Conn, p *Player, info *data.MagicInfo,
 	})
 	// 伤害表现
 	s.broadcastToViewers(tMap, tx, ty, func(other *Player) {
-		s.sendStruck(other, tID, hp, maxHP, dmg)
+		s.sendStruck(other, p.Obj.ID, tID, hp, maxHP, dmg)
 	})
 
 	if !died {
 		log.Printf("%s 用 %s 命中 %s 伤害=%d (HP %d/%d)", p.Char.Name, info.Name, tName, dmg, hp, maxHP)
 		return
 	}
-	s.send(c, proto.SM_DEATH, int32(tID), uint16(tx), uint16(ty), uint16(info.MagicID), "")
+	s.sendDeathTo(p, tID, tx, ty, 0, p.Obj.ID)
 	// 经验与升级统一走 grantExp（与打怪、脚本 GIVEEXP 同一条路径）
 	s.grantExp(p, uint64(exp))
 	log.Printf("%s 用 %s 击杀 %s 伤害=%d 经验+%d", p.Char.Name, info.Name, tName, dmg, exp)

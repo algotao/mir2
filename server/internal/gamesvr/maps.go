@@ -71,6 +71,27 @@ func (s *Server) switchMap(c net.Conn, p *Player, mapID string, x, y int) error 
 	s.world.index.Add(p)
 	s.mu.Unlock()
 
+	// 新协议：换图 = **一份新快照**（`ChangeMap`）。
+	//
+	// ⚠️ legacy 那套三步（先 SM_CLEAROBJECTS 清掉旧对象、再 SM_CHANGEMAP、最后靠
+	// updateVision 增量补）在新协议里是多余的：客户端拿到"新地图名 + 整份实体表"
+	// 就自然重建了。而且少了"先清空"这一步，也就没有"清空与补发之间闪一下空地图"
+	// 那个窗口。
+	//
+	// ⚠️ `p.visible` 已被上面的 `Clear()` 清空，`sendMapSnapshotTo` 会把它填成
+	// 这次快照的集合（"快照即出现"，见那里的注释）。
+	if p.protoOut != nil {
+		s.activateSpawnMap(mp.Name)
+		s.sendMapSnapshotTo(p, mp.Name)
+		// "别人看我"那半边仍要走（我这边已由快照填好 ⇒ 不会再发一遍出现）。
+		s.updateVision(p)
+		p.lastMoveAt = time.Now()
+		log.Printf("%s 切换到 %s(%s) (%d,%d)（新协议）",
+			p.Char.Name, mapID, s.world.maps.Name(mapID), x, y)
+		obs.Event("map_change", "player", p.Char.Name, "map", mapID, "x", x, "y", y)
+		return nil
+	}
+
 	s.send(c, proto.SM_CLEAROBJECTS, 0, 0, 0, 0, "")
 	// ⚠️ 客户端把这条的 Series 也读作 darkness（ClMain.pas:2493）⇒ 原来写死 0 的话
 	// 夜里切图会突然变亮。按新地图算（原版 ObjBase.pas:5796 也是 `DayBright()`）。

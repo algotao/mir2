@@ -133,7 +133,7 @@ func (s *Server) applyPetHits(hits []petHit, now time.Time) {
 		}
 		s.broadcastToViewers(h.target.MapRef(), h.target.PosX(), h.target.PosY(), func(o *Player) {
 			if o.visible.Contains(h.target.ID) {
-				s.sendStruck(o, h.target.ID, h.hp, h.maxHP, h.dmg)
+				s.sendStruck(o, h.pet.ID, h.target.ID, h.hp, h.maxHP, h.dmg)
 			}
 		})
 		log.Printf("%s 的宠物 %s 打了 %s %d 点（HP %d/%d）",

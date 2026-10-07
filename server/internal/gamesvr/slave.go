@@ -294,8 +294,7 @@ func (s *Server) killSlavesWithMaster(p *Player) {
 	for _, m := range dead {
 		s.broadcastToViewers(m.MapRef(), m.PosX(), m.PosY(), func(o *Player) {
 			if o.visible.Remove(m.ID) {
-				s.send(o.conn, proto.SM_DEATH, int32(m.ID),
-					uint16(m.PosX()), uint16(m.PosY()), uint16(m.Facing()), "")
+				s.sendDeathTo(o, m.ID, m.PosX(), m.PosY(), m.Facing(), 0)
 			}
 		})
 	}

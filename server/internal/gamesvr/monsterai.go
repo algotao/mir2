@@ -266,12 +266,12 @@ func (s *Server) applyMonsterHit(h monsterHit) {
 	// 受击动作：给能看到该玩家的客户端
 	s.broadcastToViewers(p.Obj.MapRef(), p.Obj.PosX(), p.Obj.PosY(), func(other *Player) {
 		if other.visible.Contains(h.playerID) {
-			s.sendStruck(other, h.playerID, h.hp, h.maxHP, h.dmg)
+			s.sendStruck(other, h.monID, h.playerID, h.hp, h.maxHP, h.dmg)
 		}
 	})
 	// ⚠️ 受击者自己也要收到一份：自己的 visible 集合不含自己，
 	// 只靠上面那段广播的话，玩家永远看不到自己挨打（闪红/受击动作）。
-	s.sendStruck(p, h.playerID, h.hp, h.maxHP, h.dmg)
+	s.sendStruck(p, h.monID, h.playerID, h.hp, h.maxHP, h.dmg)
 	// 血量同步（SM_HEALTHSPELLCHANGED）
 	s.sendHealthChanged(p, h.playerID, h.hp, h.mp, h.maxHP)
 
@@ -286,8 +286,14 @@ func (s *Server) applyMonsterHit(h monsterHit) {
 		return
 	}
 	log.Printf("%s 被 ActorId=%d 击倒（伤害 %d）", p.Char.Name, h.monID, h.dmg)
-	s.send(p.conn, proto.SM_NOWDEATH, int32(h.playerID),
-		uint16(p.Obj.PosX()), uint16(p.Obj.PosY()), uint16(p.Obj.Facing()), "")
+	if sink := p.protoOut; sink != nil {
+		// 新协议：死亡动作 + Death（击杀者是那只怪）；回城走 switchMap → ChangeMap 快照。
+		sink.action(h.playerID, actionDeath)
+		sink.death(h.playerID, h.monID)
+	} else {
+		s.send(p.conn, proto.SM_NOWDEATH, int32(h.playerID),
+			uint16(p.Obj.PosX()), uint16(p.Obj.PosY()), uint16(p.Obj.Facing()), "")
+	}
 	s.revive(p.conn, p, nil) // 怪物致死：没有"杀人者行会"可记分
 }
 

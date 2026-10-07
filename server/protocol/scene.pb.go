@@ -726,6 +726,9 @@ func (x *EntityMove) GetServerTick() uint32 {
 }
 
 // 动作切换（走/跑/攻击/受击/死亡/骑马…）。用动作 id + 时间戳，取代原版 70 个手写动画类。
+//
+// ⚠️ `action` 的**值域**见 docs/protocol.md §9.5（1..8 与 AttackAction 同值 / 51 受击 /
+// 52 死亡）。它是本项目**自己定的**：原版那 70 个动画类没法照搬，也不该照搬。
 type EntityAction struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EntityId      uint64                 `protobuf:"varint,1,opt,name=entity_id,json=entityId,proto3" json:"entity_id,omitempty"`

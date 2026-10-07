@@ -674,7 +674,7 @@ func (s *Server) damagePlayer(c net.Conn, attacker, victim *Player, dmg uint32, 
 	// 受击者自己也要收到 SM_STRUCK（他的 visible 集合不含自己）。
 	s.broadcastToViewers(victim.Obj.MapRef(), victim.Obj.PosX(), victim.Obj.PosY(), func(o *Player) {
 		if o.visible.Contains(victim.Obj.ID) || o == victim {
-			s.sendStruck(o, victim.Obj.ID, hp, maxHP, dmg)
+			s.sendStruck(o, attacker.Obj.ID, victim.Obj.ID, hp, maxHP, dmg)
 		}
 	})
 	obs.Event("pvp_hit", "attacker", attacker.Char.Name, "victim", victim.Char.Name,
@@ -712,8 +712,7 @@ func (s *Server) killPlayerByPlayer(c net.Conn, killer, victim *Player, now time
 	// SM_NOWDEATH：原版发 SM_DEATH 广播 + 自己收到 NOWDEATH（ObjBase.pas:21071）。
 	s.broadcastToViewers(victim.Obj.MapRef(), victim.Obj.PosX(), victim.Obj.PosY(), func(o *Player) {
 		if o.visible.Remove(victim.Obj.ID) {
-			s.send(o.conn, proto.SM_DEATH, int32(victim.Obj.ID),
-				uint16(victim.Obj.PosX()), uint16(victim.Obj.PosY()), uint16(victim.Obj.Facing()), "")
+			s.sendDeathTo(o, victim.Obj.ID, victim.Obj.PosX(), victim.Obj.PosY(), victim.Obj.Facing(), killer.Obj.ID)
 		}
 	})
 	s.send(victim.conn, proto.SM_NOWDEATH, int32(victim.Obj.ID),
@@ -840,7 +839,7 @@ func (s *Server) spellHitPlayer(c net.Conn, caster, victim *Player, nPower int, 
 
 	s.broadcastToViewers(victim.Obj.MapRef(), victim.Obj.PosX(), victim.Obj.PosY(), func(o *Player) {
 		if o.visible.Contains(victim.Obj.ID) || o == victim {
-			s.sendStruck(o, victim.Obj.ID, hp, maxHP, dmg)
+			s.sendStruck(o, caster.Obj.ID, victim.Obj.ID, hp, maxHP, dmg)
 		}
 	})
 	obs.Event("pvp_spell_hit", "caster", caster.Char.Name, "victim", victim.Char.Name,

@@ -100,7 +100,9 @@ func seedAccount(t *testing.T, store storage.Store) (sessionID int32, charID uin
 			Account: "tester", ChrName: "勇士",
 			// 播在 (1,1)：紧贴边界 ⇒ 向右可走、向上被挡（见 protoContractServer 的地图）
 			CurMap: "0", CurX: 1, CurY: 1, Dir: uint32(entity.DirRight), Hair: 3,
-			Abil: &pb.Ability{Level: 7, Hp: 30, MaxHp: 40, Mp: 5, MaxMp: 9},
+			// ⚠️ DC 必须给：打怪的伤害来自它，缺了就只有 0-0（战斗用例会验不到东西）
+			Abil: &pb.Ability{Level: 7, Hp: 30, MaxHp: 40, Mp: 5, MaxMp: 9,
+				Dc: &pb.MinMax{Min: 20, Max: 25}},
 		},
 	}
 	if err := store.Characters().Create(ctx, chr); err != nil {
@@ -906,4 +908,54 @@ func TestDirectionEnumMatchesLegacyOrder(t *testing.T) {
 	if entity.DirUpLeft != 7 {
 		t.Errorf("原版朝向常量变成 %d 个了？", entity.DirUpLeft+1)
 	}
+}
+
+// TestProtoRustCombat 是 A′（攻击 → 伤害 → 血量 → 死亡）的跨实现验收：
+// Rust 客户端发 `AttackInput`，Go 服务端走 legacy 那条结算路径，客户端应当依次看到
+// **自己的挥砍动作**、**伤害**、**血量**、**死亡**。
+//
+// ⚠️ 为什么这条值得单列：战斗是本项目**规则最密**的一块（威力/打空/减防/麻痹/掉落/经验）。
+// 它同时也是"新协议客户端能不能真的玩"的第一道门槛。
+func TestProtoRustCombat(t *testing.T) {
+	bin, why := findE2EBin()
+	if bin == "" {
+		t.Skipf("跳过：%s", why)
+	}
+
+	s, store, addr := protoContractServer(t)
+	sessionID, charID := seedAccount(t, store)
+
+	// 一只紧贴玩家的怪（对角相邻 = 八格里的一格），15 血、玩家 DC 20-25 ⇒ 一刀毙命。
+	// 位置 (2,2) 与玩家 (1,1) 是"右下"邻格 —— 正好验 service 端算出的朝向。
+	mon := newTestMonster(1_000_001, "鸡", 15)
+	mon.Object.SetPlace(s.world.defaultMap, 2, 2, entity.DirDown)
+	s.world.monsters[mon.ID] = mon
+	s.world.monsterIdx.Add(mon)
+
+	cmd := exec.Command(bin, "world",
+		"-addr", addr,
+		"-session", strconv.Itoa(int(sessionID)),
+		"-char", strconv.FormatUint(charID, 10),
+		"-expect-map", "0",
+		"-expect-pos", "1,1",
+		"-expect-entities", "1",
+		"-attack", strconv.FormatUint(uint64(mon.ID), 10),
+		"-expect-damage", "1",
+		"-expect-kill",
+		"-timeout-ms", "8000",
+	)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Rust 战斗剧本失败：%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "世界状态通过") {
+		t.Errorf("剧本没打通过标记，输出：\n%s", out.String())
+	}
+	// 伤害值必须是**真的算出来的**（不是 0）：DC 20-25 减怪物 AC 之后仍应 > 0。
+	if !strings.Contains(out.String(), "伤害：") {
+		t.Errorf("输出里没有伤害事件：\n%s", out.String())
+	}
+	t.Logf("Rust 战斗剧本输出：\n%s", out.String())
 }
