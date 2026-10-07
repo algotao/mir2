@@ -260,6 +260,14 @@ TCP 保证送达与顺序，但不保证"语义上的只有一次"。所以按**
       （T1 可达 172 / T2 待定 26 / T3 引擎扩展 18），与 28 窗口交叉核对。
 - [x] **`protocol/` 骨架 + 生成脚本 + 核心子集 schema v1**（握手 / 登录 / 选角 / 进图 / 移动 /
       攻击 / 聊天 / 物品，oneof 共 65 条）；`protoc` 校验通过，Go 产物生成并编译通过。
+- [x] **分帧 + 握手层落地**（2026-10-07）⇒ [`server/internal/frame`](../server/internal/frame)：
+      `Write`/`Read`（信封）+ `ReadRaw`/`WriteRaw`（**给 gate 用**：按 D-17 gate 不做协议感知，
+      只需要长度域）+ `CheckHello`（版本不匹配**明确拒绝**）+ `MsgName`（日志可读）。
+      - **手写的只有长度域**：消息体一律 protoc 生成（§3 硬规则 1）
+      - `protocol.Version` 也由 `gen.sh` 从 `version.txt` 生成 —— Go 侧不再有"手抄一份版本号"
+      - **黄金报文测试已就位**（§9.3 的第一道门禁）：`TestGoldenFrameBytes` 断言
+        固定握手信封的**逐字节输出**与 sha256；改 schema/版本就会红
 - [ ] D-13（连接模型）定稿。D-12 / D-16 已定（protobuf 3 + oneof 信封），D-17 已定（gate 不做协议感知）。
 - [ ] Rust 侧生成落地：`client/protocol/build.rs` + prost-build（依赖 `protoc`）。
-- [ ] 契约测试与 CI 门禁骨架。
+- [ ] **契约测试**骨架：起 Go 服务端 → 跑 `client/e2e` 剧本（§9.2）。
+      需要先完成服务端抽取 ③（换协议）/ ④（`gamesvr` 71 文件替换）。
