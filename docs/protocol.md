@@ -267,7 +267,39 @@ TCP 保证送达与顺序，但不保证"语义上的只有一次"。所以按**
       - `protocol.Version` 也由 `gen.sh` 从 `version.txt` 生成 —— Go 侧不再有"手抄一份版本号"
       - **黄金报文测试已就位**（§9.3 的第一道门禁）：`TestGoldenFrameBytes` 断言
         固定握手信封的**逐字节输出**与 sha256；改 schema/版本就会红
+- [x] **Rust 侧生成落地**（2026-10-07）⇒ [`client/protocol`](../client/protocol)（`build.rs` + prost-build）
+      + [`client/net`](../client/net)（连接、握手、发一收一；**不含 SDL**，D-18）。
+      版本号也由 `build.rs` 从 `version.txt` 生成（Rust 侧不手抄）。
+      两条判据：
+      - **黄金报文两端逐字节相同**：Rust 的 `golden_frame_bytes_match_go` 与 Go 的
+        `TestGoldenFrameBytes` 断言**同一串** `1400000008018a100f08021204746573741a057a682d434e`
+        （§9.3 那道门第一次跨了两个实现）；
+      - `mir2-e2e` 的依赖树里**没有 sdl3**（D-18 门禁仍成立）。
+- [x] **契约测试**（2026-10-07，§9.2 的完整形态）：Go 起服务端 → 跑 **`client/e2e` 的剧本**
+      ⇒ `mir2-e2e contract`（握手 → 认领会话 → 列角色 → 选角 → 进图 → 能力值 → 心跳 → 未知消息）
+      + Go 侧 [`TestProtoContractRustClient`](../server/internal/gamesvr/netproto_test.go)
+      （起服务端、播种数据、把**已知真值**用 `-expect-*` 传给 Rust 端断言）。
+      Go 侧另有一份同构的纯 Go 契约用例（`TestProtoContractEnterWorld`）覆盖错误路径。
+      ⚠️ 产物缺失时**跳过**（与 core 的 `real_container_if_present` 同一约定）：
+      先 `cd client && cargo build -p mir2-e2e`，或设 `$MIR2_E2E_BIN`。
+- [x] **修正 `Direction` 枚举顺序**（2026-10-07）：原枚举按"下→逆时针"排（`DIR_DOWN=1` …），
+      注释却声称"沿用原版顺序"（原版是 **上→顺时针**，`Grobal2.pas:19-26`）。已改为
+      **原版 + 1**，并 `version.txt 1 → 2`（改枚举值 = 改线上格式 ⇒ 必须 bump）。
+      钉子测试：`TestDirectionEnumMatchesLegacyOrder`（服务端）把两侧常量锁在一起。
+      ⚠️ 这类错**不会报错**，只会让每个实体差 4 个方向（上看起来是下）—— 正是 §9 要防的。
 - [ ] D-13（连接模型）定稿。D-12 / D-16 已定（protobuf 3 + oneof 信封），D-17 已定（gate 不做协议感知）。
-- [ ] Rust 侧生成落地：`client/protocol/build.rs` + prost-build（依赖 `protoc`）。
-- [ ] **契约测试**骨架：起 Go 服务端 → 跑 `client/e2e` 剧本（§9.2）。
+- [ ] **`Login` 还没实现**（新协议入口目前用 `Reconnect` 认领既有会话）：
+      卡在 `Login.password_hash` 的语义 —— 即**口令怎么过网络**（要定成 [D-24](./decisions.md)），
+      它同时依赖 accountsvc 的接入（D-13 的内部 RPC）。
+- [ ] `EnterWorld.map_id` 的取值还没定义（v0 恒 0，客户端请用 `map_name`）：
+      本项目地图**按名字**索引（D-22，容器里就是 `<名字>.map`），需要定"id 到底是什么"
+      （编号？CRC？还是干脆从 schema 里去掉）。
+- [ ] `Ability.ac` / `ability.mac` 是否要拆成 `(min,max)` 对偶：1.76 的 AC/MAC 本来是
+      (min,max)（原版打包成一个 uint32 发出去、客户端再拆），而新协议给了**单值** ⇒
+      v0 只取了 `min`，**丢了信息**。等 combat 落地时一并定。
+- [ ] `session_token` 的正式格式与签发者：v0 是"4 字节小端会话号"（可猜测、不可换发），
+      正式应由 `LoginResult` 签发一个不可猜的随机值（§5 要求它独立于 TCP 连接）。
+- [ ] 新协议入口的 v0 边界（见 [`netproto.go`](../server/internal/gamesvr/netproto.go) 文件头）：
+      只做到"进图 + 看见自己"；移动/攻击/物品仍走 legacy；
+      新协议玩家**收不到 legacy 世界的实时广播**（`protoDown` 会把那些字节丢掉）。
       需要先完成服务端抽取 ③（换协议）/ ④（`gamesvr` 71 文件替换）。

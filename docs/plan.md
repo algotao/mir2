@@ -196,16 +196,26 @@ mir2/
       ⚠️ 解析器需支持 **12 B 与 36 B 两种格布局**（D-22 落地要求 4：`4.map` 就是 36 B）
       ⚠️ 别忘三条小语义：图号 **1 基**（0 = 不画）、**地表层只在 `i%2==0 && j%2==0` 的格上绘制**、
       通行 = `(BkImg & 0x8000) + (FrImg & 0x8000) == 0`
-- [ ] 协议：登录 → 选角 → 进图 → 走路 → 打怪 → 掉落捡取 → 升级
+- [~] 协议：登录 → 选角 → 进图 → 走路 → 打怪 → 掉落捡取 → 升级
+      **「进图 + 看见自己」这一段已在新协议上打通**（2026-10-07，**双协议并存**，A 方案）：
+      服务端新入口 `gamesvr -proto-addr`（`[u32 长度][Envelope]`，默认关）+ Rust 客户端
+      （`client/protocol` + `client/net` + `mir2-e2e contract`）+ 契约测试（§9.2）。
+      序列 = 握手 → 认领会话 → 列角色 → 选角（**在此申请角色租约**）→ EnterWorld 快照 → 能力值 → 心跳。
+      ⚠️ 未做：**`Login`**（被 [D-24](./decisions.md) 的口令传输挡着）、走路/战斗/物品；
+      新协议玩家暂时收不到 legacy 世界的实时广播（见 [protocol.md §11](./protocol.md)）。
 - [ ] 聊天显示与发送、背包/装备/状态窗口、技能栏
 - [ ] **`client/e2e` 产物**：crate 已就位（**不依赖 SDL3**），
       **无头渲染（出 PNG）+ 平移自检**已可用（2026-10-07）⇒ 用法见 §4.2；
       多机位自检 10/10 通过，反向验证（把 `FRONT_ROW_MARGIN` 改回 1）能立刻报出 17.2% 不一致
-      ⚠️ 待补：**协议剧本**（Go 服务端 ⇄ Rust 客户端）+ 容器内跑一次以证明"无显示环境可运行"
-- [ ] CI 门禁：`cargo tree -p mir2-e2e` 不含 `sdl3` ⇒ **已落实**
+      ⚠️ 待补：容器内跑一次以证明"无显示环境可运行"
+- [x] **协议剧本**（Go 服务端 ⇄ Rust 客户端，2026-10-07）：`mir2-e2e contract` 走 §9.2 的
+      完整序列并断言；驱动方（Go 契约测试）用 `-expect-*` 把**已知真值**传进去对账。
+      跑法：`cd client && cargo build -p mir2-e2e`，
+      然后 `go test ./server/internal/gamesvr/ -run Rust`（产物缺失则跳过）
+- [x] CI 门禁：`cargo tree -p mir2-e2e` 不含 `sdl3` ⇒ **已落实**
       （[`client/e2e/check.sh`](../client/e2e/check.sh)：构建 + sdl3 门禁 + 多机位平移自检，
       并有 `real_pan_selfcheck` 集成测试守在 `cargo test` 里）
-      ⚠️ 待补：**契约测试**进流水线（依赖服务端）
+      ⚠️ 待补：契约测试**进流水线**（用例已就位，但 CI 编排要先构建 Rust 产物）
 - [ ] **`client/app` 在 macOS M4 上跑起来、连上 `server/`**（同时验证 SDL3 可用性，D-04）
 - [ ] 与 `server/` 实机联调
 
@@ -280,7 +290,11 @@ mir2/
      **proto 239 / wire 8 / netgate 6 / codec 1**。
      ⚠️ 注意"删掉再 `go build`"数不全（Go 缺包时只报前几个就停）
 6. **[客户端 M1 骨架]**（并行）——窗口 + 主循环 + 合成测试图渲染。
-7. **[契约测试骨架]**——必须在 M1 内建立，不能推迟。
+7. **[契约测试骨架]**——必须在 M1 内建立，不能推迟。⇒ **已建立**（2026-10-07）：
+   `internal/gamesvr/netproto_test.go`（Go 侧主契约 + 4 条错误路径 + 朝向编号钉子）
+   + `client/e2e/src/contract.rs`（Rust 剧本，与 app 共用协议与连接层）
+   + `TestProtoContractRustClient`（起服务端 → 跑 Rust 剧本 → 对账）。
+   下一步是把它接进流水线（现在靠手动 `cargo build` 才会真跑）。
 
 ---
 
