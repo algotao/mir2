@@ -139,7 +139,8 @@ mir2/
       与原版 `SM_ITEMSHOW` 不同，故不可据"mir2go 未实现"砍功能**
 - [ ] **搭 Mac 开发环境**（D-19 / D-21）：Rust（`aarch64-apple-darwin`）、Go **1.27.x**、
       CMake + Xcode CLT；**建议用大小写敏感的 APFS 卷放工作区**（D-20）
-- [ ] **基准版本**：`Client/` 还是 `MirClient/`（D-10）
+- [x] **基准版本** = **`MirClient/`**（D-10 已定）：两版**非等价**（`ClMain.pas` 有效代码差 ~363 行），
+      但**协议常量表几乎一致**（仅差 1 条 T3）⇒ 消息清单无需重做
 - [x] **IDL 核心子集**（v1）⇒ [`protocol/`](../protocol)：握手 / 登录 / 选角 / 进图 / 移动 / 攻击 / 聊天 / 物品；
       8 个 `.proto`（含共享 `common.proto`）+ `version.txt` + `gen.sh`；**oneof 共 65 条**，
       `protoc` 校验通过，Go 产物（`server/protocol/*.pb.go`）生成并**编译通过**

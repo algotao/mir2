@@ -253,7 +253,10 @@ gzip -9 -c $WS/mir2go/data/map/3.map | wc -c              # 0.059x
 
 另有 `MirClient/GShare-oldbk.pas` 是 `Client/` 没有的。
 
-**基准版本未定（D-10），开工前必须先定，成本 1–2 天，定错则全返工。**
+**基准版本已定：`MirClient/`（D-10，2026-10-07）** —— 它是**未精简的原始快照**
+（中文注释完整、有效代码更多、含 `GShare-oldbk.pas`）。
+两版**协议常量表几乎一致**（`CM_` 87/87；`SM_` 仅差 1 条 T3 `SM_PLAYDICE`）
+⇒ 本文与 [messages.md](./messages.md) 的结论**无需重做**。
 
 ---
 
