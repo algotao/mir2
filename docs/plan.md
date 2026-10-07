@@ -270,6 +270,15 @@ mir2/
 3. **[素材获取]**（非技术，可并行）——D-15。
 4. **[IDL 核心子集]**（3 天）——`protocol/mir2.proto` 初稿 + 两端生成脚本。
 5. **[服务端抽取 ① ②]**（2–3 天）——复制 + 编译通过，然后删协议层收集失败清单。
+   - **① 已完成**（2026-10-07）：`mir2go/{cmd,internal,proto,data}` → `server/`，
+     import 前缀 561 处改到 `github.com/algotao/mir2/server`；**`go build ./...` 零错误**、
+     **21 个包全过**（491 用例：485 通过 / 6 skip，skip 的都要真实地图 ⇒ 待 D-22 接容器）。
+     两个坑已记入 [server-extraction.md §3.1](./server-extraction.md)
+     （生成的 `.pb.go` 内嵌描述符不能纯 sed / `data/` 必须随代码下沉一层）
+   - **② 已完成**（量法见 [server-extraction.md §2.1](./server-extraction.md)）：
+     受影响面 **10 个包 / 89 个文件**（`gamesvr` 71）；新协议层要提供的符号面
+     **proto 239 / wire 8 / netgate 6 / codec 1**。
+     ⚠️ 注意"删掉再 `go build`"数不全（Go 缺包时只报前几个就停）
 6. **[客户端 M1 骨架]**（并行）——窗口 + 主循环 + 合成测试图渲染。
 7. **[契约测试骨架]**——必须在 M1 内建立，不能推迟。
 
