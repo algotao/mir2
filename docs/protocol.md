@@ -376,6 +376,21 @@ TCP 保证送达与顺序，但不保证"语义上的只有一次"。所以按**
       ⚠️ 配套：`ChangePassword` 还是空壳（要旧口令证明 + 新口令的新盐，还没接）；
       会话阶段号（`sessionStageAuthed = 1`）与 `loginSessionTTL` 在 gamesvr 与 accountsvc
       **各存了一份**，该搬到 `storage` 去。
+- [x] **选角**（2026-10-08）：`ListCharacters` / `CharacterList` / `SelectCharacter` /
+      `SelectCharacterResult`。做法：`Entrance` 加**显式开关** `set_manual_pick(true)`
+      —— 开了就停在新的 `Stage::AwaitPick` 等调用方 `pick(id)`，不开仍是"自动选第一个"
+      （e2e/无头驱动的默认）。选角被拒（`SELECT_CHAR_LEASE_HELD`）在手动模式下
+      **退回选角**让人换一个（原版也是弹个框接着选），不判死。
+- [x] **`CharacterSummary.gender` 现在真的填了**：`Data.Sex`（0/1，`accountsvc` 建角时写）
+      ⇒ `GENDER_MALE/FEMALE`；超出 0/1 的脏数据按"未指定"下发。
+      ⚠️ 这不是可有可无的字段：原版选角界面按 **(Job, Sex)** 各有一套坐标与图号
+      （`IntroScn.pas:1390-1429`、`stand_index = 40+Job*40+Sex*120`），缺了它
+      六个职业/性别组合只能画成同一个。跨实现用例：`TestProtoRustPickCharacter`。
+- [ ] `CreateCharacter` / `DeleteCharacter`：**协议里有、服务端没实现**
+      （`gamesvr` 的 dispatch 里没有这两条 ⇒ 会落到 `noteUnknown`）。
+      `accountsvc` 那条 legacy 路径有 `onNewChr`/`onDelChr`，但它们的输入是 6bit 文本正文，
+      **不能直接复用** ⇒ 要在 `netproto.go` 里按 proto 字段重写一遍（或抽共享函数）。
+      在那之前，客户端界面上那两颗按钮是**诚实的占位**（弹说明，不装作成功）。
 - [ ] 新协议入口的**剩余边界**（见 [`netproto.go`](../server/internal/gamesvr/netproto.go) 文件头）：
       物品/聊天/技能输入/组队/交易仍走 legacy；`protoDown` 会把那些 legacy 下行丢掉。
 - [ ] `MoveInput` **没有走/跑标志**（legacy 靠 CM_WALK / CM_RUN 两条消息区分）⇒
