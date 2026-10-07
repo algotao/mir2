@@ -313,12 +313,14 @@ fn draw_tile<'a, T>(
     let _ = ensure_tile(tc, libs, cache, dir, d.lib, d.area, d.index);
     if let Some(t) = cache.get(&(d.lib, d.area, d.index)) {
         let q = t.query();
+        // 前景要按图块实际高度底边对齐（判定在 core，见 TileDraw::top_y）
+        let top = d.top_y(q.width as i32, q.height as i32);
         canvas.copy(
             t,
             None::<FRect>,
             FRect::new(
                 d.x as f32,
-                origin_y + d.y as f32,
+                origin_y + top as f32,
                 q.width as f32,
                 q.height as f32,
             ),

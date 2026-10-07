@@ -309,9 +309,40 @@ pub struct TileDraw {
     pub area: u8,
     /// 图号（**已转 0 基**）。
     pub index: u16,
-    /// 相对视口左上角的像素坐标。
+    /// 该格左上角在视口内的像素坐标（`x`、`y`）。
+    ///
+    /// ⚠️ 对**前景层**，这**不是**图块的落点——前景要按图块实际高度做**底边对齐**
+    /// （见 [`TileDraw::top_y`]）。
     pub x: i32,
     pub y: i32,
+    /// 前景层的动画帧数（`ani_frame & 0x7F`）；其余层恒为 0。
+    pub ani_frames: u8,
+}
+
+impl TileDraw {
+    /// 图块落点的 Y（相对视口）。
+    ///
+    /// * **地表 / 中间**：左上角对齐格 ⇒ 就是 [`TileDraw::y`]。
+    /// * **前景**：
+    ///   - "平"图块（48×32 或 96×64）且**无动画** ⇒ 左上角对齐（官方 floor 趟）；
+    ///   - 其余（树、墙、Alpha 混合…）⇒ **底边对齐格的底边**。
+    ///
+    /// 依据：Delphi `PlayScn.pas:1172`（`mmm := m + UNITY - DSurface.Height`）与
+    /// Crystal `GameScene.cs:10814/10933`（`drawY` 取格底，再 `- s.Height`）。
+    /// 这两份实现在"平的"情形下**天然等价**（`height == 32` 时两种算法同解），
+    /// 差异只出现在高于一格的图块上——正是之前错位的地方。
+    pub fn top_y(&self, width: i32, height: i32) -> i32 {
+        if self.layer != Layer::Front {
+            return self.y;
+        }
+        let flat =
+            (width == UNIT_X && height == UNIT_Y) || (width == 2 * UNIT_X && height == 2 * UNIT_Y);
+        if flat && self.ani_frames == 0 {
+            self.y
+        } else {
+            self.y + UNIT_Y - height
+        }
+    }
 }
 
 impl Map {
@@ -366,6 +397,11 @@ impl Map {
                         index,
                         x: dx * UNIT_X,
                         y: dy * UNIT_Y,
+                        ani_frames: if layer == Layer::Front {
+                            c.ani_frames()
+                        } else {
+                            0
+                        },
                     });
                 }
             }
@@ -615,6 +651,46 @@ mod tests {
         // 完全没有前景物件时返回 None（镜头退回几何中心）
         let empty = Map::parse(&build(2, 2, CELL_LEN_CLASSIC, |_, _| [0u8; 12])).unwrap();
         assert_eq!(empty.nearest_front_tile(0, 0), None);
+    }
+
+    #[test]
+    fn front_layer_bottom_alignment() {
+        // 地表 / 中间：左上角对齐，不受高度影响
+        for layer in [Layer::Ground, Layer::Mid] {
+            let d = TileDraw {
+                layer,
+                lib: Lib::Tiles,
+                area: 0,
+                index: 0,
+                x: 0,
+                y: 64,
+                ani_frames: 0,
+            };
+            assert_eq!(d.top_y(48, 32), 64);
+            assert_eq!(d.top_y(48, 200), 64, "非前景层不做底边对齐");
+        }
+
+        let front = |ani: u8| TileDraw {
+            layer: Layer::Front,
+            lib: Lib::Objects,
+            area: 0,
+            index: 0,
+            x: 0,
+            y: 64,
+            ani_frames: ani,
+        };
+
+        // "平"图块（48×32）且无动画 ⇒ 左上对齐；两种算法同解
+        assert_eq!(front(0).top_y(48, 32), 64);
+        // 96×64 的平图块同理走左上对齐
+        assert_eq!(front(0).top_y(96, 64), 64);
+        // 高图块 ⇒ 底边对齐格的底边（y + 32 - h）
+        assert_eq!(front(0).top_y(48, 86), 64 + 32 - 86);
+        assert_eq!(front(0).top_y(48, 200), 64 + 32 - 200);
+        // 有动画时即使尺寸是 48×32，结果也不变（因为 h == 32）
+        assert_eq!(front(7).top_y(48, 32), 64);
+        // 但 96×64 有动画 ⇒ 走底边对齐（与官方第二趟一致）
+        assert_eq!(front(7).top_y(96, 64), 64 + 32 - 64);
     }
 
     #[test]
