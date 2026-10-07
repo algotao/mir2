@@ -137,8 +137,11 @@ mir2/
       ⚠️ 三条关键结论：**① IDL 必须双向（`CM_` 87 一并覆盖）；② 邮件/好友/黑名单/备忘录无协议支撑 ⇒ 不做；
       ③ mir2go 是"行为/数值"标杆，但**不是消息选集标杆**——`gold.go:96` 用 `SM_ADDITEM` 发地面物品，
       与原版 `SM_ITEMSHOW` 不同，故不可据"mir2go 未实现"砍功能**
-- [ ] **搭 Mac 开发环境**（D-19 / D-21）：Rust（`aarch64-apple-darwin`）、Go **1.27.x**、
-      CMake + Xcode CLT；**建议用大小写敏感的 APFS 卷放工作区**（D-20）
+- [x] **搭 Mac 开发环境**（D-19 / D-21，2026-10-07）：Go **1.27.1**、Rust **1.99.0**
+      （`aarch64-apple-darwin`）、CMake 4.4.4 + Xcode CLT、protoc 36.2；
+      **`linux/amd64` 与 `linux/arm64` 交叉编译均通过**（D-21 无 cgo 生效）
+      ⚠️ 待补：Windows 发布需 `rustup target add x86_64-pc-windows-gnu`（D-19 要 gnu 工具链，当前只有 `-msvc`）
+      ⚠️ 待办：**用大小写敏感的 APFS 卷放工作区**（D-20，建议项）
 - [x] **基准版本** = **`MirClient/`**（D-10 已定）：两版**非等价**（`ClMain.pas` 有效代码差 ~363 行），
       但**协议常量表几乎一致**（仅差 1 条 T3）⇒ 消息清单无需重做
 - [x] **IDL 核心子集**（v1）⇒ [`protocol/`](../protocol)：握手 / 登录 / 选角 / 进图 / 移动 / 攻击 / 聊天 / 物品；
