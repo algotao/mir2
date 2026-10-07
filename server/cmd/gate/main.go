@@ -1,33 +1,33 @@
-// Command gate 是客户端接入网关。
+// Command gate 是客户端接入网关（D-17：**纯字节转发层**）。
 //
-// 职责：把客户端连接转发到后端服务，并在上行首帧里填入**真实客户端 IP**
-// （直连时后端看到的是网关自己的地址）。
+// 职责只有四件：**TCP 接入 / 按帧转发 / 限流 / 连接元数据**。
+// 它**不做协议感知** —— 只认 `[u32 小端长度][bytes]` 这一层分帧
+// （[docs/protocol.md §2]），不认识 Envelope、不解析消息体、不随 schema 演进。
 //
 // 用法：
 //
 //	go run ./cmd/gate -route :7300=127.0.0.1:7200
 //	go run ./cmd/gate -route :7000=127.0.0.1:7000 -route :7100=127.0.0.1:7100
 //
-// 完整部署形态（accountsvc 下发的地址指向本网关，回归批次 4 就是它）：
+// ⚠️ **真实客户端 IP 目前只落在网关自己的日志里，没有传给后端。**
+// 旧协议是在登录首帧的文本 token 里拼 `|<IP>`，新协议里没有这种可以"顺手拼一段"
+// 的字段（这正是自研协议的好处：不再有格式与字符集耦合的定长串）。要把它交给后端，
+// 得在下面几条里选一条，属**待决**（见 docs/decisions.md）：
 //
-//	gate -route :7000=127.0.0.1:17000 -route :7100=127.0.0.1:17100 \
-//	     -route :7400=127.0.0.1:7200
-//	accountsvc -login-addr 127.0.0.1:17000 -sel-addr 127.0.0.1:17100 \
-//	           -selgate-addr 127.0.0.1 -selgate-port 7100 \
-//	           -rungate-addr 127.0.0.1 -rungate-port 7400
+//  1. PROXY protocol（HAProxy 事实标准）：网关在首帧前写一行
+//     `PROXY TCP4 <src> <dst> <sport> <dport>\r\n`，后端剥掉。**协议无关**，推荐；
+//  2. 后端向网关发起内部查询（网关维护"连接元数据"表，按 conn id 查）；
+//  3. 把 client_ip 放进 ClientHello —— 但这等于**相信客户端自报**，只在网关
+//     不可信时才勉强可接受，且会让 schema 多一个"只有网关填"的字段。
 //
-// 协议两端完全一致（都是 wire 的 '#'…'!' 帧 + 6bit 负载），
-// 因此网关可以做**透明转发**，只在首帧上做一处改写。
-//
-// ⚠️ 真实 IP 只注入 `**` 开头的**登录首帧**（进游戏阶段）。登录/选角阶段
-// 首帧是 CM_PROTOCOL 之类的文本包，注入会破坏协议，故原样透传——
-// accountsvc 记到的会话 IP 因此是网关自己的地址（它目前不用这个 IP 做判定）。
+// [docs/protocol.md §2]: ../../../docs/protocol.md
 package main
 
 import (
+	"bufio"
+	"errors"
 	"flag"
 	"fmt"
-	_ "github.com/algotao/mir2/server/internal/tz"
 	"io"
 	"log"
 	"net"
@@ -38,12 +38,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/algotao/mir2/server/internal/codec"
-	"github.com/algotao/mir2/server/internal/wire"
+	_ "github.com/algotao/mir2/server/internal/tz"
+
+	"github.com/algotao/mir2/server/internal/frame"
 )
 
 const (
-	maxFrameLen  = 64 * 1024
 	readBufSize  = 4096
 	readTimeout  = 5 * time.Minute
 	dialTimeout  = 5 * time.Second
@@ -154,81 +154,62 @@ func serve(client net.Conn, backend, ip string) {
 
 	done := make(chan struct{}, 2)
 
-	// 下行：后端 → 客户端（原样转发）
+	// 下行：后端 → 客户端。**纯 `io.Copy`** —— 连长度域都不需要看，
+	// 后端写什么就原样给客户端什么。
 	go func() {
-		io.Copy(client, up)
+		_, _ = io.Copy(client, up)
 		done <- struct{}{}
 	}()
 
-	// 上行：客户端 → 后端（首帧注入真实 IP）
+	// 上行：客户端 → 后端，逐帧转发 + 限速
 	go func() {
-		sp := wire.NewSplitter(maxFrameLen)
-		buf := make([]byte, readBufSize)
-		first := true
-		// 简易限速：每秒允许的帧数
-		var winStart time.Time
-		var winCount int
-
-		for {
-			_ = client.SetReadDeadline(time.Now().Add(readTimeout))
-			n, err := client.Read(buf)
-			if err != nil {
-				break
-			}
-			sp.Feed(buf[:n])
-
-			for {
-				raw, err := sp.Next()
-				if err != nil {
-					break
-				}
-
-				// 限速：滑动窗口按秒重置
-				now := time.Now()
-				if now.Sub(winStart) >= time.Second {
-					winStart, winCount = now, 0
-				}
-				winCount++
-				if winCount > maxPPS {
-					log.Printf("%s 发包过快，断开", ip)
-					client.Close()
-					return
-				}
-
-				if first {
-					raw = injectIP(raw, ip)
-					first = false
-				}
-				if _, err := up.Write(raw); err != nil {
-					break
-				}
-			}
-		}
+		forwardUp(client, up, ip)
 		done <- struct{}{}
 	}()
 
 	<-done
 }
 
-// injectIP 把真实客户端 IP 拼进首帧的登录 token。
+// forwardUp 逐帧把上行转发给后端，顺带做单连接速率限制。
 //
-// token 形如 `**<账号>/<角色>/<会话>/<版本>/<序号>`，
-// 这里在末尾追加 `|<IP>`；解析侧用 strings.Cut 取，直连时不带也兼容。
-//
-// ⚠️ 只对**登录首帧**生效（以 `**` 开头）。若首帧不是它（比如直连 gamesvr
-// 之外的场景），原样返回，不破坏数据。
-func injectIP(raw []byte, ip string) []byte {
-	f, err := wire.DecodeFrame(raw)
-	if err != nil {
-		return raw
+// 只用到 [`frame.ReadRaw`] / [`frame.WriteRaw`] —— 即"长度域"这一层。
+// 帧长超限（> 64 KiB）与空帧都属于协议错误：**断开**，不静默跳过，
+// 否则对端可以一直喂垃圾把网关当免费的中继使。
+func forwardUp(client, up net.Conn, ip string) {
+	br := bufio.NewReaderSize(client, readBufSize)
+	var winStart time.Time
+	var winCount int
+
+	for {
+		_ = client.SetReadDeadline(time.Now().Add(readTimeout))
+		raw, err := frame.ReadRaw(br)
+		if err != nil {
+			if !errors.Is(err, io.EOF) && !isClosed(err) {
+				log.Printf("%s 上行帧错误: %v", ip, err)
+			}
+			return
+		}
+
+		// 限速：滑动窗口按秒重置
+		now := time.Now()
+		if now.Sub(winStart) >= time.Second {
+			winStart, winCount = now, 0
+		}
+		winCount++
+		if winCount > maxPPS {
+			log.Printf("%s 发包过快（>%d 帧/秒），断开", ip, maxPPS)
+			return
+		}
+
+		if err := frame.WriteRaw(up, raw); err != nil {
+			return
+		}
 	}
-	s := string(codec.Decode6BitBuf(f.Payload))
-	if !strings.HasPrefix(s, "**") {
-		return raw
-	}
-	// 6bit 编回去（追加 IP 后）
-	s = s + "|" + ip
-	return wire.EncodeFrame(f.Seq, codec.Encode6BitBuf([]byte(s)))
+}
+
+// isClosed 判断"对端已关闭"这类正常收尾错误（不值得打日志）。
+func isClosed(err error) bool {
+	return errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrDeadlineExceeded)
 }
 
 // clientIP 去掉端口号，只留 IP。

@@ -71,7 +71,9 @@ func Read(r io.Reader) (*protocol.Envelope, error) {
 func ReadRaw(r io.Reader) ([]byte, error) {
 	var hdr [4]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrShort, err)
+		// 同时 %w 包住底层错误：调用方要能用 errors.Is(err, io.EOF) 区分
+		// "对端正常关闭"与"半包被截断"，否则日志里全是噪声。
+		return nil, fmt.Errorf("%w: %w", ErrShort, err)
 	}
 	n := binary.LittleEndian.Uint32(hdr[:])
 	switch {
