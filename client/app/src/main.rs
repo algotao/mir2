@@ -1562,7 +1562,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut mouse = (0.0f32, 0.0f32);
 
     let mut music_on = true;
-    let started = Instant::now();
+    // ⚠️ "现在"必须在**每帧开头**取（见循环里的重取）。原来只在循环外取一次，
+    // 于是它是个常量：选角场景按 `now - last` 算 dt ⇒ dt 恒为 0 ⇒ **动画永不推进**
+    //（实测踩过：选中角色后小人一动不动）。
+    // 这里不写初值：唯一的作用域就是循环体内，初值只会是"读了但没人用"的警告。
+    let mut started;
 
     // 联网状态（`C` 键连接/断开）。地址与会话号走环境变量，见 `Net::connect`。
     let mut net: Option<Net> = None;
@@ -1588,6 +1592,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     'main: loop {
+        // 每帧重新取"现在"：所有按时间推进的东西（选角动画、开门动画、移动补间）
+        // 都拿它当基准。⚠️ 漏了这行 = 动画全部静止（踩过）。
+        started = Instant::now();
+
         for ev in events.poll_iter() {
             match ev {
                 Event::Quit { .. } => break 'main,

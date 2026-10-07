@@ -19,7 +19,7 @@ use sdl3::render::{
     BlendMode, FRect, ScaleMode, Texture, TextureAccess, TextureCreator, WindowCanvas,
 };
 
-use mir2_core::wzl::Wzl;
+use mir2_core::wzl::{BBox, Wzl};
 
 /// 缓存上限（界面素材用量小，越界直接清空）。
 const UI_CACHE_CAP: usize = 256;
@@ -32,6 +32,8 @@ struct UiTex<'a> {
 pub struct UiCache<'a> {
     libs: HashMap<&'static str, Option<Wzl>>,
     texs: HashMap<(&'static str, u32), UiTex<'a>>,
+    /// 不透明包围盒缓存（键与纹理同）。选角的小人要按它"按内容对齐"。
+    bboxes: HashMap<(&'static str, u32), Option<BBox>>,
 }
 
 impl<'a> UiCache<'a> {
@@ -39,6 +41,7 @@ impl<'a> UiCache<'a> {
         Self {
             libs: HashMap::new(),
             texs: HashMap::new(),
+            bboxes: HashMap::new(),
         }
     }
 
@@ -56,6 +59,23 @@ impl<'a> UiCache<'a> {
         let w = self.lib(dir, lib)?;
         let r = w.record(idx as usize)?;
         Some((r.width as u32, r.height as u32))
+    }
+
+    /// 一张界面图的**不透明包围盒**（图内坐标）。取不到/全透明 ⇒ `None`。
+    ///
+    /// 选角界面靠它把小人的**不透明部分**对齐到凹槽上（见 `Sprite::alpha_bbox`）。
+    pub fn bbox(
+        &mut self,
+        dir: &Path,
+        lib: &'static str,
+        idx: u32,
+    ) -> Option<(i32, i32, u32, u32)> {
+        if let Some(b) = self.bboxes.get(&(lib, idx)) {
+            return *b;
+        }
+        let b = self.lib(dir, lib)?.decode(idx as usize)?.alpha_bbox();
+        self.bboxes.insert((lib, idx), b);
+        b
     }
 
     /// 画一张界面图（不调色）。返回它的尺寸（画不出来 = 素材缺/空壳，返回 `None`）。

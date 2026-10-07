@@ -46,7 +46,37 @@ impl Sprite {
     pub fn is_empty(&self) -> bool {
         self.width == 0 || self.height == 0
     }
+
+    /// **不透明像素**的包围盒 `(x, y, w, h)`（图内坐标）；整张全透明返回 `None`。
+    ///
+    /// 用途：把精灵"按内容"对齐（例：选角的小人要按不透明部分的底边中点落到凹槽上）。
+    /// 人物图四周的透明边各图不同，按整图尺寸对齐会让不同职业/性别的小人**高低不一**。
+    pub fn alpha_bbox(&self) -> Option<BBox> {
+        if self.is_empty() {
+            return None;
+        }
+        let (w, h) = (self.width as i32, self.height as i32);
+        let (mut x0, mut y0, mut x1, mut y1) = (w, h, -1i32, -1i32);
+        for y in 0..h {
+            for x in 0..w {
+                if self.rgba[((y * w + x) * 4 + 3) as usize] < 128 {
+                    continue;
+                }
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+        (x1 >= 0).then(|| (x0, y0, (x1 - x0 + 1) as u32, (y1 - y0 + 1) as u32))
+    }
 }
+
+/// 不透明像素的包围盒：`(x, y, w, h)`（图内坐标）。
+///
+/// 起个名字是因为它横跨三处（`Sprite::alpha_bbox` / `select_ui::place_sprite` /
+/// `app::ui::UiCache::bbox`）—— 裸元组写到第三处就看不懂了。
+pub type BBox = (i32, i32, u32, u32);
 
 /// 单条图像记录（16 字节）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
