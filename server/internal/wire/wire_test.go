@@ -251,6 +251,18 @@ func TestLoginToken(t *testing.T) {
 		t.Errorf("解析结果 = %+v", tok)
 	}
 
+	// ⚠️ 反向断言：旧协议让网关在末尾拼 `|<真实IP>`，D-23 之后这条路已删。
+	// 末尾带 `|` 的内容必须被当作**原样的末段**，绝不能被解析成"客户端 IP"——
+	// 否则一旦有人把它加回来，客户端就能自称任意地址（这条测试会立刻红）。
+	payload = codec.Encode6BitBuf([]byte("**tester/勇士/2/120040918/0|1.2.3.4"))
+	tok, err = ParseLoginToken(payload)
+	if err != nil {
+		t.Fatalf("带 | 的末段不该让认证失败: %v", err)
+	}
+	if tok.Idx != "0|1.2.3.4" {
+		t.Errorf("末段 = %q，应原样保留（IP 只能来自连接本身）", tok.Idx)
+	}
+
 	bad := []string{
 		"tester/勇士/2/1/0",   // 缺 ** 前缀
 		"**tester/勇士/1/1/0", // sessionID < 2

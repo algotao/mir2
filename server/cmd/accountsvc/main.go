@@ -17,10 +17,13 @@
 //
 //	go run ./cmd/gate -route :7000=127.0.0.1:17000 -route :7100=127.0.0.1:17100 \
 //	                   -route :7400=127.0.0.1:7200
-//	go run ./cmd/accountsvc -db ./mir2go.db \
+//	go run ./cmd/accountsvc -db ./mir2go.db -proxy-protocol \
 //	                   -login-addr 127.0.0.1:17000 -sel-addr 127.0.0.1:17100 \
 //	                   -selgate-addr 127.0.0.1 -selgate-port 7100 \
 //	                   -rungate-addr 127.0.0.1 -rungate-port 7400
+//
+// ⚠️ `-proxy-protocol` 必须与网关一致（gate 默认就写这个头）：开着它才拿得到真实客户端 IP，
+// 关着则所有连接看起来都来自网关自己 —— 封禁/同 IP 多开/审计都会失准（docs/decisions.md D-23）。
 package main
 
 import (
@@ -36,6 +39,7 @@ import (
 
 	"github.com/algotao/mir2/server/internal/accountsvc"
 	"github.com/algotao/mir2/server/internal/data"
+	"github.com/algotao/mir2/server/internal/proxyproto"
 	"github.com/algotao/mir2/server/internal/storage/sqlite"
 	"github.com/algotao/mir2/server/internal/tscale"
 	_ "github.com/algotao/mir2/server/internal/tz"
@@ -62,7 +66,11 @@ func main() {
 		srvName   = flag.String("server-name", "mir2go", "服务器名")
 		timeScale = flag.Float64("time-scale", 1,
 			"游戏内时间流速倍率（1=正常；20=二十倍速。客户端与 gamesvr 需同值）")
-		dataDir = flag.String("data", "./data", "静态数据目录（用于新角色的初始物品）")
+		dataDir       = flag.String("data", "./data", "静态数据目录（用于新角色的初始物品）")
+		proxyProtocol = flag.Bool("proxy-protocol", false,
+			"要求接入连接先带一行 PROXY protocol v1 头（网关 -proxy-protocol 会写），"+
+				"从中取真实客户端 IP（docs/decisions.md D-23）。直连调试时保持关闭；"+
+				"打开后缺头即断开，没有\"有头就认、没头退回 socket\"这种可伪造的中间态")
 	)
 	flag.Parse()
 
@@ -107,13 +115,18 @@ func main() {
 
 	log.Printf("accountsvc 启动: db=%s 登录=%s 选角=%s 服务器=%q",
 		*dbPath, *loginAddr, *selAddr, *srvName)
+	if *proxyProtocol {
+		log.Printf("客户端地址来源: PROXY protocol v1 头（要求网关转发；缺头即断开）")
+	} else {
+		log.Printf("客户端地址来源: TCP 对端地址（直连模式；经网关转发时看到的会是网关自己）")
+	}
 	// 下发给客户端的地址单独打一行：走网关时它与上面两个监听地址**不同**
 	//（监听 7000/7100 的是 gate，accountsvc 挪到 17000/17100）。
 	// 排查"客户端到底连到哪去了"先看这行。
 	log.Printf("下发给客户端: 选角 %s:%d 游戏 %s:%d", *selGate, *selPort, *runGate, *runPort)
 
-	go acceptLoop(loginLn, svc, true)
-	go acceptLoop(selLn, svc, false)
+	go acceptLoop(loginLn, svc, true, *proxyProtocol)
+	go acceptLoop(selLn, svc, false, *proxyProtocol)
 
 	// 优雅退出：必须显式 Close，否则 WAL 未 checkpoint
 	sig := make(chan os.Signal, 1)
@@ -127,7 +140,7 @@ func main() {
 }
 
 // acceptLoop 接受连接。isLogin 决定会话是"注册"还是"游离"。
-func acceptLoop(ln net.Listener, svc *accountsvc.Service, isLogin bool) {
+func acceptLoop(ln net.Listener, svc *accountsvc.Service, isLogin, proxyProtocol bool) {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -137,23 +150,36 @@ func acceptLoop(ln net.Listener, svc *accountsvc.Service, isLogin bool) {
 			}
 			return
 		}
-		go handleConn(c, svc, isLogin)
+		// 取真实客户端地址（PROXY protocol，见 docs/decisions.md D-23）后再交给会话处理：
+		// 会话/日志里那一串 `addr` 从这里往后就都是**客户端**的地址，而不是网关的。
+		//
+		// ⚠️ 必须**在 goroutine 里**等头：等头最长要 10 秒（见 DefaultHeaderTimeout），
+		// 放在 accept 循环里同步做，一个连上就不说话的客户端就能把整个接入面堵住。
+		go func() {
+			ec, addr, err := proxyproto.ServerConn(c, proxyProtocol, proxyproto.DefaultHeaderTimeout)
+			if err != nil {
+				log.Printf("%s: 取得客户端地址失败，断开: %v", c.RemoteAddr(), err)
+				_ = c.Close()
+				return
+			}
+			handleConn(ec, svc, isLogin, addr)
+		}()
 	}
 }
 
-func handleConn(c net.Conn, svc *accountsvc.Service, isLogin bool) {
+func handleConn(c net.Conn, svc *accountsvc.Service, isLogin bool, addr string) {
 	defer c.Close()
 
 	var sess *accountsvc.Session
 	if isLogin {
 		var err error
-		sess, err = svc.NewSession(c.RemoteAddr().String())
+		sess, err = svc.NewSession(addr)
 		if err != nil {
-			log.Printf("%s: 建立登录会话失败: %v", c.RemoteAddr(), err)
+			log.Printf("%s: 建立登录会话失败: %v", addr, err)
 			return
 		}
 	} else {
-		sess = svc.NewConnSession(c.RemoteAddr().String())
+		sess = svc.NewConnSession(addr)
 	}
 	if isLogin {
 		defer svc.Sessions().Forget(sess.SessionID)
@@ -175,7 +201,7 @@ func handleConn(c net.Conn, svc *accountsvc.Service, isLogin bool) {
 				break // 半包或垃圾，等下一批数据
 			}
 			if err := processFrame(c, svc, sess, raw); err != nil {
-				log.Printf("%s: %v", c.RemoteAddr(), err)
+				log.Printf("%s: %v", addr, err)
 				return
 			}
 		}

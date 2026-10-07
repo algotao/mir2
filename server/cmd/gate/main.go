@@ -9,17 +9,18 @@
 //	go run ./cmd/gate -route :7300=127.0.0.1:7200
 //	go run ./cmd/gate -route :7000=127.0.0.1:7000 -route :7100=127.0.0.1:7100
 //
-// ⚠️ **真实客户端 IP 目前只落在网关自己的日志里，没有传给后端。**
-// 旧协议是在登录首帧的文本 token 里拼 `|<IP>`，新协议里没有这种可以"顺手拼一段"
-// 的字段（这正是自研协议的好处：不再有格式与字符集耦合的定长串）。要把它交给后端，
-// 得在下面几条里选一条，属**待决**（见 docs/decisions.md）：
+// 真实客户端 IP 的传递走 **PROXY protocol v1**（[D-23] 已定，HAProxy 事实标准）：
+// 连上后端后、转发任何游戏数据**之前**，先写一行
 //
-//  1. PROXY protocol（HAProxy 事实标准）：网关在首帧前写一行
-//     `PROXY TCP4 <src> <dst> <sport> <dport>\r\n`，后端剥掉。**协议无关**，推荐；
-//  2. 后端向网关发起内部查询（网关维护"连接元数据"表，按 conn id 查）；
-//  3. 把 client_ip 放进 ClientHello —— 但这等于**相信客户端自报**，只在网关
-//     不可信时才勉强可接受，且会让 schema 多一个"只有网关填"的字段。
+//	PROXY TCP4 <源IP> <目的IP> <源端口> <目的端口>\r\n
 //
+// 后端剥掉这一行就拿到了真实地址。它不属于游戏协议（只是连接级元数据），
+// 所以网关照旧**不做协议感知**（D-17）—— 它只是写下自己本来就知道的东西。
+//
+// 对端不认识这个头时用 `-proxy-protocol=false` 关掉（例如把网关挡在参照系统
+// mir2go 前面做对拍）。
+//
+// [D-23]: ../../../docs/decisions.md
 // [docs/protocol.md §2]: ../../../docs/protocol.md
 package main
 
@@ -41,6 +42,7 @@ import (
 	_ "github.com/algotao/mir2/server/internal/tz"
 
 	"github.com/algotao/mir2/server/internal/frame"
+	"github.com/algotao/mir2/server/internal/proxyproto"
 )
 
 const (
@@ -74,6 +76,9 @@ func (r *routeList) Set(v string) error {
 func main() {
 	var routes routeList
 	flag.Var(&routes, "route", "转发规则 <监听>=<后端>，可重复传入")
+	proxyHeader := flag.Bool("proxy-protocol", true,
+		"为每条上游连接先写一行 PROXY protocol v1 头，把真实客户端 IP 交给后端（docs/decisions.md D-23）。"+
+			"后端需以同样的开关打开对应模式；对端不认识该头时用 -proxy-protocol=false")
 	flag.Parse()
 
 	if len(routes) == 0 {
@@ -95,7 +100,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("监听 %s: %v", rt.listen, err)
 		}
-		log.Printf("网关 %s → %s", rt.listen, rt.backend)
+		if *proxyHeader {
+			log.Printf("网关 %s → %s（先写 PROXY v1 头：后端须以 -proxy-protocol 打开对应模式）",
+				rt.listen, rt.backend)
+		} else {
+			log.Printf("网关 %s → %s（-proxy-protocol=false：后端只会看到网关自己的地址）",
+				rt.listen, rt.backend)
+		}
 
 		go func() {
 			for {
@@ -130,7 +141,7 @@ func main() {
 						}
 						mu.Unlock()
 					}()
-					serve(c, rt.backend, ip)
+					serve(c, rt.backend, ip, *proxyHeader)
 				}()
 
 			}
@@ -141,8 +152,8 @@ func main() {
 	log.Println("收到退出信号，关闭中...")
 }
 
-// serve 处理一条客户端连接：连后端，双向转发。
-func serve(client net.Conn, backend, ip string) {
+// serve 处理一条客户端连接：连后端 → （可选）写 PROXY 头 → 双向转发。
+func serve(client net.Conn, backend, ip string, proxyHeader bool) {
 	defer client.Close()
 
 	up, err := net.DialTimeout("tcp", backend, dialTimeout)
@@ -151,6 +162,18 @@ func serve(client net.Conn, backend, ip string) {
 		return
 	}
 	defer up.Close()
+
+	// PROXY protocol v1（D-23）：在**任何游戏数据之前**写一行，告诉后端这条连接背后是谁。
+	//
+	// ⚠️ 目的地址取 client.LocalAddr()：那是客户端**实际连到**的地址（网关的对外地址），
+	// 而不是网关到后端的这条连接 —— 规格要的正是前者（客户端以为自己连的是它）。
+	// ⚠️ 时机只有这一次：写晚了它就成了协议中间的垃圾。
+	if proxyHeader {
+		if err := proxyproto.WriteV1(up, client.RemoteAddr(), client.LocalAddr()); err != nil {
+			log.Printf("%s → %s 写 PROXY 头失败: %v", ip, backend, err)
+			return
+		}
+	}
 
 	done := make(chan struct{}, 2)
 

@@ -11,12 +11,34 @@ import (
 	"github.com/algotao/mir2/server/internal/netgate"
 	"github.com/algotao/mir2/server/internal/obs"
 	"github.com/algotao/mir2/server/internal/proto"
+	"github.com/algotao/mir2/server/internal/proxyproto"
 	"github.com/algotao/mir2/server/internal/storage"
 	"github.com/algotao/mir2/server/internal/tscale"
 	"github.com/algotao/mir2/server/internal/wire"
 )
 
-func (s *Server) handleConn(c net.Conn) {
+// acceptConn 是接入侧的**第一段**：先按 -proxy-protocol 的约定取到可信的客户端地址，
+// 再把（已剥掉 PROXY 头的）连接交给 handleConn。
+//
+// 为什么不并进 handleConn：handleConn 的契约是"一条已经在按协议说话的连接"，
+// 而 PROXY 头属于**协议之前**的事。混在一起之后，"这条连接读到哪儿了"就没人讲得清。
+func (s *Server) acceptConn(c net.Conn) {
+	ec, clientIP, err := proxyproto.ServerConn(c, s.cfg.proxyProtocol, proxyHeaderTimeout)
+	if err != nil {
+		// 缺头/头非法 ⇒ 直接断开，**不退回 socket 地址**：
+		// 那会让"必须带头"变成一句空话（能直连到 gamesvr 的人，写不写头都行）。
+		log.Printf("%s: 取得客户端地址失败，断开: %v", c.RemoteAddr(), err)
+		_ = c.Close()
+		return
+	}
+	s.handleConn(ec, clientIP)
+}
+
+// handleConn 是接入侧的**第二段**：连接已就位（PROXY 头已剥离），开始按协议收发。
+//
+// clientIP 是**可信的**客户端地址（形如 `1.2.3.4:51234`）：直连模式下取 socket 对端，
+// 经网关转发时来自 PROXY 头（见 internal/proxyproto 与 docs/decisions.md 的 D-23）。
+func (s *Server) handleConn(c net.Conn, clientIP string) {
 	defer c.Close()
 
 	sp := wire.NewSplitter(maxFrameLen)
@@ -98,19 +120,16 @@ func (s *Server) handleConn(c net.Conn) {
 		if player == nil {
 			tok, err := wire.ParseLoginToken(msg.payload)
 			if err != nil {
-				log.Printf("%s: 认证首包非法: %v", c.RemoteAddr(), err)
+				log.Printf("%s: 认证首包非法: %v", clientIP, err)
 				s.send(c, proto.SM_OUTOFCONNECTION, 0, 0, 0, 0, "")
 				return
 			}
-			// ⚠️ 经网关转发时，连接 IP 是网关自己的；网关会把真实客户端 IP
-			// 拼在登录 token 末尾。
-			ip := tok.ClientIP
-			if ip == "" {
-				ip = c.RemoteAddr().String()
-			}
-			p, err := s.authenticate(tok, ip)
+			// ⚠️ 客户端 IP **只能**来自连接本身（PROXY 头，或直连时的 socket 对端）。
+			// 旧协议把它拼在登录 token 末尾（`idx|<IP>`），那是**客户端自报** ——
+			// 谁都能自称 1.2.3.4。那条路已随 D-23 删除，见 internal/proxyproto。
+			p, err := s.authenticate(tok, clientIP)
 			if err != nil {
-				log.Printf("%s: 认证失败: %v", c.RemoteAddr(), err)
+				log.Printf("%s: 认证失败: %v", clientIP, err)
 				s.send(c, proto.SM_OUTOFCONNECTION, 0, 0, 0, 0, "")
 				return
 			}
@@ -120,12 +139,11 @@ func (s *Server) handleConn(c net.Conn) {
 			// 会读它（在 s.mu 下取出玩家列表后再用），这次赋值与那次读之间由
 			// s.mu 建立 happens-before。
 			player.snapReq = snapReq
-			player.permission = s.cfg.adminList.LevelFor(p.Char.Name, ip)
+			player.permission = s.cfg.adminList.LevelFor(p.Char.Name, clientIP)
 			if player.permission > 0 {
 				log.Printf("%s 的 GM 权限等级 = %d", p.Char.Name, player.permission)
 			}
-			log.Printf("%s: %s 进游戏 (ActorId=%d)%s", c.RemoteAddr(), p.Char.Name, p.Obj.ID,
-				map[bool]string{true: fmt.Sprintf(" [网关转发，真实IP=%s]", tok.ClientIP), false: ""}[tok.ClientIP != ""])
+			log.Printf("%s: %s 进游戏 (ActorId=%d)", clientIP, p.Char.Name, p.Obj.ID)
 
 			s.mu.Lock()
 			s.world.players[p.Obj.ID] = p

@@ -39,6 +39,10 @@ func Main() {
 		dbPath        = flag.String("db", "./mir2go.db", "SQLite 路径（与 accountsvc 共享）")
 		dataDir       = flag.String("data", "./data", "静态数据目录")
 		gameAddr      = flag.String("addr", ":7200", "监听地址")
+		proxyProtocol = flag.Bool("proxy-protocol", false,
+			"要求接入连接先带一行 PROXY protocol v1 头（网关 -proxy-protocol 会写），"+
+				"从中取真实客户端 IP（docs/decisions.md D-23）。直连调试时保持关闭；"+
+				"打开后缺头即断开，没有\"有头就认、没头退回 socket\"这种可伪造的中间态")
 		viewRangeFlag = flag.Int("view-range", 12, "玩家视野半径（切比雪夫距离）")
 		noMonster     = flag.Bool("no-monster", false, "不生成怪物")
 		monsterWander = flag.Bool("monster-wander", true, "怪物是否游荡（关闭便于端到端验证战斗）")
@@ -156,6 +160,7 @@ func Main() {
 			wander:         *monsterWander,
 			aggro:          *monsterAggro,
 			wallNoSafeZone: *wallNoSafeZone,
+			proxyProtocol:  *proxyProtocol,
 		},
 		data: dataState{
 			tables: tables,
@@ -429,6 +434,14 @@ func Main() {
 	// 避免启动时在一个 gamesvr 实例化社区包全部 60k+ 的配置怪物。
 	srv.activateSpawnMap(dm.Name)
 
+	// 单独打一行：'客户端到底是谁' 是排查封禁/多开/审计时的第一个问题，
+	// 而这两种模式的表现**完全不同**（直连模式下所有人看起来都来自网关）。
+	if *proxyProtocol {
+		log.Printf("客户端地址来源: PROXY protocol v1 头（要求网关转发；缺头即断开）")
+	} else {
+		log.Printf("客户端地址来源: TCP 对端地址（直连模式；经网关转发时看到的会是网关自己）")
+	}
+
 	ln, err := net.Listen("tcp", *gameAddr)
 	if err != nil {
 		log.Fatalf("监听 %s: %v", *gameAddr, err)
@@ -454,7 +467,7 @@ func Main() {
 			if err != nil {
 				return
 			}
-			go srv.handleConn(c)
+			go srv.acceptConn(c)
 		}
 	}()
 

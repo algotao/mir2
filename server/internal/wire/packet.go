@@ -36,11 +36,15 @@ var (
 	ErrBadLoginToken = errors.New("wire: 认证首包格式非法")
 )
 
-// LoginToken 是进入游戏时的认证首包（客户端连上游戏网关后发的第一条）。
-// LoginToken 是客户端建立游戏连接时的首个帧。
+// LoginToken 是进入游戏时的认证首包（客户端连上游戏服务后发的第一条）。
 //
-// 格式：`**<账号>/<角色名>/<会话号>/<版本>/<序号>`，
-// 序号后可用 `|` 附加网关填入的真实客户端 IP。
+// 格式：`**<账号>/<角色名>/<会话号>/<版本>/<序号>`。
+//
+// ⚠️ 这里**没有**"客户端 IP"字段，而且不要加回去：旧协议让网关把真实 IP 拼在末尾
+// （`<序号>|<IP>`），但那需要报文体里有一个**只有网关才该填**的字段 ——
+// 既让 schema 语义被污染，又等于相信客户端自报（谁都能自称 1.2.3.4）。
+// 真实地址改由**连接级**的 PROXY protocol 交代（docs/decisions.md D-23，
+// 实现见 internal/proxyproto）。
 type LoginToken struct {
 	Account       string
 	ChrName       string
@@ -48,8 +52,6 @@ type LoginToken struct {
 	ClientVersion int32
 	// Idx 是末段标记："0" 表示正常登录，非 "0" 原版视为异常。
 	Idx string
-	// ClientIP 是网关填入的真实客户端 IP（直连时为空）。
-	ClientIP string
 }
 
 // ParseLoginToken 解析认证首包。
@@ -77,19 +79,13 @@ func ParseLoginToken(payload []byte) (*LoginToken, error) {
 		return nil, ErrBadLoginToken
 	}
 	ver, _ := strconv.Atoi(parts[3])
-	// 索引段后可带客户端真实 IP（`idx|1.2.3.4`）。
-	//
-	// ⚠️ 经网关转发时，后端看到的连接 IP 是网关自己的，
-	// 因此由网关把真实 IP 拼在这里。不带时保持空，兼容直连。
-	idx, clientIP, _ := strings.Cut(parts[4], "|")
 
 	t := &LoginToken{
 		Account:       parts[0],
 		ChrName:       parts[1],
 		SessionID:     int32(sid),
 		ClientVersion: int32(ver),
-		Idx:           idx,
-		ClientIP:      clientIP,
+		Idx:           parts[4],
 	}
 	if t.Account == "" || t.ChrName == "" || t.SessionID < 2 {
 		return nil, ErrBadLoginToken

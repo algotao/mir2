@@ -14,6 +14,7 @@ import (
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/group"
 	"github.com/algotao/mir2/server/internal/guild"
+	"github.com/algotao/mir2/server/internal/proxyproto"
 	"github.com/algotao/mir2/server/internal/script"
 	"github.com/algotao/mir2/server/internal/storage"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
@@ -23,6 +24,10 @@ import (
 const (
 	maxFrameLen = 64 * 1024
 	readTimeout = 30 * time.Minute
+	// proxyHeaderTimeout 是"等 PROXY 头"的上限（只在该模式打开时用）。
+	// 与 readTimeout 差了三个数量级是有意的：协议读 30 分钟是"玩家挂机"，
+	// 头读 30 分钟就是"有人在白占连接"。
+	proxyHeaderTimeout = proxyproto.DefaultHeaderTimeout
 	// loginNoticeTimeout 等待客户端回应公告的时限（原版 10 秒）。
 	loginNoticeTimeout = 10 * time.Second
 
@@ -261,6 +266,14 @@ func (p *Player) Pos() (int, int) { return p.Obj.Pos() }
 type configState struct {
 	// viewRange 是玩家视野半径（切比雪夫距离）。
 	viewRange int
+	// proxyProtocol 决定**怎么取得可信的客户端 IP**（D-23）：
+	//
+	//	true   要求接入连接先写一行 PROXY protocol v1 头（gate 会写），缺头即断开；
+	//	false  直连模式，用 socket 对端地址（本地开发与回归用）。
+	//
+	// ⚠️ 没有"有头就解析、没头退回 socket 地址"这第三种模式 —— 那是可伪造的
+	// （能直连到 gamesvr 的人可以自称 `PROXY TCP4 1.2.3.4 …`）。见 internal/proxyproto。
+	proxyProtocol bool
 	// saveInterval 自动存档间隔。
 	saveInterval time.Duration
 	// makeDrugPrice 是制药单价（官方 `!setup.txt:256 MakeDurg=100`）。
