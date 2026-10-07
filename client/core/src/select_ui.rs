@@ -52,8 +52,12 @@ impl Art {
     pub const FREEZE_FRAMES: u32 = 13;
     /// 光效帧数（`EFFECTFRAME`，`IntroScn.pas:14`）。
     pub const EFFECT_FRAMES: u32 = 14;
-    /// 站立动画每帧毫秒（`IntroScn.pas:1503`）。
-    pub const STAND_MS: u32 = 300;
+    /// 站立动画每帧毫秒。
+    ///
+    /// ⚠️ **原版是 300**（`IntroScn.pas:1503` 写死 `> 300`），16 帧 = 4.8 秒一圈。
+    /// 实测 16 帧**帧帧不同**（是一段真的循环动画），但 300ms 看着"很慢"（用户反馈）
+    /// ⇒ 这里取 **150**（2.4 秒一圈）。要还原原版就把这行改回 300。
+    pub const STAND_MS: u32 = 150;
     /// 解冻/石化每帧毫秒（`IntroScn.pas:1447 / 1466`）。
     pub const FREEZE_MS: u32 = 50;
 
@@ -301,6 +305,22 @@ impl SlotAnim {
     pub fn new(job: u8, sex: u8) -> Self {
         SlotAnim {
             phase: SlotPhase::Stand,
+            k: 0,
+            acc: 0,
+            job,
+            sex,
+        }
+    }
+
+    /// 新槽，**直接是石化定格**。
+    ///
+    /// 进选角界面时用：原版 `OpenScene` 什么都不做 ⇒ 两个都站着、都不石化，
+    /// 于是**看不出当前选的是谁**（而且这时点[开始]会被服务端拒掉，因为
+    /// `Selected` 都还是 FALSE）。我们改成"默认选中第一个、其余石化"——
+    /// 一眼能看出当前是哪个，也避免上面那个空选状态。
+    pub fn new_frozen(job: u8, sex: u8) -> Self {
+        SlotAnim {
+            phase: SlotPhase::Freeze,
             k: 0,
             acc: 0,
             job,
@@ -562,13 +582,19 @@ mod tests {
         for _ in 0..13 {
             s.tick(50, true);
         }
-        s.tick(250, true);
-        assert_eq!(s.tick(0, true).index, stand_index(1, 0, 0), "还没到 300ms");
+        // ⚠️ 用 `Art::STAND_MS` 而不是写死 300：这个节拍是**调过的**（原版 300，我们取 150），
+        // 写死的话一调节拍测试就红（踩过）。
+        s.tick(Art::STAND_MS - 50, true);
+        assert_eq!(
+            s.tick(0, true).index,
+            stand_index(1, 0, 0),
+            "还没到一帧的时间"
+        );
         s.tick(50, true);
         assert_eq!(
             s.tick(0, true).index,
             stand_index(1, 0, 1),
-            "过了 300ms 该进帧"
+            "过了一帧该进帧"
         );
 
         // 取消 ⇒ 石化倒放
@@ -721,6 +747,16 @@ mod tests {
                 let a = dec(&mut libs, &dir, Art::CHR, stand_index(job, sex, 0)).unwrap();
                 let b = dec(&mut libs, &dir, Art::CHR, stand_index(job, sex, 1)).unwrap();
                 assert_ne!(a.rgba, b.rgba, "Job={job} Sex={sex}：站立第 0/1 帧一样");
+                // 16 帧**帧帧不同**（实测）—— 帧数/基址写错时这里会红
+                let mut seen: Vec<Vec<u8>> = Vec::new();
+                for k in 0..Art::STAND_FRAMES {
+                    let s = dec(&mut libs, &dir, Art::CHR, stand_index(job, sex, k)).unwrap();
+                    assert!(
+                        !seen.contains(&s.rgba),
+                        "Job={job} Sex={sex}：第 {k} 帧与前面某帧重复（不是 16 帧循环？）"
+                    );
+                    seen.push(s.rgba);
+                }
                 let c = dec(&mut libs, &dir, Art::CHR, freeze_index(job, sex, 0)).unwrap();
                 assert_ne!(a.rgba, c.rgba, "Job={job} Sex={sex}：石化帧与站立帧一样");
             }

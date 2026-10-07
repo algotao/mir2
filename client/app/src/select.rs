@@ -108,9 +108,17 @@ pub struct Select {
 
 impl Select {
     pub fn new(chars: Vec<CharEntry>) -> Self {
+        // 第 0 个槽 = **默认选中**（站立、播动画）；其余**直接石化**。
+        // ⚠️ 原版进场景时两个都站着（`OpenScene` 只开窗口放 BGM），于是看不出
+        // 当前选的是谁 —— 那时点[开始]还会被拒（两边 `Selected` 都是 FALSE）。
+        // 我们有意改成"默认选中第一个"，一眼能看出当前是哪个。
         let anims = std::array::from_fn(|i| {
             let (job, sex) = chars.get(i).map_or((0, 0), |c| (c.job(), c.sex));
-            su::SlotAnim::new(job, sex)
+            if i == 0 {
+                su::SlotAnim::new(job, sex)
+            } else {
+                su::SlotAnim::new_frozen(job, sex)
+            }
         });
         Self {
             chars,
@@ -370,17 +378,17 @@ impl Select {
                 );
             }
             // 解冻时叠一层选中光效（原版 `DrawBlend`，`IntroScn.pas:1442`）
+            // 解冻时叠一层选中光效（原版 `DrawBlend`，`IntroScn.pas:1442`）。
+            //
+            // ⚠️ 位置用**同一条对齐规则**：把光效图不透明部分的底边中点也摆到
+            // 同一个锚点上（= 居中压在人物身上、底边落在脚下）。
+            // 原来这里是 `(anchor.0 - 30, anchor.1 - 60)` 这种**猜出来的偏移**，
+            // 结果光效偏右、也不在脚下（用户实测报的）。
             if let Some(e) = f.effect {
-                ui.draw_tint(
-                    canvas,
-                    tc,
-                    dir,
-                    su::Art::CHR,
-                    e,
-                    anchor.0 - 30.0,
-                    anchor.1 - 60.0,
-                    C_SEL_HL,
-                );
+                if let Some(eb) = ui.bbox(dir, su::Art::CHR, e) {
+                    let (ex, ey) = su::place_sprite(eb, anchor);
+                    ui.draw_tint(canvas, tc, dir, su::Art::CHR, e, ex, ey, C_SEL_HL);
+                }
             }
             // 名字 / 等级 / 职业（白字黑边，写在面板的字段框里）
             let t = su::slot_text(slot, l.bg);
