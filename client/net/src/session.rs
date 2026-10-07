@@ -31,10 +31,17 @@ use crate::{Conn, NetError};
 /// 分成两类：**进世界的握手**（前三条，走一遍就完）与**玩法输入**（Move/Ping）。
 /// ⚠️ 握手几步的顺序由 `core::entrance::Entrance` 决定，不在这里 —— 免得两端
 /// （app 与 e2e）各排一遍序列。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cmd {
-    /// 认领会话（v0：token 就是会话号，见 `protocol.md §11`）。
+    /// 认领会话（token 就是会话号，见 `protocol.md §11`）。
+    ///
+    /// ⚠️ 与 `Login` 的关系：`Login` 成功后服务端会把**新开的会话号**当 token 回给你，
+    /// 那之后重连就走这条（不必再输口令）。v0 之前它也是**唯一**的入口。
     Reconnect(i32),
+    /// 登录第一步：要 KDF 参数（盐/迭代/派生长）。见 `core::auth` 与 D-24①。
+    LoginSaltRequest(String),
+    /// 登录第二步：发口令的**证明**（`hex(HMAC(K, nonce‖account))`，不是口令）。
+    Login { account: String, proof_hex: String },
     /// 列出该账号的角色。
     ListCharacters,
     /// 选角（服务端在**这一步**申请角色租约）。
@@ -60,6 +67,9 @@ pub enum Ev {
     Connected {
         version: u32,
         capabilities: Vec<String>,
+        /// 握手 nonce（`ServerHello.session_key`）—— 登录时要把它拼进口令证明里
+        /// （`core::auth::proof`）。**每条连接一次**，所以证明重放不了。
+        nonce: Vec<u8>,
     },
     /// 收到一条信封。**调用方负责解释它**（`core::world::World::apply`）。
     Envelope(Box<Envelope>),
@@ -103,6 +113,7 @@ impl Session {
             let _ = ev_tx.send(Ev::Connected {
                 version: proto::VERSION,
                 capabilities: conn.capabilities.clone(),
+                nonce: conn.session_key.clone(),
             });
 
             // 写线程：只管命令 → 写帧。
@@ -168,6 +179,14 @@ fn writer_loop(stream: &mut TcpStream, cmds: Receiver<Cmd>) {
                 // v0 的临时编码：4 字节小端会话号（正式 token 由 `LoginResult` 签发）。
                 session_token: session.to_le_bytes().to_vec(),
                 last_ack_seq: 0,
+            }),
+            Cmd::LoginSaltRequest(account) => {
+                Body::LoginSaltRequest(proto::LoginSaltRequest { account })
+            }
+            Cmd::Login { account, proof_hex } => Body::Login(proto::Login {
+                account,
+                password_hash: proof_hex,
+                client_build: String::new(),
             }),
             Cmd::ListCharacters => Body::ListCharacters(proto::ListCharacters {}),
             Cmd::SelectCharacter(id) => {

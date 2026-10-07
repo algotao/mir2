@@ -6,6 +6,7 @@
 //! **纪律**：这里不出现窗口 / 音频 / 网络线程。能跑满单测是硬要求。
 
 pub mod actor;
+pub mod auth;
 pub mod blend;
 /// 进世界的握手流程（纯状态机）：喂进收到的信封，吐出下一条要发的消息。
 pub mod entrance;

@@ -28,6 +28,13 @@ import (
 // 不只是某个服务的内部常量。新协议入口在自己选角后会把它推进到这一档。
 const sessionStageSelected = 4
 
+// sessionStageAuthed 是"口令已通过、还没选角"的阶段号。
+//
+// ⚠️ 数字与 `accountsvc.Stage` 是**同一个枚举**（`storage.SessionRecord.Stage` 的注释
+// 就写着"见 accountsvc.Stage"）：登录成功=1、选角=4。两边各存一份常量迟早漂，
+// 该搬到 `storage` 去（记在 protocol.md §11）。
+const sessionStageAuthed = 1
+
 // claimGameLease 申请角色写租约（进游戏前必须拿到，否则同一角色会被两个连接同时跑）。
 //
 // 两步是**有意的顺序**，原注释一并搬来：

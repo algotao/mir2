@@ -18,6 +18,22 @@ const (
 	pwSaltLen    = 16
 )
 
+// Params 是存储侧当前使用的口令派生参数。
+//
+// ⚠️ 必须与 `HashPassword` 里用的**同一组常量** —— 客户端靠它算出与服务端存储
+// 一致的 `K`（D-24① 挑战应答的第一步：服务端把盐与这两个数下发）。
+// 盐本身是**每账号一份**（在 `Account.Salt` 里），不在这个结构里。
+type Params struct {
+	Iterations int
+	KeyLen     int
+	SaltLen    int
+}
+
+// KDFParams 返回当前的派生参数。
+func KDFParams() Params {
+	return Params{Iterations: pwIterations, KeyLen: pwKeyLen, SaltLen: pwSaltLen}
+}
+
 // ErrEmptyPassword 表示口令为空。
 var ErrEmptyPassword = errors.New("storage: 口令不能为空")
 

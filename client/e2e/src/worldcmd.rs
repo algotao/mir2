@@ -30,7 +30,11 @@ pub fn main(argv: &[String]) -> i32 {
 
 struct Args {
     addr: String,
-    session: i32,
+    /// 认领既有会话（`-session`）；与 `-account`/`-password` **二选一**。
+    session: Option<i32>,
+    /// 口令登录（D-24① 挑战应答）—— 与 `-session` 二选一。
+    account: Option<String>,
+    password: Option<String>,
     char_id: Option<u64>,
     /// 整轮的超时（毫秒）。
     timeout_ms: u64,
@@ -52,6 +56,7 @@ struct Args {
 impl Args {
     fn parse(argv: &[String]) -> Result<Self, String> {
         let (mut addr, mut session, mut char_id) = (None, None, None);
+        let (mut account, mut password) = (None::<String>, None::<String>);
         let (mut timeout_ms, mut move_steps) = (8000u64, 0u32);
         let (mut attack, mut expect_damage, mut expect_kill) = (None, 0u64, false);
         let (mut expect_map, mut expect_pos, mut expect_entities) = (None, None, None);
@@ -69,6 +74,8 @@ impl Args {
             match key.as_str() {
                 "-addr" => addr = Some(val("地址")?),
                 "-session" => session = Some(parse(&val("会话号")?, "-session")?),
+                "-account" => account = Some(val("账号")?),
+                "-password" => password = Some(val("口令")?),
                 "-char" => char_id = Some(parse(&val("角色 id")?, "-char")?),
                 "-timeout-ms" => timeout_ms = parse(&val("毫秒")?, "-timeout-ms")?,
                 "-move-steps" => move_steps = parse(&val("步数")?, "-move-steps")?,
@@ -87,7 +94,9 @@ impl Args {
         }
         Ok(Args {
             addr: addr.ok_or("缺少 -addr <host:port>（gamesvr -proto-addr 的地址）")?,
-            session: session.ok_or("缺少 -session <会话号>")?,
+            session,
+            account,
+            password,
             char_id,
             timeout_ms,
             move_steps,
@@ -117,7 +126,18 @@ fn parse_pos(s: &str) -> Result<(i32, i32), String> {
 fn run(argv: &[String]) -> Result<(), String> {
     let a = Args::parse(argv)?;
     let sess = Session::spawn(a.addr.clone(), "mir2-e2e-world".into(), "zh-CN".into());
-    let mut entrance = Entrance::new(a.session, a.char_id);
+    // 两个入口，之后是同一条尾巴（见 `core::entrance` 的文件头）：
+    //   -account/-password ⇒ 口令登录（D-24① 挑战应答）
+    //   -session           ⇒ 认领既有会话
+    let mut entrance = match (&a.account, &a.password) {
+        (Some(acc), Some(pw)) => Entrance::new_with_password(acc.clone(), pw.clone(), a.char_id),
+        (None, None) => Entrance::new(
+            a.session
+                .ok_or("要么给 -session <会话号>，要么给 -account/-password")?,
+            a.char_id,
+        ),
+        _ => return Err("-account 与 -password 要一起给".into()),
+    };
     let mut world = World::default();
 
     let deadline = Instant::now() + Duration::from_millis(a.timeout_ms);
@@ -128,7 +148,7 @@ fn run(argv: &[String]) -> Result<(), String> {
     // 第一步：把 Reconnect 发出去。`Session` 会在握手完成后才开始写（命令排队），
     // 所以这里不必等 `Connected`。
     if let Some(b) = entrance.next_cmd() {
-        send(&sess, a.session, &b)?;
+        send(&sess, a.session.unwrap_or(0), &b)?;
     }
 
     while Instant::now() < deadline {
@@ -136,7 +156,7 @@ fn run(argv: &[String]) -> Result<(), String> {
         match sess.evs.recv_timeout(Duration::from_millis(50)) {
             Ok(ev) => handle_ev(
                 &sess,
-                a.session,
+                a.session.unwrap_or(0),
                 &mut entrance,
                 &mut world,
                 ev,
@@ -276,7 +296,11 @@ fn handle_ev(
         Ev::Connected {
             version,
             capabilities,
+            // ⚠️ 登录要把口令证明绑在它上面（`core::auth::proof`）—— 每条连接一次，
+            // 所以必须立刻交给握手状态机，晚了就发不出证明。
+            nonce,
         } => {
+            entrance.on_nonce(&nonce);
             println!("[world] 已连接：协议版本 {version}，能力 {capabilities:?}");
         }
         Ev::Closed(why) => return Err(format!("连接结束：{why}")),
@@ -359,6 +383,13 @@ fn send(sess: &Session, session_id: i32, body: &Body) -> Result<(), String> {
         // v0 的 token 就是会话号 ⇒ 不必从 `session_token` 里解回来（那会把
         // "编码"这一件事在两个地方各写一遍）。
         Body::Reconnect(_) => Cmd::Reconnect(session_id),
+        // 口令登录（D-24①）：两步都是状态机吐出来的，这里只做"翻译"。
+        // ⚠️ 证明是**算好的十六进制串**，不是口令 —— 口令到此为止没离开过 `core::auth`。
+        Body::LoginSaltRequest(r) => Cmd::LoginSaltRequest(r.account.clone()),
+        Body::Login(l) => Cmd::Login {
+            account: l.account.clone(),
+            proof_hex: l.password_hash.clone(),
+        },
         Body::ListCharacters(_) => Cmd::ListCharacters,
         Body::SelectCharacter(s) => Cmd::SelectCharacter(s.character_id),
         other => {

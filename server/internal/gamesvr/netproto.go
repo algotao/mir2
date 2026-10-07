@@ -9,12 +9,11 @@
 //
 // # v0 的边界（都在 protocol.md §11 记了待办）
 //
-//   - **不实现 `Login`**：`Login.password_hash` 到底是什么（客户端预哈希？挑战应答？）
-//     还没有定论，而它依赖 accountsvc 的接入（D-13 的内部 RPC）。所以 v0 的入口是
-//     `Reconnect`：拿**已有会话号**认领会话 —— 这条路径不会白写，§5 的重连语义就是它，
-//     将来 `LoginResult` 签发的 `session_token` 只会替换掉 v0 这层"会话号即 token"的编码。
-//   - 进图的身份仍由 **accountsvc 建立的会话**提供（真实口令校验在那里）；
-//     本入口不重复实现登录生命周期，只接管"选角 → 进世界"这一段。
+//   - **`Login` 已实现**（2026-10-08，D-24① 挑战应答）：两步往返，服务端始终不知道口令。
+//     与 `Reconnect` 的分工：`Login` 是"第一次来"，`Reconnect` 是"带着已经签发的会话号回来"。
+//     两条路之后走的是**同一条尾巴**（选角 → 进世界）。见 onLoginSaltRequest / onLogin。
+//   - `accountsvc` 那条 legacy 登录路径仍然在（服务旧客户端与 mir2cli）；
+//     口令策略与校验原语两边共用 `internal/authn` 那一份。
 //   - 已做到：进图快照 + 能力值 + **实时实体事件**（出现/消失/移动，出站）与
 //     `MoveInput`（入站：走一步 / 限流 / 被挡回权威位置）。
 //   - 未做到：攻击 / 物品 / 聊天 / 技能仍走 legacy 入口 —— 那些 legacy 下行会被
@@ -25,15 +24,19 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/algotao/mir2/server/internal/authn"
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/frame"
 	"github.com/algotao/mir2/server/internal/obs"
@@ -50,6 +53,12 @@ const (
 	// protoHandshakeTimeout 只用于**等 ClientHello**：握手是接入面的第一份输入，
 	// 不能让"连上就不说话"的连接无限期挂着（与 PROXY 头那个超时同理）。
 	protoHandshakeTimeout = 10 * time.Second
+	// loginSessionTTL 是登录后签发的会话寿命。
+	//
+	// ⚠️ 与 `accountsvc.loginSessionTTL` 同值（10 分钟）—— 两边各存一份迟早漂，
+	// 该搬到一个共享常量（记在 protocol.md §11）。
+	loginSessionTTL = 10 * time.Minute
+
 	// protoStoreTimeout 是单次查库的上限（会话/角色都在这里读）。
 	protoStoreTimeout = 5 * time.Second
 	// protoTicketTTL 是选角时开出的"进游戏凭证"有效期。
@@ -266,9 +275,15 @@ type protoSession struct {
 	rd       *bufio.Reader
 	clientIP string
 
-	// rec 是 Reconnect 认领到的会话；player 是进世界之后的在线对象。
+	// rec 是 Reconnect/Login 认领到的会话；player 是进世界之后的在线对象。
 	rec    *storage.SessionRecord
 	player *Player
+
+	// nonce 是这条连接**一次性**的握手随机值（`ServerHello.session_key`）。
+	//
+	// ⚠️ 它是 D-24① 挑战应答的另一半：客户端把口令证明绑在它上面，
+	// 所以证明**重放不了**（换个连接 nonce 就变）。见 onLogin 的说明。
+	nonce []byte
 
 	// snapReq 是自动存档的投递通道（容量 1，与 legacy 同一套机制）。
 	// 在**注册进 world.players 之前**挂到 player 上，见 enterWorld。
@@ -369,15 +384,15 @@ func (ps *protoSession) handshake() bool {
 		return false
 	}
 
-	// `session_key` 先给一个随机 nonce：v0 不用它做校验，但握手里带上它，
-	// 是为将来"口令挑战应答"（`Login.password_hash` 的定论）留的位置。
-	nonce := make([]byte, 16)
-	if _, err := rand.Read(nonce); err != nil {
+	// `session_key` 是这条连接**一次性**的 nonce：登录时客户端把口令证明绑在它上面
+	//（D-24① 挑战应答），所以这里必须**留下来**，不能只发出去就算完。
+	ps.nonce = make([]byte, 16)
+	if _, err := rand.Read(ps.nonce); err != nil {
 		log.Printf("%s: 生成握手 nonce 失败: %v", ps.clientIP, err)
 		return false
 	}
 	// capabilities 目前只报一条：v0 的能力面就是"进图快照"。
-	if err := ps.send(frame.NewServerHello(protocol.Version, nonce, []string{"enter-world"})); err != nil {
+	if err := ps.send(frame.NewServerHello(protocol.Version, ps.nonce, []string{"enter-world"})); err != nil {
 		return false
 	}
 	log.Printf("%s: 新协议握手完成（版本 %d）", ps.clientIP, protocol.Version)
@@ -402,6 +417,10 @@ func (ps *protoSession) dispatch(env *protocol.Envelope) (keep bool) {
 		return ps.send(frame.NewPong(body.Ping.GetClientTimeMs())) == nil
 	case *protocol.Envelope_Reconnect:
 		return ps.onReconnect(body.Reconnect)
+	case *protocol.Envelope_LoginSaltRequest:
+		return ps.onLoginSaltRequest(body.LoginSaltRequest)
+	case *protocol.Envelope_Login:
+		return ps.onLogin(body.Login)
 	case *protocol.Envelope_ListCharacters:
 		return ps.onListCharacters()
 	case *protocol.Envelope_SelectCharacter:
@@ -431,6 +450,143 @@ func (ps *protoSession) noteUnknown(env *protocol.Envelope) {
 		name = "未知（oneof case 未设置）"
 	}
 	log.Printf("%s: 忽略未实现的新协议消息 %s（本连接累计 %d 条）", ps.clientIP, name, ps.unknown)
+}
+
+// ---------- 登录：D-24① 挑战应答 ----------
+//
+// 两步：
+//
+//	① 客户端要 **KDF 参数**（`LoginSaltRequest` → `LoginSalt`）：盐在服务端且是随机的，
+//	   客户端拿不到就算不出与服务端存储一致的 `K` —— 这正是 D-24 当初卡住的地方。
+//	② 客户端发**证明** `HMAC-SHA256(K, nonce ‖ account)`（放进 `Login.password_hash`），
+//	   nonce 是握手里那条连接一次的 `session_key`。
+//
+// 服务端**始终不知道口令**：它存着 `K`（PBKDF2 派生值），重算一遍 HMAC 就能比对
+//（`authn.CheckProof`，常量时间）。于是：明文不落网络、`K` 不落网络、证明本身也绑在
+// 这条连接上（嗅到也重放不了）。
+//
+// ⚠️ 策略（锁定/失败计数）与 accountsvc 共用 `authn` 那一份 —— 安全策略只允许有一份（R-7）。
+
+// onLoginSaltRequest 回一条 KDF 参数。
+func (ps *protoSession) onLoginSaltRequest(m *protocol.LoginSaltRequest) bool {
+	account := m.GetAccount()
+	params := storage.KDFParams()
+
+	out := &protocol.LoginSalt{
+		Iterations: uint32(params.Iterations),
+		KeyLen:     uint32(params.KeyLen),
+	}
+	// 先用**随机盐**打底：账号不存在/已停用也回它 —— 不在这里露出"账号存不存在"
+	//（与 accountsvc 那套"不存在也按口令错误回"是同一条纪律）。
+	out.Salt = make([]byte, params.SaltLen)
+	if _, err := rand.Read(out.Salt); err != nil {
+		log.Printf("%s: 生成随机盐失败: %v", ps.clientIP, err)
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), protoStoreTimeout)
+	defer cancel()
+	if acc, err := ps.srv.store.Accounts().GetByName(ctx, account); err == nil && !acc.Deleted {
+		out.Salt = acc.Salt
+	}
+	return ps.send(&protocol.Envelope{Body: &protocol.Envelope_LoginSalt{LoginSalt: out}}) == nil
+}
+
+// onLogin 校验口令证明，成功则开一条会话（与 accountsvc 登录成功后做的是同一件事）。
+func (ps *protoSession) onLogin(m *protocol.Login) bool {
+	if ps.rec != nil {
+		// 这条连接已经认领过会话：当幂等回执（与 onReconnect 同一纪律），
+		// 但**不重发 token**（那等于把已经给过的东西再喊一遍）。
+		return ps.sendLoginResult(protocol.LoginCode_LOGIN_OK, "已登录", nil) == nil
+	}
+	if len(ps.nonce) == 0 {
+		// 握手里的 nonce 没留下来 ⇒ 证明没法验。这属服务器内部错误，不是客户端的错。
+		return ps.failLogin(protocol.LoginCode_LOGIN_SERVER_FULL, "服务器缺少握手 nonce")
+	}
+	proof, err := hex.DecodeString(strings.TrimSpace(m.GetPasswordHash()))
+	if err != nil || len(proof) != sha256.Size {
+		return ps.failLogin(protocol.LoginCode_LOGIN_BAD_CREDENTIALS, "口令证明格式非法")
+	}
+	account := m.GetAccount()
+
+	ctx, cancel := context.WithTimeout(context.Background(), protoStoreTimeout)
+	defer cancel()
+	acc, err := ps.srv.store.Accounts().GetByName(ctx, account)
+	if err != nil || acc.Deleted {
+		// ⚠️ 不存在与已停用**都按口令错误回**：不告诉对方账号是否存在
+		return ps.failLogin(protocol.LoginCode_LOGIN_BAD_CREDENTIALS, "账号或口令不正确")
+	}
+	now := time.Now()
+	lock := authn.DefaultLockPolicy()
+	if lock.Locked(acc, now) {
+		return ps.failLogin(protocol.LoginCode_LOGIN_LOCKED, "口令错误次数过多，请稍后再试")
+	}
+	if !authn.CheckProof(acc.PasswordHash, ps.nonce, account, proof) {
+		lock.NoteFailure(acc, now)
+		if err := ps.srv.store.Accounts().Update(ctx, acc); err != nil {
+			log.Printf("%s: 写回失败计数出错（不影响本次拒绝）: %v", ps.clientIP, err)
+		}
+		return ps.failLogin(protocol.LoginCode_LOGIN_BAD_CREDENTIALS, "账号或口令不正确")
+	}
+	if authn.NoteSuccess(acc) {
+		_ = ps.srv.store.Accounts().Update(ctx, acc)
+	}
+
+	// 成功：开一条**已认证**的会话，并把会话号当 token 回给客户端。
+	// ⚠️ 会话号是 31 位随机值（不可猜测）；唯一性由存储主键兜底（Create 失败就换个号）。
+	rec := &storage.SessionRecord{
+		Account:   account,
+		IP:        ps.clientIP,
+		Stage:     sessionStageAuthed,
+		ExpiresAt: now.Add(loginSessionTTL),
+	}
+	if _, err := ps.newSession(ctx, rec); err != nil {
+		log.Printf("%s: 账号 %s 登录后开会话失败: %v", ps.clientIP, account, err)
+		return ps.failLogin(protocol.LoginCode_LOGIN_SERVER_FULL, "服务器暂时无法分配会话")
+	}
+	if err := ps.srv.store.Sessions().Activate(ctx, rec); err != nil {
+		log.Printf("%s: 账号 %s 会话接管失败: %v", ps.clientIP, account, err)
+		return ps.failLogin(protocol.LoginCode_LOGIN_SERVER_FULL, "服务器暂时无法分配会话")
+	}
+	ps.rec = rec
+
+	var tok [4]byte
+	binary.LittleEndian.PutUint32(tok[:], uint32(rec.SessionID))
+	log.Printf("%s: 账号 %s 登录成功（会话 %d）", ps.clientIP, account, rec.SessionID)
+	return ps.sendLoginResult(protocol.LoginCode_LOGIN_OK, "", tok[:]) == nil
+}
+
+// newSession 分配一个不可猜测的会话号并落库（形状与 accountsvc.SessionStore.Create 一致）。
+func (ps *protoSession) newSession(ctx context.Context, rec *storage.SessionRecord) (int32, error) {
+	for i := 0; i < 8; i++ {
+		var raw [4]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return 0, err
+		}
+		rec.SessionID = int32(binary.BigEndian.Uint32(raw[:]) & 0x7fffffff)
+		if rec.SessionID < 2 {
+			continue
+		}
+		if err := ps.srv.store.Sessions().Create(ctx, rec); err == nil {
+			return rec.SessionID, nil
+		}
+	}
+	return 0, errors.New("无法分配唯一会话号")
+}
+
+// sendLoginResult 回一条登录结果。
+func (ps *protoSession) sendLoginResult(code protocol.LoginCode, msg string, token []byte) error {
+	return ps.send(&protocol.Envelope{Body: &protocol.Envelope_LoginResult{
+		LoginResult: &protocol.LoginResult{Code: code, Message: msg, SessionToken: token}}})
+}
+
+// failLogin 回一条失败并断开：登录失败时**没有**可继续的状态（与 failReconnect 同一纪律）。
+func (ps *protoSession) failLogin(code protocol.LoginCode, reason string) bool {
+	log.Printf("%s: 新协议登录失败（%s）: %s", ps.clientIP, code, reason)
+	_ = ps.sendLoginResult(code, reason, nil)
+	_ = ps.send(&protocol.Envelope{Body: &protocol.Envelope_Disconnect{
+		Disconnect: &protocol.Disconnect{Reason: reason}}})
+	return false
 }
 
 // onReconnect 用会话号认领会话（v0 的入口；语义与 §5 的重连一致）。

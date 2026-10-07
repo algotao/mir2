@@ -37,7 +37,7 @@ func helloEnvelope() *protocol.Envelope {
 //	Envelope.seq = 1                      →  08 01
 //	Envelope.body 字段号 0x0101（=257）    →  8A 10            （LEN 类型：257<<3|2 = 2058）
 //	ClientHello 长度 15                   →  0F
-//	  protocol_version = 3                →  08 03
+//	  protocol_version = 4                →  08 04
 //	  client_build = "test"               →  12 04 74 65 73 74
 //	  locale = "zh-CN"                    →  1A 05 7A 68 2D 43 4E
 //	帧头 = u32 小端长度 20                  →  14 00 00 00
@@ -47,6 +47,7 @@ func helloEnvelope() *protocol.Envelope {
 //
 //	version 1 → 2  修 `Direction` 枚举顺序
 //	version 2 → 3  给 `EntityFeature` 加 `appr`（怪物外观号，见 common.proto 的说明）
+//	version 3 → 4  加 `LoginSaltRequest` / `LoginSalt`（D-24① 挑战应答的第一步）
 //
 // 每次都必须**看着**这一行确认改的只有它，而不是盲抄一遍新哈希。
 func TestGoldenFrameBytes(t *testing.T) {
@@ -54,7 +55,7 @@ func TestGoldenFrameBytes(t *testing.T) {
 	if err := Write(&buf, helloEnvelope()); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	const wantHex = "1400000008018a100f08031204746573741a057a682d434e"
+	const wantHex = "1400000008018a100f08041204746573741a057a682d434e"
 	got := hex.EncodeToString(buf.Bytes())
 	if got != wantHex {
 		t.Fatalf("黄金报文不符（协议一改这里必须同步确认）\n  want %s\n  got  %s", wantHex, got)
@@ -63,7 +64,7 @@ func TestGoldenFrameBytes(t *testing.T) {
 	// ⚠️ 这里用了 protocol.Version（= version.txt）⇒ **一次 schema/版本变更就应该让
 	// 这条测试红**，这正是它存在的意义：改协议不能"顺手改过去"。
 	sum := sha256.Sum256(buf.Bytes())
-	const wantSum = "c67e6df038207b7c8a62ee7de8ed5b90d42a66c44bb7161919009ac4122218b2"
+	const wantSum = "db637e5560e858a6dc2fcb964601a3726935299f5588aac01241c28ced33f417"
 	if hex.EncodeToString(sum[:]) != wantSum {
 		t.Logf("帧字节 = %s", got)
 		t.Logf("sha256  = %s", hex.EncodeToString(sum[:]))

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/algotao/mir2/server/internal/authn"
 	"github.com/algotao/mir2/server/internal/data"
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/proto"
@@ -82,11 +83,12 @@ func DefaultConfig() Config {
 		MaxChrPerAccount:   2,
 		NewChrIntervalMs:   1000,
 		QueryChrIntervalMs: 200,
-		MaxPasswordErrors:  5,
-		PasswordLockMs:     60_000,
-		HomeMap:            "0",
-		HomeX:              289,
-		HomeY:              618,
+		// ⚠️ 默认值来自 `authn`（唯一来源）：gamesvr 的挑战应答走的是同一套策略
+		MaxPasswordErrors: authn.DefaultLockPolicy().MaxErrors,
+		PasswordLockMs:    authn.DefaultLockPolicy().LockForMs,
+		HomeMap:           "0",
+		HomeX:             289,
+		HomeY:             618,
 	}
 }
 
@@ -302,23 +304,22 @@ func (s *Service) onLogin(ctx context.Context, sess *Session, p wire.Packet) []w
 		return one(proto.SM_PASSWD_FAIL, -5, "")
 	}
 
-	now := time.Now().UnixMilli()
-	if acc.ErrorCount >= s.cfg.MaxPasswordErrors &&
-		now-acc.ActionTick < s.cfg.PasswordLockMs {
+	// 锁定策略与"错误计数怎么记"都在 `authn`（**唯一一份**，见那个包的文件头）——
+	// gamesvr 的挑战应答走的是同一套策略，两边不许各写一遍。
+	now := time.Now()
+	lock := authn.LockPolicy{MaxErrors: s.cfg.MaxPasswordErrors, LockForMs: s.cfg.PasswordLockMs}
+	if lock.Locked(acc, now) {
 		return one(proto.SM_PASSWD_FAIL, -2, "")
 	}
 
-	if !storage.VerifyPassword(password, acc.PasswordHash, acc.Salt) {
-		acc.ErrorCount++
-		acc.ActionTick = now
+	if !authn.CheckPassword(password, acc) {
+		lock.NoteFailure(acc, now)
 		_ = s.store.Accounts().Update(ctx, acc)
 		return one(proto.SM_PASSWD_FAIL, -1, "")
 	}
 
 	// 成功：清零错误计数
-	if acc.ErrorCount != 0 || acc.ActionTick != 0 {
-		acc.ErrorCount = 0
-		acc.ActionTick = 0
+	if authn.NoteSuccess(acc) {
 		_ = s.store.Accounts().Update(ctx, acc)
 	}
 	sess.Account = account

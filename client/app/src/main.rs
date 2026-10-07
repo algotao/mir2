@@ -755,11 +755,45 @@ impl Net {
     ///
     /// ⚠️ 为什么还要 `MIR2_SESSION`：新协议的 `Login` 还没实现（口令怎么过网络未定，
     /// 见 D-24），所以客户端只能认领一个**既有会话** —— 它由账户服务（或 e2e 测试）建立。
+    /// 用**口令**登录（D-24① 挑战应答；口令不上网络，只上证明）。
+    ///
+    /// ⚠️ 与 `connect()`（认领既有会话）的区别只有"入口不同"：两条路之后
+    /// 走的是**同一条尾巴**（列角色 → 选角 → 进世界），见 `core::entrance` 的文件头。
+    fn connect_with_password(addr: &str, account: &str, password: &str) -> Result<Net, String> {
+        if account.is_empty() {
+            return Err("账号不能为空".into());
+        }
+        if password.is_empty() {
+            return Err("口令不能为空".into());
+        }
+        let char_id: Option<u64> = match std::env::var("MIR2_CHAR") {
+            Ok(s) => Some(s.parse().map_err(|_| "MIR2_CHAR 必须是整数".to_string())?),
+            Err(_) => None,
+        };
+        println!("[net] 连接 {addr}（账号 {account}，口令登录）…");
+        let sess = mir2_net::Session::spawn(addr.to_string(), "mir2-app".into(), "zh-CN".into());
+        Ok(Net {
+            sess,
+            entrance: mir2_core::entrance::Entrance::new_with_password(
+                account.to_string(),
+                password.to_string(),
+                char_id,
+            ),
+            world: mir2_core::world::World::default(),
+            session: 0,
+            status: format!("登录 {account} …"),
+            changes: 0,
+            floaters: Vec::new(),
+            anims: HashMap::new(),
+        })
+    }
+
     fn connect() -> Result<Net, String> {
         let addr = std::env::var("MIR2_SERVER").unwrap_or_else(|_| "127.0.0.1:7500".into());
         let session: i32 = std::env::var("MIR2_SESSION")
             .map_err(|_| {
-                "缺 MIR2_SESSION（新协议还没实现 Login，要先有一个已认证的会话号）".to_string()
+                "缺 MIR2_SESSION（这条是\"认领既有会话\"的入口；用登录界面输入账号口令则不需要它）"
+                    .to_string()
             })?
             .parse()
             .map_err(|_| "MIR2_SESSION 必须是十进制整数".to_string())?;
@@ -792,7 +826,11 @@ impl Net {
                 mir2_net::Ev::Connected {
                     version,
                     capabilities,
+                    nonce,
                 } => {
+                    // ⚠️ nonce 是**这条连接一次**的握手随机值，登录时要把口令证明绑在它上面
+                    //（D-24①）⇒ 必须立刻交给握手状态机，晚了就发不出证明。
+                    self.entrance.on_nonce(&nonce);
                     self.status =
                         format!("已连接（协议 {version}，能力 {}）", capabilities.join(","));
                     println!("[net] {}", self.status);
@@ -851,6 +889,14 @@ impl Net {
         use mir2_protocol::envelope::Body;
         let cmd = match body {
             Body::Reconnect(_) => Some(mir2_net::Cmd::Reconnect(self.session)),
+            // ⚠️ 口令登录那两步也必须在这里翻译 —— 少了它状态机吐出来的
+            // `LoginSaltRequest`/`Login` 会被 `_ => None` **静默吞掉**，
+            // 表现是"点了登录一直转圈"（e2e 的 `TestProtoRustLogin` 抓的就是这个）。
+            Body::LoginSaltRequest(r) => Some(mir2_net::Cmd::LoginSaltRequest(r.account.clone())),
+            Body::Login(l) => Some(mir2_net::Cmd::Login {
+                account: l.account.clone(),
+                proof_hex: l.password_hash.clone(),
+            }),
             Body::ListCharacters(_) => Some(mir2_net::Cmd::ListCharacters),
             Body::SelectCharacter(s) => Some(mir2_net::Cmd::SelectCharacter(s.character_id)),
             _ => None,
@@ -1499,7 +1545,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ if mode == 1 => {
                         if let Some(k) = keycode {
                             match login.on_key(k) {
-                                login::Action::Submit => submit_login(&mut login, &mut status),
+                                login::Action::Submit => {
+                                    submit_login(&mut login, &mut net, &mut status)
+                                }
                                 login::Action::NewAccount => {
                                     // 原版会开 `DLoginNew` 对话框（`FState.pas:886`）。
                                     // 那条链要服务端配合建号，还没接 ⇒ 明确说一声，别装作成功。
@@ -1670,7 +1718,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         });
                         if let Some(l) = l {
                             match login.on_up((x, y), &l) {
-                                login::Action::Submit => submit_login(&mut login, &mut status),
+                                login::Action::Submit => {
+                                    submit_login(&mut login, &mut net, &mut status)
+                                }
                                 login::Action::Quit => break 'main,
                                 login::Action::Dismiss => {}
                                 login::Action::NewAccount => {
@@ -1692,6 +1742,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 联网：把网络线程收到的东西推进状态机（**每帧一次**，永不阻塞）。
         if let Some(n) = &mut net {
             n.pump();
+            // 登录界面与网络状态互相照应。三件事：
+            //   ① 失败 ⇒ 弹窗（原版也是 `DMessageDlg`），并把"登录中"解掉；
+            //   ② 进世界 ⇒ 开始播开门动画（原版 `IntroScn.pas:907-914`），播完切地图；
+            //   ③ 成功拿到的会话号存下来 —— 之后重连走 `Reconnect`，不必再输口令。
+            if let Some(why) = n.entrance.failed() {
+                if login.error.is_none() {
+                    login.error = Some(why.to_string());
+                    login.busy = false;
+                }
+            }
+            if n.entrance.in_world() && login.opened_at.is_none() {
+                login.opened_at = Some(Instant::now());
+                login.busy = false;
+                mode = 1; // 开门动画在登录屏上播（否则会在地图里"看不见地"播完）
+            }
+            if let Some(tok) = n.entrance.session_token() {
+                n.session = tok;
+            }
         }
         // 进了世界就让相机跟着自己（离线时保持手动镜头）。
         if let Some(c) = net.as_ref().and_then(|n| n.follow_cam()) {
@@ -2191,7 +2259,7 @@ fn draw_asset_view<'a, T>(
 /// `Login`，而它的口令形态是 [D-24](../../../docs/decisions.md) 在管的事 ——
 /// 在定下来之前不假装成功（`docs/decisions.md` 原文：**也不把 `password_hash` 当成
 /// "收到了就用"**）。
-fn submit_login(login: &mut login::Login, status: &mut String) {
+fn submit_login(login: &mut login::Login, net: &mut Option<Net>, status: &mut String) {
     if login.account.is_empty() {
         login.error = Some("Please enter your account name.".into());
         return;
@@ -2200,13 +2268,20 @@ fn submit_login(login: &mut login::Login, status: &mut String) {
         login.error = Some("Please enter your password.".into());
         return;
     }
-    login.busy = true;
-    *status = format!("LOGIN {}", login.account);
-    println!(
-        "[login] 提交：账号={:?} 密码长度={}（网络登录待接：见 D-24）",
-        login.account,
-        login.password.chars().count()
-    );
+    let addr = std::env::var("MIR2_SERVER").unwrap_or_else(|_| "127.0.0.1:7500".into());
+    match Net::connect_with_password(&addr, &login.account, &login.password) {
+        Ok(n) => {
+            login.busy = true;
+            login.error = None;
+            *status = format!("LOGIN {}", login.account);
+            println!(
+                "[login] 提交：账号={:?} → 口令挑战应答（D-24①）",
+                login.account
+            );
+            *net = Some(n);
+        }
+        Err(e) => login.error = Some(e),
+    }
 }
 
 #[cfg(test)]

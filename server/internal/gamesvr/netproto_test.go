@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/pbkdf2"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +19,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/algotao/mir2/server/internal/authn"
 
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/frame"
@@ -958,4 +963,169 @@ func TestProtoRustCombat(t *testing.T) {
 		t.Errorf("输出里没有伤害事件：\n%s", out.String())
 	}
 	t.Logf("Rust 战斗剧本输出：\n%s", out.String())
+}
+
+// TestProtoLoginChallenge 是 D-24① 挑战应答的**完整线上往返**：
+//
+//	ClientHello → ServerHello(nonce) → LoginSaltRequest → LoginSalt
+//	→（客户端算 K 与证明）→ Login → LoginResult
+//
+// 并验三件事：拿到的 token 真的能用（Reconnect 回去）、错口令被拒、
+// 错够次数会锁（策略与 accountsvc 共用 `authn` 那一份）。
+//
+// ⚠️ 这里手搓每一步，**故意不复用** `core::entrance`：服务端测试要对的是线上字节，
+// 客户端状态机错的时候这条不该跟着错。
+func TestProtoLoginChallenge(t *testing.T) {
+	_, store, addr := protoContractServer(t)
+	seedAccount(t, store) // 账号 tester / 口令 pw
+
+	// 走一遍登录，返回 (结果, nonce)
+	login := func(t *testing.T, account, password string) *protocol.LoginResult {
+		t.Helper()
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("连接: %v", err)
+		}
+		defer c.Close()
+		rd := bufio.NewReader(c)
+		write := func(env *protocol.Envelope) {
+			if err := frame.Write(c, env); err != nil {
+				t.Fatalf("发帧: %v", err)
+			}
+		}
+		read := func() *protocol.Envelope {
+			env, err := frame.Read(rd)
+			if err != nil {
+				t.Fatalf("读帧: %v", err)
+			}
+			return env
+		}
+
+		write(&protocol.Envelope{Body: &protocol.Envelope_ClientHello{ClientHello: &protocol.ClientHello{
+			ProtocolVersion: protocol.Version, ClientBuild: "test", Locale: "zh-CN",
+		}}})
+		nonce := read().GetServerHello().GetSessionKey()
+		if len(nonce) == 0 {
+			t.Fatal("握手里没给 nonce（挑战应答要用它）")
+		}
+
+		// ① 取盐
+		write(&protocol.Envelope{Body: &protocol.Envelope_LoginSaltRequest{
+			LoginSaltRequest: &protocol.LoginSaltRequest{Account: account}}})
+		salt := read().GetLoginSalt()
+		if len(salt.GetSalt()) == 0 || salt.GetIterations() == 0 || salt.GetKeyLen() == 0 {
+			t.Fatalf("LoginSalt 不完整: %v", salt)
+		}
+
+		// ② 算证明：K = PBKDF2(口令, 盐, 迭代, 派生长)，证明 = HMAC(K, nonce‖account)
+		k, err := pbkdf2.Key(sha256.New, password, salt.GetSalt(),
+			int(salt.GetIterations()), int(salt.GetKeyLen()))
+		if err != nil {
+			t.Fatalf("PBKDF2: %v", err)
+		}
+		write(&protocol.Envelope{Body: &protocol.Envelope_Login{Login: &protocol.Login{
+			Account:      account,
+			PasswordHash: hex.EncodeToString(authn.ExpectedProof(k, nonce, account)),
+		}}})
+		return read().GetLoginResult()
+	}
+
+	// 口令对 ⇒ OK + 4 字节 token
+	res := login(t, "tester", "pw")
+	if res.GetCode() != protocol.LoginCode_LOGIN_OK {
+		t.Fatalf("登录该成功，实得 %v %s", res.GetCode(), res.GetMessage())
+	}
+	tok := res.GetSessionToken()
+	if len(tok) != 4 {
+		t.Fatalf("session_token 该是 4 字节（会话号），实得 %d 字节", len(tok))
+	}
+	if sid := int32(binary.LittleEndian.Uint32(tok)); sid < 2 {
+		t.Fatalf("会话号不合法: %d", sid)
+	}
+
+	// token 真的能用：Reconnect 回去应回"回选角"（这条连接还没选角）
+	{
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("连接: %v", err)
+		}
+		defer c.Close()
+		rd := bufio.NewReader(c)
+		if err := frame.Write(c, &protocol.Envelope{Body: &protocol.Envelope_ClientHello{
+			ClientHello: &protocol.ClientHello{ProtocolVersion: protocol.Version, ClientBuild: "test"}}}); err != nil {
+			t.Fatalf("发 ClientHello: %v", err)
+		}
+		if _, err := frame.Read(rd); err != nil {
+			t.Fatalf("读 ServerHello: %v", err)
+		}
+		if err := frame.Write(c, &protocol.Envelope{Body: &protocol.Envelope_Reconnect{
+			Reconnect: &protocol.Reconnect{SessionToken: tok}}}); err != nil {
+			t.Fatalf("发 Reconnect: %v", err)
+		}
+		env, err := frame.Read(rd)
+		if err != nil {
+			t.Fatalf("读 ReconnectResult: %v", err)
+		}
+		if got := env.GetReconnectResult().GetStatus(); got != protocol.ReconnectStatus_RECONNECT_BACK_TO_SELECT {
+			t.Fatalf("拿登录签发的 token 重连该回「回选角」，实得 %v", got)
+		}
+	}
+
+	// 口令错 ⇒ 被拒（且**不区分**账号是否存在）
+	if got := login(t, "tester", "wrong"); got.GetCode() != protocol.LoginCode_LOGIN_BAD_CREDENTIALS {
+		t.Fatalf("错口令该被拒，实得 %v %s", got.GetCode(), got.GetMessage())
+	}
+	// 不存在的账号：盐照给（随机），登录照样只是"口令不正确"——不暴露账号是否存在
+	if got := login(t, "nobody", "pw"); got.GetCode() != protocol.LoginCode_LOGIN_BAD_CREDENTIALS {
+		t.Fatalf("不存在的账号该按口令错误回，实得 %v", got.GetCode())
+	}
+
+	// 错够次数（默认 5）之后连**对的**口令也要被锁 —— 策略与 accountsvc 共用一份
+	for i := 0; i < 4; i++ {
+		login(t, "tester", "wrong")
+	}
+	if got := login(t, "tester", "pw"); got.GetCode() != protocol.LoginCode_LOGIN_LOCKED {
+		t.Fatalf("错够次数后该锁，实得 %v %s", got.GetCode(), got.GetMessage())
+	}
+}
+
+// TestProtoRustLogin 让**真 Rust 客户端**用口令登一次（D-24① 的跨语言端到端）：
+// 先取盐、算证明、发 Login，然后接着走选角 → 进世界 —— 与产线上同一条路。
+//
+// ⚠️ 与 `TestProtoLoginChallenge`（Go 手搓每一步）互补：那条验**服务端**的线上字节，
+// 这条验**客户端实现**（PBKDF2/HMAC 算得对不对、顺序对不对）。两端各写一套密码学，
+// 算得不一样的话只有这条会发现。
+func TestProtoRustLogin(t *testing.T) {
+	bin, why := findE2EBin()
+	if bin == "" {
+		t.Skipf("跳过：%s", why)
+	}
+	_, store, addr := protoContractServer(t)
+	seedAccount(t, store) // 账号 tester / 口令 pw
+
+	out, err := exec.Command(bin, "world",
+		"-addr", addr,
+		"-account", "tester",
+		"-password", "pw",
+		"-expect-map", "0",
+		"-expect-pos", "1,1",
+		// 这条验的是**登录**那条路（视野里没有别人 ⇒ 0 个实体）
+		"-expect-entities", "0",
+		"-timeout-ms", "8000",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("Rust 口令登录失败：%v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "世界状态通过") {
+		t.Errorf("没走通：\n%s", out)
+	}
+
+	// 错口令必须进不去 —— 否则"验过了"就是假的（这条防的是"客户端根本不发证明也能过"）
+	out2, err2 := exec.Command(bin, "world",
+		"-addr", addr, "-account", "tester", "-password", "WRONG", "-timeout-ms", "3000",
+	).CombinedOutput()
+	if err2 == nil {
+		t.Fatalf("错口令竟然也进了世界：\n%s", out2)
+	}
+	t.Logf("Rust 口令登录输出：\n%s", out)
 }

@@ -369,6 +369,13 @@ TCP 保证送达与顺序，但不保证"语义上的只有一次"。所以按**
       现在不影响观感（换装要走背包，那条链还没接）。
 - [ ] `MapChunk` **还没有发送点**：客户端读本地地图容器（`maps.m2pk`，D-22），
       服务端下发地图块那条路只在 IDL 里存在。
+- [x] **登录**（2026-10-08，D-24① 挑战应答）：`LoginSaltRequest` / `LoginSalt` / `Login`
+      / `LoginResult`（协议版本 3 → 4）。服务端两步：先给 KDF 参数，再用**存着的口令凭证**
+      重算 `HMAC(K, nonce ‖ account)` 比对（`nonce` = 握手的 `session_key`）——
+      明文、等价口令、证明本身都不落网络且不可重放。
+      ⚠️ 配套：`ChangePassword` 还是空壳（要旧口令证明 + 新口令的新盐，还没接）；
+      会话阶段号（`sessionStageAuthed = 1`）与 `loginSessionTTL` 在 gamesvr 与 accountsvc
+      **各存了一份**，该搬到 `storage` 去。
 - [ ] 新协议入口的**剩余边界**（见 [`netproto.go`](../server/internal/gamesvr/netproto.go) 文件头）：
       物品/聊天/技能输入/组队/交易仍走 legacy；`protoDown` 会把那些 legacy 下行丢掉。
 - [ ] `MoveInput` **没有走/跑标志**（legacy 靠 CM_WALK / CM_RUN 两条消息区分）⇒

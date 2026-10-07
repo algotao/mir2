@@ -13,9 +13,38 @@ option go_package = "github.com/algotao/mir2/server/protocol;protocol";
 
 // ---------- 0x02xx 账号 ----------
 
+// 客户端 → 服务端：取登录要用的 KDF 参数。
+//
+// ⚠️ 这条往返是 **D-24①（挑战应答）** 的必需品：存储侧是 `PBKDF2(口令, 服务端随机盐)`，
+// 客户端**拿不到盐就算不出服务端能校验的那个值**（这正是 D-24 卡住的地方）。
+// 盐不是秘密 —— 标准做法（SCRAM/HTTP digest）都是明文下发它。
+message LoginSaltRequest {
+  string account = 1;
+}
+
+// 服务端 → 客户端：KDF 参数。
+//
+// ⚠️ 三个数必须与**存储侧**当前用的完全一致（`storage/password.go` 的 pwIterations 等），
+// 否则客户端算出来的 `K` 与服务端存的对不上。所以由服务端下发，客户端**不许写死**
+// —— 将来调迭代次数时，只有服务端要改。
+message LoginSalt {
+  bytes salt = 1;
+  uint32 iterations = 2;
+  uint32 key_len = 3;
+}
+
 message Login {
   string account = 1;
-  string password_hash = 2;  // 客户端只发哈希，明文不落网络
+  // 口令的**证明**，不是口令、也不是口令的等价物：
+  //
+  //    password_hash = hex( HMAC-SHA256( K, nonce ‖ account ) )
+  //    K            = PBKDF2-SHA256(口令, salt, iterations, key_len)   ← 三个参数由 LoginSalt 下发
+  //    nonce        = 握手时 ServerHello.session_key（每条连接一次性的随机值）
+  //
+  // ⚠️ 三个「不落网络」：明文不落、`K`（等价口令）不落、连证明本身也**绑在这条连接的
+  // 一次性 nonce 上** —— 嗅到也重放不了（D-24①）。
+  // 字段名保持 `password_hash` 是历史包袱（IDL 先写的），语义以这里为准。
+  string password_hash = 2;
   string client_build = 3;
 }
 
@@ -23,7 +52,8 @@ enum LoginCode {
   LOGIN_CODE_UNSPECIFIED = 0;
   LOGIN_OK = 1;
   LOGIN_BAD_CREDENTIALS = 2;
-  LOGIN_ACCOUNT_NOT_FOUND = 3;
+  LOGIN_ACCOUNT_NOT_FOUND = 3;   // ⚠️ 与 BAD_CREDENTIALS 同义：**不区分**账号是否存在
+  LOGIN_LOCKED = 6;               // 口令错误次数过多，暂时锁定
   LOGIN_ALREADY_ONLINE = 4;
   LOGIN_SERVER_FULL = 5;
 }

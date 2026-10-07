@@ -44,6 +44,9 @@ message Envelope {
     LoginResult login_result = 0x0202;
     ChangePassword change_password = 0x0203;
     ChangePasswordResult change_password_result = 0x0204;
+    // D-24① 挑战应答的第一步：取盐（见 account.proto 的说明）
+    LoginSaltRequest login_salt_request = 0x0205;
+    LoginSalt login_salt = 0x0206;
 
     // ---------- 0x03xx 角色 ----------
     ListCharacters list_characters = 0x0301;

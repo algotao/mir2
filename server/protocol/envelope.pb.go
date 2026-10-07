@@ -53,6 +53,8 @@ type Envelope struct {
 	//	*Envelope_LoginResult
 	//	*Envelope_ChangePassword
 	//	*Envelope_ChangePasswordResult
+	//	*Envelope_LoginSaltRequest
+	//	*Envelope_LoginSalt
 	//	*Envelope_ListCharacters
 	//	*Envelope_CharacterList
 	//	*Envelope_SelectCharacter
@@ -272,6 +274,24 @@ func (x *Envelope) GetChangePasswordResult() *ChangePasswordResult {
 	if x != nil {
 		if x, ok := x.Body.(*Envelope_ChangePasswordResult); ok {
 			return x.ChangePasswordResult
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetLoginSaltRequest() *LoginSaltRequest {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_LoginSaltRequest); ok {
+			return x.LoginSaltRequest
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetLoginSalt() *LoginSalt {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_LoginSalt); ok {
+			return x.LoginSalt
 		}
 	}
 	return nil
@@ -808,6 +828,15 @@ type Envelope_ChangePasswordResult struct {
 	ChangePasswordResult *ChangePasswordResult `protobuf:"bytes,516,opt,name=change_password_result,json=changePasswordResult,proto3,oneof"`
 }
 
+type Envelope_LoginSaltRequest struct {
+	// D-24① 挑战应答的第一步：取盐（见 account.proto 的说明）
+	LoginSaltRequest *LoginSaltRequest `protobuf:"bytes,517,opt,name=login_salt_request,json=loginSaltRequest,proto3,oneof"`
+}
+
+type Envelope_LoginSalt struct {
+	LoginSalt *LoginSalt `protobuf:"bytes,518,opt,name=login_salt,json=loginSalt,proto3,oneof"`
+}
+
 type Envelope_ListCharacters struct {
 	// ---------- 0x03xx 角色 ----------
 	ListCharacters *ListCharacters `protobuf:"bytes,769,opt,name=list_characters,json=listCharacters,proto3,oneof"`
@@ -1053,6 +1082,10 @@ func (*Envelope_ChangePassword) isEnvelope_Body() {}
 
 func (*Envelope_ChangePasswordResult) isEnvelope_Body() {}
 
+func (*Envelope_LoginSaltRequest) isEnvelope_Body() {}
+
+func (*Envelope_LoginSalt) isEnvelope_Body() {}
+
 func (*Envelope_ListCharacters) isEnvelope_Body() {}
 
 func (*Envelope_CharacterList) isEnvelope_Body() {}
@@ -1217,7 +1250,7 @@ var File_envelope_proto protoreflect.FileDescriptor
 const file_envelope_proto_rawDesc = "" +
 	"\n" +
 	"\x0eenvelope.proto\x12\x04mir2\x1a\rcontrol.proto\x1a\raccount.proto\x1a\vscene.proto\x1a\fcombat.proto\x1a\n" +
-	"item.proto\x1a\fsocial.proto\"\x9f\x1e\n" +
+	"item.proto\x1a\fsocial.proto\"\x9b\x1f\n" +
 	"\bEnvelope\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\rR\x03seq\x12\x17\n" +
 	"\aack_seq\x18\x02 \x01(\rR\x06ackSeq\x12\x1d\n" +
@@ -1238,7 +1271,10 @@ const file_envelope_proto_rawDesc = "" +
 	"\x05login\x18\x81\x04 \x01(\v2\v.mir2.LoginH\x00R\x05login\x127\n" +
 	"\flogin_result\x18\x82\x04 \x01(\v2\x11.mir2.LoginResultH\x00R\vloginResult\x12@\n" +
 	"\x0fchange_password\x18\x83\x04 \x01(\v2\x14.mir2.ChangePasswordH\x00R\x0echangePassword\x12S\n" +
-	"\x16change_password_result\x18\x84\x04 \x01(\v2\x1a.mir2.ChangePasswordResultH\x00R\x14changePasswordResult\x12@\n" +
+	"\x16change_password_result\x18\x84\x04 \x01(\v2\x1a.mir2.ChangePasswordResultH\x00R\x14changePasswordResult\x12G\n" +
+	"\x12login_salt_request\x18\x85\x04 \x01(\v2\x16.mir2.LoginSaltRequestH\x00R\x10loginSaltRequest\x121\n" +
+	"\n" +
+	"login_salt\x18\x86\x04 \x01(\v2\x0f.mir2.LoginSaltH\x00R\tloginSalt\x12@\n" +
 	"\x0flist_characters\x18\x81\x06 \x01(\v2\x14.mir2.ListCharactersH\x00R\x0elistCharacters\x12=\n" +
 	"\x0echaracter_list\x18\x82\x06 \x01(\v2\x13.mir2.CharacterListH\x00R\rcharacterList\x12C\n" +
 	"\x10select_character\x18\x83\x06 \x01(\v2\x15.mir2.SelectCharacterH\x00R\x0fselectCharacter\x12V\n" +
@@ -1346,58 +1382,60 @@ var file_envelope_proto_goTypes = []any{
 	(*LoginResult)(nil),           // 11: mir2.LoginResult
 	(*ChangePassword)(nil),        // 12: mir2.ChangePassword
 	(*ChangePasswordResult)(nil),  // 13: mir2.ChangePasswordResult
-	(*ListCharacters)(nil),        // 14: mir2.ListCharacters
-	(*CharacterList)(nil),         // 15: mir2.CharacterList
-	(*SelectCharacter)(nil),       // 16: mir2.SelectCharacter
-	(*SelectCharacterResult)(nil), // 17: mir2.SelectCharacterResult
-	(*CreateCharacter)(nil),       // 18: mir2.CreateCharacter
-	(*CreateCharacterResult)(nil), // 19: mir2.CreateCharacterResult
-	(*DeleteCharacter)(nil),       // 20: mir2.DeleteCharacter
-	(*DeleteCharacterResult)(nil), // 21: mir2.DeleteCharacterResult
-	(*EnterWorld)(nil),            // 22: mir2.EnterWorld
-	(*ChangeMap)(nil),             // 23: mir2.ChangeMap
-	(*MapChunk)(nil),              // 24: mir2.MapChunk
-	(*TimeOfDay)(nil),             // 25: mir2.TimeOfDay
-	(*MapDescription)(nil),        // 26: mir2.MapDescription
-	(*EntityAppear)(nil),          // 27: mir2.EntityAppear
-	(*EntityDisappear)(nil),       // 28: mir2.EntityDisappear
-	(*EntityMove)(nil),            // 29: mir2.EntityMove
-	(*EntityAction)(nil),          // 30: mir2.EntityAction
-	(*EntityHealth)(nil),          // 31: mir2.EntityHealth
-	(*EntityStatus)(nil),          // 32: mir2.EntityStatus
-	(*AbilityUpdate)(nil),         // 33: mir2.AbilityUpdate
-	(*MoveInput)(nil),             // 34: mir2.MoveInput
-	(*MoveRejected)(nil),          // 35: mir2.MoveRejected
-	(*EntityFeatureChanged)(nil),  // 36: mir2.EntityFeatureChanged
-	(*AttackInput)(nil),           // 37: mir2.AttackInput
-	(*Damage)(nil),                // 38: mir2.Damage
-	(*Death)(nil),                 // 39: mir2.Death
-	(*Revive)(nil),                // 40: mir2.Revive
-	(*ExperienceGain)(nil),        // 41: mir2.ExperienceGain
-	(*LevelUp)(nil),               // 42: mir2.LevelUp
-	(*CastSkillInput)(nil),        // 43: mir2.CastSkillInput
-	(*SkillEffect)(nil),           // 44: mir2.SkillEffect
-	(*MagicList)(nil),             // 45: mir2.MagicList
-	(*MagicChanged)(nil),          // 46: mir2.MagicChanged
-	(*MagicLevelExp)(nil),         // 47: mir2.MagicLevelExp
-	(*BagItems)(nil),              // 48: mir2.BagItems
-	(*AddItem)(nil),               // 49: mir2.AddItem
-	(*RemoveItem)(nil),            // 50: mir2.RemoveItem
-	(*UpdateItem)(nil),            // 51: mir2.UpdateItem
-	(*UseItem)(nil),               // 52: mir2.UseItem
-	(*DropItem)(nil),              // 53: mir2.DropItem
-	(*PickupItem)(nil),            // 54: mir2.PickupItem
-	(*GroundItemShow)(nil),        // 55: mir2.GroundItemShow
-	(*GroundItemHide)(nil),        // 56: mir2.GroundItemHide
-	(*EquipItem)(nil),             // 57: mir2.EquipItem
-	(*UnequipItem)(nil),           // 58: mir2.UnequipItem
-	(*EquippedItems)(nil),         // 59: mir2.EquippedItems
-	(*WeightChanged)(nil),         // 60: mir2.WeightChanged
-	(*GoldChanged)(nil),           // 61: mir2.GoldChanged
-	(*RepairItem)(nil),            // 62: mir2.RepairItem
-	(*RepairCostNotice)(nil),      // 63: mir2.RepairCostNotice
-	(*ChatInput)(nil),             // 64: mir2.ChatInput
-	(*ChatMessage)(nil),           // 65: mir2.ChatMessage
+	(*LoginSaltRequest)(nil),      // 14: mir2.LoginSaltRequest
+	(*LoginSalt)(nil),             // 15: mir2.LoginSalt
+	(*ListCharacters)(nil),        // 16: mir2.ListCharacters
+	(*CharacterList)(nil),         // 17: mir2.CharacterList
+	(*SelectCharacter)(nil),       // 18: mir2.SelectCharacter
+	(*SelectCharacterResult)(nil), // 19: mir2.SelectCharacterResult
+	(*CreateCharacter)(nil),       // 20: mir2.CreateCharacter
+	(*CreateCharacterResult)(nil), // 21: mir2.CreateCharacterResult
+	(*DeleteCharacter)(nil),       // 22: mir2.DeleteCharacter
+	(*DeleteCharacterResult)(nil), // 23: mir2.DeleteCharacterResult
+	(*EnterWorld)(nil),            // 24: mir2.EnterWorld
+	(*ChangeMap)(nil),             // 25: mir2.ChangeMap
+	(*MapChunk)(nil),              // 26: mir2.MapChunk
+	(*TimeOfDay)(nil),             // 27: mir2.TimeOfDay
+	(*MapDescription)(nil),        // 28: mir2.MapDescription
+	(*EntityAppear)(nil),          // 29: mir2.EntityAppear
+	(*EntityDisappear)(nil),       // 30: mir2.EntityDisappear
+	(*EntityMove)(nil),            // 31: mir2.EntityMove
+	(*EntityAction)(nil),          // 32: mir2.EntityAction
+	(*EntityHealth)(nil),          // 33: mir2.EntityHealth
+	(*EntityStatus)(nil),          // 34: mir2.EntityStatus
+	(*AbilityUpdate)(nil),         // 35: mir2.AbilityUpdate
+	(*MoveInput)(nil),             // 36: mir2.MoveInput
+	(*MoveRejected)(nil),          // 37: mir2.MoveRejected
+	(*EntityFeatureChanged)(nil),  // 38: mir2.EntityFeatureChanged
+	(*AttackInput)(nil),           // 39: mir2.AttackInput
+	(*Damage)(nil),                // 40: mir2.Damage
+	(*Death)(nil),                 // 41: mir2.Death
+	(*Revive)(nil),                // 42: mir2.Revive
+	(*ExperienceGain)(nil),        // 43: mir2.ExperienceGain
+	(*LevelUp)(nil),               // 44: mir2.LevelUp
+	(*CastSkillInput)(nil),        // 45: mir2.CastSkillInput
+	(*SkillEffect)(nil),           // 46: mir2.SkillEffect
+	(*MagicList)(nil),             // 47: mir2.MagicList
+	(*MagicChanged)(nil),          // 48: mir2.MagicChanged
+	(*MagicLevelExp)(nil),         // 49: mir2.MagicLevelExp
+	(*BagItems)(nil),              // 50: mir2.BagItems
+	(*AddItem)(nil),               // 51: mir2.AddItem
+	(*RemoveItem)(nil),            // 52: mir2.RemoveItem
+	(*UpdateItem)(nil),            // 53: mir2.UpdateItem
+	(*UseItem)(nil),               // 54: mir2.UseItem
+	(*DropItem)(nil),              // 55: mir2.DropItem
+	(*PickupItem)(nil),            // 56: mir2.PickupItem
+	(*GroundItemShow)(nil),        // 57: mir2.GroundItemShow
+	(*GroundItemHide)(nil),        // 58: mir2.GroundItemHide
+	(*EquipItem)(nil),             // 59: mir2.EquipItem
+	(*UnequipItem)(nil),           // 60: mir2.UnequipItem
+	(*EquippedItems)(nil),         // 61: mir2.EquippedItems
+	(*WeightChanged)(nil),         // 62: mir2.WeightChanged
+	(*GoldChanged)(nil),           // 63: mir2.GoldChanged
+	(*RepairItem)(nil),            // 64: mir2.RepairItem
+	(*RepairCostNotice)(nil),      // 65: mir2.RepairCostNotice
+	(*ChatInput)(nil),             // 66: mir2.ChatInput
+	(*ChatMessage)(nil),           // 67: mir2.ChatMessage
 }
 var file_envelope_proto_depIdxs = []int32{
 	2,  // 0: mir2.Envelope.client_hello:type_name -> mir2.ClientHello
@@ -1412,64 +1450,66 @@ var file_envelope_proto_depIdxs = []int32{
 	11, // 9: mir2.Envelope.login_result:type_name -> mir2.LoginResult
 	12, // 10: mir2.Envelope.change_password:type_name -> mir2.ChangePassword
 	13, // 11: mir2.Envelope.change_password_result:type_name -> mir2.ChangePasswordResult
-	14, // 12: mir2.Envelope.list_characters:type_name -> mir2.ListCharacters
-	15, // 13: mir2.Envelope.character_list:type_name -> mir2.CharacterList
-	16, // 14: mir2.Envelope.select_character:type_name -> mir2.SelectCharacter
-	17, // 15: mir2.Envelope.select_character_result:type_name -> mir2.SelectCharacterResult
-	18, // 16: mir2.Envelope.create_character:type_name -> mir2.CreateCharacter
-	19, // 17: mir2.Envelope.create_character_result:type_name -> mir2.CreateCharacterResult
-	20, // 18: mir2.Envelope.delete_character:type_name -> mir2.DeleteCharacter
-	21, // 19: mir2.Envelope.delete_character_result:type_name -> mir2.DeleteCharacterResult
-	22, // 20: mir2.Envelope.enter_world:type_name -> mir2.EnterWorld
-	23, // 21: mir2.Envelope.change_map:type_name -> mir2.ChangeMap
-	24, // 22: mir2.Envelope.map_chunk:type_name -> mir2.MapChunk
-	25, // 23: mir2.Envelope.time_of_day:type_name -> mir2.TimeOfDay
-	26, // 24: mir2.Envelope.map_description:type_name -> mir2.MapDescription
-	27, // 25: mir2.Envelope.entity_appear:type_name -> mir2.EntityAppear
-	28, // 26: mir2.Envelope.entity_disappear:type_name -> mir2.EntityDisappear
-	29, // 27: mir2.Envelope.entity_move:type_name -> mir2.EntityMove
-	30, // 28: mir2.Envelope.entity_action:type_name -> mir2.EntityAction
-	31, // 29: mir2.Envelope.entity_health:type_name -> mir2.EntityHealth
-	32, // 30: mir2.Envelope.entity_status:type_name -> mir2.EntityStatus
-	33, // 31: mir2.Envelope.ability_update:type_name -> mir2.AbilityUpdate
-	34, // 32: mir2.Envelope.move_input:type_name -> mir2.MoveInput
-	35, // 33: mir2.Envelope.move_rejected:type_name -> mir2.MoveRejected
-	36, // 34: mir2.Envelope.entity_feature_changed:type_name -> mir2.EntityFeatureChanged
-	37, // 35: mir2.Envelope.attack_input:type_name -> mir2.AttackInput
-	38, // 36: mir2.Envelope.damage:type_name -> mir2.Damage
-	39, // 37: mir2.Envelope.death:type_name -> mir2.Death
-	40, // 38: mir2.Envelope.revive:type_name -> mir2.Revive
-	41, // 39: mir2.Envelope.experience_gain:type_name -> mir2.ExperienceGain
-	42, // 40: mir2.Envelope.level_up:type_name -> mir2.LevelUp
-	43, // 41: mir2.Envelope.cast_skill_input:type_name -> mir2.CastSkillInput
-	44, // 42: mir2.Envelope.skill_effect:type_name -> mir2.SkillEffect
-	45, // 43: mir2.Envelope.magic_list:type_name -> mir2.MagicList
-	46, // 44: mir2.Envelope.magic_changed:type_name -> mir2.MagicChanged
-	47, // 45: mir2.Envelope.magic_level_exp:type_name -> mir2.MagicLevelExp
-	48, // 46: mir2.Envelope.bag_items:type_name -> mir2.BagItems
-	49, // 47: mir2.Envelope.add_item:type_name -> mir2.AddItem
-	50, // 48: mir2.Envelope.remove_item:type_name -> mir2.RemoveItem
-	51, // 49: mir2.Envelope.update_item:type_name -> mir2.UpdateItem
-	52, // 50: mir2.Envelope.use_item:type_name -> mir2.UseItem
-	53, // 51: mir2.Envelope.drop_item:type_name -> mir2.DropItem
-	54, // 52: mir2.Envelope.pickup_item:type_name -> mir2.PickupItem
-	55, // 53: mir2.Envelope.ground_item_show:type_name -> mir2.GroundItemShow
-	56, // 54: mir2.Envelope.ground_item_hide:type_name -> mir2.GroundItemHide
-	57, // 55: mir2.Envelope.equip_item:type_name -> mir2.EquipItem
-	58, // 56: mir2.Envelope.unequip_item:type_name -> mir2.UnequipItem
-	59, // 57: mir2.Envelope.equipped_items:type_name -> mir2.EquippedItems
-	60, // 58: mir2.Envelope.weight_changed:type_name -> mir2.WeightChanged
-	61, // 59: mir2.Envelope.gold_changed:type_name -> mir2.GoldChanged
-	62, // 60: mir2.Envelope.repair_item:type_name -> mir2.RepairItem
-	63, // 61: mir2.Envelope.repair_cost_notice:type_name -> mir2.RepairCostNotice
-	64, // 62: mir2.Envelope.chat_input:type_name -> mir2.ChatInput
-	65, // 63: mir2.Envelope.chat_message:type_name -> mir2.ChatMessage
-	1,  // 64: mir2.Envelope.raw:type_name -> mir2.Raw
-	65, // [65:65] is the sub-list for method output_type
-	65, // [65:65] is the sub-list for method input_type
-	65, // [65:65] is the sub-list for extension type_name
-	65, // [65:65] is the sub-list for extension extendee
-	0,  // [0:65] is the sub-list for field type_name
+	14, // 12: mir2.Envelope.login_salt_request:type_name -> mir2.LoginSaltRequest
+	15, // 13: mir2.Envelope.login_salt:type_name -> mir2.LoginSalt
+	16, // 14: mir2.Envelope.list_characters:type_name -> mir2.ListCharacters
+	17, // 15: mir2.Envelope.character_list:type_name -> mir2.CharacterList
+	18, // 16: mir2.Envelope.select_character:type_name -> mir2.SelectCharacter
+	19, // 17: mir2.Envelope.select_character_result:type_name -> mir2.SelectCharacterResult
+	20, // 18: mir2.Envelope.create_character:type_name -> mir2.CreateCharacter
+	21, // 19: mir2.Envelope.create_character_result:type_name -> mir2.CreateCharacterResult
+	22, // 20: mir2.Envelope.delete_character:type_name -> mir2.DeleteCharacter
+	23, // 21: mir2.Envelope.delete_character_result:type_name -> mir2.DeleteCharacterResult
+	24, // 22: mir2.Envelope.enter_world:type_name -> mir2.EnterWorld
+	25, // 23: mir2.Envelope.change_map:type_name -> mir2.ChangeMap
+	26, // 24: mir2.Envelope.map_chunk:type_name -> mir2.MapChunk
+	27, // 25: mir2.Envelope.time_of_day:type_name -> mir2.TimeOfDay
+	28, // 26: mir2.Envelope.map_description:type_name -> mir2.MapDescription
+	29, // 27: mir2.Envelope.entity_appear:type_name -> mir2.EntityAppear
+	30, // 28: mir2.Envelope.entity_disappear:type_name -> mir2.EntityDisappear
+	31, // 29: mir2.Envelope.entity_move:type_name -> mir2.EntityMove
+	32, // 30: mir2.Envelope.entity_action:type_name -> mir2.EntityAction
+	33, // 31: mir2.Envelope.entity_health:type_name -> mir2.EntityHealth
+	34, // 32: mir2.Envelope.entity_status:type_name -> mir2.EntityStatus
+	35, // 33: mir2.Envelope.ability_update:type_name -> mir2.AbilityUpdate
+	36, // 34: mir2.Envelope.move_input:type_name -> mir2.MoveInput
+	37, // 35: mir2.Envelope.move_rejected:type_name -> mir2.MoveRejected
+	38, // 36: mir2.Envelope.entity_feature_changed:type_name -> mir2.EntityFeatureChanged
+	39, // 37: mir2.Envelope.attack_input:type_name -> mir2.AttackInput
+	40, // 38: mir2.Envelope.damage:type_name -> mir2.Damage
+	41, // 39: mir2.Envelope.death:type_name -> mir2.Death
+	42, // 40: mir2.Envelope.revive:type_name -> mir2.Revive
+	43, // 41: mir2.Envelope.experience_gain:type_name -> mir2.ExperienceGain
+	44, // 42: mir2.Envelope.level_up:type_name -> mir2.LevelUp
+	45, // 43: mir2.Envelope.cast_skill_input:type_name -> mir2.CastSkillInput
+	46, // 44: mir2.Envelope.skill_effect:type_name -> mir2.SkillEffect
+	47, // 45: mir2.Envelope.magic_list:type_name -> mir2.MagicList
+	48, // 46: mir2.Envelope.magic_changed:type_name -> mir2.MagicChanged
+	49, // 47: mir2.Envelope.magic_level_exp:type_name -> mir2.MagicLevelExp
+	50, // 48: mir2.Envelope.bag_items:type_name -> mir2.BagItems
+	51, // 49: mir2.Envelope.add_item:type_name -> mir2.AddItem
+	52, // 50: mir2.Envelope.remove_item:type_name -> mir2.RemoveItem
+	53, // 51: mir2.Envelope.update_item:type_name -> mir2.UpdateItem
+	54, // 52: mir2.Envelope.use_item:type_name -> mir2.UseItem
+	55, // 53: mir2.Envelope.drop_item:type_name -> mir2.DropItem
+	56, // 54: mir2.Envelope.pickup_item:type_name -> mir2.PickupItem
+	57, // 55: mir2.Envelope.ground_item_show:type_name -> mir2.GroundItemShow
+	58, // 56: mir2.Envelope.ground_item_hide:type_name -> mir2.GroundItemHide
+	59, // 57: mir2.Envelope.equip_item:type_name -> mir2.EquipItem
+	60, // 58: mir2.Envelope.unequip_item:type_name -> mir2.UnequipItem
+	61, // 59: mir2.Envelope.equipped_items:type_name -> mir2.EquippedItems
+	62, // 60: mir2.Envelope.weight_changed:type_name -> mir2.WeightChanged
+	63, // 61: mir2.Envelope.gold_changed:type_name -> mir2.GoldChanged
+	64, // 62: mir2.Envelope.repair_item:type_name -> mir2.RepairItem
+	65, // 63: mir2.Envelope.repair_cost_notice:type_name -> mir2.RepairCostNotice
+	66, // 64: mir2.Envelope.chat_input:type_name -> mir2.ChatInput
+	67, // 65: mir2.Envelope.chat_message:type_name -> mir2.ChatMessage
+	1,  // 66: mir2.Envelope.raw:type_name -> mir2.Raw
+	67, // [67:67] is the sub-list for method output_type
+	67, // [67:67] is the sub-list for method input_type
+	67, // [67:67] is the sub-list for extension type_name
+	67, // [67:67] is the sub-list for extension extendee
+	0,  // [0:67] is the sub-list for field type_name
 }
 
 func init() { file_envelope_proto_init() }
@@ -1496,6 +1536,8 @@ func file_envelope_proto_init() {
 		(*Envelope_LoginResult)(nil),
 		(*Envelope_ChangePassword)(nil),
 		(*Envelope_ChangePasswordResult)(nil),
+		(*Envelope_LoginSaltRequest)(nil),
+		(*Envelope_LoginSalt)(nil),
 		(*Envelope_ListCharacters)(nil),
 		(*Envelope_CharacterList)(nil),
 		(*Envelope_SelectCharacter)(nil),

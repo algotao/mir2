@@ -8,8 +8,9 @@ license.workspace = true
 # 会话世界状态要读信封类型（见 core/src/world.rs 的文件头：e2e 与 app 必须共用同一份）
 mir2-protocol = { path = "../protocol" }
 flate2.workspace = true
+# HMAC/PBKDF2 的哈希（`auth.rs` 自己在它之上实现 HMAC 与 PBKDF2，
+# 见那个文件头"为什么自己实现这两个"）
+sha2 = "0.10"
 brotli-decompressor.workspace = true
 
 [dev-dependencies]
-# 黄金哈希回归用（纯 Rust）
-sha2 = "0.10"

@@ -33,7 +33,8 @@ const (
 	LoginCode_LOGIN_CODE_UNSPECIFIED  LoginCode = 0
 	LoginCode_LOGIN_OK                LoginCode = 1
 	LoginCode_LOGIN_BAD_CREDENTIALS   LoginCode = 2
-	LoginCode_LOGIN_ACCOUNT_NOT_FOUND LoginCode = 3
+	LoginCode_LOGIN_ACCOUNT_NOT_FOUND LoginCode = 3 // ⚠️ 与 BAD_CREDENTIALS 同义：**不区分**账号是否存在
+	LoginCode_LOGIN_LOCKED            LoginCode = 6 // 口令错误次数过多，暂时锁定
 	LoginCode_LOGIN_ALREADY_ONLINE    LoginCode = 4
 	LoginCode_LOGIN_SERVER_FULL       LoginCode = 5
 )
@@ -45,6 +46,7 @@ var (
 		1: "LOGIN_OK",
 		2: "LOGIN_BAD_CREDENTIALS",
 		3: "LOGIN_ACCOUNT_NOT_FOUND",
+		6: "LOGIN_LOCKED",
 		4: "LOGIN_ALREADY_ONLINE",
 		5: "LOGIN_SERVER_FULL",
 	}
@@ -53,6 +55,7 @@ var (
 		"LOGIN_OK":                1,
 		"LOGIN_BAD_CREDENTIALS":   2,
 		"LOGIN_ACCOUNT_NOT_FOUND": 3,
+		"LOGIN_LOCKED":            6,
 		"LOGIN_ALREADY_ONLINE":    4,
 		"LOGIN_SERVER_FULL":       5,
 	}
@@ -140,18 +143,141 @@ func (SelectCharCode) EnumDescriptor() ([]byte, []int) {
 	return file_account_proto_rawDescGZIP(), []int{1}
 }
 
-type Login struct {
+// 客户端 → 服务端：取登录要用的 KDF 参数。
+//
+// ⚠️ 这条往返是 **D-24①（挑战应答）** 的必需品：存储侧是 `PBKDF2(口令, 服务端随机盐)`，
+// 客户端**拿不到盐就算不出服务端能校验的那个值**（这正是 D-24 卡住的地方）。
+// 盐不是秘密 —— 标准做法（SCRAM/HTTP digest）都是明文下发它。
+type LoginSaltRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Account       string                 `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
-	PasswordHash  string                 `protobuf:"bytes,2,opt,name=password_hash,json=passwordHash,proto3" json:"password_hash,omitempty"` // 客户端只发哈希，明文不落网络
-	ClientBuild   string                 `protobuf:"bytes,3,opt,name=client_build,json=clientBuild,proto3" json:"client_build,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LoginSaltRequest) Reset() {
+	*x = LoginSaltRequest{}
+	mi := &file_account_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LoginSaltRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LoginSaltRequest) ProtoMessage() {}
+
+func (x *LoginSaltRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_account_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LoginSaltRequest.ProtoReflect.Descriptor instead.
+func (*LoginSaltRequest) Descriptor() ([]byte, []int) {
+	return file_account_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *LoginSaltRequest) GetAccount() string {
+	if x != nil {
+		return x.Account
+	}
+	return ""
+}
+
+// 服务端 → 客户端：KDF 参数。
+//
+// ⚠️ 三个数必须与**存储侧**当前用的完全一致（`storage/password.go` 的 pwIterations 等），
+// 否则客户端算出来的 `K` 与服务端存的对不上。所以由服务端下发，客户端**不许写死**
+// —— 将来调迭代次数时，只有服务端要改。
+type LoginSalt struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Salt          []byte                 `protobuf:"bytes,1,opt,name=salt,proto3" json:"salt,omitempty"`
+	Iterations    uint32                 `protobuf:"varint,2,opt,name=iterations,proto3" json:"iterations,omitempty"`
+	KeyLen        uint32                 `protobuf:"varint,3,opt,name=key_len,json=keyLen,proto3" json:"key_len,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LoginSalt) Reset() {
+	*x = LoginSalt{}
+	mi := &file_account_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LoginSalt) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LoginSalt) ProtoMessage() {}
+
+func (x *LoginSalt) ProtoReflect() protoreflect.Message {
+	mi := &file_account_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LoginSalt.ProtoReflect.Descriptor instead.
+func (*LoginSalt) Descriptor() ([]byte, []int) {
+	return file_account_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *LoginSalt) GetSalt() []byte {
+	if x != nil {
+		return x.Salt
+	}
+	return nil
+}
+
+func (x *LoginSalt) GetIterations() uint32 {
+	if x != nil {
+		return x.Iterations
+	}
+	return 0
+}
+
+func (x *LoginSalt) GetKeyLen() uint32 {
+	if x != nil {
+		return x.KeyLen
+	}
+	return 0
+}
+
+type Login struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Account string                 `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
+	// 口令的**证明**，不是口令、也不是口令的等价物：
+	//
+	//    password_hash = hex( HMAC-SHA256( K, nonce ‖ account ) )
+	//    K            = PBKDF2-SHA256(口令, salt, iterations, key_len)   ← 三个参数由 LoginSalt 下发
+	//    nonce        = 握手时 ServerHello.session_key（每条连接一次性的随机值）
+	//
+	// ⚠️ 三个「不落网络」：明文不落、`K`（等价口令）不落、连证明本身也**绑在这条连接的
+	// 一次性 nonce 上** —— 嗅到也重放不了（D-24①）。
+	// 字段名保持 `password_hash` 是历史包袱（IDL 先写的），语义以这里为准。
+	PasswordHash  string `protobuf:"bytes,2,opt,name=password_hash,json=passwordHash,proto3" json:"password_hash,omitempty"`
+	ClientBuild   string `protobuf:"bytes,3,opt,name=client_build,json=clientBuild,proto3" json:"client_build,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Login) Reset() {
 	*x = Login{}
-	mi := &file_account_proto_msgTypes[0]
+	mi := &file_account_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -163,7 +289,7 @@ func (x *Login) String() string {
 func (*Login) ProtoMessage() {}
 
 func (x *Login) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[0]
+	mi := &file_account_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -176,7 +302,7 @@ func (x *Login) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Login.ProtoReflect.Descriptor instead.
 func (*Login) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{0}
+	return file_account_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Login) GetAccount() string {
@@ -211,7 +337,7 @@ type LoginResult struct {
 
 func (x *LoginResult) Reset() {
 	*x = LoginResult{}
-	mi := &file_account_proto_msgTypes[1]
+	mi := &file_account_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -223,7 +349,7 @@ func (x *LoginResult) String() string {
 func (*LoginResult) ProtoMessage() {}
 
 func (x *LoginResult) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[1]
+	mi := &file_account_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -236,7 +362,7 @@ func (x *LoginResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoginResult.ProtoReflect.Descriptor instead.
 func (*LoginResult) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{1}
+	return file_account_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *LoginResult) GetCode() LoginCode {
@@ -271,7 +397,7 @@ type ChangePassword struct {
 
 func (x *ChangePassword) Reset() {
 	*x = ChangePassword{}
-	mi := &file_account_proto_msgTypes[2]
+	mi := &file_account_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -283,7 +409,7 @@ func (x *ChangePassword) String() string {
 func (*ChangePassword) ProtoMessage() {}
 
 func (x *ChangePassword) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[2]
+	mi := &file_account_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -296,7 +422,7 @@ func (x *ChangePassword) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangePassword.ProtoReflect.Descriptor instead.
 func (*ChangePassword) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{2}
+	return file_account_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ChangePassword) GetAccount() string {
@@ -329,7 +455,7 @@ type ChangePasswordResult struct {
 
 func (x *ChangePasswordResult) Reset() {
 	*x = ChangePasswordResult{}
-	mi := &file_account_proto_msgTypes[3]
+	mi := &file_account_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -341,7 +467,7 @@ func (x *ChangePasswordResult) String() string {
 func (*ChangePasswordResult) ProtoMessage() {}
 
 func (x *ChangePasswordResult) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[3]
+	mi := &file_account_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -354,7 +480,7 @@ func (x *ChangePasswordResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangePasswordResult.ProtoReflect.Descriptor instead.
 func (*ChangePasswordResult) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{3}
+	return file_account_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ChangePasswordResult) GetResult() *ActionResult {
@@ -379,7 +505,7 @@ type CharacterSummary struct {
 
 func (x *CharacterSummary) Reset() {
 	*x = CharacterSummary{}
-	mi := &file_account_proto_msgTypes[4]
+	mi := &file_account_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -391,7 +517,7 @@ func (x *CharacterSummary) String() string {
 func (*CharacterSummary) ProtoMessage() {}
 
 func (x *CharacterSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[4]
+	mi := &file_account_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -404,7 +530,7 @@ func (x *CharacterSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CharacterSummary.ProtoReflect.Descriptor instead.
 func (*CharacterSummary) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{4}
+	return file_account_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CharacterSummary) GetCharacterId() uint64 {
@@ -457,7 +583,7 @@ type ListCharacters struct {
 
 func (x *ListCharacters) Reset() {
 	*x = ListCharacters{}
-	mi := &file_account_proto_msgTypes[5]
+	mi := &file_account_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -469,7 +595,7 @@ func (x *ListCharacters) String() string {
 func (*ListCharacters) ProtoMessage() {}
 
 func (x *ListCharacters) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[5]
+	mi := &file_account_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -482,7 +608,7 @@ func (x *ListCharacters) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCharacters.ProtoReflect.Descriptor instead.
 func (*ListCharacters) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{5}
+	return file_account_proto_rawDescGZIP(), []int{7}
 }
 
 type CharacterList struct {
@@ -494,7 +620,7 @@ type CharacterList struct {
 
 func (x *CharacterList) Reset() {
 	*x = CharacterList{}
-	mi := &file_account_proto_msgTypes[6]
+	mi := &file_account_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -506,7 +632,7 @@ func (x *CharacterList) String() string {
 func (*CharacterList) ProtoMessage() {}
 
 func (x *CharacterList) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[6]
+	mi := &file_account_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -519,7 +645,7 @@ func (x *CharacterList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CharacterList.ProtoReflect.Descriptor instead.
 func (*CharacterList) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{6}
+	return file_account_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *CharacterList) GetCharacters() []*CharacterSummary {
@@ -538,7 +664,7 @@ type SelectCharacter struct {
 
 func (x *SelectCharacter) Reset() {
 	*x = SelectCharacter{}
-	mi := &file_account_proto_msgTypes[7]
+	mi := &file_account_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -550,7 +676,7 @@ func (x *SelectCharacter) String() string {
 func (*SelectCharacter) ProtoMessage() {}
 
 func (x *SelectCharacter) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[7]
+	mi := &file_account_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -563,7 +689,7 @@ func (x *SelectCharacter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectCharacter.ProtoReflect.Descriptor instead.
 func (*SelectCharacter) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{7}
+	return file_account_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *SelectCharacter) GetCharacterId() uint64 {
@@ -584,7 +710,7 @@ type SelectCharacterResult struct {
 
 func (x *SelectCharacterResult) Reset() {
 	*x = SelectCharacterResult{}
-	mi := &file_account_proto_msgTypes[8]
+	mi := &file_account_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -596,7 +722,7 @@ func (x *SelectCharacterResult) String() string {
 func (*SelectCharacterResult) ProtoMessage() {}
 
 func (x *SelectCharacterResult) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[8]
+	mi := &file_account_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -609,7 +735,7 @@ func (x *SelectCharacterResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectCharacterResult.ProtoReflect.Descriptor instead.
 func (*SelectCharacterResult) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{8}
+	return file_account_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *SelectCharacterResult) GetCode() SelectCharCode {
@@ -645,7 +771,7 @@ type CreateCharacter struct {
 
 func (x *CreateCharacter) Reset() {
 	*x = CreateCharacter{}
-	mi := &file_account_proto_msgTypes[9]
+	mi := &file_account_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -657,7 +783,7 @@ func (x *CreateCharacter) String() string {
 func (*CreateCharacter) ProtoMessage() {}
 
 func (x *CreateCharacter) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[9]
+	mi := &file_account_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -670,7 +796,7 @@ func (x *CreateCharacter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCharacter.ProtoReflect.Descriptor instead.
 func (*CreateCharacter) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{9}
+	return file_account_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CreateCharacter) GetName() string {
@@ -711,7 +837,7 @@ type CreateCharacterResult struct {
 
 func (x *CreateCharacterResult) Reset() {
 	*x = CreateCharacterResult{}
-	mi := &file_account_proto_msgTypes[10]
+	mi := &file_account_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -723,7 +849,7 @@ func (x *CreateCharacterResult) String() string {
 func (*CreateCharacterResult) ProtoMessage() {}
 
 func (x *CreateCharacterResult) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[10]
+	mi := &file_account_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -736,7 +862,7 @@ func (x *CreateCharacterResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCharacterResult.ProtoReflect.Descriptor instead.
 func (*CreateCharacterResult) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{10}
+	return file_account_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CreateCharacterResult) GetResult() *ActionResult {
@@ -763,7 +889,7 @@ type DeleteCharacter struct {
 
 func (x *DeleteCharacter) Reset() {
 	*x = DeleteCharacter{}
-	mi := &file_account_proto_msgTypes[11]
+	mi := &file_account_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -775,7 +901,7 @@ func (x *DeleteCharacter) String() string {
 func (*DeleteCharacter) ProtoMessage() {}
 
 func (x *DeleteCharacter) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[11]
+	mi := &file_account_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -788,7 +914,7 @@ func (x *DeleteCharacter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCharacter.ProtoReflect.Descriptor instead.
 func (*DeleteCharacter) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{11}
+	return file_account_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *DeleteCharacter) GetCharacterId() uint64 {
@@ -814,7 +940,7 @@ type DeleteCharacterResult struct {
 
 func (x *DeleteCharacterResult) Reset() {
 	*x = DeleteCharacterResult{}
-	mi := &file_account_proto_msgTypes[12]
+	mi := &file_account_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -826,7 +952,7 @@ func (x *DeleteCharacterResult) String() string {
 func (*DeleteCharacterResult) ProtoMessage() {}
 
 func (x *DeleteCharacterResult) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[12]
+	mi := &file_account_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -839,7 +965,7 @@ func (x *DeleteCharacterResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCharacterResult.ProtoReflect.Descriptor instead.
 func (*DeleteCharacterResult) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{12}
+	return file_account_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *DeleteCharacterResult) GetResult() *ActionResult {
@@ -853,7 +979,15 @@ var File_account_proto protoreflect.FileDescriptor
 
 const file_account_proto_rawDesc = "" +
 	"\n" +
-	"\raccount.proto\x12\x04mir2\x1a\fcommon.proto\"i\n" +
+	"\raccount.proto\x12\x04mir2\x1a\fcommon.proto\",\n" +
+	"\x10LoginSaltRequest\x12\x18\n" +
+	"\aaccount\x18\x01 \x01(\tR\aaccount\"X\n" +
+	"\tLoginSalt\x12\x12\n" +
+	"\x04salt\x18\x01 \x01(\fR\x04salt\x12\x1e\n" +
+	"\n" +
+	"iterations\x18\x02 \x01(\rR\n" +
+	"iterations\x12\x17\n" +
+	"\akey_len\x18\x03 \x01(\rR\x06keyLen\"i\n" +
 	"\x05Login\x12\x18\n" +
 	"\aaccount\x18\x01 \x01(\tR\aaccount\x12#\n" +
 	"\rpassword_hash\x18\x02 \x01(\tR\fpasswordHash\x12!\n" +
@@ -899,12 +1033,13 @@ const file_account_proto_rawDesc = "" +
 	"\fcharacter_id\x18\x01 \x01(\x04R\vcharacterId\x12#\n" +
 	"\rpassword_hash\x18\x02 \x01(\tR\fpasswordHash\"C\n" +
 	"\x15DeleteCharacterResult\x12*\n" +
-	"\x06result\x18\x01 \x01(\v2\x12.mir2.ActionResultR\x06result*\x9e\x01\n" +
+	"\x06result\x18\x01 \x01(\v2\x12.mir2.ActionResultR\x06result*\xb0\x01\n" +
 	"\tLoginCode\x12\x1a\n" +
 	"\x16LOGIN_CODE_UNSPECIFIED\x10\x00\x12\f\n" +
 	"\bLOGIN_OK\x10\x01\x12\x19\n" +
 	"\x15LOGIN_BAD_CREDENTIALS\x10\x02\x12\x1b\n" +
-	"\x17LOGIN_ACCOUNT_NOT_FOUND\x10\x03\x12\x18\n" +
+	"\x17LOGIN_ACCOUNT_NOT_FOUND\x10\x03\x12\x10\n" +
+	"\fLOGIN_LOCKED\x10\x06\x12\x18\n" +
 	"\x14LOGIN_ALREADY_ONLINE\x10\x04\x12\x15\n" +
 	"\x11LOGIN_SERVER_FULL\x10\x05*\x9a\x01\n" +
 	"\x0eSelectCharCode\x12 \n" +
@@ -927,38 +1062,40 @@ func file_account_proto_rawDescGZIP() []byte {
 }
 
 var file_account_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_account_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_account_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_account_proto_goTypes = []any{
 	(LoginCode)(0),                // 0: mir2.LoginCode
 	(SelectCharCode)(0),           // 1: mir2.SelectCharCode
-	(*Login)(nil),                 // 2: mir2.Login
-	(*LoginResult)(nil),           // 3: mir2.LoginResult
-	(*ChangePassword)(nil),        // 4: mir2.ChangePassword
-	(*ChangePasswordResult)(nil),  // 5: mir2.ChangePasswordResult
-	(*CharacterSummary)(nil),      // 6: mir2.CharacterSummary
-	(*ListCharacters)(nil),        // 7: mir2.ListCharacters
-	(*CharacterList)(nil),         // 8: mir2.CharacterList
-	(*SelectCharacter)(nil),       // 9: mir2.SelectCharacter
-	(*SelectCharacterResult)(nil), // 10: mir2.SelectCharacterResult
-	(*CreateCharacter)(nil),       // 11: mir2.CreateCharacter
-	(*CreateCharacterResult)(nil), // 12: mir2.CreateCharacterResult
-	(*DeleteCharacter)(nil),       // 13: mir2.DeleteCharacter
-	(*DeleteCharacterResult)(nil), // 14: mir2.DeleteCharacterResult
-	(*ActionResult)(nil),          // 15: mir2.ActionResult
-	(CharClass)(0),                // 16: mir2.CharClass
-	(Gender)(0),                   // 17: mir2.Gender
+	(*LoginSaltRequest)(nil),      // 2: mir2.LoginSaltRequest
+	(*LoginSalt)(nil),             // 3: mir2.LoginSalt
+	(*Login)(nil),                 // 4: mir2.Login
+	(*LoginResult)(nil),           // 5: mir2.LoginResult
+	(*ChangePassword)(nil),        // 6: mir2.ChangePassword
+	(*ChangePasswordResult)(nil),  // 7: mir2.ChangePasswordResult
+	(*CharacterSummary)(nil),      // 8: mir2.CharacterSummary
+	(*ListCharacters)(nil),        // 9: mir2.ListCharacters
+	(*CharacterList)(nil),         // 10: mir2.CharacterList
+	(*SelectCharacter)(nil),       // 11: mir2.SelectCharacter
+	(*SelectCharacterResult)(nil), // 12: mir2.SelectCharacterResult
+	(*CreateCharacter)(nil),       // 13: mir2.CreateCharacter
+	(*CreateCharacterResult)(nil), // 14: mir2.CreateCharacterResult
+	(*DeleteCharacter)(nil),       // 15: mir2.DeleteCharacter
+	(*DeleteCharacterResult)(nil), // 16: mir2.DeleteCharacterResult
+	(*ActionResult)(nil),          // 17: mir2.ActionResult
+	(CharClass)(0),                // 18: mir2.CharClass
+	(Gender)(0),                   // 19: mir2.Gender
 }
 var file_account_proto_depIdxs = []int32{
 	0,  // 0: mir2.LoginResult.code:type_name -> mir2.LoginCode
-	15, // 1: mir2.ChangePasswordResult.result:type_name -> mir2.ActionResult
-	16, // 2: mir2.CharacterSummary.class:type_name -> mir2.CharClass
-	17, // 3: mir2.CharacterSummary.gender:type_name -> mir2.Gender
-	6,  // 4: mir2.CharacterList.characters:type_name -> mir2.CharacterSummary
+	17, // 1: mir2.ChangePasswordResult.result:type_name -> mir2.ActionResult
+	18, // 2: mir2.CharacterSummary.class:type_name -> mir2.CharClass
+	19, // 3: mir2.CharacterSummary.gender:type_name -> mir2.Gender
+	8,  // 4: mir2.CharacterList.characters:type_name -> mir2.CharacterSummary
 	1,  // 5: mir2.SelectCharacterResult.code:type_name -> mir2.SelectCharCode
-	16, // 6: mir2.CreateCharacter.class:type_name -> mir2.CharClass
-	17, // 7: mir2.CreateCharacter.gender:type_name -> mir2.Gender
-	15, // 8: mir2.CreateCharacterResult.result:type_name -> mir2.ActionResult
-	15, // 9: mir2.DeleteCharacterResult.result:type_name -> mir2.ActionResult
+	18, // 6: mir2.CreateCharacter.class:type_name -> mir2.CharClass
+	19, // 7: mir2.CreateCharacter.gender:type_name -> mir2.Gender
+	17, // 8: mir2.CreateCharacterResult.result:type_name -> mir2.ActionResult
+	17, // 9: mir2.DeleteCharacterResult.result:type_name -> mir2.ActionResult
 	10, // [10:10] is the sub-list for method output_type
 	10, // [10:10] is the sub-list for method input_type
 	10, // [10:10] is the sub-list for extension type_name
@@ -978,7 +1115,7 @@ func file_account_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_account_proto_rawDesc), len(file_account_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
