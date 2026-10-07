@@ -132,6 +132,37 @@ impl Canvas {
         }
     }
 
+    /// 把一张 RGBA 图贴到 `(x, y)`（最近邻 1:1，索引 0 / alpha=0 跳过）。
+    ///
+    /// 界面素材（`Prguse`/`ChrSel`）与地图图块同一个来源（`.wzl` 解码成 RGBA），
+    /// 只是没有"Alpha 物件"那套滤色 —— 素材里的透明只有"全透"这一种。
+    pub fn blit_rgba(&mut self, rgba: &[u8], w: i32, h: i32, x: i32, y: i32) {
+        for sy in 0..h {
+            let dy = y + sy;
+            if dy < 0 || dy >= self.h {
+                continue;
+            }
+            for sx in 0..w {
+                let dx = x + sx;
+                if dx < 0 || dx >= self.w {
+                    continue;
+                }
+                let i = ((sy * w + sx) * 4) as usize;
+                let a = u32::from(rgba[i + 3]);
+                if a == 0 {
+                    continue;
+                }
+                let keep = 255 - a;
+                let dst = &mut self.px[(dy * self.w + dx) as usize];
+                let mix =
+                    |s: u8, d: u8| ((u32::from(s) * a + u32::from(d) * keep) / 255).min(255) as u8;
+                dst[0] = mix(rgba[i], dst[0]);
+                dst[1] = mix(rgba[i + 1], dst[1]);
+                dst[2] = mix(rgba[i + 2], dst[2]);
+            }
+        }
+    }
+
     /// 画格网（每 `UNIT_X` / `UNIT_Y` 一条），用于与 app 的 `D` 叠加层对照。
     pub fn draw_grid(&mut self, c: [u8; 3]) {
         let mut x = 0;

@@ -9,6 +9,7 @@ pub mod actor;
 pub mod blend;
 /// 进世界的握手流程（纯状态机）：喂进收到的信封，吐出下一条要发的消息。
 pub mod entrance;
+pub mod login_ui;
 pub mod m2pk;
 pub mod map;
 pub mod palette;

@@ -1,0 +1,105 @@
+//! 界面素材（`Prguse` / `ChrSel` 这类**界面容器**）的纹理缓存。
+//!
+//! 与地图图块缓存、actor 精灵缓存分开，是因为键与用法都不同：
+//!
+//! - 图块：`(Lib 枚举, 区域, 编号)`，几千张、按视口取；
+//! - 精灵：`(容器名, 图号)`，图号**算出来**（`core::actor`）；
+//! - 界面：`(容器名, 图号)`，图号是**原版写死的常量**（`Prguse[60]` 就是登录框），
+//!   一屏几张，而且**必须能在画之前拿到尺寸**（版式要按它居中/摆按钮）。
+//!
+//! ⚠️ 尺寸走 `Wzl::record`（只读头部，**不解压像素**）—— 版式计算每帧都要用，
+//! 走解压就白解码一整张图。
+
+use std::collections::HashMap;
+use std::path::Path;
+
+use sdl3::pixels::PixelFormat;
+use sdl3::rect::Rect;
+use sdl3::render::{
+    BlendMode, FRect, ScaleMode, Texture, TextureAccess, TextureCreator, WindowCanvas,
+};
+
+use mir2_core::wzl::Wzl;
+
+/// 缓存上限（界面素材用量小，越界直接清空）。
+const UI_CACHE_CAP: usize = 256;
+
+struct UiTex<'a> {
+    tex: Texture<'a>,
+}
+
+/// 界面素材缓存。`lib + 图号 → 纹理`。
+pub struct UiCache<'a> {
+    libs: HashMap<&'static str, Option<Wzl>>,
+    texs: HashMap<(&'static str, u32), UiTex<'a>>,
+}
+
+impl<'a> UiCache<'a> {
+    pub fn new() -> Self {
+        Self {
+            libs: HashMap::new(),
+            texs: HashMap::new(),
+        }
+    }
+
+    fn lib(&mut self, dir: &Path, name: &'static str) -> Option<&Wzl> {
+        self.libs
+            .entry(name)
+            .or_insert_with(|| Wzl::open(dir.join(name)).ok())
+            .as_ref()
+    }
+
+    /// 某张界面图的尺寸（**只读容器记录，不解压**）。取不到返回 `None`。
+    ///
+    /// 版式计算靠它：对话框要居中、按钮要摆进框内、都会在画之前先问尺寸。
+    pub fn size(&mut self, dir: &Path, lib: &'static str, idx: u32) -> Option<(u32, u32)> {
+        let w = self.lib(dir, lib)?;
+        let r = w.record(idx as usize)?;
+        Some((r.width as u32, r.height as u32))
+    }
+
+    /// 画一张界面图。返回它的尺寸（画不出来 = 素材缺/空壳，返回 `None`）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw<T>(
+        &mut self,
+        canvas: &mut WindowCanvas,
+        tc: &'a TextureCreator<T>,
+        dir: &Path,
+        lib: &'static str,
+        idx: u32,
+        x: f32,
+        y: f32,
+    ) -> Option<(u32, u32)> {
+        if !self.texs.contains_key(&(lib, idx)) {
+            if self.texs.len() >= UI_CACHE_CAP {
+                self.texs.clear();
+            }
+            let s = self.lib(dir, lib)?.decode(idx as usize)?;
+            if s.is_empty() {
+                return None;
+            }
+            let mut t = tc
+                .create_texture(
+                    PixelFormat::RGBA32,
+                    TextureAccess::Streaming,
+                    s.width as u32,
+                    s.height as u32,
+                )
+                .ok()?;
+            t.set_blend_mode(BlendMode::Blend);
+            t.set_scale_mode(ScaleMode::Nearest);
+            t.update(None::<Rect>, &s.rgba, s.width as usize * 4).ok()?;
+            self.texs.insert((lib, idx), UiTex { tex: t });
+        }
+        let t = self.texs.get(&(lib, idx))?;
+        let q = t.tex.query();
+        canvas
+            .copy(
+                &t.tex,
+                None::<FRect>,
+                FRect::new(x, y, q.width as f32, q.height as f32),
+            )
+            .ok()?;
+        Some((q.width, q.height))
+    }
+}

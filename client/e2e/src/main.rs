@@ -21,6 +21,7 @@
 
 mod canvas;
 mod contract;
+mod logincmd;
 mod png;
 mod worldcmd;
 
@@ -48,6 +49,14 @@ fn main() {
         Some("contract") => contract::main(&argv[1..]),
         // world 走**会话层**（消息泵 + core 的握手/世界状态机），参数集同样独立。
         Some("world") => worldcmd::main(&argv[1..]),
+        // 无头合成登录界面（照原版版式）—— "照原版"这件事的可视验收
+        Some("login") => match logincmd::main(&argv[1..]) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("[e2e] 失败：{e}");
+                1
+            }
+        },
         Some("-h" | "--help" | "help") | None => {
             usage();
             0

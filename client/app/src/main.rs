@@ -41,6 +41,9 @@ use sdl3::audio::{AudioCallback, AudioFormat, AudioSpec, AudioStream};
 use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod};
 use sdl3::mouse::MouseButton;
+
+mod login;
+mod ui;
 use sdl3::pixels::{Color, PixelFormat};
 use sdl3::rect::Rect;
 // 注：`WindowContext` 在 sdl3 里是私有类型、不可具名，
@@ -68,7 +71,6 @@ const VIEW_H: f32 = WIN_H as f32 - BAR_TOP - BAR_BOTTOM;
 const TEXT_COLS: usize = WIN_W as usize / 8 - 2;
 
 /// 右侧信息区每行最大列数（内置字体等宽 8px）。
-const INFO_COLS: usize = 28;
 const INFO_LINE_H: f32 = 16.0;
 
 /// 图块纹理缓存上限；超出就整批丢掉重建（开发期查看器，够用且简单）。
@@ -88,8 +90,6 @@ const C_TEXT: Color = Color::RGB(206, 212, 226);
 const C_DIM: Color = Color::RGB(120, 132, 156);
 const C_FIELD: Color = Color::RGB(8, 10, 20);
 const C_ACTIVE: Color = Color::RGB(255, 236, 140);
-const C_BTN: Color = Color::RGB(46, 70, 116);
-const C_BTN_BORDER: Color = Color::RGB(150, 186, 236);
 const C_CHECKER_A: Color = Color::RGB(34, 38, 52);
 const C_CHECKER_B: Color = Color::RGB(26, 30, 42);
 const C_OK: Color = Color::RGB(120, 220, 150);
@@ -1420,14 +1420,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => println!("[mir2-app] 未找到资产目录：设 MIR2_ASSET_DIR=<mir2c/data>"),
     }
     println!("[mir2-app] 音频驱动 = {}", audio.current_audio_driver());
-    println!("[mir2-app] 操作：F1 登录界面 / F2 地图视图 / M 音乐 / ESC 退出");
+    println!("[mir2-app] 操作：F1 登录界面 / F2 地图视图 / F3 素材浏览器 / M 音乐 / ESC 退出");
 
     let mut events: EventPump = sdl.event_pump()?;
 
-    // 登录模式的状态
-    let mut id = String::new();
-    let mut pw = String::new();
-    let mut active: usize = 0;
+    // 登录界面的状态（照原版的那套版式与交互，见 `login.rs`）
+    let mut login = login::Login::new();
+    // 界面素材缓存（`Prguse` / `ChrSel`）—— 与地图图块、actor 精灵的缓存分开
+    let mut ui = ui::UiCache::new();
+
+    // 素材浏览器的状态（F3）
     let mut status = String::from("READY");
     let mut lib_idx: usize = 0;
     let mut img_idx: usize = 0;
@@ -1435,7 +1437,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sprite_tex: Option<Texture<'_>> = None;
 
     // 地图模式的状态
-    let mut mode: u8 = 2; // 1 = 登录，2 = 地图（直接开在地图视图上）
+    let mut mode: u8 = 1; // 1 = 登录界面（从头开始就是它），2 = 地图，3 = 素材浏览器
     let mut map_i: usize = 0;
     let mut map: Option<Map> = None;
     let mut map_err = String::new();
@@ -1466,6 +1468,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // 给了会话号就说明"我已经有会话了" ⇒ 直接进地图（登录界面留给真登录用）
+    if net.is_some() {
+        mode = 2;
+    }
+
     // 载入初始地图
     if let Some(a) = &archive {
         load_map(a, map_i, &mut map, &mut map_err, &mut cam);
@@ -1481,29 +1488,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(Keycode::Escape) => break 'main,
                     Some(Keycode::F1) => mode = 1,
                     Some(Keycode::F2) => mode = 2,
+                    Some(Keycode::F3) => mode = 3,
                     Some(Keycode::M) => {
                         music_on = !music_on;
                         muted.store(!music_on, Ordering::Relaxed);
                         status = format!("MUSIC {}", if music_on { "ON" } else { "OFF" });
                     }
-                    _ if mode == 1 => match keycode {
-                        Some(Keycode::Tab) => active = 1 - active,
-                        Some(Keycode::Backspace) => {
-                            if active == 0 {
-                                id.pop();
-                            } else {
-                                pw.pop();
+                    // 登录界面：全部交互在 `login` 里（Tab/退格/回车/ESC），这里只把
+                    // 它给出的动作翻译成"接下来干什么"。
+                    _ if mode == 1 => {
+                        if let Some(k) = keycode {
+                            match login.on_key(k) {
+                                login::Action::Submit => submit_login(&mut login, &mut status),
+                                login::Action::NewAccount => {
+                                    // 原版会开 `DLoginNew` 对话框（`FState.pas:886`）。
+                                    // 那条链要服务端配合建号，还没接 ⇒ 明确说一声，别装作成功。
+                                    status = "NEW ACCOUNT: NOT WIRED YET".into();
+                                    println!("[login] 新建账号尚未接线（原版开 DLoginNew 对话框）");
+                                }
+                                login::Action::ChangePassword => {
+                                    status = "CHANGE PASSWORD: NOT WIRED YET".into();
+                                }
+                                login::Action::Quit => break 'main,
+                                login::Action::None | login::Action::Dismiss => {}
                             }
                         }
-                        Some(Keycode::Return) => {
-                            let who = if id.is_empty() { "GUEST" } else { id.as_str() };
-                            println!(
-                                "[login] 用户名={:?} 密码长度={} → 桩实现（尚未连接服务端）",
-                                who,
-                                pw.chars().count()
-                            );
-                            status = format!("LOGIN AS {} ... STUB OK", who);
-                        }
+                    }
+                    // 素材浏览器（开发用）
+                    _ if mode == 3 => match keycode {
                         Some(Keycode::LeftBracket) => {
                             lib_idx = (lib_idx + LIBS.len() - 1) % LIBS.len();
                             img_idx = 0;
@@ -1630,17 +1642,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     y,
                     ..
                 } if mode == 2 => probe_at(x, y, cam, &draws, &tiles, layers),
-                Event::TextInput { text: t, .. } if mode == 1 => {
-                    for ch in t.chars() {
-                        if ch.is_ascii_graphic() || ch == ' ' {
-                            if active == 0 && id.chars().count() < 12 {
-                                id.push(ch);
-                            } else if active == 1 && pw.chars().count() < 12 {
-                                pw.push(ch);
+                Event::MouseButtonDown {
+                    mouse_btn: MouseButton::Left,
+                    x,
+                    y,
+                    ..
+                } if mode == 1 => {
+                    // 版式每帧现算（尺寸来自容器头，不解压 ⇒ 很便宜），用于命中判定。
+                    if let Some(dir) = asset_dir.as_ref() {
+                        let l = mir2_core::login_ui::Layout::build((WIN_W, WIN_H), |c, i| {
+                            ui.size(dir, c, i)
+                        });
+                        if let Some(l) = l {
+                            login.on_down((x, y), &l);
+                        }
+                    }
+                }
+                Event::MouseButtonUp {
+                    mouse_btn: MouseButton::Left,
+                    x,
+                    y,
+                    ..
+                } if mode == 1 => {
+                    if let Some(dir) = asset_dir.as_ref() {
+                        let l = mir2_core::login_ui::Layout::build((WIN_W, WIN_H), |c, i| {
+                            ui.size(dir, c, i)
+                        });
+                        if let Some(l) = l {
+                            match login.on_up((x, y), &l) {
+                                login::Action::Submit => submit_login(&mut login, &mut status),
+                                login::Action::Quit => break 'main,
+                                login::Action::Dismiss => {}
+                                login::Action::NewAccount => {
+                                    status = "NEW ACCOUNT: NOT WIRED YET".into();
+                                }
+                                login::Action::ChangePassword => {
+                                    status = "CHANGE PASSWORD: NOT WIRED YET".into();
+                                }
+                                login::Action::None => {}
                             }
                         }
                     }
                 }
+                Event::TextInput { text: t, .. } if mode == 1 => login.on_text(&t),
                 _ => {}
             }
         }
@@ -1690,16 +1734,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ani_count,
                 net.as_ref(),
             )?;
+        } else if mode == 1 {
+            // 开门动画播完 ⇒ 进地图（原版也是"开门 → 换场景"，`IntroScn.pas:907-914`）
+            if login.door_done() {
+                mode = 2;
+            }
+            login.draw(
+                &mut canvas,
+                &mut ui,
+                &tex_creator,
+                &asset_dir,
+                (WIN_W, WIN_H),
+                started,
+            )?;
         } else {
-            draw_login_view(
+            draw_asset_view(
                 &mut canvas,
                 &tex_creator,
                 &asset_dir,
                 &mut loaded,
                 &mut sprite_tex,
-                &id,
-                &pw,
-                active,
                 &status,
                 music_on,
                 lib_idx,
@@ -1709,10 +1763,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // 顶部/底部公共条
-        let hint = if mode == 2 {
-            "ARROWS WALK  SPACE HIT  C CONNECT  [ ] MAP  D DEBUG  1/2/3 LAYER  P DUMP  F1 LOGIN  ESC"
-        } else {
-            "TAB FIELD   ENTER LOGIN   [ ] LIB   , . IMG   F2 MAP   M MUSIC   ESC QUIT"
+        let hint = match mode {
+            2 => {
+                "ARROWS WALK  SPACE HIT  C CONNECT  [ ] MAP  D DEBUG  1/2/3 LAYER  P DUMP  F1 LOGIN  ESC"
+            }
+            1 => "TAB NEXT FIELD   ENTER LOGIN   F2 MAP   F3 ASSETS   M MUSIC   ESC QUIT",
+            _ => "F3 ASSETS   [ ] LIB   , . IMG   F1 LOGIN   F2 MAP   M MUSIC   ESC QUIT",
         };
         fill(
             &mut canvas,
@@ -1971,23 +2027,42 @@ fn draw_map_view<'a, T>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_login_view<'a, T>(
+/// 素材浏览器（**开发用**，`F3` 进出）：任取一个容器里的第 N 张图，看它解码成什么样。
+///
+/// 它原先挤在登录页右侧 —— 那让"照原版的登录界面"没法做（一屏两件事）。
+/// 现在独立成一屏：`[` `]` 换容器、`,` `.` 换图号。
+#[allow(clippy::too_many_arguments)] // 都是渲染所需的最小上下文，与 draw_login_view 同理
+fn draw_asset_view<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
     asset_dir: &Option<PathBuf>,
     loaded: &mut Option<(usize, Wzl)>,
     sprite_tex: &mut Option<Texture<'a>>,
-    id: &str,
-    pw: &str,
-    active: usize,
     status: &str,
     music_on: bool,
     lib_idx: usize,
     img_idx: &mut usize,
     started: Instant,
 ) -> Result<(), sdl3::Error> {
-    // 右侧：真实精灵
+    let t1 = "ASSET  BROWSER   (F1 = LOGIN,  F2 = MAP)";
+    text(canvas, t1, center_x(t1, 0.0, WIN_W as f32), 14.0, C_TITLE)?;
+    let t2 = format!(
+        "UPTIME {:.0}s    MUSIC {}    STATUS: {}",
+        started.elapsed().as_secs_f32(),
+        if music_on { "ON" } else { "OFF" },
+        status
+    );
+    text(canvas, &trunc(&t2, 118), 12.0, 34.0, C_DIM)?;
+
+    // 预览区（棋盘底 + 最近邻放大）与右侧信息
+    const PX: f32 = 24.0;
+    const PY: f32 = 60.0;
+    const PW: f32 = 496.0;
+    const PH: f32 = 420.0;
+    const IX: f32 = PX + PW + 16.0;
+    checkerboard(canvas, PX, PY, PW, PH)?;
+    frame(canvas, PX, PY, PW, PH, C_PANEL_BORDER)?;
+
     let mut info_lines: Vec<(String, Color)> = vec![("NO ASSETS".to_string(), C_ERR)];
     let mut sprite_dims = (0u32, 0u32);
     let mut ready = false;
@@ -2003,24 +2078,25 @@ fn draw_login_view<'a, T>(
             if *img_idx >= total {
                 *img_idx = 0;
             }
+            // 空壳图很常见（本套素材里 146 个容器是 64 字节的空壳）⇒ 往后找 64 张
             let mut found = None;
             for k in 0..64 {
                 let i = (*img_idx + k) % total.max(1);
-                if let Some(s) = lib.decode(i) {
-                    found = Some((i, s));
+                if let Some(sp) = lib.decode(i) {
+                    found = Some((i, sp));
                     break;
                 }
             }
-            if let Some((i, s)) = found {
+            if let Some((i, sp)) = found {
                 *img_idx = i;
                 let is16 = lib.record(i).map(|r| r.is_16bit()).unwrap_or(false);
-                sprite_dims = (s.width as u32, s.height as u32);
+                sprite_dims = (sp.width as u32, sp.height as u32);
                 info_lines = vec![
-                    (format!("{}  #{} / {}", name, i, total), C_TEXT),
+                    (format!("{name}  #{i} / {total}"), C_TEXT),
                     (
                         format!(
                             "{}x{}   ANCHOR({},{})",
-                            s.width, s.height, s.anchor_x, s.anchor_y
+                            sp.width, sp.height, sp.anchor_x, sp.anchor_y
                         ),
                         C_DIM,
                     ),
@@ -2034,7 +2110,7 @@ fn draw_login_view<'a, T>(
                 let need_new = match sprite_tex.as_ref() {
                     Some(t) => {
                         let q = t.query();
-                        q.width != s.width as u32 || q.height != s.height as u32
+                        q.width != sp.width as u32 || q.height != sp.height as u32
                     }
                     None => true,
                 };
@@ -2045,8 +2121,8 @@ fn draw_login_view<'a, T>(
                     if let Ok(mut t) = tc.create_texture(
                         PixelFormat::RGBA32,
                         TextureAccess::Streaming,
-                        s.width as u32,
-                        s.height as u32,
+                        sp.width as u32,
+                        sp.height as u32,
                     ) {
                         t.set_blend_mode(BlendMode::Blend);
                         t.set_scale_mode(ScaleMode::Nearest);
@@ -2054,160 +2130,83 @@ fn draw_login_view<'a, T>(
                     }
                 }
                 if let Some(t) = sprite_tex.as_mut() {
-                    if t.update(None::<Rect>, &s.rgba, s.width as usize * 4)
+                    if t.update(None::<Rect>, &sp.rgba, sp.width as usize * 4)
                         .is_err()
                     {
                         ready = false;
                     }
                 }
             } else {
-                info_lines = vec![(format!("{}  #{}  (空壳图)", name, img_idx), C_DIM)];
+                info_lines = vec![(format!("{name}  #{}  (EMPTY)", img_idx), C_DIM)];
             }
         } else {
-            info_lines = vec![(format!("{name}.wzl 打不开"), C_ERR)];
+            info_lines = vec![(format!("{name}.wzl NOT FOUND"), C_ERR)];
         }
     }
 
-    // 整块**垂直居中**：本布局是按 480 高的窗口排的，窗口变高后若不偏移，
-    // 所有内容都会挤在顶部、下方空掉一大片（768 高时尤其难看）。
-    // 用**渲染视口平移**实现 —— 坐标字面量一处都不用改；
-    // 底部提示条由调用方在原视口下画，不受影响。
-    let dy = ((WIN_H as f32 - 480.0) * 0.5).max(0.0) as i32;
-    canvas.set_viewport(Some(Rect::new(0, dy, WIN_W, WIN_H - dy as u32)));
+    let px = PX + 24.0;
+    let mut py = PY + 24.0;
+    for (line, col) in &info_lines {
+        text(canvas, &trunc(line, 56), px, py, *col)?;
+        py += INFO_LINE_H;
+    }
+    py += 8.0;
+    for line in [
+        format!("LIB [{}/{}]  =  {}", lib_idx + 1, LIBS.len(), LIBS[lib_idx]),
+        format!("IMG {}", *img_idx),
+        "[ ] CHANGE LIB      , . CHANGE IMG".to_string(),
+        "F1 LOGIN   F2 MAP   M MUSIC   ESC QUIT".to_string(),
+    ] {
+        text(canvas, &trunc(&line, 56), px, py, C_DIM)?;
+        py += INFO_LINE_H;
+    }
 
-    let t1 = "MIR2  1.76  CLIENT";
-    text(canvas, t1, center_x(t1, 0.0, WIN_W as f32), 16.0, C_TITLE)?;
-    let t2 = "SDL3  DEV  VIEWER  (F2 = MAP)";
-    text(canvas, t2, center_x(t2, 0.0, WIN_W as f32), 34.0, C_DIM)?;
-
-    const LX: f32 = 20.0;
-    const LW: f32 = 336.0;
-    fill(canvas, LX, 60.0, LW, 250.0, C_PANEL)?;
-    frame(canvas, LX, 60.0, LW, 250.0, C_PANEL_BORDER)?;
-
-    text(canvas, "ACCOUNT", LX + 14.0, 96.0, C_TEXT)?;
-    fill(canvas, LX + 14.0, 112.0, LW - 28.0, 22.0, C_FIELD)?;
-    frame(
-        canvas,
-        LX + 14.0,
-        112.0,
-        LW - 28.0,
-        22.0,
-        if active == 0 {
-            C_ACTIVE
-        } else {
-            C_PANEL_BORDER
-        },
-    )?;
-    text(canvas, id, LX + 20.0, 119.0, C_TEXT)?;
-
-    text(canvas, "PASSWORD", LX + 14.0, 152.0, C_TEXT)?;
-    fill(canvas, LX + 14.0, 168.0, LW - 28.0, 22.0, C_FIELD)?;
-    frame(
-        canvas,
-        LX + 14.0,
-        168.0,
-        LW - 28.0,
-        22.0,
-        if active == 1 {
-            C_ACTIVE
-        } else {
-            C_PANEL_BORDER
-        },
-    )?;
-    let masked = "*".repeat(pw.chars().count());
-    text(canvas, &masked, LX + 20.0, 175.0, C_TEXT)?;
-
-    fill(canvas, LX + 14.0, 210.0, 140.0, 28.0, C_BTN)?;
-    frame(canvas, LX + 14.0, 210.0, 140.0, 28.0, C_BTN_BORDER)?;
-    text(
-        canvas,
-        "LOGIN",
-        LX + 14.0 + (140.0 - 40.0) / 2.0,
-        220.0,
-        C_ACTIVE,
-    )?;
-    fill(canvas, LX + 182.0, 210.0, 140.0, 28.0, C_BTN)?;
-    frame(canvas, LX + 182.0, 210.0, 140.0, 28.0, C_BTN_BORDER)?;
-    text(
-        canvas,
-        "EXIT",
-        LX + 182.0 + (140.0 - 32.0) / 2.0,
-        220.0,
-        C_TEXT,
-    )?;
-
-    let mus = format!("MUSIC: {}", if music_on { "ON" } else { "OFF" });
-    text(
-        canvas,
-        &mus,
-        LX + 14.0,
-        256.0,
-        if music_on { C_ACTIVE } else { C_DIM },
-    )?;
-    text(
-        canvas,
-        &format!("UPTIME {:.0}s", started.elapsed().as_secs_f32()),
-        LX + 200.0,
-        256.0,
-        C_DIM,
-    )?;
-    text(
-        canvas,
-        &format!("STATUS: {status}"),
-        LX + 14.0,
-        280.0,
-        C_TEXT,
-    )?;
-
-    // 右侧精灵面板（**右对齐**：窗口加宽后不会挤在中间）
-    const RW: f32 = 248.0;
-    let rx = WIN_W as f32 - RW - 20.0;
-    fill(canvas, rx, 60.0, RW, 250.0, C_PANEL)?;
-    frame(canvas, rx, 60.0, RW, 250.0, C_PANEL_BORDER)?;
-    text(canvas, "SPRITE (REAL .WZL)", rx + 12.0, 72.0, C_TITLE)?;
-
-    let px = rx + 12.0;
-    let py = 92.0;
-    const PW: f32 = RW - 24.0;
-    const PH: f32 = 132.0;
-    checkerboard(canvas, px, py, PW, PH)?;
-    frame(canvas, px, py, PW, PH, C_PANEL_BORDER)?;
-
+    // 精灵本体：等比放大画进预览区（最近邻，像素不糊）
     if ready {
         if let Some(t) = sprite_tex.as_ref() {
             let (sw, sh) = (sprite_dims.0 as f32, sprite_dims.1 as f32);
-            let scale = (PW / sw).min(PH / sh).floor().clamp(1.0, 6.0);
+            let scale = (PW / sw).min(PH / sh).floor().clamp(1.0, 8.0);
             let (dw, dh) = (sw * scale, sh * scale);
             canvas.copy(
                 t,
                 None::<FRect>,
-                FRect::new(px + (PW - dw) / 2.0, py + (PH - dh) / 2.0, dw, dh),
+                FRect::new(PX + (PW - dw) / 2.0, PY + (PH - dh) / 2.0, dw, dh),
             )?;
         }
     } else {
         let msg = if asset_dir.is_none() {
-            "ASSETS NOT FOUND"
+            "ASSETS NOT FOUND - SET MIR2_ASSET_DIR"
         } else {
             "NO SPRITE"
         };
-        text(canvas, msg, center_x(msg, px, PW), py + 60.0, C_ERR)?;
+        text(canvas, msg, center_x(msg, PX, PW), PY + PH / 2.0, C_ERR)?;
     }
-
-    for (i, (line, col)) in info_lines.iter().enumerate().take(3) {
-        text(
-            canvas,
-            &trunc(line, INFO_COLS),
-            px,
-            py + PH + 8.0 + i as f32 * INFO_LINE_H,
-            *col,
-        )?;
-    }
-    let libl = format!("LIB [{}/{}]   IMG {}", lib_idx + 1, LIBS.len(), *img_idx);
-    text(canvas, &libl, px, py + PH + 8.0 + 3.0 * INFO_LINE_H, C_TEXT)?;
-
-    canvas.set_viewport(None::<Rect>);
+    let _ = IX;
     Ok(())
+}
+
+/// 提交登录。
+///
+/// ⚠️ 这里只做**客户端侧**的准备（必填校验、置忙、记日志）：真正的认证要走新协议的
+/// `Login`，而它的口令形态是 [D-24](../../../docs/decisions.md) 在管的事 ——
+/// 在定下来之前不假装成功（`docs/decisions.md` 原文：**也不把 `password_hash` 当成
+/// "收到了就用"**）。
+fn submit_login(login: &mut login::Login, status: &mut String) {
+    if login.account.is_empty() {
+        login.error = Some("Please enter your account name.".into());
+        return;
+    }
+    if login.password.is_empty() {
+        login.error = Some("Please enter your password.".into());
+        return;
+    }
+    login.busy = true;
+    *status = format!("LOGIN {}", login.account);
+    println!(
+        "[login] 提交：账号={:?} 密码长度={}（网络登录待接：见 D-24）",
+        login.account,
+        login.password.chars().count()
+    );
 }
 
 #[cfg(test)]
