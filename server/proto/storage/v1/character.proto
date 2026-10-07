@@ -1,0 +1,166 @@
+// MIR2 角色/账号存档的持久化格式。
+//
+// 对应 Delphi THumData（Common/Grobal2.pas:891-952）与 TAccountDBRecord（:987-993）。
+// 原版是 ~3628 字节的定长二进制，改为 protobuf 后：
+//   - 字段可演进（加字段不破坏旧档）
+//   - 不再受"改背包长度就要重编三端"的约束（Grobal2.pas:808 的历史坑）
+//
+// ⚠️ 字段号一旦发布不得更改/复用，否则旧档解析错乱。
+syntax = "proto3";
+
+package mir2go.storage.v1;
+
+option go_package = "github.com/algotao/mir2/server/internal/storage/pb";
+
+// MinMax 对应原版打包进单个 DWord 的属性对（LoWord=下限，HiWord=上限）。
+// 见 Common/Grobal2.pas:734-753 —— 原版战斗公式大量用 LoWord/HiWord 拆分，此处拆开存储。
+message MinMax {
+  uint32 min = 1;
+  uint32 max = 2;
+}
+
+// Ability 对应 Delphi TAbility（Grobal2.pas:734-753，packed 50 字节）。
+message Ability {
+  uint32 level = 1;
+  MinMax ac = 2;
+  MinMax mac = 3;
+  MinMax dc = 4;
+  MinMax mc = 5;
+  MinMax sc = 6;
+  uint32 hp = 7;
+  uint32 mp = 8;
+  uint32 max_hp = 9;
+  uint32 max_mp = 10;
+  uint64 exp = 11;
+  uint64 max_exp = 12;
+  uint32 weight = 13;
+  uint32 max_weight = 14;
+  uint32 wear_weight = 15;
+  uint32 max_wear_weight = 16;
+  uint32 hand_weight = 17;
+  uint32 max_hand_weight = 18;
+}
+
+// NakedAbility 对应 Delphi TNakedAbility（Grobal2.pas:662-673）。
+message NakedAbility {
+  MinMax dc = 1;
+  MinMax mc = 2;
+  MinMax sc = 3;
+  MinMax ac = 4;
+  MinMax mac = 5;
+  uint32 hp = 6;
+  uint32 mp = 7;
+  uint32 hit = 8;
+  int32 speed = 9;
+  uint32 x2 = 10;
+}
+
+// UserItem 对应 Delphi TUserItem（Grobal2.pas:788-795，24 字节）。
+message UserItem {
+  int32 make_index = 1; // 物品唯一 ID（GetItemNumber 分配）
+  uint32 index = 2; // 物品模板索引（StdItem.Index，1-based）
+  uint32 dura = 3;
+  uint32 dura_max = 4;
+  bytes value = 5; // 14 字节：附加属性与升级点数（btValue[0..13]）
+}
+
+// UserMagic 对应 Delphi TUserMagic（Grobal2.pas:814-820）。
+message UserMagic {
+  // 原版存的是 pTMagic 指针（落盘时无意义），改为存技能号（MagicID）。
+  uint32 magic_id = 1;
+  uint32 level = 2;
+  uint32 mag_idx = 3;
+  int32 tran_point = 4; // 修炼点
+  uint32 key = 5; // 快捷键
+}
+
+// CharacterData 对应 Delphi THumData（Grobal2.pas:891-952）。
+//
+// 高频查询字段（账号、角色名、等级、金币等）已提为 SQL 主表列，
+// 此处只存"整块读写"的详情。见 docs/service-architecture.md。
+message CharacterData {
+  // 基础
+  string chr_name = 1;
+  string cur_map = 2;
+  uint32 cur_x = 3;
+  uint32 cur_y = 4;
+  uint32 dir = 5;
+  uint32 hair = 6;
+  uint32 sex = 7;
+  uint32 job = 8;
+  int64 gold = 9;
+
+  // 能力与状态（status_time 长度 = MAX_STATUS_ATTRIBUTE = 12）
+  Ability abil = 10;
+  repeated uint32 status_time = 11;
+
+  // 回城点
+  string home_map = 12;
+  uint32 home_x = 13;
+  uint32 home_y = 14;
+
+  // 加点
+  NakedAbility bonus_abil = 15;
+  int64 bonus_point = 16;
+  uint32 credit_point = 17;
+  uint32 re_level = 18;
+
+  // 元宝 / 点数
+  string storage_pwd = 19;
+  int64 game_gold = 20;
+  int64 game_point = 21;
+  int64 payment_point = 22;
+  int64 pk_point = 23;
+
+  // 行为开关
+  bool allow_group = 24;
+  uint32 f9 = 25;
+  uint32 attack_mode = 26;
+  bool inc_health = 27;
+  bool inc_spell = 28;
+  bool inc_healing = 29;
+  uint32 fight_zone_die_count = 30;
+  bool ee = 31;
+  bool ef = 32;
+
+  // 归属与其它
+  string account = 33;
+  bool lock_logon = 34;
+  uint32 contribution = 35;
+  int64 hunger_status = 36;
+  bool allow_guild_recall = 37;
+  uint32 group_recall_time = 38;
+  double body_luck = 39; // 原版 TDateTime（Double）
+  bool allow_group_recall = 40;
+
+  // 任务标志，原版各为 array[0..127] of Byte
+  bytes quest_unit_open = 41;
+  bytes quest_unit = 42;
+  bytes quest_flag = 43;
+
+  // 物品与技能（数量：装备 13 / 背包 46 / 技能 20 / 仓库 50）
+  repeated UserItem hum_items = 44;
+  repeated UserItem bag_items = 45;
+  repeated UserMagic magics = 46;
+  repeated UserItem storage_items = 47;
+}
+
+// AccountData 是账号的详情部分。
+//
+// 对应 Delphi TUserEntry（Grobal2.pas:592-601，148 字节）+
+// TUserEntryAdd（:602-609，143 字节）。
+// 账号名、密码哈希、错误计数等高频字段已提为 SQL 主表列。
+message AccountData {
+  string user_name = 1; // 真实姓名
+  string ss_no = 2; // 身份证号
+  string phone = 3;
+  string quiz = 4; // 密码提示问题 1
+  string answer = 5;
+  string email = 6;
+  string quiz2 = 7; // 密码提示问题 2
+  string answer2 = 8;
+  string birth_day = 9;
+  string mobile_phone = 10;
+  string memo = 11;
+  string memo2 = 12;
+}

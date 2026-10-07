@@ -1,0 +1,481 @@
+package gamesvr
+
+import (
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/algotao/mir2/server/internal/proto"
+	"github.com/algotao/mir2/server/internal/script"
+	pb "github.com/algotao/mir2/server/internal/storage/pb"
+	"github.com/algotao/mir2/server/internal/wire"
+)
+
+// NPC 对话与脚本执行。
+//
+// 脚本来自 Envir\market_def\<NPC ID>-<地图>.txt（1.76 官方配置）。
+// 点击 NPC 时：有脚本 → 进入对话；没有 → 打开商店。
+
+// dialog 记录玩家当前所处的对话。
+type dialog struct {
+	scriptName string
+	// npcID 用于对白里的 @buy/@sell/@trading 打开对应商店。
+	npcID uint32
+	links []script.Link
+	// label 是**当前所处的脚本标签**（原版 `m_sScriptLable`，小写）。
+	// 修理的两档就是按它分的（`@s_repair` 特修 / 其余普修，ObjNpc.pas:2431-2446）。
+	label string
+}
+
+// npcScript 取某个 NPC 的脚本，按需加载并缓存。
+//
+// 文件名是 <NPC ID>-<地图>.txt（如 1Bme-0102.txt）。
+// 同一 NPC 在不同地图可能挂不同脚本。
+func (s *Server) npcScript(id, mapID string) *script.Script {
+	if id == "" {
+		return nil
+	}
+	key := id + "-" + mapID
+
+	s.npc.mu.RLock()
+	if sc, ok := s.npc.scripts[key]; ok {
+		s.npc.mu.RUnlock()
+		return sc
+	}
+	s.npc.mu.RUnlock()
+
+	path := filepath.Join(s.npc.scriptDir, key+".txt")
+	if _, err := os.Stat(path); err != nil {
+		// 没有专属脚本时退回 <ID>.txt（部分 NPC 不分地图）
+		path = filepath.Join(s.npc.scriptDir, id+".txt")
+		if _, err := os.Stat(path); err != nil {
+			return nil
+		}
+	}
+	log.Printf("加载 NPC 脚本: %s", path)
+	sc, err := script.ParseFile(path)
+	if err != nil {
+		log.Printf("脚本 %s 解析失败: %v", path, err)
+		return nil
+	}
+
+	s.npc.mu.Lock()
+	// `scripts` 在最小测试服里是 nil（生产路径由启动流程建好）—— 与 `spawned` 同款防御。
+	if s.npc.scripts == nil {
+		s.npc.scripts = make(map[string]*script.Script)
+	}
+	s.npc.scripts[key] = sc
+	s.npc.mu.Unlock()
+	return sc
+}
+
+// startDialog 打开一个脚本的入口段。
+func (s *Server) startDialog(c net.Conn, p *Player, sc *script.Script, npcID uint32) {
+	entry := sc.Entry()
+	if entry == nil {
+		return
+	}
+	p.dialog = &dialog{scriptName: sc.Name, npcID: npcID}
+	s.showLabel(c, p, sc, entry)
+}
+
+// showLabel 显示一个段：按 #if 结果选择 #act 或 #elseact，再输出文本与选项。
+// 没有 #elseact 且条件不满足时，该段仍静默停在这里。
+func (s *Server) showLabel(c net.Conn, p *Player, sc *script.Script, l *script.Label) {
+	if l == nil {
+		return
+	}
+	if p.dialog == nil {
+		p.dialog = &dialog{scriptName: sc.Name}
+	}
+
+	passed := s.evalLabelConds(p, l)
+	acts := l.Acts
+	if !passed {
+		if len(l.ElseActs) == 0 {
+			p.dialog.links = nil
+			return
+		}
+		acts = l.ElseActs
+	}
+
+	p.dialog.links = l.Links
+
+	// 选中的动作在显示之前执行（原版语义）。
+	s.runActs(c, p, acts)
+
+	msg := l.Say
+	for i, lk := range l.Links {
+		if msg != "" {
+			msg += "\n"
+		}
+		msg += fmt.Sprintf("[%d] %s", i+1, lk.Text)
+	}
+	if msg == "" {
+		msg = "……"
+	}
+	s.sysMsg(c, msg)
+}
+
+// handleDlgSelect 处理玩家在对话里选择某项（CM_MERCHANTDLGSELECT=1011）。
+//
+// 两种形态：
+//   - 原版：Recog = NPC 的 ActorId，body = 选项文本。以 '@@' 开头的标签
+//     表示需要内嵌输入框，客户端会把玩家输入拼在 #13 之后一起发来
+//     （ClMain.pas:3661-3681）；
+//   - 简化：Recog = 选项序号（1-based），body 为空（mir2cli 的用法）。
+func (s *Server) handleDlgSelect(c net.Conn, p *Player, m wire.Packet) {
+	if p.dialog == nil {
+		return
+	}
+	if body := strings.TrimSpace(m.Body); strings.HasPrefix(body, "@") {
+		s.handleDlgSelectText(c, p, body)
+		return
+	}
+	idx := int(m.Head.Recog) - 1
+	if idx < 0 || idx >= len(p.dialog.links) {
+		return
+	}
+	lk := p.dialog.links[idx]
+	// 记下"玩家点进哪个标签了"（原版 m_sScriptLable，由 GotoLable 推进）
+	p.dialog.label = strings.ToLower(lk.Label)
+
+	switch strings.ToLower(lk.Label) {
+	case "exit":
+		p.dialog = nil
+		return
+	case "buy", "sell", "trading":
+		// 脚本里的商店入口
+		s.openShop(c, p, p.dialog.npcID)
+		return
+	case "storage", "getback":
+		// 同上（按序号选择时镜像一份；原版是文本形态）
+		if s.handleStorageDialog(c, p, "@"+strings.ToLower(lk.Label)) {
+			return
+		}
+	case "upgradenow", "getbackupgnow":
+		// 武器修炼（镜像文本形态那条路，见 @upgradenow 分支）
+		if !s.dialogAllows(p, "@"+strings.ToLower(lk.Label)) {
+			return
+		}
+		if strings.EqualFold(lk.Label, "upgradenow") {
+			s.weaponUpgradeStart(c, p, p.dialog.npcID)
+		} else {
+			s.weaponUpgradeTake(c, p, p.dialog.npcID)
+		}
+	case "main":
+		// 回到入口
+	}
+
+	sc := s.scriptByName(p.dialog.scriptName)
+	if sc == nil {
+		return
+	}
+	if next := sc.Label(lk.Label); next != nil {
+		s.showLabel(c, p, sc, next)
+		return
+	}
+	// 标签不存在（很多脚本里的 @buy/@sell 指向商店功能）
+	s.sysMsg(c, fmt.Sprintf("（选项 %q 尚未实现）", lk.Label))
+}
+
+// handleDlgSelectText 处理原版形态的选项文本。
+//
+// 目前支持 NPC 脚本里的 @@ 内嵌输入框标签（客户端会弹输入框，
+// 并把输入拼在标签后的 #13 之后）：
+//
+//	@@buildguildnow\r<行会名>   —— 建会（ObjNpc.pas:11317-11364）
+//	@@guildwar\r<行会名>       —— 行会战（ObjNpc.pas:26722）
+//
+// 以及城堡的无输入框标签（见 handleCastleMsg）。
+//
+// 其余 @@ 标签暂未实现，回一条系统提示。
+func (s *Server) handleDlgSelectText(c net.Conn, p *Player, body string) {
+	param, tag := cutAt(body, "\r\n")
+	// 记下当前标签（小写；原版 m_sScriptLable）—— 修理分档要用
+	p.dialog.label = strings.ToLower(strings.TrimSpace(tag))
+	// 仓库入口：`@storage`（开界面）/ `@getback`（拉列表）。
+	//
+	// ⚠️ 这是**单 @** 的脚本标签（不是 @@ 输入框标签），1.76 的仓库就靠它打开
+	//（ObjNpc.pas:1560-1575），没有 CM_OPENSTORAGE 这种包。见 storage.go。
+	if s.handleStorageDialog(c, p, tag) {
+		return
+	}
+	switch strings.ToLower(tag) {
+	case "@repair", "@s_repair":
+		// 打开修理界面（原版 `TMerchant.RepairItem`/`S_RepairItem`，
+		// ObjNpc.pas:1536-1560 ⇒ `User.SendMsg(Self, RM_SENDUSERREPAIR, …)`）：
+		// `@s_repair` 是**特修**档（价格 ×3、不磨损上限），`@repair` 是普修。
+		// 两者都要脚本头声明了对应标签才开（原版查 `m_boS_repair`/`m_boRepair`）。
+		if s.dialogAllows(p, strings.ToLower(tag)) {
+			if npc := s.dialogNPC(p); npc != nil {
+				s.send(c, proto.SM_SENDUSERREPAIR, 0, uint16(npc.ID), 0, 0, "")
+			}
+		}
+	case "@makedrug":
+		// 打开制药列表（原版 `TMerchant.MakeDurg`，ObjNpc.pas:1465-1492）：
+		// 脚本头没声明 `@makedrug` 的 NPC 不接这活（原版查 `m_boMakeDrug`）。
+		if s.dialogAllows(p, "@makedrug") {
+			if npc := s.dialogNPC(p); npc != nil {
+				s.sendMakeDrugList(c, p, npc, s.npcDefOf(npc))
+			}
+		}
+	case "@upgradenow":
+		// 武器修炼（原版 `TMerchant.UpgradeWapon`，见 weaponupgrade.go）。
+		// 脚本头没声明 @upgradenow 的 NPC 不允许接这活（原版查 m_boUpgradenow）。
+		if s.dialogAllows(p, "@upgradenow") {
+			s.weaponUpgradeStart(c, p, p.dialog.npcID)
+		}
+	case "@getbackupgnow":
+		if s.dialogAllows(p, "@getbackupgnow") {
+			s.weaponUpgradeTake(c, p, p.dialog.npcID)
+		}
+	case "@@buildguildnow":
+		s.requestBuildGuild(c, p, param)
+	case "@@guildwar":
+		// 原版客户端在行会管理员对话框里点"发起行会战"后弹输入框，
+		// 玩家填对方行会名（ObjNpc.pas:11365-11383 → ReQuestGuildWar）。
+		s.requestGuildWar(c, p, param)
+	default:
+		if s.handleCastleMsg(c, p, tag, param) {
+			return
+		}
+		s.sysMsg(c, fmt.Sprintf("（选项 %q 尚未实现）", tag))
+	}
+}
+
+// scriptByName 从缓存里按脚本名找（用于对话跳转）。
+func (s *Server) scriptByName(name string) *script.Script {
+	s.npc.mu.RLock()
+	defer s.npc.mu.RUnlock()
+	for _, sc := range s.npc.scripts {
+		if sc.Name == name {
+			return sc
+		}
+	}
+	return nil
+}
+
+// ---------- #act 指令 ----------
+
+// runActs 执行一组 #act 指令。
+//
+// 目前支持：mapmove / give / take（扣物品）/ takegold / givegold / gold。
+// 其余指令忽略并记日志——1.76 脚本里有十几条常用指令，逐步补齐。
+func (s *Server) runActs(c net.Conn, p *Player, acts []string) {
+	for _, raw := range acts {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		f := strings.Fields(line)
+		switch strings.ToLower(f[0]) {
+		case "groupmovemap":
+			// GROUPMOVEMAP <地图名> <X> <Y>：把**全队**送到同一坐标。
+			//
+			// 对应 ObjNpc.pas:10962-10992 ActionOfGroupMoveMap。
+			//
+			// ⚠️ 原版 `GROUPMOVE`（不带 MAP）**只有常量、没有解析也没有分发**，
+			// 是死代码（M2Share.pas:828-829 有常量，LocalDB/ObjNpc 都没有分支）；
+			// 可用的是 GROUPMOVEMAP。别顺手实现 GROUPMOVE。
+			if len(f) >= 4 {
+				x, e1 := strconv.Atoi(f[2])
+				y, e2 := strconv.Atoi(f[3])
+				if e1 == nil && e2 == nil {
+					s.actGroupMoveMap(c, p, f[1], x, y)
+				}
+			}
+		case "mapmove":
+			if len(f) >= 4 {
+				x, e1 := strconv.Atoi(f[2])
+				y, e2 := strconv.Atoi(f[3])
+				if e1 == nil && e2 == nil {
+					if err := s.switchMap(c, p, f[1], x, y); err != nil {
+						log.Printf("脚本 mapmove 失败: %v", err)
+					}
+				}
+			}
+		case "give":
+			if len(f) >= 2 {
+				n := 1
+				if len(f) >= 3 {
+					n, _ = strconv.Atoi(f[2])
+				}
+				s.actGive(c, p, f[1], n)
+			}
+		case "take":
+			if len(f) >= 2 {
+				n := 1
+				if len(f) >= 3 {
+					n, _ = strconv.Atoi(f[2])
+				}
+				s.actTake(c, p, f[1], n)
+			}
+		case "givegold":
+			if len(f) >= 2 && p.Char.Data != nil {
+				if v, err := strconv.Atoi(f[1]); err == nil {
+					p.addGold(int64(v))
+					s.send(c, proto.SM_GOLDCHANGED, int32(p.gold()), 0, 0, 0, "")
+				}
+			}
+		case "takegold":
+			if len(f) >= 2 && p.Char.Data != nil {
+				if v, err := strconv.Atoi(f[1]); err == nil {
+					// 原子"够就扣"：判定与扣款不能分家（并发收支会插进来）
+					if !p.spendGold(int64(v)) {
+						s.sysMsg(c, "金币不足")
+						return
+					}
+					s.send(c, proto.SM_GOLDCHANGED, int32(p.gold()), 0, 0, 0, "")
+				}
+			}
+		case "map":
+			// MAP <地图> [x] [y]：MAPMOVE 的简写，不带发包模拟。
+			// 官方脚本高频（61 个文件用），语义与 MAPMOVE 相同。
+			s.actMapMove(c, p, f[1:])
+		case "break":
+			// BREAK：中断本段后续指令（BREAKTIMERECALL 之外的普通中断）。
+			// 原版语义是停止执行当前标签的剩余 #act。
+			return
+		case "mov", "set":
+			// MOV <变量> <值> / SET <变量> <值>
+			// 官方写法：mov n1 <$STR(n2)>、set n1 0。变量名形如 n1..n99。
+			if len(f) >= 3 {
+				s.actSetVar(p, f[1], strings.Join(f[2:], " "))
+			}
+		case "inc", "dec":
+			// INC/DEC <变量> [<增量>]：默认 ±1。
+			if len(f) >= 2 {
+				delta := int64(1)
+				if strings.EqualFold(f[0], "dec") {
+					delta = -1
+				}
+				if len(f) >= 3 {
+					if v, err := strconv.ParseInt(f[2], 10, 64); err == nil {
+						delta = v
+						if strings.EqualFold(f[0], "dec") {
+							delta = -v
+						}
+					}
+				}
+				s.actIncrVar(p, f[1], delta)
+			}
+		case "sendmsg":
+			// SENDMSG <文本>：给玩家发一句系统消息。
+			// 官方 QFunction-0.txt 一个文件里用了 11 次。
+			if len(f) >= 2 {
+				s.sysMsg(c, strings.Join(f[1:], " "))
+			}
+		// ---- 第二批：技能 / 经验 / 等级 / PK 点 / 刷怪 / 清怪 / 元宝 ----
+		case "addskill":
+			s.actAddSkill(c, p, f[1:])
+		case "delskill", "delnojobskill", "clearskill":
+			s.actDelSkill(c, p, f[1:])
+		case "skilllevel":
+			s.actSkillLevel(c, p, f[1:])
+		case "changeexp":
+			s.actChangeExp(c, p, f[1:])
+		case "changelevel":
+			if len(f) >= 2 {
+				if lv, err := strconv.Atoi(f[1]); err == nil && lv > 0 {
+					s.setPlayerLevel(p, uint32(lv))
+				}
+			}
+		case "changepkpoint", "setpkpoint":
+			s.actChangePKPoint(c, p, f[1:])
+		case "recallmob", "mongene", "mongenex":
+			s.actRecallMob(c, p, f[1:])
+		case "clearmapmon", "monclear":
+			s.actClearMapMon(c, p, f[1:])
+		case "gamegold", "autogamegold":
+			s.actGameGold(c, p, f[1:])
+		case "gamepoint", "autogetexp":
+			s.actGamePoint(c, p, f[1:])
+		// ---- 操作位（ITEM 窗口服务端侧，见 scriptitem.go）----
+		case "linkbagitem":
+			s.actLinkBagItem(c, p, f[1:])
+		case "clearlinkitem":
+			s.actClearLinkItem(c, p)
+		case "getitemfieldvalue":
+			s.actGetItemFieldValue(c, p, f[1:])
+		case "changeitemdura":
+			s.actChangeItemDura(c, p, f[1:])
+		case "updateitem":
+			s.actUpdateItem(c, p)
+		case "addfunitemdura":
+			s.actAddFunItemDura(c, p, f[1:])
+
+		case "timerecall":
+			s.actTimerRecall(c, p, f[1:], false)
+		case "delaygoto":
+			s.actTimerRecall(c, p, f[1:], true)
+		case "breaktimerecall":
+			s.actBreakTimerRecall(c, p)
+		case "humanhp", "hum:hp":
+			s.actSetHP(c, p, f[1:], true)
+		case "humanmp", "hum:mp":
+			s.actSetHP(c, p, f[1:], false)
+		default:
+			log.Printf("脚本指令未实现: %s", line)
+		}
+	}
+}
+
+// actGive 给玩家物品。
+func (s *Server) actGive(c net.Conn, p *Player, name string, n int) {
+	it := s.data.tables.Items.GetByName(name)
+	if it == nil {
+		log.Printf("脚本 give：物品表没有 %q", name)
+		return
+	}
+	if n <= 0 {
+		n = 1
+	}
+	for i := 0; i < n; i++ {
+		ui := &pb.UserItem{
+			MakeIndex: int32(s.itemSeq.Add(1)),
+			Index:     uint32(it.Index),
+			Dura:      initialDura(it),
+			DuraMax:   it.DuraMax,
+		}
+		if s.addToBag(p, ui) < 0 {
+			s.sysMsg(c, "背包已满")
+			return
+		}
+	}
+	s.sendBagItems(c, p)
+	s.sysMsg(c, fmt.Sprintf("获得 %s x%d", it.Name, n))
+}
+
+// actTake 从背包扣物品。
+func (s *Server) actTake(c net.Conn, p *Player, name string, n int) {
+	it := s.data.tables.Items.GetByName(name)
+	if it == nil || p.Char.Data == nil {
+		return
+	}
+	if n <= 0 {
+		n = 1
+	}
+	// ⚠️ 先收集槽位、再**从后往前**删：takeBagItem 会把后面的元素整体左移
+	//（保持背包无空洞），正序"边遍历边删"会漏掉元素。
+	var hits []int
+	for i, ui := range p.Char.Data.BagItems {
+		if len(hits) >= n {
+			break
+		}
+		if ui == nil || ui.Index != uint32(it.Index) {
+			continue
+		}
+		hits = append(hits, i)
+	}
+	for k := len(hits) - 1; k >= 0; k-- {
+		s.takeBagItem(p, hits[k])
+	}
+	if len(hits) > 0 {
+		s.sendBagItems(c, p)
+	}
+}

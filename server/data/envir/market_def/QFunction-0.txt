@@ -1,0 +1,279 @@
+[@MagSelfFunc1024]
+#IF
+checkskill 血龙水 = 0
+#ACT
+ChangeSlaveLevel 变异骷髅 = 4
+ChangeSlaveLevel 神兽 = 4
+ChangeSlaveLevel 神兽0 = 4
+ChangeSlaveLevel 月灵 = 4
+#IF
+checkskill 血龙水 = 1
+#ACT
+ChangeSlaveLevel 变异骷髅 = 5
+ChangeSlaveLevel 神兽 = 5
+ChangeSlaveLevel 神兽0 = 5
+ChangeSlaveLevel 月灵 = 5
+#IF
+checkskill 血龙水 = 2
+#ACT
+ChangeSlaveLevel 变异骷髅 = 6
+ChangeSlaveLevel 神兽 = 6
+ChangeSlaveLevel 神兽0 = 6
+ChangeSlaveLevel 月灵 = 6
+#IF
+checkskill 血龙水 = 3
+#ACT
+ChangeSlaveLevel 变异骷髅 = 7
+ChangeSlaveLevel 神兽 = 7
+ChangeSlaveLevel 神兽0 = 7
+ChangeSlaveLevel 月灵 = 7
+
+[@OpenStoratge2]
+#if 
+not CheckStorageOpen 2
+#act
+MESSAGEBOX 是否花费100W金币开启仓库第二页? @开启仓库第二页 @取消
+
+[@OpenStoratge3]
+#if 
+not CheckStorageOpen 3
+#act
+MESSAGEBOX 是否花费200W金币开启仓库第三页? @开启仓库第三页 @取消
+
+[@OpenStoratge4]
+#if 
+not CheckStorageOpen 4
+#act
+MESSAGEBOX 是否花费300W金币开启仓库第四页? @开启仓库第四页 @取消
+
+[@开启仓库第二页]
+#if 
+checkgold 1000000
+#act
+take 金币 1000000
+OpenStoratge 2 1
+SendMsg 5 开启仓库第二页成功!
+
+[@开启仓库第三页]
+#if 
+checkgold 2000000
+#act
+take 金币 2000000
+OpenStoratge 3 1
+SendMsg 5 开启仓库第三页成功!
+
+[@开启仓库第四页]
+#if 
+checkgold 3000000
+#act
+take 金币 3000000
+OpenStoratge 4 1
+SendMsg 5 开启仓库第四页成功!
+
+
+[@ClosedBagItemClick]
+#act
+mov n1 <$ExtBagOpenItemCount>
+inc n1 1
+mul n1 10000
+MESSAGEBOX 是否花费<$STR(n1)>金币开启新格子? @开启新背包格子 @取消
+
+[@开启新背包格子]
+#act
+mov n1 <$ExtBagOpenItemCount>
+inc n1 1
+mul n1 10000
+#if 
+checkgold n1
+Large <$ExtBagCloseItemCount> 0
+#act
+take 金币 n1
+mov n2 <$ExtBagOpenItemCount>
+ExtBagOpenItemCount + 1
+SENDMSG 7 你的扩展背包已从<$STR(n2)>格扩展到<$ExtBagOpenItemCount>格
+#elsesay
+你的金币不足，扩展失败！ \ \
+<退出/@exit>
+
+[@取消]
+#ACT
+break
+
+;点开始挂机触发
+[@StartAutoOnline]
+#IF
+;CHECKMAPNAME 0
+#ACT
+;SENDMSG 6 当前地图禁止挂机
+;#ELSEACT
+StartAutoPlayGame
+SENDMSG 6 开始挂机，使用快捷键“CTRL+ALT+X”停止挂机
+
+;点停止挂机触发
+[@StopAutoOnline]
+#IF
+#ACT
+StopAutoPlayGame
+SENDMSG 6 停止挂机，使用快捷键“CTRL+ALT+X”开始挂机
+
+[@StdModeFunc14] 
+#IF
+checkitem 强效太阳水 6
+#ACT
+take 强效太阳水 6
+give 强效太阳水包 1 
+#ELSEACT
+AddFunItemDura 1000
+
+[@StdModeFunc15]
+#IF
+checkitem 万年雪霜 6
+#ACT
+take 万年雪霜 6
+give 万年雪霜包 1
+#ELSEACT
+AddFunItemDura 1000 
+
+[@StdModeFunc16] 
+#IF 
+checkitem 疗伤药 6
+#ACT 
+take 疗伤药 6
+give 疗伤药包 1
+#ELSEACT
+AddFunItemDura 1000
+
+[@StdModeFunc17] 
+#ACT 
+close 
+mapmove 0 327 272 
+
+[@StdModeFunc18] 
+#ACT 
+close
+mapmove 3 330 330
+
+[@StdModeFunc31]
+#IF
+#ACT
+KILLMONEXPRATE 200 10800 1
+SENDMSG 7 你获得了3个小时双倍经验,期间死亡或下线不减少双倍时间,重复使用无效!
+
+[@StdModeFunc32]
+#IF
+#ACT
+KILLMONEXPRATE 200 21600 1
+SENDMSG 7 你获得了6个小时双倍经验,期间死亡或下线不减少双倍时间,重复使用无效!
+
+[@StdModeFunc33]
+#IF
+CheckJob Taoist
+#ACT
+ChangeSlaveLevel 变异骷髅 = 7
+ChangeSlaveLevel 神兽 = 7
+ChangeSlaveLevel 神兽0 = 7
+ChangeSlaveLevel 月灵 = 7
+Break
+#ELSEACT
+sendmsg 7 召唤强化卷只适合道士职业使用！！
+
+[@StdModeFunc34] 
+#IF 
+CheckSlaveCount < 5 
+#ACT
+RECALLMOB 虎卫 3
+#ELSEACT 
+SENDMSG 7 可带领的宠物数量已达到5个的上限！！
+
+
+[@StdModeFunc101]
+#IF
+#ACT
+KILLMONEXPRATE 130 3600 1
+SENDMSG 7 你获得了1个小时30%经验增益,期间死亡或下线不减少双倍时间,重复使用无效!
+
+[@StdModeFunc102]
+#IF
+#ACT
+KILLMONEXPRATE 130 10800 1
+SENDMSG 7 你获得了3个小时30%经验增益,期间死亡或下线不减少双倍时间,重复使用无效!
+
+[@StdModeFunc103]
+#IF
+#ACT
+KILLMONEXPRATE 130 18000 1
+SENDMSG 7 你获得了5个小时30%经验增益,期间死亡或下线不减少双倍时间,重复使用无效!
+
+[@StdModeFunc104]
+#IF
+#ACT
+KILLMONEXPRATE 130 86400 1
+SENDMSG 7 你获得了24个小时30%经验增益,期间死亡或下线不减少双倍时间,重复使用无效!
+
+[@StdModeFunc105]
+#IF
+#ACT
+KILLMONEXPRATE 300 10800 1
+SENDMSG 7 你获得了3个小时3倍经验增益,期间死亡或下线不减少双倍时间,重复使用无效!
+
+[@StdModeFunc106]
+#IF
+#ACT
+KILLMONEXPRATE 300 86400 1
+SENDMSG 7 你获得了24个小时3倍经验增益,期间死亡或下线不减少双倍时间,重复使用无效!
+
+[@StdmodeShow101]
+#if
+#act
+;SendMsg 6 人物当前使用的物品名:<$UseItemName>，唯一ID:<$UseItemMakeIndex>
+;SendMsg 6 使用物品目标名字:<$BagItemName>,唯一ID:<$BagItemMakeIndex>
+LinkBagItem <$BagItemMakeIndex>
+GetItemFieldValue -1 name S1
+GetItemFieldValue -1 idx S2
+GetItemFieldValue -1 dura S3
+GetItemFieldValue -1 duramax S4
+;SendMsg 6 当前操作的装备Idx：<$Str(S1)>；dura：<$Str(S3)>，duramax：<$Str(S4)>
+ChangeItemDura -1 = <$Str(S4)> 0
+UpdateItem -1
+ClearLinkItem
+break
+
+[@StdmodeShow102]
+#if
+#act
+;SendMsg 6 人物当前使用的物品名:<$UseItemName>，唯一ID:<$UseItemMakeIndex>
+;SendMsg 6 使用物品目标名字:<$BagItemName>,唯一ID:<$BagItemMakeIndex>
+LinkBagItem <$BagItemMakeIndex>
+GetItemFieldValue -1 name S1
+GetItemFieldValue -1 idx S2
+GetItemFieldValue -1 dura S3
+GetItemFieldValue -1 duramax S4
+DIV S4 30
+MUL S4 29
+ChangeItemDura -1 = <$Str(S4)> 1
+ChangeItemDura -1 = <$Str(S4)> 0
+SendMsg 6 当前操作的装备Idx：<$Str(S1)>；dura：<$Str(S3)>，duramax：<$Str(S4)>
+UpdateItem -1
+ClearLinkItem
+break
+
+;拍卖行出价被冲
+[@AuctionInvalidItem]
+#IF
+;物品被别人秒了
+EQUAL <$AuctionItemSelled> 1
+#ACT
+sendmsg 7 很遗憾，你出价<$AuctionItemInvalidPrice>的竞拍物品【<$AuctionItemName>；底价：<$AuctionItemStartPrice><$AuctionItemMoneyType>；一口价：<$AuctionItemSellPrice>】被人用秒拍
+#ELSEACT
+sendmsg 7 你出价<$AuctionItemInvalidPrice>的竞拍物品【<$AuctionItemName>；底价：<$AuctionItemStartPrice><$AuctionItemMoneyType>；一口价：<$AuctionItemSellPrice>】被人出了更高的价格：<$AuctionItemFinaPrice>，赶快去加价吧
+
+;拍卖人的物品被卖出
+[@AuctionSellItem]
+#ACT
+sendmsg 7 你拍卖的物品【<$AuctionItemName>；底价：<$AuctionItemStartPrice><$AuctionItemMoneyType>；一口价：<$AuctionItemSellPrice>】被人用<$AuctionItemFinaPrice>的价格买走
+
+;竞拍人买到物品
+[@AuctionBuyItem]
+#ACT
+sendmsg 7 恭喜。你参与竞拍的物品【<$AuctionItemName>；底价：<$AuctionItemStartPrice><$AuctionItemMoneyType>；一口价：<$AuctionItemSellPrice>】竞拍成功。成交价：<$AuctionItemFinaPrice> 
+
