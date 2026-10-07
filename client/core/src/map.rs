@@ -342,12 +342,29 @@ impl Lib {
     }
 }
 
+/// 三层**全部可见**的掩码（见 [`Layer::bit`]）。
+pub const LAYERS_ALL: u8 = 0b111;
+
 /// 图层。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layer {
     Ground,
     Mid,
     Front,
+}
+
+impl Layer {
+    /// 该层在"可见性掩码"里的位：bit0 = 地表、bit1 = 中间、bit2 = 前景。
+    ///
+    /// 放在 core 是因为 **app 与 e2e 都要用它过滤绘制指令** ——
+    /// 各写一份迟早不一致（plan §4.2 / R-10）。
+    pub fn bit(self) -> u8 {
+        match self {
+            Layer::Ground => 1,
+            Layer::Mid => 2,
+            Layer::Front => 4,
+        }
+    }
 }
 
 /// 一条绘制指令：从哪个库取哪张图，画在视口内的哪个像素位置。

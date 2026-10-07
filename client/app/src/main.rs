@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use mir2_core::m2pk::Archive;
-use mir2_core::map::{Layer, Lib, Map, TileDraw, UNIT_X, UNIT_Y};
+use mir2_core::map::{Layer, Lib, Map, TileDraw, LAYERS_ALL, UNIT_X, UNIT_Y};
 use mir2_core::wzl::Wzl;
 
 use sdl3::audio::{AudioCallback, AudioFormat, AudioSpec, AudioStream};
@@ -90,21 +90,10 @@ const C_CROSS: Color = Color::RGB(255, 255, 255);
 /// 鼠标下那张图**自己那一格**的高亮色（与鼠标格区分开）
 const C_TOPMOST: Color = Color::RGB(255, 90, 220);
 
-/// 图层可见性掩码：bit0 = 地表 bit1 = 中间 bit2 = 前景；默认三层全开。
-///
-/// 三层**各自独立**开关（`CTRL+1/2/3`），而不是"单选一层"——
-/// 排查错位时最常用的动作是"只关掉一层看底下那层在哪"，
-/// 单选模式反而要来回切两次才能对比。
-const LAYERS_ALL: u8 = 0b111;
-
-/// `Layer` → 可见性掩码位。
-fn layer_bit(l: Layer) -> u8 {
-    match l {
-        Layer::Ground => 1,
-        Layer::Mid => 2,
-        Layer::Front => 4,
-    }
-}
+// 图层可见性掩码定义在 core（`map::LAYERS_ALL` / `Layer::bit`）——
+// app 与 e2e 都要用它过滤绘制指令，各写一份迟早不一致（plan §4.2 / R-10）。
+// 语义：bit0 = 地表、bit1 = 中间、bit2 = 前景；`CTRL+1/2/3` **各自独立**开关
+// （排查错位时最常用的动作是"只关掉一层看底下那层在哪"，单选模式要来回切两次）。
 
 /// 掩码 → 三字母缩写（G=地表 M=中间 F=前景），隐藏的层显示为 `-`。
 fn layers_desc(m: u8) -> String {
@@ -262,31 +251,8 @@ fn checkerboard(c: &mut WindowCanvas, x: f32, y: f32, w: f32, h: f32) -> Result<
 }
 
 // ---------- 路径解析 ----------
-/// `$MIR2_ASSET_DIR` → `$MIR2C_DATA` → 仓库旁 `mir2c/data`。
-fn resolve_asset_dir() -> Option<PathBuf> {
-    for key in ["MIR2_ASSET_DIR", "MIR2C_DATA"] {
-        if let Ok(v) = std::env::var(key) {
-            let p = PathBuf::from(v);
-            if p.is_dir() {
-                return Some(p);
-            }
-        }
-    }
-    let guess = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mir2c/data");
-    guess.canonicalize().ok().filter(|p| p.is_dir())
-}
-
-/// `$MIR2_MAP_CONTAINER` → 仓库的 `assets/map/maps.m2pk`。
-fn resolve_container() -> Option<PathBuf> {
-    if let Ok(v) = std::env::var("MIR2_MAP_CONTAINER") {
-        let p = PathBuf::from(v);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    let guess = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/map/maps.m2pk");
-    guess.canonicalize().ok().filter(|p| p.is_file())
-}
+// 放在 core（`mir2_core::paths`）：`client/e2e` 也要用同一套规则，
+// 两个产物各写一份迟早会在某台机器上不一致（plan §4.2 / R-10）。
 
 // ---------- 图块纹理缓存 ----------
 /// 图块缓存键：图库 + `Objects` 的编号 + 图号 + 是否混合。
@@ -450,7 +416,7 @@ fn draw_debug_overlay(
 
     // 2) 各层落点框（与图块同步显隐：关掉的层不留框，免得误判还剩东西）
     for d in draws {
-        if layers & layer_bit(d.layer) == 0 {
+        if layers & d.layer.bit() == 0 {
             continue;
         }
         let Some(r) = rect_of(d, tiles) else { continue };
@@ -484,7 +450,7 @@ fn draw_debug_overlay(
 
         // 该像素最上层的那一条（绘制顺序里最后命中的；隐藏层不参与）
         let topmost = draws.iter().rev().find(|d| {
-            layers & layer_bit(d.layer) != 0
+            layers & d.layer.bit() != 0
                 && rect_of(d, tiles)
                     .is_some_and(|r| mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h)
         });
@@ -654,7 +620,7 @@ fn dump_draws(
             d.top_y(w, h, ay),
             d.left_x(ax),
             d.lib.file_name(d.area),
-            if layers & layer_bit(d.layer) == 0 {
+            if layers & d.layer.bit() == 0 {
                 " HIDDEN"
             } else if d.ani_frames > 0 {
                 " ANI"
@@ -685,7 +651,7 @@ fn probe_at(
     );
     let mut hits = 0;
     for (i, d) in draws.iter().enumerate() {
-        if layers & layer_bit(d.layer) == 0 {
+        if layers & d.layer.bit() == 0 {
             continue;
         }
         let Some(r) = rect_of(d, tiles) else { continue };
@@ -741,8 +707,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     device.resume()?;
 
     // ---------- 资产 ----------
-    let asset_dir = resolve_asset_dir();
-    let container_path = resolve_container();
+    let asset_dir = mir2_core::paths::asset_dir();
+    let container_path = mir2_core::paths::map_container();
     let archive = match &container_path {
         Some(p) => match Archive::open(p) {
             Ok(a) => {
@@ -1108,7 +1074,7 @@ fn draw_map_view<'a, T>(
     let view = viewport_rect();
     for d in draws.iter() {
         // 逐层显隐（CTRL+1/2/3 / L）：关掉的层**既不画图块也不画调试框**
-        if layers & layer_bit(d.layer) == 0 {
+        if layers & d.layer.bit() == 0 {
             continue;
         }
         // 视口剔除：前景向下多扫了 35 行，那批候选多半够不着视口。

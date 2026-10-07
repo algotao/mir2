@@ -101,6 +101,21 @@ mir2/
    `client/app`（SDL3 GUI）**共用 `client/core`**；且 **e2e 必须走与 app 相同的协议编解码与
    会话状态机**，不允许任何"测试专用捷径"。CI 门禁：
    `cargo tree -p mir2-e2e | grep -q sdl3 && exit 1`。
+
+   **这条纪律的收益（2026-10-07 实证）**：`e2e` 建起来之后，一条 `client/e2e` 的
+   软件合成器就能复用 app 的**全部**规则（`visible_tiles` / `top_y` / `left_x` /
+   `blend::screen_source` / `Layer::bit`），因此可以把"画面"变成**可自动比对的字节**：
+
+   ```bash
+   mir2-e2e render  -map 0 -cam 340,331 -out a.png      # 出图（无显示环境）
+   mir2-e2e panself -map 0 -cam 340,331                 # 平移自检
+   client/e2e/check.sh                                   # 构建 + sdl3 门禁 + 多机位自检
+   ```
+
+   **平移自检**：同一块地图在两个**只差平移**的机位各渲染一遍，重叠区必须**逐像素相同**。
+   它一次就能抓住"该画却没画"这类**只在镜头移动时暴露**的漏画 —— 这类 bug 静看很难发现
+   （2026-10-07 的"高树随镜头凭空出现"就是人工比对两张截图才发现的，已固化为一条判据：
+   把 `map::FRONT_ROW_MARGIN` 改回 1，自检立刻报 17.2% 像素不一致）。
 1. **`core` 无 IO**。协议、解码、资产、配置全是纯函数——这是能跑满单测的前提。
 2. **动画数据驱动**。遗留是 70 个手写动画类（`AxeMon` 34 + `magiceff` 15 +
    `HerbActor` 10 + `Actor` 9 = 7.6k 行）。新版 = **一个状态机引擎 + 动作表**。
@@ -183,9 +198,14 @@ mir2/
       通行 = `(BkImg & 0x8000) + (FrImg & 0x8000) == 0`
 - [ ] 协议：登录 → 选角 → 进图 → 走路 → 打怪 → 掉落捡取 → 升级
 - [ ] 聊天显示与发送、背包/装备/状态窗口、技能栏
-- [ ] **`client/e2e` 产物跑通剧本**（Go 服务端 ⇄ Rust 客户端，headless；Mac 本地起步，
-      容器里也跑一次以证明"无显示环境可运行"）
-- [ ] CI 门禁就位：`cargo tree -p mir2-e2e` 不含 `sdl3` + 契约测试进流水线
+- [ ] **`client/e2e` 产物**：crate 已就位（**不依赖 SDL3**），
+      **无头渲染（出 PNG）+ 平移自检**已可用（2026-10-07）⇒ 用法见 §4.2；
+      多机位自检 10/10 通过，反向验证（把 `FRONT_ROW_MARGIN` 改回 1）能立刻报出 17.2% 不一致
+      ⚠️ 待补：**协议剧本**（Go 服务端 ⇄ Rust 客户端）+ 容器内跑一次以证明"无显示环境可运行"
+- [ ] CI 门禁：`cargo tree -p mir2-e2e` 不含 `sdl3` ⇒ **已落实**
+      （[`client/e2e/check.sh`](../client/e2e/check.sh)：构建 + sdl3 门禁 + 多机位平移自检，
+      并有 `real_pan_selfcheck` 集成测试守在 `cargo test` 里）
+      ⚠️ 待补：**契约测试**进流水线（依赖服务端）
 - [ ] **`client/app` 在 macOS M4 上跑起来、连上 `server/`**（同时验证 SDL3 可用性，D-04）
 - [ ] 与 `server/` 实机联调
 

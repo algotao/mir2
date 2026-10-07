@@ -9,5 +9,6 @@ pub mod blend;
 pub mod m2pk;
 pub mod map;
 pub mod palette;
+pub mod paths;
 pub mod wzl;
 pub mod wzx;

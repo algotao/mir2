@@ -1,0 +1,17 @@
+[package]
+name = "mir2-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mir2-e2e"
+path = "src/main.rs"
+
+[dependencies]
+mir2-core = { path = "../core" }
+# 纯 Rust deflate，用来写 PNG（无头产物要能出图、能被工具与肉眼打开）
+flate2.workspace = true
+
+# ⚠️ **禁止**在此加 sdl3（plan §4.2 / C-8）：e2e 必须能在无显示环境下跑。
+# CI 门禁：`cargo tree -p mir2-e2e | grep -q sdl3 && exit 1`
