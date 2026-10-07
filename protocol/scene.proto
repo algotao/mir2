@@ -37,6 +37,9 @@ message EnterWorld {
   Direction direction = 5;
   repeated EntityState entities = 6;
   uint32 server_tick = 7;
+  // 自己的外观 —— **不在 `entities` 里**：快照刻意不包含自己（自己由 `self_entity_id`
+  // 与移动/心跳回显维护）。少了它客户端就画不出自己的精灵（连"自己长什么样"都不知道）。
+  EntityFeature self_feature = 8;
 }
 
 // 服务端 → 客户端：切换地图（重发新图快照）。
@@ -46,6 +49,8 @@ message ChangeMap {
   Vec2 position = 3;
   repeated EntityState entities = 4;
   uint32 server_tick = 5;
+  // 自己的外观，与 `EnterWorld.self_feature` 同义（换图后重发一次）。
+  EntityFeature self_feature = 6;
 }
 
 // 大块地图数据 —— 独立分块传输（protocol.md §2：大二进制块单独分帧）。

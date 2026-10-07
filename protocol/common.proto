@@ -71,6 +71,15 @@ message EntityFeature {
   uint32 hair = 3;
   uint32 dress = 4;
   uint32 effect = 5;
+  // 怪物外观号（原版 `Monster.Appr` / `ObjBase.pas` 的 `m_wAppr`）——**只有怪物**用它，
+  // 玩家恒 0。
+  //
+  // ⚠️ 为什么它得单列一个字段：原版把 `MakeHumanFeature`/`MakeMonsterFeature` 的四个字节
+  // **打包**进一个 int32（`Grobal2.pas:2663-2699`），于是怪物的 Appr 那 16 位被拆散在
+  // `hair`（低字节）与 `dress`（高字节）里。让客户端去拼 `hair | dress<<8` 正是 §10
+  // 说的"位掩码是原版 bug 的来源"；所以在协议里给它自己的字段，客户端按 `kind` 取用，
+  // 完全不必知道打包布局（服务端在 `featureOf` 那一个函数里拆一次就够）。
+  uint32 appr = 6;
 }
 
 // 能力值（原版 SM_ABILITY / TAbility）。

@@ -202,14 +202,17 @@ func (x *EntityState) GetAction() uint32 {
 
 // 服务端 → 客户端：进世界（选角成功后的初始快照）。
 type EnterWorld struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SelfEntityId  uint64                 `protobuf:"varint,1,opt,name=self_entity_id,json=selfEntityId,proto3" json:"self_entity_id,omitempty"`
-	MapId         uint32                 `protobuf:"varint,2,opt,name=map_id,json=mapId,proto3" json:"map_id,omitempty"`
-	MapName       string                 `protobuf:"bytes,3,opt,name=map_name,json=mapName,proto3" json:"map_name,omitempty"`
-	Position      *Vec2                  `protobuf:"bytes,4,opt,name=position,proto3" json:"position,omitempty"`
-	Direction     Direction              `protobuf:"varint,5,opt,name=direction,proto3,enum=mir2.Direction" json:"direction,omitempty"`
-	Entities      []*EntityState         `protobuf:"bytes,6,rep,name=entities,proto3" json:"entities,omitempty"`
-	ServerTick    uint32                 `protobuf:"varint,7,opt,name=server_tick,json=serverTick,proto3" json:"server_tick,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	SelfEntityId uint64                 `protobuf:"varint,1,opt,name=self_entity_id,json=selfEntityId,proto3" json:"self_entity_id,omitempty"`
+	MapId        uint32                 `protobuf:"varint,2,opt,name=map_id,json=mapId,proto3" json:"map_id,omitempty"`
+	MapName      string                 `protobuf:"bytes,3,opt,name=map_name,json=mapName,proto3" json:"map_name,omitempty"`
+	Position     *Vec2                  `protobuf:"bytes,4,opt,name=position,proto3" json:"position,omitempty"`
+	Direction    Direction              `protobuf:"varint,5,opt,name=direction,proto3,enum=mir2.Direction" json:"direction,omitempty"`
+	Entities     []*EntityState         `protobuf:"bytes,6,rep,name=entities,proto3" json:"entities,omitempty"`
+	ServerTick   uint32                 `protobuf:"varint,7,opt,name=server_tick,json=serverTick,proto3" json:"server_tick,omitempty"`
+	// 自己的外观 —— **不在 `entities` 里**：快照刻意不包含自己（自己由 `self_entity_id`
+	// 与移动/心跳回显维护）。少了它客户端就画不出自己的精灵（连"自己长什么样"都不知道）。
+	SelfFeature   *EntityFeature `protobuf:"bytes,8,opt,name=self_feature,json=selfFeature,proto3" json:"self_feature,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -293,14 +296,23 @@ func (x *EnterWorld) GetServerTick() uint32 {
 	return 0
 }
 
+func (x *EnterWorld) GetSelfFeature() *EntityFeature {
+	if x != nil {
+		return x.SelfFeature
+	}
+	return nil
+}
+
 // 服务端 → 客户端：切换地图（重发新图快照）。
 type ChangeMap struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	MapId         uint32                 `protobuf:"varint,1,opt,name=map_id,json=mapId,proto3" json:"map_id,omitempty"`
-	MapName       string                 `protobuf:"bytes,2,opt,name=map_name,json=mapName,proto3" json:"map_name,omitempty"`
-	Position      *Vec2                  `protobuf:"bytes,3,opt,name=position,proto3" json:"position,omitempty"`
-	Entities      []*EntityState         `protobuf:"bytes,4,rep,name=entities,proto3" json:"entities,omitempty"`
-	ServerTick    uint32                 `protobuf:"varint,5,opt,name=server_tick,json=serverTick,proto3" json:"server_tick,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	MapId      uint32                 `protobuf:"varint,1,opt,name=map_id,json=mapId,proto3" json:"map_id,omitempty"`
+	MapName    string                 `protobuf:"bytes,2,opt,name=map_name,json=mapName,proto3" json:"map_name,omitempty"`
+	Position   *Vec2                  `protobuf:"bytes,3,opt,name=position,proto3" json:"position,omitempty"`
+	Entities   []*EntityState         `protobuf:"bytes,4,rep,name=entities,proto3" json:"entities,omitempty"`
+	ServerTick uint32                 `protobuf:"varint,5,opt,name=server_tick,json=serverTick,proto3" json:"server_tick,omitempty"`
+	// 自己的外观，与 `EnterWorld.self_feature` 同义（换图后重发一次）。
+	SelfFeature   *EntityFeature `protobuf:"bytes,6,opt,name=self_feature,json=selfFeature,proto3" json:"self_feature,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -368,6 +380,13 @@ func (x *ChangeMap) GetServerTick() uint32 {
 		return x.ServerTick
 	}
 	return 0
+}
+
+func (x *ChangeMap) GetSelfFeature() *EntityFeature {
+	if x != nil {
+		return x.SelfFeature
+	}
+	return nil
 }
 
 // 大块地图数据 —— 独立分块传输（protocol.md §2：大二进制块单独分帧）。
@@ -1138,7 +1157,7 @@ const file_scene_proto_rawDesc = "" +
 	"\vstatus_bits\x18\t \x01(\x04R\n" +
 	"statusBits\x12\x16\n" +
 	"\x06action\x18\n" +
-	" \x01(\rR\x06action\"\x8b\x02\n" +
+	" \x01(\rR\x06action\"\xc3\x02\n" +
 	"\n" +
 	"EnterWorld\x12$\n" +
 	"\x0eself_entity_id\x18\x01 \x01(\x04R\fselfEntityId\x12\x15\n" +
@@ -1149,7 +1168,8 @@ const file_scene_proto_rawDesc = "" +
 	"\tdirection\x18\x05 \x01(\x0e2\x0f.mir2.DirectionR\tdirection\x12-\n" +
 	"\bentities\x18\x06 \x03(\v2\x11.mir2.EntityStateR\bentities\x12\x1f\n" +
 	"\vserver_tick\x18\a \x01(\rR\n" +
-	"serverTick\"\xb5\x01\n" +
+	"serverTick\x126\n" +
+	"\fself_feature\x18\b \x01(\v2\x13.mir2.EntityFeatureR\vselfFeature\"\xed\x01\n" +
 	"\tChangeMap\x12\x15\n" +
 	"\x06map_id\x18\x01 \x01(\rR\x05mapId\x12\x19\n" +
 	"\bmap_name\x18\x02 \x01(\tR\amapName\x12&\n" +
@@ -1157,7 +1177,8 @@ const file_scene_proto_rawDesc = "" +
 	".mir2.Vec2R\bposition\x12-\n" +
 	"\bentities\x18\x04 \x03(\v2\x11.mir2.EntityStateR\bentities\x12\x1f\n" +
 	"\vserver_tick\x18\x05 \x01(\rR\n" +
-	"serverTick\"w\n" +
+	"serverTick\x126\n" +
+	"\fself_feature\x18\x06 \x01(\v2\x13.mir2.EntityFeatureR\vselfFeature\"w\n" +
 	"\bMapChunk\x12\x15\n" +
 	"\x06map_id\x18\x01 \x01(\rR\x05mapId\x12\x1f\n" +
 	"\vchunk_index\x18\x02 \x01(\rR\n" +
@@ -1268,24 +1289,26 @@ var file_scene_proto_depIdxs = []int32{
 	17, // 3: mir2.EnterWorld.position:type_name -> mir2.Vec2
 	18, // 4: mir2.EnterWorld.direction:type_name -> mir2.Direction
 	1,  // 5: mir2.EnterWorld.entities:type_name -> mir2.EntityState
-	17, // 6: mir2.ChangeMap.position:type_name -> mir2.Vec2
-	1,  // 7: mir2.ChangeMap.entities:type_name -> mir2.EntityState
-	1,  // 8: mir2.EntityAppear.entity:type_name -> mir2.EntityState
-	0,  // 9: mir2.EntityDisappear.reason:type_name -> mir2.DisappearReason
-	17, // 10: mir2.EntityMove.from:type_name -> mir2.Vec2
-	17, // 11: mir2.EntityMove.to:type_name -> mir2.Vec2
-	18, // 12: mir2.EntityMove.direction:type_name -> mir2.Direction
-	20, // 13: mir2.AbilityUpdate.ability:type_name -> mir2.Ability
-	17, // 14: mir2.MoveInput.from:type_name -> mir2.Vec2
-	17, // 15: mir2.MoveInput.to:type_name -> mir2.Vec2
-	18, // 16: mir2.MoveInput.direction:type_name -> mir2.Direction
-	17, // 17: mir2.MoveRejected.authoritative_position:type_name -> mir2.Vec2
-	19, // 18: mir2.EntityFeatureChanged.feature:type_name -> mir2.EntityFeature
-	19, // [19:19] is the sub-list for method output_type
-	19, // [19:19] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	19, // 6: mir2.EnterWorld.self_feature:type_name -> mir2.EntityFeature
+	17, // 7: mir2.ChangeMap.position:type_name -> mir2.Vec2
+	1,  // 8: mir2.ChangeMap.entities:type_name -> mir2.EntityState
+	19, // 9: mir2.ChangeMap.self_feature:type_name -> mir2.EntityFeature
+	1,  // 10: mir2.EntityAppear.entity:type_name -> mir2.EntityState
+	0,  // 11: mir2.EntityDisappear.reason:type_name -> mir2.DisappearReason
+	17, // 12: mir2.EntityMove.from:type_name -> mir2.Vec2
+	17, // 13: mir2.EntityMove.to:type_name -> mir2.Vec2
+	18, // 14: mir2.EntityMove.direction:type_name -> mir2.Direction
+	20, // 15: mir2.AbilityUpdate.ability:type_name -> mir2.Ability
+	17, // 16: mir2.MoveInput.from:type_name -> mir2.Vec2
+	17, // 17: mir2.MoveInput.to:type_name -> mir2.Vec2
+	18, // 18: mir2.MoveInput.direction:type_name -> mir2.Direction
+	17, // 19: mir2.MoveRejected.authoritative_position:type_name -> mir2.Vec2
+	19, // 20: mir2.EntityFeatureChanged.feature:type_name -> mir2.EntityFeature
+	21, // [21:21] is the sub-list for method output_type
+	21, // [21:21] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_scene_proto_init() }

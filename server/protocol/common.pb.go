@@ -328,12 +328,21 @@ func (x *ActionResult) GetMessage() string {
 // 实体外观（原版的 Feature 位打包：raceImg/weapon/hair/dress）。
 // 用显式字段而不是位掩码 —— 位掩码是原版 bug 的来源之一。
 type EntityFeature struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RaceImg       uint32                 `protobuf:"varint,1,opt,name=race_img,json=raceImg,proto3" json:"race_img,omitempty"`
-	Weapon        uint32                 `protobuf:"varint,2,opt,name=weapon,proto3" json:"weapon,omitempty"`
-	Hair          uint32                 `protobuf:"varint,3,opt,name=hair,proto3" json:"hair,omitempty"`
-	Dress         uint32                 `protobuf:"varint,4,opt,name=dress,proto3" json:"dress,omitempty"`
-	Effect        uint32                 `protobuf:"varint,5,opt,name=effect,proto3" json:"effect,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	RaceImg uint32                 `protobuf:"varint,1,opt,name=race_img,json=raceImg,proto3" json:"race_img,omitempty"`
+	Weapon  uint32                 `protobuf:"varint,2,opt,name=weapon,proto3" json:"weapon,omitempty"`
+	Hair    uint32                 `protobuf:"varint,3,opt,name=hair,proto3" json:"hair,omitempty"`
+	Dress   uint32                 `protobuf:"varint,4,opt,name=dress,proto3" json:"dress,omitempty"`
+	Effect  uint32                 `protobuf:"varint,5,opt,name=effect,proto3" json:"effect,omitempty"`
+	// 怪物外观号（原版 `Monster.Appr` / `ObjBase.pas` 的 `m_wAppr`）——**只有怪物**用它，
+	// 玩家恒 0。
+	//
+	// ⚠️ 为什么它得单列一个字段：原版把 `MakeHumanFeature`/`MakeMonsterFeature` 的四个字节
+	// **打包**进一个 int32（`Grobal2.pas:2663-2699`），于是怪物的 Appr 那 16 位被拆散在
+	// `hair`（低字节）与 `dress`（高字节）里。让客户端去拼 `hair | dress<<8` 正是 §10
+	// 说的"位掩码是原版 bug 的来源"；所以在协议里给它自己的字段，客户端按 `kind` 取用，
+	// 完全不必知道打包布局（服务端在 `featureOf` 那一个函数里拆一次就够）。
+	Appr          uint32 `protobuf:"varint,6,opt,name=appr,proto3" json:"appr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -399,6 +408,13 @@ func (x *EntityFeature) GetDress() uint32 {
 func (x *EntityFeature) GetEffect() uint32 {
 	if x != nil {
 		return x.Effect
+	}
+	return 0
+}
+
+func (x *EntityFeature) GetAppr() uint32 {
+	if x != nil {
+		return x.Appr
 	}
 	return 0
 }
@@ -596,13 +612,14 @@ const file_common_proto_rawDesc = "" +
 	"\fActionResult\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x12\n" +
 	"\x04code\x18\x02 \x01(\rR\x04code\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\x84\x01\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\x98\x01\n" +
 	"\rEntityFeature\x12\x19\n" +
 	"\brace_img\x18\x01 \x01(\rR\araceImg\x12\x16\n" +
 	"\x06weapon\x18\x02 \x01(\rR\x06weapon\x12\x12\n" +
 	"\x04hair\x18\x03 \x01(\rR\x04hair\x12\x14\n" +
 	"\x05dress\x18\x04 \x01(\rR\x05dress\x12\x16\n" +
-	"\x06effect\x18\x05 \x01(\rR\x06effect\"\xad\x03\n" +
+	"\x06effect\x18\x05 \x01(\rR\x06effect\x12\x12\n" +
+	"\x04appr\x18\x06 \x01(\rR\x04appr\"\xad\x03\n" +
 	"\aAbility\x12\x15\n" +
 	"\x06dc_min\x18\x01 \x01(\rR\x05dcMin\x12\x15\n" +
 	"\x06dc_max\x18\x02 \x01(\rR\x05dcMax\x12\x15\n" +

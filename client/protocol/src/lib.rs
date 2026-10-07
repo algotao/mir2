@@ -144,14 +144,14 @@ mod tests {
     /// ⚠️ `VERSION` 变了这里就会红 —— 那正是它存在的意义。
     #[test]
     fn golden_frame_bytes_match_go() {
-        // Go 侧断言（version=2）：
-        //   1400000008018a100f08021204746573741a057a682d434e
+        // 与 Go 侧 `TestGoldenFrameBytes` **逐字节对齐**（两边各钉一份，谁改协议都得两边一起动）：
+        //   1400000008018a100f08031204746573741a057a682d434e
         let ver = VERSION;
-        assert_eq!(ver, 2, "version.txt 变了就要连着确认这条黄金报文");
+        assert_eq!(ver, 3, "version.txt 变了就要连着确认这条黄金报文");
         let mut buf = Vec::new();
         write_frame(&mut buf, &hello()).expect("写帧");
         let got: String = buf.iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(got, "1400000008018a100f08021204746573741a057a682d434e");
+        assert_eq!(got, "1400000008018a100f08031204746573741a057a682d434e");
     }
 
     /// 分帧边界：超限**先判长度再分配**、空帧报错、往返一致。

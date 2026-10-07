@@ -611,12 +611,13 @@ func (ps *protoSession) enterWorld(chr *storage.Character) bool {
 		SelfEntityId: uint64(p.Obj.ID),
 		// ⚠️ `map_id` 暂置 0：地图在本项目是**按名字**索引的（D-22，容器里就是 `<名字>.map`），
 		// 新协议的 `map_id` 语义还没定（见 protocol.md §11 待办）。客户端请用 `map_name`。
-		MapId:      0,
-		MapName:    p.Obj.MapRef().Name,
-		Position:   &protocol.Vec2{X: int32(p.Obj.PosX()), Y: int32(p.Obj.PosY())},
-		Direction:  directionOf(p.Obj.Facing()),
-		Entities:   states,
-		ServerTick: uint32(time.Now().UnixMilli()),
+		MapId:       0,
+		MapName:     p.Obj.MapRef().Name,
+		Position:    &protocol.Vec2{X: int32(p.Obj.PosX()), Y: int32(p.Obj.PosY())},
+		Direction:   directionOf(p.Obj.Facing()),
+		Entities:    states,
+		ServerTick:  uint32(time.Now().UnixMilli()),
+		SelfFeature: featureOf(p.Obj.FeatureBits()),
 	}}}
 	if err := ps.send(env); err != nil {
 		return false
@@ -848,11 +849,12 @@ func (s *Server) sendMapSnapshotTo(p *Player, mapID string) {
 	p.visible.Update(inView)
 	p.protoOut.enqueue(&protocol.Envelope{Body: &protocol.Envelope_ChangeMap{
 		ChangeMap: &protocol.ChangeMap{
-			MapId:      0, // ⚠️ 语义未定（v0 恒 0，以 map_name 为准），见 protocol.md §11
-			MapName:    mapID,
-			Position:   &protocol.Vec2{X: int32(p.Obj.PosX()), Y: int32(p.Obj.PosY())},
-			Entities:   states,
-			ServerTick: uint32(time.Now().UnixMilli()),
+			MapId:       0, // ⚠️ 语义未定（v0 恒 0，以 map_name 为准），见 protocol.md §11
+			MapName:     mapID,
+			Position:    &protocol.Vec2{X: int32(p.Obj.PosX()), Y: int32(p.Obj.PosY())},
+			Entities:    states,
+			ServerTick:  uint32(time.Now().UnixMilli()),
+			SelfFeature: featureOf(p.Obj.FeatureBits()),
 		}}})
 	if p.Char != nil && p.Char.Data != nil {
 		p.protoOut.ability(p.Char.Data.Abil, p.Char.Data.Gold)
@@ -975,7 +977,7 @@ func monsterState(m *entity.Monster) *protocol.EntityState {
 		Name:      m.Name, // ⚠️ 宠物名的"(主人名)"装饰在 s.showName，属显示策略，留给后续的实体更新路径
 		Position:  &protocol.Vec2{X: int32(x), Y: int32(y)},
 		Direction: directionOf(dir),
-		Feature:   featureOf(m.FeatureBits()),
+		Feature:   monsterFeatureOf(m.FeatureBits()),
 		Hp:        m.HPValue(),
 		MaxHp:     maxHP,
 	}
@@ -1005,6 +1007,20 @@ func featureOf(f int32) *protocol.EntityFeature {
 		Hair:    uint32(proto.FeatureHair(f)),
 		Dress:   uint32(proto.FeatureDress(f)),
 	}
+}
+
+// monsterFeatureOf 同 featureOf，但把怪物的**外观号**也填上。
+//
+// ⚠️ 这里是原版那套打包位域的**最后一次拆解**：`Object` 存的是
+// `MakeLong(RaceImg, Appr)`（`entity/monster.go`），所以 Appr 的 16 位躺在了
+// `hair`（低字节）与 `dress`（高字节）里 —— 就在这里把它拼回来，别让客户端去猜。
+// 玩家那条路径不调它（玩家的 hair/dress 是真字段，appr 恒 0）。
+//
+// 等实体层不再打包（把四个字段直接存）时，这个函数与该拆解一起消失。
+func monsterFeatureOf(f int32) *protocol.EntityFeature {
+	feat := featureOf(f)
+	feat.Appr = uint32(proto.FeatureHair(f)) | uint32(proto.FeatureDress(f))<<8
+	return feat
 }
 
 // characterSummary 把存档转成选角列表要的摘要（只带选角需要的几项，不带整份存档）。
