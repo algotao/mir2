@@ -564,12 +564,20 @@ cargo tree -p mir2-e2e | grep -q sdl3 && { echo "e2e 不许依赖 SDL3"; exit 1;
 - 资产解码用**签入仓库的合成测试资源**（体积小、确定性）验证。
 - ⇒ e2e **完全不被 D-15 阻塞**，这也是 M1 能在素材到位前推进的原因。
 
-### 待确认
+### 已定（2026-10-07）
 
-**Linux 侧产物的目标架构**（若日后要容器化部署、或在容器里跑 CI）：
-`linux/amd64`（与 `mir2go` 现有镜像一致）、`linux/arm64`（Mac M4 上 Docker 的默认架构），
-还是两者都要？注意 **Mac M4 上 Docker 默认是 arm64**，与 `mir2go` 的 `linux/amd64` 镜像不一致。
-纯 Go + 无 cgo（D-21）让两者都容易出。**M0 定。**
+**Linux 侧产物出两种架构：`linux/amd64` + `linux/arm64`；默认/首选 `linux/amd64`。**
+
+| 产物 | 目标 | 理由 |
+|---|---|---|
+| `server`（Go） | **amd64 + arm64** | D-21 无 cgo ⇒ 纯交叉编译，两种架构各一条命令，成本几乎为零 |
+| `client/e2e`（Linux） | 容器 / CI 内按宿主架构 | 只跑 headless 契约测试，无需双架构 |
+| `client/app`（Windows） | `x86_64-pc-windows-gnu` | 见 D-19 |
+
+**默认 `linux/amd64`**：与 `mir2go` 的现有镜像/部署保持一致，避免"本地 arm64 通过、线上 amd64 挂"。
+
+⚠️ 因此**容器里跑 CI 时要显式 `--platform linux/amd64`**（Mac M4 上 Docker 默认是 arm64）。
+这同时消除了 [D-20](#d-20-大小写敏感门禁mac-开发特有) 里"CI 门禁架构与部署架构不一致"的隐患。
 
 ---
 
