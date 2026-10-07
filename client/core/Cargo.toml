@@ -1,0 +1,12 @@
+[package]
+name = "mir2-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+flate2.workspace = true
+
+[dev-dependencies]
+# 黄金哈希回归用（纯 Rust）
+sha2 = "0.10"

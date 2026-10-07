@@ -42,10 +42,20 @@ const C_BTN_BORDER: Color = Color::RGB(150, 186, 236);
 const TEMPO_SEC: f32 = 0.34; // 每拍秒数
 /// (MIDI 音高, 拍数)；音高 0 表示休止
 const MELODY: &[(u8, f32)] = &[
-    (72, 1.0), (74, 1.0), (76, 1.0), (79, 1.0),
-    (76, 1.0), (74, 1.0), (72, 2.0),
-    (69, 1.0), (72, 1.0), (76, 1.0), (74, 2.0),
-    (72, 1.0), (69, 1.0), (67, 2.0),
+    (72, 1.0),
+    (74, 1.0),
+    (76, 1.0),
+    (79, 1.0),
+    (76, 1.0),
+    (74, 1.0),
+    (72, 2.0),
+    (69, 1.0),
+    (72, 1.0),
+    (76, 1.0),
+    (74, 2.0),
+    (72, 1.0),
+    (69, 1.0),
+    (67, 2.0),
     (0, 1.0),
 ];
 
@@ -59,7 +69,13 @@ struct Music {
 
 impl Music {
     fn new(sr: f32, muted: Arc<AtomicBool>) -> Self {
-        Self { sr, phase: 0.0, note: 0, elapsed: 0.0, muted }
+        Self {
+            sr,
+            phase: 0.0,
+            note: 0,
+            elapsed: 0.0,
+            muted,
+        }
     }
 
     fn freq(midi: u8) -> f32 {
@@ -115,12 +131,26 @@ impl AudioCallback<f32> for Music {
 }
 
 // ---------- 绘制辅助 ----------
-fn fill(c: &mut WindowCanvas, x: f32, y: f32, w: f32, h: f32, col: Color) -> Result<(), sdl3::Error> {
+fn fill(
+    c: &mut WindowCanvas,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    col: Color,
+) -> Result<(), sdl3::Error> {
     c.set_draw_color(col);
     c.fill_rect(FRect::new(x, y, w, h))
 }
 
-fn frame(c: &mut WindowCanvas, x: f32, y: f32, w: f32, h: f32, col: Color) -> Result<(), sdl3::Error> {
+fn frame(
+    c: &mut WindowCanvas,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    col: Color,
+) -> Result<(), sdl3::Error> {
     c.set_draw_color(col);
     c.draw_rect(FRect::new(x, y, w, h))
 }
@@ -157,7 +187,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         channels: Some(1),
         format: Some(AudioFormat::F32LE),
     };
-    let device = audio.open_playback_stream(&spec, Music::new(SAMPLE_RATE as f32, muted.clone()))?;
+    let device =
+        audio.open_playback_stream(&spec, Music::new(SAMPLE_RATE as f32, muted.clone()))?;
     device.resume()?;
 
     println!("[mir2-app] SDL3 登录界面启动");
@@ -183,7 +214,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(Keycode::Escape) | Some(Keycode::F4) => break 'main,
                     Some(Keycode::Tab) => active = 1 - active,
                     Some(Keycode::Backspace) => {
-                        if active == 0 { id.pop(); } else { pw.pop(); }
+                        if active == 0 {
+                            id.pop();
+                        } else {
+                            pw.pop();
+                        }
                     }
                     Some(Keycode::Return) => {
                         let who = if id.is_empty() { "GUEST" } else { id.as_str() };
@@ -236,12 +271,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fill(&mut canvas, 200.0, 152.0, 316.0, 20.0, C_FIELD)?;
         frame(
             &mut canvas,
-            200.0, 152.0, 316.0, 20.0,
-            if active == 0 { C_ACTIVE } else { C_PANEL_BORDER },
+            200.0,
+            152.0,
+            316.0,
+            20.0,
+            if active == 0 {
+                C_ACTIVE
+            } else {
+                C_PANEL_BORDER
+            },
         )?;
         text(&mut canvas, &id, 206.0, 158.0, C_TEXT)?;
         if active == 0 && blink {
-            fill(&mut canvas, 206.0 + id.chars().count() as f32 * 8.0, 156.0, 8.0, 12.0, C_ACTIVE)?;
+            fill(
+                &mut canvas,
+                206.0 + id.chars().count() as f32 * 8.0,
+                156.0,
+                8.0,
+                12.0,
+                C_ACTIVE,
+            )?;
         }
 
         // PASSWORD 输入框
@@ -249,32 +298,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fill(&mut canvas, 200.0, 202.0, 316.0, 20.0, C_FIELD)?;
         frame(
             &mut canvas,
-            200.0, 202.0, 316.0, 20.0,
-            if active == 1 { C_ACTIVE } else { C_PANEL_BORDER },
+            200.0,
+            202.0,
+            316.0,
+            20.0,
+            if active == 1 {
+                C_ACTIVE
+            } else {
+                C_PANEL_BORDER
+            },
         )?;
         let masked = "*".repeat(pw.chars().count());
         text(&mut canvas, &masked, 206.0, 208.0, C_TEXT)?;
         if active == 1 && blink {
-            fill(&mut canvas, 206.0 + masked.chars().count() as f32 * 8.0, 206.0, 8.0, 12.0, C_ACTIVE)?;
+            fill(
+                &mut canvas,
+                206.0 + masked.chars().count() as f32 * 8.0,
+                206.0,
+                8.0,
+                12.0,
+                C_ACTIVE,
+            )?;
         }
 
         // 按钮
         fill(&mut canvas, 200.0, 258.0, 140.0, 28.0, C_BTN)?;
         frame(&mut canvas, 200.0, 258.0, 140.0, 28.0, C_BTN_BORDER)?;
-        text(&mut canvas, "LOGIN", 200.0 + (140.0 - 5.0 * 8.0) / 2.0, 268.0, C_ACTIVE)?;
+        text(
+            &mut canvas,
+            "LOGIN",
+            200.0 + (140.0 - 5.0 * 8.0) / 2.0,
+            268.0,
+            C_ACTIVE,
+        )?;
 
         fill(&mut canvas, 372.0, 258.0, 140.0, 28.0, C_BTN)?;
         frame(&mut canvas, 372.0, 258.0, 140.0, 28.0, C_BTN_BORDER)?;
-        text(&mut canvas, "EXIT (ESC)", 372.0 + (140.0 - 10.0 * 8.0) / 2.0, 268.0, C_TEXT)?;
+        text(
+            &mut canvas,
+            "EXIT (ESC)",
+            372.0 + (140.0 - 10.0 * 8.0) / 2.0,
+            268.0,
+            C_TEXT,
+        )?;
 
         // 提示 / 状态
         let hint = "TAB SWITCH   ENTER LOGIN   M MUSIC   ESC QUIT";
         text(&mut canvas, hint, center_x(hint), 344.0, C_DIM)?;
-        text(&mut canvas, &format!("STATUS: {status}"), 96.0, 372.0, C_TEXT)?;
+        text(
+            &mut canvas,
+            &format!("STATUS: {status}"),
+            96.0,
+            372.0,
+            C_TEXT,
+        )?;
 
         // 音乐指示 + 运行时长
         let mus = format!("MUSIC: {}", if music_on { "ON" } else { "OFF" });
-        text(&mut canvas, &mus, 96.0, 400.0, if music_on { C_ACTIVE } else { C_DIM })?;
+        text(
+            &mut canvas,
+            &mus,
+            96.0,
+            400.0,
+            if music_on { C_ACTIVE } else { C_DIM },
+        )?;
         let up = format!("UPTIME: {:.1}s", started.elapsed().as_secs_f32());
         text(&mut canvas, &up, 400.0, 400.0, C_DIM)?;
 

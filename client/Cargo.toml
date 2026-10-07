@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["app"]
+members = ["app", "core"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,8 @@ repository = "https://github.com/algotao/mir2"
 [workspace.dependencies]
 # D-04：从源码构建并静态链接 SDL3（SDL3 源码随 crate 编入，运行期零依赖 C-7）
 sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static"] }
+# 纯 Rust deflate（rust_backend）—— 不引入 C 版 zlib，保持"运行期零依赖"（C-7）
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 # D-01：体积优先的发布配置
 [profile.release]
