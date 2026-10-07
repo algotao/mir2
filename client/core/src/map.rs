@@ -373,6 +373,30 @@ impl Map {
     }
 }
 
+impl Map {
+    /// 找**离 `(cx, cy)` 最近、且前景层有图**的格。
+    ///
+    /// 用途：打开地图时把镜头放到"有东西可看"的位置——几何中心常常是一片空地，
+    /// 一进去看到空白会让人怀疑渲染坏了。
+    pub fn nearest_front_tile(&self, cx: i32, cy: i32) -> Option<(i32, i32)> {
+        let (w, h) = (self.width as i32, self.height as i32);
+        let mut best: Option<(i32, i32, i64)> = None;
+        for y in 0..h {
+            for x in 0..w {
+                if self.cells[(y * w + x) as usize].fr_tile().is_none() {
+                    continue;
+                }
+                let (dx, dy) = ((x - cx) as i64, (y - cy) as i64);
+                let d = dx * dx + dy * dy;
+                if best.is_none_or(|(_, _, bd)| d < bd) {
+                    best = Some((x, y, d));
+                }
+            }
+        }
+        best.map(|(x, y, _)| (x, y))
+    }
+}
+
 /// 由文件长度与格数推断每格字节数；未知布局返回 `None`。
 fn detect_cell_len(len: usize, cells: usize) -> Option<usize> {
     [CELL_LEN_CLASSIC, CELL_LEN_EXTENDED]
@@ -570,6 +594,27 @@ mod tests {
         m.visible_tiles(-1, -1, 3, 3, &mut out);
         assert!(out.iter().all(|d| d.x >= 0 && d.y >= 0));
         assert_eq!(n(&out, Layer::Mid), 4, "(-1,-1) 被裁 ⇒ 只剩 2×2");
+    }
+
+    #[test]
+    fn nearest_front_tile_picks_closest_object() {
+        // 只有 (1,1) 与 (3,0) 两格有前景物件
+        let bytes = build(4, 4, CELL_LEN_CLASSIC, |x, y| {
+            let mut b = [0u8; 12];
+            if (x, y) == (1, 1) || (x, y) == (3, 0) {
+                b[4..6].copy_from_slice(&9u16.to_le_bytes());
+            }
+            b
+        });
+        let m = Map::parse(&bytes).unwrap();
+        assert_eq!(m.nearest_front_tile(1, 1), Some((1, 1)));
+        assert_eq!(m.nearest_front_tile(3, 0), Some((3, 0)));
+        // 从 (2,0) 看：(3,0) 距离 1，(1,1) 距离 2 ⇒ 取 (3,0)
+        assert_eq!(m.nearest_front_tile(2, 0), Some((3, 0)));
+
+        // 完全没有前景物件时返回 None（镜头退回几何中心）
+        let empty = Map::parse(&build(2, 2, CELL_LEN_CLASSIC, |_, _| [0u8; 12])).unwrap();
+        assert_eq!(empty.nearest_front_tile(0, 0), None);
     }
 
     #[test]

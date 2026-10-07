@@ -583,7 +583,13 @@ fn load_map(a: &Archive, i: usize, map: &mut Option<Map>, err: &mut String, cam:
                     ""
                 }
             );
-            *cam = (m.width as i32 / 2, m.height as i32 / 2);
+            // 镜头对准离中心最近的前景物件：中心常常是空地，
+            // 一进去看到空白会让人以为渲染坏了。
+            let (w, h) = (m.width as i32, m.height as i32);
+            let (tx, ty) = m.nearest_front_tile(w / 2, h / 2).unwrap_or((w / 2, h / 2));
+            let cols = WIN_W as i32 / UNIT_X;
+            let rows = VIEW_H as i32 / UNIT_Y;
+            *cam = (tx - cols / 2, ty - rows / 2);
             *err = String::new();
             *map = Some(m);
         }
