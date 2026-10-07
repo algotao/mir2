@@ -255,6 +255,26 @@ SCREEN 下，占 56% 的近黑外圈满足 `out = src + dst·(1−src/255) ≈ d
 ⚠️ Crystal 另用 `BackImage & 0x1FFFFFFF`（29 位，含 `BackIndex` 选库），是**新格式**；
 1.76 用 16 位 + `0x7FFF` 掩码 + `btArea` 选 `Objects<N>`。**以 1.76 为准**。
 
+##### 前景动画的帧推进（2026-10-07 定案）
+
+官方 `PlayScn.pas:1150-1153`（前景两趟各有一份，逻辑相同）：
+
+```text
+fridx := fridx + (aniCount mod (ani + ani*anitick)) div (1 + anitick)
+```
+
+- `ani` = `btAniFrame and $7F`（帧数）、`anitick` = `btAniTick`；
+  **每帧持续 `(1+anitick)` 个 tick**，一整轮 `ani*(1+anitick)`。
+- `aniCount` 是 `PlayScn.pas:963` 的全局计数器：**每 50 ms 加一**
+  （`GetTickCount` 比较，与渲染帧率**无关**）⇒ 实现必须按"毫秒 / 50"驱动，
+  **不能**每渲染帧 +1，否则动画速度随机器性能漂移。
+- 开门偏移（同一段代码）：`if (btDoorOffset and $80) > 0 and (btDoorIndex and $7F) > 0 then
+  fridx := fridx + (btDoorOffset and $7F)` —— 加在 `-1` 转 0 基**之前**。
+- ⚠️ **动画只作用于前景层**：官方两趟都只读 `wFrImg`，地表/中间层不参与。
+
+实测那盏灯（格 `(344,335)`：`fr=2724`、`btAniFrame=0x8A`（10 帧 + blend）、`btAniTick=0`）
+⇒ 每 50 ms 换一帧，`#2723..#2732` 共 10 个 100×100 帧，**0.5 秒一轮**。
+
 #### 3.3b 实测：地图**不止一种布局**（2026-10-07，全量 605 + 771 张扫描）
 
 上面那张表只描述**经典布局**。全量扫描后实际存在三种：

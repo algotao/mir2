@@ -894,6 +894,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cam.1 = cam.1.clamp(-2, max_y);
         }
 
+        // 前景动画的节拍：官方 `m_nAniCount` **每 50 ms 加一**（`PlayScn.pas:963`，
+        // 固定定时器、与帧率无关）。所以这里按**真实时间**算，而不是每帧 +1 ——
+        // 否则灯会随机器性能忽快忽慢。
+        let ani_count = (started.elapsed().as_millis() / 50) as u32;
+
         canvas.set_draw_color(C_BG);
         canvas.clear();
 
@@ -913,6 +918,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 debug,
                 layers,
                 mouse,
+                ani_count,
             )?;
         } else {
             draw_login_view(
@@ -1016,6 +1022,7 @@ fn draw_map_view<'a, T>(
     debug: bool,
     layers: u8,
     mouse: (f32, f32),
+    ani_count: u32,
 ) -> Result<(), sdl3::Error> {
     fill(canvas, 0.0, 0.0, WIN_W as f32, BAR_TOP, C_PANEL)?;
 
@@ -1045,7 +1052,7 @@ fn draw_map_view<'a, T>(
     // 有单测守着三层顺序与隔格规则）；这里只负责取纹理 + 上屏。
     let cols = WIN_W as i32 / UNIT_X + 3;
     let rows = VIEW_H as i32 / UNIT_Y + 3;
-    m.visible_tiles(cam.0, cam.1, cols, rows, draws);
+    m.visible_tiles(cam.0, cam.1, cols, rows, ani_count, draws);
     // 裁剪到地图视口：`visible_tiles` 左上会多给一格（坐标可能为负），
     // 且高图块（树/墙）本身上端会超出视口——不裁剪就会画到上下信息条上。
     canvas.set_clip_rect(Some(Rect::new(0, BAR_TOP as i32, WIN_W, VIEW_H as u32)));

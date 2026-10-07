@@ -124,6 +124,43 @@ impl Cell {
         tile(self.fr_img)
     }
 
+    /// 前景层**当前实际要画的图号**（0 基）—— 已含动画帧推进与开门偏移。
+    ///
+    /// 官方 `PlayScn.pas:1145-1164`（前景两趟各有一份，逻辑完全相同）：
+    ///
+    /// ```text
+    /// fridx := (wFrImg and $7FFF)                        // 1 基
+    /// if (btAniFrame and $7F) > 0 then
+    ///    fridx := fridx + (aniCount mod (ani + ani*anitick)) div (1 + anitick)
+    /// if (btDoorOffset and $80) > 0 and (btDoorIndex and $7F) > 0 then
+    ///    fridx := fridx + (btDoorOffset and $7F)
+    /// fridx := fridx - 1                                 // 转 0 基
+    /// ```
+    ///
+    /// `ani_count` 是官方那个**每 50 ms 加一**的全局计数器（`PlayScn.pas:963`，
+    /// 固定定时器、与帧率无关）⇒ 调用方按"毫秒 / 50"驱动，**不要**按渲染帧数，
+    /// 否则动画速度会随帧率漂移。
+    ///
+    /// 帧节奏：每帧持续 `(1 + ani_tick)` 个 tick，一整轮 `ani_frames * (1 + ani_tick)`。
+    ///
+    /// ⚠️ 动画只作用于**前景层**：官方两趟都只读 `wFrImg`，地表/中间层不参与。
+    pub fn fr_frame(&self, ani_count: u32) -> Option<u16> {
+        let raw = self.fr_img & 0x7FFF;
+        if raw == 0 {
+            return None;
+        }
+        let mut idx = i32::from(raw);
+        let frames = i32::from(self.ani_frames());
+        if frames > 0 {
+            let hold = 1 + i32::from(self.ani_tick);
+            idx += (ani_count as i32 % (frames * hold)) / hold;
+        }
+        if self.door_shifted() && self.door_group() > 0 {
+            idx += i32::from(self.door_shift());
+        }
+        Some((idx - 1).max(0) as u16)
+    }
+
     /// 地表层是否需要绘制：地块只在 `x`、`y` 皆为偶数的格上画（见模块文档第 2 条）。
     pub fn draws_ground_at(&self, x: usize, y: usize) -> bool {
         x.is_multiple_of(2) && y.is_multiple_of(2) && self.bk_tile().is_some()
@@ -366,9 +403,11 @@ impl TileDraw {
                     // 官方 `mmm := m + ay - 68`（m = 格原点 Y）。68 是原版魔数，照抄。
                     return self.y + anchor_y - 68;
                 }
-                let flat = (width == UNIT_X && height == UNIT_Y)
-                    || (width == 2 * UNIT_X && height == 2 * UNIT_Y);
-                if flat && self.ani_frames == 0 {
+                // 官方的两趟分法写死为"**只有 48×32** 走第一趟（格顶），其余走第二趟
+                // （底边对齐格底）"——第一趟的条件是 `Width = 48 and Height = 32`。
+                // 所以 **96×64 不属于"平的"**：它落进第二趟，落点比格顶高一格。
+                // （`ani_frames` 不参与判定：48×32 两个分支结果相同。）
+                if width == UNIT_X && height == UNIT_Y {
                     self.y
                 } else {
                     self.y + UNIT_Y - height
@@ -398,6 +437,9 @@ impl Map {
     /// 所以视口边界外的那一格会有可见部分。渲染层负责把这些越界指令裁掉
     /// （`x`/`y` 因此可能是负数）。
     ///
+    /// `ani_count` 驱动前景动画（官方那个 50 ms 一格的计数器，见 [`Cell::fr_frame`]）；
+    /// 不做动画时传 0 即可，得到的就是静态第 0 帧。
+    ///
     /// `out` 会被清空后复用（避免每帧分配）。
     pub fn visible_tiles(
         &self,
@@ -405,6 +447,7 @@ impl Map {
         cam_y: i32,
         cols: i32,
         rows: i32,
+        ani_count: u32,
         out: &mut Vec<TileDraw>,
     ) {
         out.clear();
@@ -432,7 +475,8 @@ impl Map {
                             Some(t) => (Lib::SmTiles, 0, t),
                             None => continue,
                         },
-                        Layer::Front => match c.fr_tile() {
+                        // 前景层取的是**当前帧**（含动画与开门偏移），不是静态图号
+                        Layer::Front => match c.fr_frame(ani_count) {
                             Some(t) => (Lib::Objects, c.area, t),
                             None => continue,
                         },
@@ -647,7 +691,7 @@ mod tests {
         });
         let m = Map::parse(&bytes).unwrap();
         let mut out = Vec::new();
-        m.visible_tiles(0, 0, 4, 4, &mut out);
+        m.visible_tiles(0, 0, 4, 4, 0, &mut out);
 
         let n = |out: &Vec<TileDraw>, l: Layer| out.iter().filter(|d| d.layer == l).count();
         assert_eq!(n(&out, Layer::Ground), 4, "地表只在偶数格：2×2=4");
@@ -675,9 +719,41 @@ mod tests {
         assert_eq!((fr.lib, fr.index, fr.area), (Lib::Objects, 3, 5));
 
         // 负镜头：越界格被裁掉，不产生负坐标
-        m.visible_tiles(-1, -1, 3, 3, &mut out);
+        m.visible_tiles(-1, -1, 3, 3, 0, &mut out);
         assert!(out.iter().all(|d| d.x >= 0 && d.y >= 0));
         assert_eq!(n(&out, Layer::Mid), 4, "(-1,-1) 被裁 ⇒ 只剩 2×2");
+    }
+
+    #[test]
+    fn visible_tiles_advances_front_animation() {
+        // 前景 4 帧（ani_frame = 4，无 blend 位）、tick=0 ⇒ 每 tick 换一帧
+        let bytes = build(2, 2, CELL_LEN_CLASSIC, |_x, _y| {
+            let mut b = [0u8; 12];
+            b[4..6].copy_from_slice(&100u16.to_le_bytes()); // fr = 100（1 基）⇒ 第 0 帧 = 99
+            b[8] = 4; // btAniFrame：4 帧，无 $80
+            b
+        });
+        let m = Map::parse(&bytes).unwrap();
+        let mut out = Vec::new();
+
+        let idx = |out: &Vec<TileDraw>| -> Vec<u16> {
+            let mut v: Vec<u16> = out
+                .iter()
+                .filter(|d| d.layer == Layer::Front)
+                .map(|d| d.index)
+                .collect();
+            v.sort_unstable();
+            v
+        };
+
+        m.visible_tiles(0, 0, 2, 2, 0, &mut out);
+        assert_eq!(idx(&out), vec![99; 4], "tick 0 ⇒ 全为第 0 帧");
+        m.visible_tiles(0, 0, 2, 2, 1, &mut out);
+        assert_eq!(idx(&out), vec![100; 4]);
+        m.visible_tiles(0, 0, 2, 2, 3, &mut out);
+        assert_eq!(idx(&out), vec![102; 4], "第 3 帧");
+        m.visible_tiles(0, 0, 2, 2, 4, &mut out);
+        assert_eq!(idx(&out), vec![99; 4], "满一轮回卷");
     }
 
     #[test]
@@ -758,17 +834,73 @@ mod tests {
             blend: false,
         };
 
-        // "平"图块（48×32）且无动画 ⇒ 左上对齐；两种算法同解
+        // "平"图块（48×32）⇒ 格顶（官方第一趟；`y + 32 - 32 == y`，两分支同解）
         assert_eq!(front(0).top_y(48, 32, 0), 64);
-        // 96×64 的平图块同理走左上对齐
-        assert_eq!(front(0).top_y(96, 64, 0), 64);
+        // ⚠️ **96×64 不算"平的"**：官方第一趟条件写死 `Width = 48 and Height = 32`，
+        //    96×64 落进第二趟 ⇒ 底边对齐格底，落点比格顶**高一格**
+        assert_eq!(front(0).top_y(96, 64, 0), 64 + 32 - 64);
         // 高图块 ⇒ 底边对齐格的底边（y + 32 - h）
         assert_eq!(front(0).top_y(48, 86, 0), 64 + 32 - 86);
         assert_eq!(front(0).top_y(48, 200, 0), 64 + 32 - 200);
-        // 有动画时即使尺寸是 48×32，结果也不变（因为 h == 32）
+        // 动画帧数**不参与**落点判定
         assert_eq!(front(7).top_y(48, 32, 0), 64);
-        // 但 96×64 有动画 ⇒ 走底边对齐（与官方第二趟一致）
         assert_eq!(front(7).top_y(96, 64, 0), 64 + 32 - 64);
+    }
+
+    #[test]
+    fn fr_frame_advances_with_ani_count() {
+        // 实测那盏灯：图号 2724（1 基）、ani_frame = 0x80|10 ⇒ 10 帧、tick=0
+        let c = Cell {
+            fr_img: 2724,
+            ani_frame: 0x80 | 10,
+            ..Cell::default()
+        };
+        assert_eq!(c.fr_frame(0), Some(2723), "静态第 0 帧");
+        assert_eq!(c.fr_frame(1), Some(2724));
+        assert_eq!(c.fr_frame(9), Some(2732), "第 10 帧");
+        assert_eq!(c.fr_frame(10), Some(2723), "满一轮回卷");
+        assert_eq!(c.fr_frame(25), Some(2728));
+    }
+
+    #[test]
+    fn fr_frame_ani_tick_holds_each_frame() {
+        // tick=2 ⇒ 每帧持续 3 个 tick，一轮 3 帧 × 3 tick = 9
+        let c = Cell {
+            fr_img: 100,
+            ani_frame: 3,
+            ani_tick: 2,
+            ..Cell::default()
+        };
+        assert_eq!(c.fr_frame(0), Some(99));
+        assert_eq!(c.fr_frame(2), Some(99), "前 3 个 tick 都是第 0 帧");
+        assert_eq!(c.fr_frame(3), Some(100));
+        assert_eq!(c.fr_frame(6), Some(101));
+        assert_eq!(c.fr_frame(9), Some(99), "一轮走完回卷");
+    }
+
+    #[test]
+    fn fr_frame_applies_door_offset() {
+        let mut c = Cell {
+            fr_img: 10,
+            door_index: DOOR_BIT | 1,         // 有门且组号非零
+            door_offset: DOOR_OFFSET_BIT | 2, // 有位移，偏移 2
+            ..Cell::default()
+        };
+        assert_eq!(c.fr_frame(0), Some(11), "9 + 2");
+        // 官方要求门组号非零才加偏移
+        c.door_index = DOOR_BIT;
+        assert_eq!(c.fr_frame(0), Some(9));
+    }
+
+    #[test]
+    fn fr_frame_is_static_without_animation() {
+        let c = Cell {
+            fr_img: 42,
+            ..Cell::default()
+        };
+        assert_eq!(c.fr_frame(0), Some(41));
+        assert_eq!(c.fr_frame(123_456), Some(41), "无动画时与 ani_count 无关");
+        assert_eq!(Cell::default().fr_frame(7), None, "图号 0 ⇒ 不画");
     }
 
     #[test]
