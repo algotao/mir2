@@ -766,6 +766,77 @@ func TestProtoContractRustClient(t *testing.T) {
 	t.Logf("Rust 客户端剧本输出：\n%s", out.String())
 }
 
+// TestProtoRustWorldModel 走**会话层**那条路（`mir2-net` 的消息泵 + `core` 的握手与世界
+// 状态机）—— 这正是 `client/app` 用的那一份（D-18），所以它能替 app 守住"连上服务端"。
+//
+// 与 `TestProtoContractRustClient` 的分工：
+//
+//	contract —— 逐条消息的类型/顺序/字段（"线路对不对"）
+//	world    —— 状态机串起来能不能用（"连上之后世界是什么样"，且世界真的在动）
+func TestProtoRustWorldModel(t *testing.T) {
+	bin, why := findE2EBin()
+	if bin == "" {
+		t.Skipf("跳过：%s", why)
+	}
+
+	s, store, addr := protoContractServer(t)
+	sessionID, charID := seedAccount(t, store)
+
+	mon := newTestMonster(1_000_001, "鸡", 15)
+	mon.Object.SetPlace(s.world.defaultMap, 3, 2, entity.DirDown)
+	s.world.monsters[mon.ID] = mon
+	s.world.monsterIdx.Add(mon)
+
+	// `-expect-entity-at 4,2` 是关键的一条：驱动方会把这只鸡推一步到 (4,2)，
+	// 断言它必须**落到世界模型里**（不只是"线上收到过一条消息"）。
+	cmd := exec.Command(bin, "world",
+		"-addr", addr,
+		"-session", strconv.Itoa(int(sessionID)),
+		"-char", strconv.FormatUint(charID, 10),
+		"-expect-map", "0",
+		"-expect-pos", "1,1",
+		"-expect-entities", "1",
+		"-expect-entity-at", "4,2",
+		"-move-steps", "1",
+		"-timeout-ms", "8000",
+	)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("启动 Rust 世界脚本: %v", err)
+	}
+	// 玩家进图后推一条实体事件（与 contract 那条同样的同步手法：等的是
+	// broadcastMonsterMove 的投递前提，而不是"等一会儿"）。
+	go func() {
+		for i := 0; i < 300; i++ {
+			s.mu.RLock()
+			var ready bool
+			for _, p := range s.world.players {
+				if p.protoOut != nil && p.visible.Contains(mon.ID) {
+					ready = true
+					break
+				}
+			}
+			s.mu.RUnlock()
+			if ready {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		s.broadcastMonsterMove(monsterMove{id: mon.ID, x: 4, y: 2, dir: entity.DirRight,
+			mapRef: s.world.defaultMap, fromX: 3, fromY: 2})
+	}()
+
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Rust 世界脚本失败：%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "世界状态通过") {
+		t.Errorf("脚本没打通过标记，输出：\n%s", out.String())
+	}
+	t.Logf("Rust 世界模型输出：\n%s", out.String())
+}
+
 // findE2EBin 找 `mir2-e2e` 可执行文件；找不到就返回原因（调用方跳过）。
 //
 // 刻意**不**在测试里自动 `cargo build`：那会把一次网络+编译（分钟级）塞进 `go test`，

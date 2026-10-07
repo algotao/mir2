@@ -218,8 +218,19 @@ mir2/
       （[`client/e2e/check.sh`](../client/e2e/check.sh)：构建 + sdl3 门禁 + 多机位平移自检，
       并有 `real_pan_selfcheck` 集成测试守在 `cargo test` 里）
       ⚠️ 待补：契约测试**进流水线**（用例已就位，但 CI 编排要先构建 Rust 产物）
-- [ ] **`client/app` 在 macOS M4 上跑起来、连上 `server/`**（同时验证 SDL3 可用性，D-04）
-- [ ] 与 `server/` 实机联调
+- [~] **`client/app` 在 macOS M4 上跑起来、连上 `server/`**（同时验证 SDL3 可用性，D-04）
+      **连上了**（2026-10-07）：`C` 键（或 `MIR2_SERVER`/`MIR2_SESSION` 环境变量）接
+      `gamesvr -proto-addr`；连上之后相机跟着自己、方向键 = 走一步、视野内实体画成标记。
+      app 这一层是**薄壳**：握手状态机与世界状态在 `core`（`entrance` / `world`），
+      连接与消息泵在 `net`（独立线程 → channel）—— `client/e2e` 用的是**同一份**（D-18），
+      所以无头契约测试能替 app 守住这条链。
+      ⚠️ **实体先画标记而不是精灵**：actor 的图号公式（`raceImg/weapon/hair/dress` →
+      `Hum.wzl`/`Objects<N>.wzl` 的第几张，按朝向/动作分块）尚未提取 —— 那是 M2 的
+      "角色/怪物动画状态机"；且本套素材里 `Hair.wzl` 是空壳（`Hum.wzl`/`Weapon.wzl` 在）。
+      换精灵时只改 `draw_entity_marker` 一处。
+      ⚠️ `MIR2_SESSION` 要一个**已认证的会话号**：新协议的 `Login` 未实现（D-24），
+      目前只能认领既有会话（由账户服务或端到端测试建立）。
+- [ ] 与 `server/` 实机联调（前置：`gamesvr -map-dir` 指向真实 `.map` 目录 + 一个可用会话）
 
 ### M2「功能对齐」（+25–35 天）
 

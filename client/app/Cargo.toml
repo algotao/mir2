@@ -15,3 +15,6 @@ sdl3.workspace = true
 # 只能从底层常量取。版本与 sdl3 的传递依赖一致，不额外下载。
 sdl3-sys = "0.7"
 mir2-core = { path = "../core" }
+# B（app 连上 server）：协议类型 + 后台会话（消息泵）。两者都**不含 SDL**（D-18）。
+mir2-protocol = { path = "../protocol" }
+mir2-net = { path = "../net" }

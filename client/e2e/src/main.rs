@@ -22,6 +22,7 @@
 mod canvas;
 mod contract;
 mod png;
+mod worldcmd;
 
 use std::path::{Path, PathBuf};
 
@@ -45,6 +46,8 @@ fn main() {
         Some("panself") => run(&argv[1..], cmd_panself),
         // contract 有自己的参数集（地址/会话/期望值），不走地图那套 Args。
         Some("contract") => contract::main(&argv[1..]),
+        // world 走**会话层**（消息泵 + core 的握手/世界状态机），参数集同样独立。
+        Some("world") => worldcmd::main(&argv[1..]),
         Some("-h" | "--help" | "help") | None => {
             usage();
             0
@@ -359,6 +362,7 @@ fn usage() {
          \x20 mir2-e2e render  -map <名字> -cam X,Y -out FILE.png [选项]\n\
          \x20 mir2-e2e panself -map <名字> -cam X,Y             [选项]\n\
          \x20 mir2-e2e contract -addr HOST:PORT -session N      [选项]\n\
+         \x20 mir2-e2e world    -addr HOST:PORT -session N      [选项]\n\
          \n\
          contract（协议契约，docs/protocol.md §9.2）：\n\
          \x20 -addr HOST:PORT   服务端新协议入口（gamesvr -proto-addr）\n\
@@ -366,6 +370,11 @@ fn usage() {
          \x20 -char N           选哪个角色（默认列表里第一个）\n\
          \x20 -expect-map/-expect-pos X,Y/-expect-dir N/-expect-entities N\n\
          \x20                    驱动方已知的真值（由 Go 的契约测试传入并断言）\n\
+         \n\
+         world（会话层，走的是与 app 同一份握手/世界状态机，D-18）：\n\
+         \x20 -addr/-session/-char  同上\n\
+         \x20 -move-steps N     进世界后向右走 N 步（每步等过限流窗口）\n\
+         \x20 -expect-map/-expect-pos/-expect-entities/-expect-entity-at X,Y\n\
          \n\
          选项：\n\
          \x20 -w N -h N        视口尺寸（默认 {DEFAULT_W}x{DEFAULT_H}，与 app 的地图区一致）\n\

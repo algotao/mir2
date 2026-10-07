@@ -12,6 +12,19 @@
 //! 容器路径：`$MIR2_MAP_CONTAINER` → `assets/map/maps.m2pk`。找不到就降级显示，不崩。
 //!
 //! 屏幕文字用 SDL3 内置 8x8 调试字体，**只认 ASCII**。
+//!
+//! **连服务端**（B 阶段，`C` 键或环境变量）：
+//!
+//! ```text
+//! MIR2_SERVER=127.0.0.1:7500 MIR2_SESSION=7 cargo run -p mir2-app
+//! ```
+//!
+//! * `MIR2_SESSION` 是**已认证的会话号** —— 新协议的 `Login` 还没实现
+//!   （口令怎么过网络未定，见 D-24），所以只能认领一个既有会话；
+//! * 连上之后：相机跟着自己、方向键 = 走一步（离线时仍是平移镜头）、
+//!   视野内的实体画成**标记**（位置/朝向/名字/血量）；
+//! * ⚠️ 实体先画标记而不是精灵：actor 的图号公式属于 M2 的"角色/怪物动画状态机"，
+//!   且本套素材里 `Hair.wzl` 是空壳。换精灵时只改 `draw_entity_marker` 一处。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -89,6 +102,12 @@ const C_CELLBASE: Color = Color::RGB(255, 220, 80);
 const C_CROSS: Color = Color::RGB(255, 255, 255);
 /// 鼠标下那张图**自己那一格**的高亮色（与鼠标格区分开）
 const C_TOPMOST: Color = Color::RGB(255, 90, 220);
+/// 联网实体标记的配色（按 `EntityState.kind`：0=玩家 1=怪物 2=NPC）。
+const C_ENT_PLAYER: Color = Color::RGB(120, 200, 255);
+const C_ENT_MONSTER: Color = Color::RGB(255, 110, 110);
+const C_ENT_NPC: Color = Color::RGB(255, 220, 120);
+/// 自己（相机跟着它）。
+const C_ENT_SELF: Color = Color::RGB(120, 255, 140);
 
 // 图层可见性掩码定义在 core（`map::LAYERS_ALL` / `Layer::bit`）——
 // app 与 e2e 都要用它过滤绘制指令，各写一份迟早不一致（plan §4.2 / R-10）。
@@ -680,6 +699,240 @@ fn probe_at(
     }
 }
 
+// ---------- 联网（B：app 连上 server）----------
+
+/// app 侧的联网状态。**薄薄一层**：
+///
+/// - 连接与消息泵在 `mir2-net`（独立线程 → channel）
+/// - 握手状态机与世界状态在 `mir2-core`（纯函数，`client/e2e` 用的是**同一份**，见 D-18）
+///
+/// 这里只负责"把它们按帧推一下、把状态交给渲染"，**不放任何游戏规则**。
+struct Net {
+    sess: mir2_net::Session,
+    entrance: mir2_core::entrance::Entrance,
+    world: mir2_core::world::World,
+    /// 会话号（v0 的 `session_token` 就是它；`Entrance` 内部也持一份，这里留一份
+    /// 是为了把 `Reconnect` 翻成 `Cmd::Reconnect` 时不必从 token 字节里解回来）。
+    session: i32,
+    /// 给人看的连接状态（连不上/已连接/进图/出错）。
+    status: String,
+    /// 累计世界变更次数（"世界在动"最直接的观测量）。
+    changes: u32,
+}
+
+impl Net {
+    /// 读环境变量连一个服务端。返回 `Net`（**连接是异步的**：结果从事件里回来）。
+    ///
+    /// ```
+    /// MIR2_SERVER=127.0.0.1:7500 MIR2_SESSION=7 cargo run -p mir2-app
+    /// ```
+    ///
+    /// ⚠️ 为什么还要 `MIR2_SESSION`：新协议的 `Login` 还没实现（口令怎么过网络未定，
+    /// 见 D-24），所以客户端只能认领一个**既有会话** —— 它由账户服务（或 e2e 测试）建立。
+    fn connect() -> Result<Net, String> {
+        let addr = std::env::var("MIR2_SERVER").unwrap_or_else(|_| "127.0.0.1:7500".into());
+        let session: i32 = std::env::var("MIR2_SESSION")
+            .map_err(|_| {
+                "缺 MIR2_SESSION（新协议还没实现 Login，要先有一个已认证的会话号）".to_string()
+            })?
+            .parse()
+            .map_err(|_| "MIR2_SESSION 必须是十进制整数".to_string())?;
+        let char_id: Option<u64> = match std::env::var("MIR2_CHAR") {
+            Ok(s) => Some(s.parse().map_err(|_| "MIR2_CHAR 必须是整数".to_string())?),
+            Err(_) => None,
+        };
+
+        println!("[net] 连接 {addr}（会话 {session}）…");
+        let sess = mir2_net::Session::spawn(addr, "mir2-app".into(), "zh-CN".into());
+        Ok(Net {
+            sess,
+            entrance: mir2_core::entrance::Entrance::new(session, char_id),
+            world: mir2_core::world::World::default(),
+            session,
+            status: "连接中…".into(),
+            changes: 0,
+        })
+    }
+
+    /// 把"网络线程收到的东西"推进两个状态机（握手 + 世界）。**每帧调一次**。
+    ///
+    /// 这是 plan §4.1 的"收包线程 → channel → 主循环按帧消费"：
+    /// 主循环永远不会被网络阻塞。
+    fn pump(&mut self) {
+        while let Ok(ev) = self.sess.evs.try_recv() {
+            match ev {
+                mir2_net::Ev::Connected {
+                    version,
+                    capabilities,
+                } => {
+                    self.status =
+                        format!("已连接（协议 {version}，能力 {}）", capabilities.join(","));
+                    println!("[net] {}", self.status);
+                }
+                mir2_net::Ev::Closed(why) => {
+                    self.status = format!("断开：{why}");
+                    println!("[net] {}", self.status);
+                }
+                mir2_net::Ev::Envelope(env) => {
+                    // 两条线各吃同一条信封：握手状态机管那几步，世界状态机管实体。
+                    if self.entrance.failed().is_none() && !self.entrance.in_world() {
+                        if let Some(b) = self.entrance.next_cmd() {
+                            self.send(&b);
+                        }
+                    }
+                    if let Some(b) = self.entrance.on(&env) {
+                        self.send(&b);
+                    }
+                    if self.world.apply(&env) == mir2_core::world::Change::World {
+                        self.changes += 1;
+                    }
+                    if self.entrance.in_world() && self.world.map_name != self.status {
+                        // 进图后把状态行换成"世界摘要"（比"已连接"有用得多）。
+                        self.status = format!(
+                            "{} @{} ({},{})",
+                            self.world.map_name,
+                            self.world.self_id,
+                            self.world.self_pos.0,
+                            self.world.self_pos.1
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(why) = self.entrance.failed() {
+            if !self.status.starts_with("失败") {
+                self.status = format!("失败：{why}");
+                println!("[net] {}", self.status);
+            }
+        }
+    }
+
+    /// 把握手状态机吐出来的信封翻译成会话命令发出去。
+    fn send(&self, body: &mir2_protocol::envelope::Body) {
+        use mir2_protocol::envelope::Body;
+        let cmd = match body {
+            Body::Reconnect(_) => Some(mir2_net::Cmd::Reconnect(self.session)),
+            Body::ListCharacters(_) => Some(mir2_net::Cmd::ListCharacters),
+            Body::SelectCharacter(s) => Some(mir2_net::Cmd::SelectCharacter(s.character_id)),
+            _ => None,
+        };
+        if let Some(c) = cmd {
+            let _ = self.sess.cmds.send(c);
+        }
+    }
+
+    /// 发一次移动输入（走）。方向用**线上编号**（`core::world` 里也不做 ±1 转换）。
+    fn walk(&self, dir: mir2_protocol::Direction) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::Move(dir as i32));
+    }
+
+    /// 相机该对着哪一格（居中自身）。没进世界时返回 `None`（保持手动镜头）。
+    fn follow_cam(&self) -> Option<(i32, i32)> {
+        if !self.world.in_world() {
+            return None;
+        }
+        let (sx, sy) = self.world.self_pos;
+        Some((
+            sx - (WIN_W as i32 / UNIT_X) / 2,
+            sy - (VIEW_H as i32 / UNIT_Y) / 2,
+        ))
+    }
+}
+
+/// 方向键：联网且在世界里 ⇒ 走一步并返回 `true`（调用方就别动镜头了）。
+///
+/// 离线时返回 `false` ⇒ 保持原来的"方向键平移镜头"（开发查看器最常用的动作）。
+fn walk_if_online(net: &Option<Net>, dir: mir2_protocol::Direction) -> bool {
+    match net {
+        Some(n) if n.world.in_world() => {
+            n.walk(dir);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// 协议朝向（1..8）→ 屏幕增量。**1 = 上**（新枚举 = 原版 + 1，见 common.proto）。
+///
+/// ⚠️ 这张表与服务端 `entity.DirDelta` 是同一份顺序（原版 0..7 各 +1）——
+/// 两处一旦不一致，人物会朝反方向走，而且不会报错。
+fn dir_delta(dir: i32) -> (f32, f32) {
+    match dir {
+        1 => (0.0, -1.0),  // 上
+        2 => (1.0, -1.0),  // 右上
+        3 => (1.0, 0.0),   // 右
+        4 => (1.0, 1.0),   // 右下
+        5 => (0.0, 1.0),   // 下
+        6 => (-1.0, 1.0),  // 左下
+        7 => (-1.0, 0.0),  // 左
+        8 => (-1.0, -1.0), // 左上
+        _ => (0.0, 0.0),   // 未指定
+    }
+}
+
+/// 画一个实体标记（A/B 阶段用）。
+///
+/// ⚠️ **为什么先画标记而不是精灵**：actor 的图号公式（`raceImg/weapon/hair/dress` →
+/// `Hum.wzl` / `Objects<N>.wzl` 里的第几张，还要按朝向/动作分块）尚未提取，
+/// 那属于 M2 的"角色/怪物动画状态机"；且本套素材里 `Hair.wzl` 是空壳。
+/// 标记先把"位置/朝向/名字/血量"这条链验通 —— 换精灵时只改这一个函数。
+#[allow(clippy::too_many_arguments)]
+fn draw_entity_marker(
+    canvas: &mut WindowCanvas,
+    cam: (i32, i32),
+    cx: i32,
+    cy: i32,
+    color: Color,
+    name: &str,
+    hp: u32,
+    max_hp: u32,
+    dir: i32,
+) -> Result<(), sdl3::Error> {
+    let sx = (cx - cam.0) as f32 * UNIT_X as f32;
+    let sy = BAR_TOP + (cy - cam.1) as f32 * UNIT_Y as f32;
+    // 视口外直接跳过（地图比视口大得多）
+    if (sx + UNIT_X as f32) < 0.0
+        || sx > WIN_W as f32
+        || (sy + UNIT_Y as f32) < BAR_TOP
+        || sy > WIN_H as f32
+    {
+        return Ok(());
+    }
+    // 占格框（内缩一点，免得与调试格网糊在一起）
+    canvas.set_draw_color(color);
+    canvas.draw_rect(FRect::new(
+        sx + 8.0,
+        sy + 2.0,
+        UNIT_X as f32 - 16.0,
+        UNIT_Y as f32 - 4.0,
+    ))?;
+    // 朝向：从格中心往外一小段
+    let (dx, dy) = dir_delta(dir);
+    if dx != 0.0 || dy != 0.0 {
+        let (mx, my) = (sx + UNIT_X as f32 / 2.0, sy + UNIT_Y as f32 / 2.0);
+        canvas.draw_line(
+            FPoint::new(mx, my),
+            FPoint::new(mx + dx * 12.0, my + dy * 8.0),
+        )?;
+    }
+    // 名字与血条（血条只在"受了伤"时画，否则一屏全是条）
+    text(canvas, &trunc(name, 12), sx, sy - 9.0, color)?;
+    if max_hp > 0 && hp < max_hp {
+        let w = UNIT_X as f32 - 16.0;
+        let frac = (hp as f32 / max_hp as f32).clamp(0.0, 1.0);
+        canvas.set_draw_color(Color::RGB(40, 40, 40));
+        canvas.fill_rect(FRect::new(sx + 8.0, sy + UNIT_Y as f32 - 6.0, w, 3.0))?;
+        canvas.set_draw_color(Color::RGB(220, 60, 60));
+        canvas.fill_rect(FRect::new(
+            sx + 8.0,
+            sy + UNIT_Y as f32 - 6.0,
+            w * frac,
+            3.0,
+        ))?;
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
@@ -762,6 +1015,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut music_on = true;
     let started = Instant::now();
 
+    // 联网状态（`C` 键连接/断开）。地址与会话号走环境变量，见 `Net::connect`。
+    let mut net: Option<Net> = None;
+    // 环境变量给了会话号就**开机自动连**（省得每次手按 `C`；开发时最常用）。
+    if std::env::var("MIR2_SESSION").is_ok() {
+        match Net::connect() {
+            Ok(n) => {
+                println!("[net] {}", n.status);
+                net = Some(n);
+            }
+            Err(e) => println!("[net] 连不上：{e}"),
+        }
+    }
+
     // 载入初始地图
     if let Some(a) = &archive {
         load_map(a, map_i, &mut map, &mut map_err, &mut cam);
@@ -815,10 +1081,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         _ => {}
                     },
                     _ if mode == 2 => match keycode {
-                        Some(Keycode::Left) => cam.0 -= 2,
-                        Some(Keycode::Right) => cam.0 += 2,
-                        Some(Keycode::Up) => cam.1 -= 2,
-                        Some(Keycode::Down) => cam.1 += 2,
+                        // 方向键：**联网且在世界里 ⇒ 走一步**（相机跟着自己）；否则平移镜头。
+                        Some(Keycode::Left) => {
+                            if !walk_if_online(&net, mir2_protocol::Direction::DirLeft) {
+                                cam.0 -= 2
+                            }
+                        }
+                        Some(Keycode::Right) => {
+                            if !walk_if_online(&net, mir2_protocol::Direction::DirRight) {
+                                cam.0 += 2
+                            }
+                        }
+                        Some(Keycode::Up) => {
+                            if !walk_if_online(&net, mir2_protocol::Direction::DirUp) {
+                                cam.1 -= 2
+                            }
+                        }
+                        Some(Keycode::Down) => {
+                            if !walk_if_online(&net, mir2_protocol::Direction::DirDown) {
+                                cam.1 += 2
+                            }
+                        }
+                        // C：连接/断开新协议服务端（地址与会话号走环境变量，见 `Net::connect`）。
+                        Some(Keycode::C) => {
+                            if net.is_some() {
+                                println!("[net] 主动断开");
+                                net = None;
+                            } else {
+                                match Net::connect() {
+                                    Ok(n) => {
+                                        println!("[net] {}", n.status);
+                                        net = Some(n);
+                                    }
+                                    Err(e) => println!("[net] 连不上：{e}"),
+                                }
+                            }
+                        }
                         Some(Keycode::Home) => cam = (0, 0),
                         // ---- 调试叠加层（只在地图模式，避免污染登录输入框）----
                         Some(Keycode::D) => {
@@ -901,6 +1199,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        // 联网：把网络线程收到的东西推进状态机（**每帧一次**，永不阻塞）。
+        if let Some(n) = &mut net {
+            n.pump();
+        }
+        // 进了世界就让相机跟着自己（离线时保持手动镜头）。
+        if let Some(c) = net.as_ref().and_then(|n| n.follow_cam()) {
+            cam = c;
+        }
+
         // 地图镜头夹在合理范围内（允许露出边缘一格）
         if let Some(m) = &map {
             let max_x = (m.width as i32 - (WIN_W as i32 / UNIT_X) + 2).max(0);
@@ -934,6 +1241,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 layers,
                 mouse,
                 ani_count,
+                net.as_ref(),
             )?;
         } else {
             draw_login_view(
@@ -955,7 +1263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // 顶部/底部公共条
         let hint = if mode == 2 {
-            "ARROWS  [ ] MAP  HOME  D DEBUG  CTRL 1/2/3 LAYER  P DUMP  PROBE  F1 LOGIN  ESC"
+            "ARROWS/PAN+WALK  C CONNECT  [ ] MAP  HOME  D DEBUG  CTRL 1/2/3 LAYER  P DUMP  F1 LOGIN  ESC"
         } else {
             "TAB FIELD   ENTER LOGIN   [ ] LIB   , . IMG   F2 MAP   M MUSIC   ESC QUIT"
         };
@@ -1038,6 +1346,7 @@ fn draw_map_view<'a, T>(
     layers: u8,
     mouse: (f32, f32),
     ani_count: u32,
+    net: Option<&Net>,
 ) -> Result<(), sdl3::Error> {
     fill(canvas, 0.0, 0.0, WIN_W as f32, BAR_TOP, C_PANEL)?;
 
@@ -1086,6 +1395,34 @@ fn draw_map_view<'a, T>(
     }
     canvas.set_clip_rect(None::<Rect>);
 
+    // 实体标记（B：联网之后"看得见世界"）。画在世界之上、调试叠加层之下 ——
+    // 这样按 D 打开叠加层时，格网仍然压在最上面（否则标记会盖住格线，很难读）。
+    if let Some(n) = net {
+        if n.world.in_world() {
+            for e in n.world.entities.values() {
+                let color = match e.kind {
+                    0 => C_ENT_PLAYER,
+                    2 => C_ENT_NPC,
+                    _ => C_ENT_MONSTER,
+                };
+                draw_entity_marker(canvas, cam, e.x, e.y, color, &e.name, e.hp, e.max_hp, e.dir)?;
+            }
+            let (sx, sy) = n.world.self_pos;
+            let (hp, max_hp) = n.world.ability.map(|a| (a.hp, a.max_hp)).unwrap_or((0, 0));
+            draw_entity_marker(
+                canvas,
+                cam,
+                sx,
+                sy,
+                C_ENT_SELF,
+                "[自己]",
+                hp,
+                max_hp,
+                n.world.self_dir,
+            )?;
+        }
+    }
+
     if debug {
         draw_debug_overlay(canvas, draws, tiles, cam, mouse, layers)?;
     }
@@ -1108,10 +1445,24 @@ fn draw_map_view<'a, T>(
     );
     text(canvas, &trunc(&info, TEXT_COLS - 20), 4.0, 8.0, C_TITLE)?;
     // 右上角：层可见性（三层全开时不显示，免得占地方）+ 纹理缓存数
-    let right = if layers == LAYERS_ALL {
+    let base = if layers == LAYERS_ALL {
         format!("TILES {}", tiles.len())
     } else {
         format!("LAYER {}   TILES {}", layers_desc(layers), tiles.len())
+    };
+    // 联网时把世界摘要接在后面：状态 / 视野实体数 / 世界变更次数 / 未识别消息数。
+    // ⚠️ `CHG` 是"世界在动"最直接的观测量（联调时盯它涨没涨，比盯着画面猜靠谱）；
+    // `UNK` 不该大于 0 —— 涨了就说明两边对不上（见 core::world）。
+    let right = match net {
+        Some(n) => format!(
+            "NET {}  ENT {}  CHG {}  UNK {}   {}",
+            trunc(&n.status, 40),
+            n.world.entities.len(),
+            n.changes,
+            n.world.unknown,
+            base
+        ),
+        None => base,
     };
     let rx = WIN_W as f32 - 6.0 - right.chars().count() as f32 * 8.0;
     text(canvas, &right, rx, 8.0, C_DIM)?;
