@@ -25,7 +25,7 @@ use mir2_core::wzl::Wzl;
 
 use sdl3::audio::{AudioCallback, AudioFormat, AudioSpec, AudioStream};
 use sdl3::event::Event;
-use sdl3::keyboard::Keycode;
+use sdl3::keyboard::{Keycode, Mod};
 use sdl3::mouse::MouseButton;
 use sdl3::pixels::{Color, PixelFormat};
 use sdl3::rect::Rect;
@@ -83,6 +83,28 @@ const C_CELLBASE: Color = Color::RGB(255, 220, 80);
 const C_CROSS: Color = Color::RGB(255, 255, 255);
 /// 鼠标下那张图**自己那一格**的高亮色（与鼠标格区分开）
 const C_TOPMOST: Color = Color::RGB(255, 90, 220);
+
+/// 图层可见性掩码：bit0 = 地表 bit1 = 中间 bit2 = 前景；默认三层全开。
+///
+/// 三层**各自独立**开关（`CTRL+1/2/3`），而不是"单选一层"——
+/// 排查错位时最常用的动作是"只关掉一层看底下那层在哪"，
+/// 单选模式反而要来回切两次才能对比。
+const LAYERS_ALL: u8 = 0b111;
+
+/// `Layer` → 可见性掩码位。
+fn layer_bit(l: Layer) -> u8 {
+    match l {
+        Layer::Ground => 1,
+        Layer::Mid => 2,
+        Layer::Front => 4,
+    }
+}
+
+/// 掩码 → 三字母缩写（G=地表 M=中间 F=前景），隐藏的层显示为 `-`。
+fn layers_desc(m: u8) -> String {
+    let ch = |bit: u8, on: char| if m & bit != 0 { on } else { '-' };
+    format!("{}{}{}", ch(1, 'G'), ch(2, 'M'), ch(4, 'F'))
+}
 
 // ---------- 程序化音乐 ----------
 const TEMPO_SEC: f32 = 0.34;
@@ -365,7 +387,7 @@ fn draw_debug_overlay(
     tiles: &HashMap<TileKey, TileTex<'_>>,
     cam: (i32, i32),
     mouse: (f32, f32),
-    layer_filter: u8,
+    layers: u8,
 ) -> Result<(), sdl3::Error> {
     // 1) 格网（48×32）
     canvas.set_draw_color(C_GRID);
@@ -380,15 +402,9 @@ fn draw_debug_overlay(
         gy += UNIT_Y as f32;
     }
 
-    // 2) 各层落点框
+    // 2) 各层落点框（与图块同步显隐：关掉的层不留框，免得误判还剩东西）
     for d in draws {
-        let want = match layer_filter {
-            0 => true,
-            1 => d.layer == Layer::Ground,
-            2 => d.layer == Layer::Mid,
-            _ => d.layer == Layer::Front,
-        };
-        if !want {
+        if layers & layer_bit(d.layer) == 0 {
             continue;
         }
         let Some(r) = rect_of(d, tiles) else { continue };
@@ -420,10 +436,11 @@ fn draw_debug_overlay(
         canvas.draw_line(FPoint::new(mx, BAR_TOP), FPoint::new(mx, BAR_TOP + VIEW_H))?;
         canvas.draw_line(FPoint::new(0.0, my), FPoint::new(WIN_W as f32, my))?;
 
-        // 该像素最上层的那一条（绘制顺序里最后命中的）
+        // 该像素最上层的那一条（绘制顺序里最后命中的；隐藏层不参与）
         let topmost = draws.iter().rev().find(|d| {
-            rect_of(d, tiles)
-                .is_some_and(|r| mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h)
+            layers & layer_bit(d.layer) != 0
+                && rect_of(d, tiles)
+                    .is_some_and(|r| mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h)
         });
         let line = match topmost {
             Some(d) => {
@@ -510,10 +527,16 @@ fn rect_of(d: &TileDraw, tiles: &HashMap<TileKey, TileTex<'_>>) -> Option<FRect>
 }
 
 /// 把视口内的绘制清单打到终端（顺序即绘制顺序）——可复制的 debug log。
-fn dump_draws(draws: &[TileDraw], cam: (i32, i32), tiles: &HashMap<TileKey, TileTex<'_>>) {
+fn dump_draws(
+    draws: &[TileDraw],
+    cam: (i32, i32),
+    tiles: &HashMap<TileKey, TileTex<'_>>,
+    layers: u8,
+) {
     println!(
-        "\n[draws] 视口内 {} 条（顺序即绘制顺序；top_y 是图块真实落点）",
-        draws.len()
+        "\n[draws] 视口内 {} 条（顺序即绘制顺序；top_y 是图块真实落点）  可见层 {}，标 HIDDEN 的当前不画",
+        draws.len(),
+        layers_desc(layers)
     );
     for (i, d) in draws.iter().enumerate() {
         let (w, h, ax, ay) = match tiles.get(&(d.lib, d.area, d.index)) {
@@ -542,24 +565,40 @@ fn dump_draws(draws: &[TileDraw], cam: (i32, i32), tiles: &HashMap<TileKey, Tile
             d.top_y(w, h, ay),
             d.left_x(ax),
             d.lib.file_name(d.area),
-            if d.ani_frames > 0 { " ANI" } else { "" }
+            if layers & layer_bit(d.layer) == 0 {
+                " HIDDEN"
+            } else if d.ani_frames > 0 {
+                " ANI"
+            } else {
+                ""
+            }
         );
     }
 }
 
 /// 报告某个视口像素被哪些图块覆盖（按绘制顺序，最后一个在最上层）。
+///
+/// `layers` 是当前可见性掩码：**被隐藏的层不参与命中**，
+/// 否则"关掉前景再点一下"会报出一堆看不见的物件，读数就没法信了。
 fn probe_at(
     px: f32,
     py: f32,
     cam: (i32, i32),
     draws: &[TileDraw],
     tiles: &HashMap<TileKey, TileTex<'_>>,
+    layers: u8,
 ) {
     let cx = cam.0 + (px / UNIT_X as f32).floor() as i32;
     let cy = cam.1 + ((py - BAR_TOP) / UNIT_Y as f32).floor() as i32;
-    println!("\n[probe] 视口像素=({px:.0},{py:.0}) → 格=({cx},{cy})");
+    println!(
+        "\n[probe] 视口像素=({px:.0},{py:.0}) → 格=({cx},{cy})   可见层 {}",
+        layers_desc(layers)
+    );
     let mut hits = 0;
     for (i, d) in draws.iter().enumerate() {
+        if layers & layer_bit(d.layer) == 0 {
+            continue;
+        }
         let Some(r) = rect_of(d, tiles) else { continue };
         if (r.x..r.x + r.w).contains(&px) && (r.y..r.y + r.h).contains(&py) {
             hits += 1;
@@ -662,7 +701,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 调试叠加层（D 开关）：画格网 + 每层落点框 + 鼠标十字线，并"点哪读哪"
     let mut debug = false;
-    let mut layer_filter: u8 = 0; // 0=全部 1=仅地表 2=仅中间 3=仅前景
+    let mut layers: u8 = LAYERS_ALL; // 三层显隐掩码（CTRL+1/2/3 独立开关，L 循环单选）
     let mut mouse = (0.0f32, 0.0f32);
 
     let mut music_on = true;
@@ -677,7 +716,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for ev in events.poll_iter() {
             match ev {
                 Event::Quit { .. } => break 'main,
-                Event::KeyDown { keycode, .. } => match keycode {
+                Event::KeyDown {
+                    keycode, keymod, ..
+                } => match keycode {
                     Some(Keycode::Escape) => break 'main,
                     Some(Keycode::F1) => mode = 1,
                     Some(Keycode::F2) => mode = 2,
@@ -728,19 +769,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Some(Keycode::D) => {
                             debug = !debug;
                             println!(
-                                "[debug] 叠加层 {}（L 过滤图层 / P 打印绘制清单 / 左键点哪读哪）",
+                                "[debug] 叠加层 {}（L 或 CTRL+1/2/3 控制图层显隐 / P 打印绘制清单 / 左键点哪读哪）",
                                 if debug { "ON" } else { "OFF" }
                             );
                         }
-                        Some(Keycode::L) => {
-                            layer_filter = (layer_filter + 1) % 4;
+                        // 逐层独立显隐：排查错位时最常用的是"关掉一层看底下那层"
+                        Some(Keycode::_1) | Some(Keycode::_2) | Some(Keycode::_3)
+                            if keymod.intersects(Mod::LCTRLMOD)
+                                || keymod.intersects(Mod::RCTRLMOD) =>
+                        {
+                            let (bit, name) = match keycode {
+                                Some(Keycode::_1) => (1u8, "地表 Tiles"),
+                                Some(Keycode::_2) => (2u8, "中间 SmTiles"),
+                                _ => (4u8, "前景 Objects"),
+                            };
+                            layers ^= bit;
                             println!(
-                                "[debug] 图层过滤 = {}",
-                                ["全部", "仅地表", "仅中间", "仅前景"][layer_filter as usize]
+                                "[layer] {} {}   →   当前可见 {}（G=地表 M=中间 F=前景）",
+                                name,
+                                if layers & bit != 0 {
+                                    "显示"
+                                } else {
+                                    "隐藏"
+                                },
+                                layers_desc(layers)
                             );
                         }
+                        Some(Keycode::L) => {
+                            // 循环：全部 → 仅地表 → 仅中间 → 仅前景 → 全部
+                            layers = match layers {
+                                LAYERS_ALL => 1,
+                                1 => 2,
+                                2 => 4,
+                                _ => LAYERS_ALL,
+                            };
+                            println!("[layer] 过滤循环   →   当前可见 {}", layers_desc(layers));
+                        }
                         Some(Keycode::P) => {
-                            dump_draws(&draws, cam, &tiles);
+                            dump_draws(&draws, cam, &tiles, layers);
                         }
                         Some(Keycode::LeftBracket) | Some(Keycode::RightBracket) => {
                             if let Some(a) = &archive {
@@ -764,7 +830,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     x,
                     y,
                     ..
-                } if mode == 2 => probe_at(x, y, cam, &draws, &tiles),
+                } if mode == 2 => probe_at(x, y, cam, &draws, &tiles, layers),
                 Event::TextInput { text: t, .. } if mode == 1 => {
                     for ch in t.chars() {
                         if ch.is_ascii_graphic() || ch == ' ' {
@@ -805,7 +871,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 map_i,
                 archive.as_ref().map(|a| a.len()).unwrap_or(0),
                 debug,
-                layer_filter,
+                layers,
                 mouse,
             )?;
         } else {
@@ -828,7 +894,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // 顶部/底部公共条
         let hint = if mode == 2 {
-            "ARROWS PAN  [ ] MAP  HOME  D DEBUG  L LAYER  P DUMP  CLICK PROBE  F1 LOGIN  ESC QUIT"
+            "ARROWS  [ ] MAP  HOME  D DEBUG  CTRL 1/2/3 LAYER  P DUMP  PROBE  F1 LOGIN  ESC"
         } else {
             "TAB FIELD   ENTER LOGIN   [ ] LIB   , . IMG   F2 MAP   M MUSIC   ESC QUIT"
         };
@@ -842,7 +908,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         text(
             &mut canvas,
-            hint,
+            &trunc(hint, 79),
             4.0,
             WIN_H as f32 - BAR_BOTTOM + 6.0,
             C_DIM,
@@ -908,7 +974,7 @@ fn draw_map_view<'a, T>(
     map_i: usize,
     map_count: usize,
     debug: bool,
-    layer_filter: u8,
+    layers: u8,
     mouse: (f32, f32),
 ) -> Result<(), sdl3::Error> {
     fill(canvas, 0.0, 0.0, WIN_W as f32, BAR_TOP, C_PANEL)?;
@@ -944,12 +1010,16 @@ fn draw_map_view<'a, T>(
     // 且高图块（树/墙）本身上端会超出视口——不裁剪就会画到上下信息条上。
     canvas.set_clip_rect(Some(Rect::new(0, BAR_TOP as i32, WIN_W, VIEW_H as u32)));
     for d in draws.iter() {
+        // 逐层显隐（CTRL+1/2/3 / L）：关掉的层**既不画图块也不画调试框**
+        if layers & layer_bit(d.layer) == 0 {
+            continue;
+        }
         draw_tile(canvas, tc, libs, tiles, dir, d, BAR_TOP)?;
     }
     canvas.set_clip_rect(None::<Rect>);
 
     if debug {
-        draw_debug_overlay(canvas, draws, tiles, cam, mouse, layer_filter)?;
+        draw_debug_overlay(canvas, draws, tiles, cam, mouse, layers)?;
     }
 
     // 信息条
@@ -969,8 +1039,14 @@ fn draw_map_view<'a, T>(
         }
     );
     text(canvas, &trunc(&info, 79), 4.0, 8.0, C_TITLE)?;
-    let right = format!("TILES {}", tiles.len());
-    text(canvas, &right, WIN_W as f32 - 96.0, 8.0, C_DIM)?;
+    // 右上角：层可见性（三层全开时不显示，免得占地方）+ 纹理缓存数
+    let right = if layers == LAYERS_ALL {
+        format!("TILES {}", tiles.len())
+    } else {
+        format!("LAYER {}   TILES {}", layers_desc(layers), tiles.len())
+    };
+    let rx = WIN_W as f32 - 6.0 - right.chars().count() as f32 * 8.0;
+    text(canvas, &right, rx, 8.0, C_DIM)?;
     Ok(())
 }
 
