@@ -36,8 +36,8 @@ use sdl3::render::{
 };
 use sdl3::EventPump;
 
-const WIN_W: u32 = 640;
-const WIN_H: u32 = 480;
+const WIN_W: u32 = 1024;
+const WIN_H: u32 = 768;
 const SAMPLE_RATE: i32 = 44_100;
 
 /// 地图视图的顶部信息条高度。
@@ -46,6 +46,12 @@ const BAR_TOP: f32 = 24.0;
 const BAR_BOTTOM: f32 = 22.0;
 /// 地图可视区高度。
 const VIEW_H: f32 = WIN_H as f32 - BAR_TOP - BAR_BOTTOM;
+
+/// 内置字体等宽 8px ⇒ 一行能放多少列（两侧各留 1 列边距）。
+///
+/// 用窗口宽度算，而不是写死列数：窗口加宽后信息条/调试读数/提示条应当铺满，
+/// 否则宽出来的部分白放着，长内容（比如探针读数）还会被无谓截断。
+const TEXT_COLS: usize = WIN_W as usize / 8 - 2;
 
 /// 右侧信息区每行最大列数（内置字体等宽 8px）。
 const INFO_COLS: usize = 28;
@@ -545,7 +551,7 @@ fn draw_debug_overlay(
             12.0,
             Color::RGB(0, 0, 0),
         )?;
-        text(canvas, &trunc(&line, 79), 2.0, ry, C_CROSS)?;
+        text(canvas, &trunc(&line, TEXT_COLS), 2.0, ry, C_CROSS)?;
     }
     Ok(())
 }
@@ -954,7 +960,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         text(
             &mut canvas,
-            &trunc(hint, 79),
+            &trunc(hint, TEXT_COLS),
             4.0,
             WIN_H as f32 - BAR_BOTTOM + 6.0,
             C_DIM,
@@ -1085,7 +1091,7 @@ fn draw_map_view<'a, T>(
             format!(" /{map_count}")
         }
     );
-    text(canvas, &trunc(&info, 79), 4.0, 8.0, C_TITLE)?;
+    text(canvas, &trunc(&info, TEXT_COLS - 20), 4.0, 8.0, C_TITLE)?;
     // 右上角：层可见性（三层全开时不显示，免得占地方）+ 纹理缓存数
     let right = if layers == LAYERS_ALL {
         format!("TILES {}", tiles.len())
@@ -1194,6 +1200,13 @@ fn draw_login_view<'a, T>(
         }
     }
 
+    // 整块**垂直居中**：本布局是按 480 高的窗口排的，窗口变高后若不偏移，
+    // 所有内容都会挤在顶部、下方空掉一大片（768 高时尤其难看）。
+    // 用**渲染视口平移**实现 —— 坐标字面量一处都不用改；
+    // 底部提示条由调用方在原视口下画，不受影响。
+    let dy = ((WIN_H as f32 - 480.0) * 0.5).max(0.0) as i32;
+    canvas.set_viewport(Some(Rect::new(0, dy, WIN_W, WIN_H - dy as u32)));
+
     let t1 = "MIR2  1.76  CLIENT";
     text(canvas, t1, center_x(t1, 0.0, WIN_W as f32), 16.0, C_TITLE)?;
     let t2 = "SDL3  DEV  VIEWER  (F2 = MAP)";
@@ -1279,19 +1292,19 @@ fn draw_login_view<'a, T>(
         C_TEXT,
     )?;
 
-    // 右侧精灵面板
-    const RX: f32 = 372.0;
+    // 右侧精灵面板（**右对齐**：窗口加宽后不会挤在中间）
     const RW: f32 = 248.0;
-    fill(canvas, RX, 60.0, RW, 250.0, C_PANEL)?;
-    frame(canvas, RX, 60.0, RW, 250.0, C_PANEL_BORDER)?;
-    text(canvas, "SPRITE (REAL .WZL)", RX + 12.0, 72.0, C_TITLE)?;
+    let rx = WIN_W as f32 - RW - 20.0;
+    fill(canvas, rx, 60.0, RW, 250.0, C_PANEL)?;
+    frame(canvas, rx, 60.0, RW, 250.0, C_PANEL_BORDER)?;
+    text(canvas, "SPRITE (REAL .WZL)", rx + 12.0, 72.0, C_TITLE)?;
 
-    const PX: f32 = RX + 12.0;
-    const PY: f32 = 92.0;
+    let px = rx + 12.0;
+    let py = 92.0;
     const PW: f32 = RW - 24.0;
     const PH: f32 = 132.0;
-    checkerboard(canvas, PX, PY, PW, PH)?;
-    frame(canvas, PX, PY, PW, PH, C_PANEL_BORDER)?;
+    checkerboard(canvas, px, py, PW, PH)?;
+    frame(canvas, px, py, PW, PH, C_PANEL_BORDER)?;
 
     if ready {
         if let Some(t) = sprite_tex.as_ref() {
@@ -1301,7 +1314,7 @@ fn draw_login_view<'a, T>(
             canvas.copy(
                 t,
                 None::<FRect>,
-                FRect::new(PX + (PW - dw) / 2.0, PY + (PH - dh) / 2.0, dw, dh),
+                FRect::new(px + (PW - dw) / 2.0, py + (PH - dh) / 2.0, dw, dh),
             )?;
         }
     } else {
@@ -1310,19 +1323,21 @@ fn draw_login_view<'a, T>(
         } else {
             "NO SPRITE"
         };
-        text(canvas, msg, center_x(msg, PX, PW), PY + 60.0, C_ERR)?;
+        text(canvas, msg, center_x(msg, px, PW), py + 60.0, C_ERR)?;
     }
 
     for (i, (line, col)) in info_lines.iter().enumerate().take(3) {
         text(
             canvas,
             &trunc(line, INFO_COLS),
-            PX,
-            PY + PH + 8.0 + i as f32 * INFO_LINE_H,
+            px,
+            py + PH + 8.0 + i as f32 * INFO_LINE_H,
             *col,
         )?;
     }
     let libl = format!("LIB [{}/{}]   IMG {}", lib_idx + 1, LIBS.len(), *img_idx);
-    text(canvas, &libl, PX, PY + PH + 8.0 + 3.0 * INFO_LINE_H, C_TEXT)?;
+    text(canvas, &libl, px, py + PH + 8.0 + 3.0 * INFO_LINE_H, C_TEXT)?;
+
+    canvas.set_viewport(None::<Rect>);
     Ok(())
 }
