@@ -20,12 +20,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use mir2_core::m2pk::Archive;
-use mir2_core::map::{Lib, Map, TileDraw, UNIT_X, UNIT_Y};
+use mir2_core::map::{Layer, Lib, Map, TileDraw, UNIT_X, UNIT_Y};
 use mir2_core::wzl::Wzl;
 
 use sdl3::audio::{AudioCallback, AudioFormat, AudioSpec, AudioStream};
 use sdl3::event::Event;
 use sdl3::keyboard::Keycode;
+use sdl3::mouse::MouseButton;
 use sdl3::pixels::{Color, PixelFormat};
 use sdl3::rect::Rect;
 // 注：`WindowContext` 在 sdl3 里是私有类型、不可具名，
@@ -73,6 +74,13 @@ const C_CHECKER_A: Color = Color::RGB(34, 38, 52);
 const C_CHECKER_B: Color = Color::RGB(26, 30, 42);
 const C_OK: Color = Color::RGB(120, 220, 150);
 const C_ERR: Color = Color::RGB(232, 120, 120);
+// 调试叠加层
+const C_GRID: Color = Color::RGB(40, 48, 70);
+const C_GRID_GROUND: Color = Color::RGB(70, 110, 200);
+const C_GRID_MID: Color = Color::RGB(60, 170, 170);
+const C_GRID_FRONT: Color = Color::RGB(210, 140, 60);
+const C_CELLBASE: Color = Color::RGB(255, 220, 80);
+const C_CROSS: Color = Color::RGB(255, 255, 255);
 
 // ---------- 程序化音乐 ----------
 const TEMPO_SEC: f32 = 0.34;
@@ -329,6 +337,198 @@ fn draw_tile<'a, T>(
     Ok(())
 }
 
+/// 调试叠加层：格网 + 各层落点框 + 鼠标十字线与"点哪读哪"的读数。
+///
+/// 关键辅助：前景图块额外画一条**格的底边黄线** —— 官方规则是"底边对齐格底"，
+/// 有这条线就能一眼看出对齐对不对（而不是靠猜）。
+fn draw_debug_overlay(
+    canvas: &mut WindowCanvas,
+    draws: &[TileDraw],
+    tiles: &HashMap<TileKey, Texture<'_>>,
+    cam: (i32, i32),
+    mouse: (f32, f32),
+    layer_filter: u8,
+) -> Result<(), sdl3::Error> {
+    // 1) 格网（48×32）
+    canvas.set_draw_color(C_GRID);
+    let mut gx = 0.0;
+    while gx < WIN_W as f32 {
+        canvas.draw_line(FPoint::new(gx, BAR_TOP), FPoint::new(gx, BAR_TOP + VIEW_H))?;
+        gx += UNIT_X as f32;
+    }
+    let mut gy = BAR_TOP;
+    while gy < BAR_TOP + VIEW_H {
+        canvas.draw_line(FPoint::new(0.0, gy), FPoint::new(WIN_W as f32, gy))?;
+        gy += UNIT_Y as f32;
+    }
+
+    // 2) 各层落点框
+    for d in draws {
+        let want = match layer_filter {
+            0 => true,
+            1 => d.layer == Layer::Ground,
+            2 => d.layer == Layer::Mid,
+            _ => d.layer == Layer::Front,
+        };
+        if !want {
+            continue;
+        }
+        let Some(r) = rect_of(d, tiles) else { continue };
+        canvas.set_draw_color(match d.layer {
+            Layer::Ground => C_GRID_GROUND,
+            Layer::Mid => C_GRID_MID,
+            Layer::Front => C_GRID_FRONT,
+        });
+        canvas.draw_rect(r)?;
+        if d.layer == Layer::Front {
+            let by = BAR_TOP + d.y as f32 + UNIT_Y as f32;
+            canvas.set_draw_color(C_CELLBASE);
+            canvas.draw_line(
+                FPoint::new(d.x as f32, by),
+                FPoint::new(d.x as f32 + UNIT_X as f32, by),
+            )?;
+        }
+    }
+
+    // 3) 鼠标十字线 + 所在格 + 读数
+    let (mx, my) = mouse;
+    if (BAR_TOP..BAR_TOP + VIEW_H).contains(&my) {
+        let cx = cam.0 + (mx / UNIT_X as f32).floor() as i32;
+        let cy = cam.1 + ((my - BAR_TOP) / UNIT_Y as f32).floor() as i32;
+        let hx = (cx - cam.0) as f32 * UNIT_X as f32;
+        let hy = BAR_TOP + (cy - cam.1) as f32 * UNIT_Y as f32;
+        canvas.set_draw_color(C_CROSS);
+        canvas.draw_rect(FRect::new(hx, hy, UNIT_X as f32, UNIT_Y as f32))?;
+        canvas.draw_line(FPoint::new(mx, BAR_TOP), FPoint::new(mx, BAR_TOP + VIEW_H))?;
+        canvas.draw_line(FPoint::new(0.0, my), FPoint::new(WIN_W as f32, my))?;
+
+        // 该像素最上层的那一条（绘制顺序里最后命中的）
+        let topmost = draws.iter().rev().find(|d| {
+            rect_of(d, tiles)
+                .is_some_and(|r| mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h)
+        });
+        let line = match topmost {
+            Some(d) => {
+                let (w, h) = match tiles.get(&(d.lib, d.area, d.index)) {
+                    Some(t) => {
+                        let q = t.query();
+                        (q.width as i32, q.height as i32)
+                    }
+                    None => (0, 0),
+                };
+                format!(
+                    "CELL({},{})  {:<6?}  #{:<5} {}x{}  格顶y={} top_y={}  (左键=终端详读)",
+                    cx,
+                    cy,
+                    d.layer,
+                    d.index,
+                    w,
+                    h,
+                    d.y,
+                    d.top_y(w, h)
+                )
+            }
+            None => format!("CELL({cx},{cy})  该像素无图块覆盖"),
+        };
+        let ry = BAR_TOP + VIEW_H - 11.0;
+        fill(
+            canvas,
+            0.0,
+            ry - 1.0,
+            WIN_W as f32,
+            12.0,
+            Color::RGB(0, 0, 0),
+        )?;
+        text(canvas, &trunc(&line, 79), 2.0, ry, C_CROSS)?;
+    }
+    Ok(())
+}
+
+// ---------- 调试工具（D 叠加层 / P 打印清单 / 左键点哪读哪）----------
+
+/// 一条绘制指令的屏幕矩形（**已计入 `top_y`**，即图块真正落下的位置）。
+fn rect_of(d: &TileDraw, tiles: &HashMap<TileKey, Texture<'_>>) -> Option<FRect> {
+    let t = tiles.get(&(d.lib, d.area, d.index))?;
+    let q = t.query();
+    let top = d.top_y(q.width as i32, q.height as i32);
+    Some(FRect::new(
+        d.x as f32,
+        BAR_TOP + top as f32,
+        q.width as f32,
+        q.height as f32,
+    ))
+}
+
+/// 把视口内的绘制清单打到终端（顺序即绘制顺序）——可复制的 debug log。
+fn dump_draws(draws: &[TileDraw], cam: (i32, i32), tiles: &HashMap<TileKey, Texture<'_>>) {
+    println!(
+        "\n[draws] 视口内 {} 条（顺序即绘制顺序；top_y 是图块真实落点）",
+        draws.len()
+    );
+    for (i, d) in draws.iter().enumerate() {
+        let (w, h) = match tiles.get(&(d.lib, d.area, d.index)) {
+            Some(t) => {
+                let q = t.query();
+                (q.width as i32, q.height as i32)
+            }
+            None => (0, 0),
+        };
+        println!(
+            "  [{i:3}] {:<6?} 格({:4},{:4}) 图号={:5} {:3}x{:<4} 格顶y={:5} top_y={:5} x={:4} 库={}{}",
+            d.layer,
+            cam.0 + d.x / UNIT_X,
+            cam.1 + d.y / UNIT_Y,
+            d.index,
+            w,
+            h,
+            d.y,
+            d.top_y(w, h),
+            d.x,
+            d.lib.file_name(d.area),
+            if d.ani_frames > 0 { " ANI" } else { "" }
+        );
+    }
+}
+
+/// 报告某个视口像素被哪些图块覆盖（按绘制顺序，最后一个在最上层）。
+fn probe_at(
+    px: f32,
+    py: f32,
+    cam: (i32, i32),
+    draws: &[TileDraw],
+    tiles: &HashMap<TileKey, Texture<'_>>,
+) {
+    let cx = cam.0 + (px / UNIT_X as f32).floor() as i32;
+    let cy = cam.1 + ((py - BAR_TOP) / UNIT_Y as f32).floor() as i32;
+    println!("\n[probe] 视口像素=({px:.0},{py:.0}) → 格=({cx},{cy})");
+    let mut hits = 0;
+    for (i, d) in draws.iter().enumerate() {
+        let Some(r) = rect_of(d, tiles) else { continue };
+        if (r.x..r.x + r.w).contains(&px) && (r.y..r.y + r.h).contains(&py) {
+            hits += 1;
+            println!(
+                "  [{i:3}] {:<6?} 格({:4},{:4}) 图号={:5} 尺寸={:.0}x{:.0} 落点=({:.0},{:.0})..({:.0},{:.0}) 库={}",
+                d.layer,
+                cam.0 + d.x / UNIT_X,
+                cam.1 + d.y / UNIT_Y,
+                d.index,
+                r.w,
+                r.h,
+                r.x,
+                r.y,
+                r.x + r.w,
+                r.y + r.h,
+                d.lib.file_name(d.area)
+            );
+        }
+    }
+    if hits == 0 {
+        println!("  （该像素没有任何图块覆盖）");
+    } else {
+        println!("  共 {hits} 条；**最后一条在最上层**");
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
@@ -403,6 +603,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tiles: HashMap<TileKey, Texture<'_>> = HashMap::new();
     let mut draws: Vec<TileDraw> = Vec::new();
 
+    // 调试叠加层（D 开关）：画格网 + 每层落点框 + 鼠标十字线，并"点哪读哪"
+    let mut debug = false;
+    let mut layer_filter: u8 = 0; // 0=全部 1=仅地表 2=仅中间 3=仅前景
+    let mut mouse = (0.0f32, 0.0f32);
+
     let mut music_on = true;
     let started = Instant::now();
 
@@ -462,6 +667,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Some(Keycode::Up) => cam.1 -= 2,
                         Some(Keycode::Down) => cam.1 += 2,
                         Some(Keycode::Home) => cam = (0, 0),
+                        // ---- 调试叠加层（只在地图模式，避免污染登录输入框）----
+                        Some(Keycode::D) => {
+                            debug = !debug;
+                            println!(
+                                "[debug] 叠加层 {}（L 过滤图层 / P 打印绘制清单 / 左键点哪读哪）",
+                                if debug { "ON" } else { "OFF" }
+                            );
+                        }
+                        Some(Keycode::L) => {
+                            layer_filter = (layer_filter + 1) % 4;
+                            println!(
+                                "[debug] 图层过滤 = {}",
+                                ["全部", "仅地表", "仅中间", "仅前景"][layer_filter as usize]
+                            );
+                        }
+                        Some(Keycode::P) => {
+                            dump_draws(&draws, cam, &tiles);
+                        }
                         Some(Keycode::LeftBracket) | Some(Keycode::RightBracket) => {
                             if let Some(a) = &archive {
                                 let step: i64 = if keycode == Some(Keycode::RightBracket) {
@@ -478,6 +701,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     },
                     _ => {}
                 },
+                Event::MouseMotion { x, y, .. } => mouse = (x, y),
+                Event::MouseButtonDown {
+                    mouse_btn: MouseButton::Left,
+                    x,
+                    y,
+                    ..
+                } if mode == 2 => probe_at(x, y, cam, &draws, &tiles),
                 Event::TextInput { text: t, .. } if mode == 1 => {
                     for ch in t.chars() {
                         if ch.is_ascii_graphic() || ch == ' ' {
@@ -517,6 +747,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cam,
                 map_i,
                 archive.as_ref().map(|a| a.len()).unwrap_or(0),
+                debug,
+                layer_filter,
+                mouse,
             )?;
         } else {
             draw_login_view(
@@ -538,7 +771,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // 顶部/底部公共条
         let hint = if mode == 2 {
-            "ARROWS PAN   [ ] MAP   HOME RESET   F1 LOGIN   M MUSIC   ESC QUIT"
+            "ARROWS PAN  [ ] MAP  HOME  D DEBUG  L LAYER  P DUMP  CLICK PROBE  F1 LOGIN  ESC QUIT"
         } else {
             "TAB FIELD   ENTER LOGIN   [ ] LIB   , . IMG   F2 MAP   M MUSIC   ESC QUIT"
         };
@@ -617,6 +850,9 @@ fn draw_map_view<'a, T>(
     cam: (i32, i32),
     map_i: usize,
     map_count: usize,
+    debug: bool,
+    layer_filter: u8,
+    mouse: (f32, f32),
 ) -> Result<(), sdl3::Error> {
     fill(canvas, 0.0, 0.0, WIN_W as f32, BAR_TOP, C_PANEL)?;
 
@@ -647,8 +883,16 @@ fn draw_map_view<'a, T>(
     let cols = WIN_W as i32 / UNIT_X + 3;
     let rows = VIEW_H as i32 / UNIT_Y + 3;
     m.visible_tiles(cam.0, cam.1, cols, rows, draws);
+    // 裁剪到地图视口：`visible_tiles` 左上会多给一格（坐标可能为负），
+    // 且高图块（树/墙）本身上端会超出视口——不裁剪就会画到上下信息条上。
+    canvas.set_clip_rect(Some(Rect::new(0, BAR_TOP as i32, WIN_W, VIEW_H as u32)));
     for d in draws.iter() {
         draw_tile(canvas, tc, libs, tiles, dir, d, BAR_TOP)?;
+    }
+    canvas.set_clip_rect(None::<Rect>);
+
+    if debug {
+        draw_debug_overlay(canvas, draws, tiles, cam, mouse, layer_filter)?;
     }
 
     // 信息条

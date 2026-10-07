@@ -320,27 +320,47 @@ pub struct TileDraw {
 }
 
 impl TileDraw {
-    /// 图块落点的 Y（相对视口）。
+    /// 图块落点的 Y（相对视口）—— **三层各有一条规则**，不是同一种对齐。
     ///
-    /// * **地表 / 中间**：左上角对齐格 ⇒ 就是 [`TileDraw::y`]。
-    /// * **前景**：
-    ///   - "平"图块（48×32 或 96×64）且**无动画** ⇒ 左上角对齐（官方 floor 趟）；
-    ///   - 其余（树、墙、Alpha 混合…）⇒ **底边对齐格的底边**。
+    /// | 层 | 落点 |
+    /// |---|---|
+    /// | 地表 | 左上角对齐**格的顶边** |
+    /// | 中间 | 左上角对齐**格的底边**（= 低一格）⚠️ |
+    /// | 前景 | "平"图块（48×32 / 96×64 且无动画）⇒ 格顶；其余 ⇒ **底边对齐格的底边** |
     ///
-    /// 依据：Delphi `PlayScn.pas:1172`（`mmm := m + UNITY - DSurface.Height`）与
-    /// Crystal `GameScene.cs:10814/10933`（`drawY` 取格底，再 `- s.Height`）。
-    /// 这两份实现在"平的"情形下**天然等价**（`height == 32` 时两种算法同解），
-    /// 差异只出现在高于一格的图块上——正是之前错位的地方。
+    /// **依据（Delphi 官方客户端；以 actor 的落点公式为参照系）**：
+    ///
+    /// actor 的世界→屏幕映射见 `PlayScn.pas:1887`：
+    /// `dy := (ry - Top - 1) * UNITY + m_nDefYY + py`，其中 `m_nDefYY = defy = -UNITY*2`。
+    /// 取 `py = 0` 得"格原点" `Y0(ry) = 32*ry - 96`（代 `Top = 0`）；又因 actor 的脚底
+    /// 正是 `Y0 + py + H` 且锚点满足 `H + py = 32`，故 **格底边 = `Y0 + UNITY`**。
+    ///
+    /// 据此换算三层（地表/中间先画进 `m_MapSurface`，再以源偏移 `(UNITX*3, UNITY*2)`
+    /// 贴到 `m_ObjSurface`）：
+    ///
+    /// - 地表 `nY := -UNITY*2`（`PlayScn.pas:555`）⇒ 落点 `= Y0` ⇒ **格顶**
+    /// - 中间 `nY := -UNITY`（`:581`，比地表少一个 `-UNITY`）⇒ 落点 `= Y0 + UNITY` ⇒ **格底**
+    /// - 前景 `mmm := m + UNITY - Height`（`:1166`）⇒ 底边 `= Y0 + UNITY` ⇒ **格底**
+    ///
+    /// ⇒ 官方里 **地表与另两层差整整一格**。`MapUnit.pas.LoadMapArr` 装载时对 `wMidImg`
+    /// **没有任何预移位补偿**（同文件的 `UpdateMapSeg` 是空函数），所以这是渲染器的
+    /// 真实行为，而不是数据约定。
+    ///
+    /// ⚠️ Crystal（`GameScene.cs:10707/10719/10755`）把中间层**改成了格顶**，属它的"修正"。
+    /// 本项目按 **C-1「体感与原版一致」** 跟随官方。
     pub fn top_y(&self, width: i32, height: i32) -> i32 {
-        if self.layer != Layer::Front {
-            return self.y;
-        }
-        let flat =
-            (width == UNIT_X && height == UNIT_Y) || (width == 2 * UNIT_X && height == 2 * UNIT_Y);
-        if flat && self.ani_frames == 0 {
-            self.y
-        } else {
-            self.y + UNIT_Y - height
+        match self.layer {
+            Layer::Ground => self.y,
+            Layer::Mid => self.y + UNIT_Y,
+            Layer::Front => {
+                let flat = (width == UNIT_X && height == UNIT_Y)
+                    || (width == 2 * UNIT_X && height == 2 * UNIT_Y);
+                if flat && self.ani_frames == 0 {
+                    self.y
+                } else {
+                    self.y + UNIT_Y - height
+                }
+            }
         }
     }
 }
@@ -350,6 +370,11 @@ impl Map {
     ///
     /// 画序：地表 → 中间 → 前景，每层内部按 `y` 递增 ——
     /// 于是靠下的前景物件自然覆盖靠上的，**Y 序遮挡不需要额外排序**。
+    ///
+    /// 范围是 `[-1, cols) × [-1, rows)`：**左上各多画一格**。原因：
+    /// 中间层与前景层是"格底对齐"的，而地表图块（96×64）还会跨 2 格，
+    /// 所以视口边界外的那一格会有可见部分。渲染层负责把这些越界指令裁掉
+    /// （`x`/`y` 因此可能是负数）。
     ///
     /// `out` 会被清空后复用（避免每帧分配）。
     pub fn visible_tiles(
@@ -363,8 +388,8 @@ impl Map {
         out.clear();
         let (w, h) = (self.width as i32, self.height as i32);
         for layer in [Layer::Ground, Layer::Mid, Layer::Front] {
-            for dy in 0..rows {
-                for dx in 0..cols {
+            for dy in -1..rows {
+                for dx in -1..cols {
                     let (x, y) = (cam_x + dx, cam_y + dy);
                     if x < 0 || y < 0 || x >= w || y >= h {
                         continue;
@@ -654,22 +679,29 @@ mod tests {
     }
 
     #[test]
-    fn front_layer_bottom_alignment() {
-        // 地表 / 中间：左上角对齐，不受高度影响
-        for layer in [Layer::Ground, Layer::Mid] {
-            let d = TileDraw {
-                layer,
-                lib: Lib::Tiles,
-                area: 0,
-                index: 0,
-                x: 0,
-                y: 64,
-                ani_frames: 0,
-            };
-            assert_eq!(d.top_y(48, 32), 64);
-            assert_eq!(d.top_y(48, 200), 64, "非前景层不做底边对齐");
-        }
+    fn layer_placement_rules() {
+        let mk = |layer: Layer| TileDraw {
+            layer,
+            lib: Lib::Tiles,
+            area: 0,
+            index: 0,
+            x: 0,
+            y: 64,
+            ani_frames: 0,
+        };
+        // 地表：格顶，且与图高无关
+        assert_eq!(mk(Layer::Ground).top_y(96, 64), 64);
+        assert_eq!(mk(Layer::Ground).top_y(48, 200), 64);
+        // 中间：**格底**（官方 PlayScn.pas:581 比地表少一个 -UNITY）
+        assert_eq!(mk(Layer::Mid).top_y(48, 32), 64 + UNIT_Y);
+        assert_eq!(
+            mk(Layer::Mid).top_y(48, 32) - mk(Layer::Ground).top_y(48, 32),
+            UNIT_Y
+        );
+    }
 
+    #[test]
+    fn front_layer_bottom_alignment() {
         let front = |ani: u8| TileDraw {
             layer: Layer::Front,
             lib: Lib::Objects,
