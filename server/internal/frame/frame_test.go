@@ -37,16 +37,20 @@ func helloEnvelope() *protocol.Envelope {
 //	Envelope.seq = 1                      →  08 01
 //	Envelope.body 字段号 0x0101（=257）    →  8A 10            （LEN 类型：257<<3|2 = 2058）
 //	ClientHello 长度 15                   →  0F
-//	  protocol_version = 1                →  08 01
+//	  protocol_version = 2                →  08 02
 //	  client_build = "test"               →  12 04 74 65 73 74
 //	  locale = "zh-CN"                    →  1A 05 7A 68 2D 43 4E
 //	帧头 = u32 小端长度 20                  →  14 00 00 00
+//
+// ⚠️ 版本号的字节是唯一随 `protocol/version.txt` 变的字段（其余都是定长字符串）。
+// 这正是它作为"改协议的门"的用法：version 1 → 2（修 `Direction` 枚举顺序）时，
+// 必须**看着**这一行确认改的只有它，而不是盲抄一遍新哈希。
 func TestGoldenFrameBytes(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Write(&buf, helloEnvelope()); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	const wantHex = "1400000008018a100f08011204746573741a057a682d434e"
+	const wantHex = "1400000008018a100f08021204746573741a057a682d434e"
 	got := hex.EncodeToString(buf.Bytes())
 	if got != wantHex {
 		t.Fatalf("黄金报文不符（协议一改这里必须同步确认）\n  want %s\n  got  %s", wantHex, got)
@@ -55,7 +59,7 @@ func TestGoldenFrameBytes(t *testing.T) {
 	// ⚠️ 这里用了 protocol.Version（= version.txt）⇒ **一次 schema/版本变更就应该让
 	// 这条测试红**，这正是它存在的意义：改协议不能"顺手改过去"。
 	sum := sha256.Sum256(buf.Bytes())
-	const wantSum = "3586942026cb29f7f0f3db3c83f766b63f35da8afff403806020f1b15932ad27"
+	const wantSum = "994c819606d8c465550516fed310e9950aa580270a4fe0c02716904e1188d02c"
 	if hex.EncodeToString(sum[:]) != wantSum {
 		t.Logf("帧字节 = %s", got)
 		t.Logf("sha256  = %s", hex.EncodeToString(sum[:]))

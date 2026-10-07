@@ -31,44 +31,52 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// 8 方向。值沿用原版顺序（0 = 未指定/无方向）。
+// 8 方向。值 = **原版编号 + 1**（原版 0..7，见 GameOfMir `Common/Grobal2.pas:19-26`，
+// 服务端侧对应 `entity.DirUp..DirUpLeft`）：
+//
+//	原版 0=上 1=右上 2=右 3=右下 4=下 5=左下 6=左 7=左上
+//
+// ⚠️ 曾经写反过：枚举按"下→逆时针"排（DIR_DOWN=1 …），注释却声称"沿用原版顺序"。
+// 那种错**不会报错**，只会让每个实体的朝向差 4 个方向（上看起来是下）——
+// 正是 §9 要防的"两端都以为自己对"。改这里 = 改线上的枚举值 ⇒ 必须 bump version.txt。
+// 0 保留给"未指定"（原版 0 是"上"，所以这里**不能**直接照抄原版编号）。
 type Direction int32
 
 const (
 	Direction_DIRECTION_UNSPECIFIED Direction = 0
-	Direction_DIR_DOWN              Direction = 1
-	Direction_DIR_DOWN_RIGHT        Direction = 2
-	Direction_DIR_RIGHT             Direction = 3
-	Direction_DIR_UP_RIGHT          Direction = 4
-	Direction_DIR_UP                Direction = 5
-	Direction_DIR_UP_LEFT           Direction = 6
-	Direction_DIR_LEFT              Direction = 7
-	Direction_DIR_DOWN_LEFT         Direction = 8
+	Direction_DIR_UP                Direction = 1 // 原版 0
+	Direction_DIR_UP_RIGHT          Direction = 2 // 原版 1
+	Direction_DIR_RIGHT             Direction = 3 // 原版 2
+	Direction_DIR_DOWN_RIGHT        Direction = 4 // 原版 3
+	Direction_DIR_DOWN              Direction = 5 // 原版 4
+	Direction_DIR_DOWN_LEFT         Direction = 6 // 原版 5
+	Direction_DIR_LEFT              Direction = 7 // 原版 6
+	Direction_DIR_UP_LEFT           Direction = 8 // 原版 7
 )
 
 // Enum value maps for Direction.
 var (
 	Direction_name = map[int32]string{
 		0: "DIRECTION_UNSPECIFIED",
-		1: "DIR_DOWN",
-		2: "DIR_DOWN_RIGHT",
+		1: "DIR_UP",
+		2: "DIR_UP_RIGHT",
 		3: "DIR_RIGHT",
-		4: "DIR_UP_RIGHT",
-		5: "DIR_UP",
-		6: "DIR_UP_LEFT",
+		4: "DIR_DOWN_RIGHT",
+		5: "DIR_DOWN",
+		6: "DIR_DOWN_LEFT",
 		7: "DIR_LEFT",
-		8: "DIR_DOWN_LEFT",
+		8: "DIR_UP_LEFT",
 	}
 	Direction_value = map[string]int32{
 		"DIRECTION_UNSPECIFIED": 0,
-		"DIR_DOWN":              1,
-		"DIR_DOWN_RIGHT":        2,
+		"DIR_UP":                1,
+		"DIR_UP_RIGHT":          2,
 		"DIR_RIGHT":             3,
-		"DIR_UP_RIGHT":          4,
-		"DIR_UP":                5,
-		"DIR_UP_LEFT":           6,
+		"DIR_DOWN_RIGHT":        4,
+		"DIR_DOWN":              5,
+		"DIR_DOWN_LEFT":         6,
 		"DIR_LEFT":              7,
-		"DIR_DOWN_LEFT":         8,
+		"DIR_UP_LEFT":           8,
 	}
 )
 
@@ -618,16 +626,16 @@ const file_common_proto_rawDesc = "" +
 	"\x05level\x18\x11 \x01(\rR\x05level\x12\x12\n" +
 	"\x04gold\x18\x12 \x01(\x04R\x04gold*\xa7\x01\n" +
 	"\tDirection\x12\x19\n" +
-	"\x15DIRECTION_UNSPECIFIED\x10\x00\x12\f\n" +
-	"\bDIR_DOWN\x10\x01\x12\x12\n" +
-	"\x0eDIR_DOWN_RIGHT\x10\x02\x12\r\n" +
-	"\tDIR_RIGHT\x10\x03\x12\x10\n" +
-	"\fDIR_UP_RIGHT\x10\x04\x12\n" +
+	"\x15DIRECTION_UNSPECIFIED\x10\x00\x12\n" +
 	"\n" +
-	"\x06DIR_UP\x10\x05\x12\x0f\n" +
-	"\vDIR_UP_LEFT\x10\x06\x12\f\n" +
-	"\bDIR_LEFT\x10\a\x12\x11\n" +
-	"\rDIR_DOWN_LEFT\x10\b*m\n" +
+	"\x06DIR_UP\x10\x01\x12\x10\n" +
+	"\fDIR_UP_RIGHT\x10\x02\x12\r\n" +
+	"\tDIR_RIGHT\x10\x03\x12\x12\n" +
+	"\x0eDIR_DOWN_RIGHT\x10\x04\x12\f\n" +
+	"\bDIR_DOWN\x10\x05\x12\x11\n" +
+	"\rDIR_DOWN_LEFT\x10\x06\x12\f\n" +
+	"\bDIR_LEFT\x10\a\x12\x0f\n" +
+	"\vDIR_UP_LEFT\x10\b*m\n" +
 	"\tCharClass\x12\x1a\n" +
 	"\x16CHAR_CLASS_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12CHAR_CLASS_WARRIOR\x10\x01\x12\x15\n" +
