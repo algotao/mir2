@@ -1,0 +1,12 @@
+# mir2 的 Cargo 配置
+#
+# 把 Rust 构建产物（target/）移出仓库，原因：
+#   1. 仓库根是 Go 模块（go.mod）。`go build ./...` 会遍历整个目录树，
+#      而 target/ 动辄数 GB、上百万文件，会显著拖慢 Go 工具链。
+#   2. 避免 target/ 进入 git 与大小写检查范围（D-20）。
+#
+# 相对路径的解析基准 = 「.cargo 目录所在目录的父目录」= 仓库根 mir2/。
+# 因此 `../.mir2-cargo-target` 落在 $WS/.mir2-cargo-target（与 mir2 平级）。
+# 用相对路径而非绝对路径，仓库整体搬迁后仍然有效。
+[build]
+target-dir = "../.mir2-cargo-target"

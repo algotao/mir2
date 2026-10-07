@@ -138,8 +138,9 @@ mir2/
 - [ ] **基准版本**：`Client/` 还是 `MirClient/`（D-10）
 - [ ] **IDL 核心子集**：握手 / 登录 / 选角 / 进图 / 移动 / 攻击 / 聊天 / 物品
 - [ ] **素材获取**（D-15，**非技术阻塞**，见 §7 R-2）
-- [x] ~~验证 SDL3 在 macOS 的依赖形态~~ ⇒ **已核实**：用 `sdl3` 的 `build-from-source-static`
-      （D-04）。只剩落地验证：Mac 上装 CMake 后跑一次构建
+- [x] ~~验证 SDL3 在 macOS 的依赖形态~~ ⇒ **已核实 + 落地验证通过**（2026-10-07）：
+      `sdl3` 0.20 的 `build-from-source-static`（D-04）；Mac 上 CMake 4.4 构建成功，
+      客户端骨架 `client/app` 编译通过（登录界面 + 程序化音乐，供体感抽查）
 - [ ] **定 Linux 侧产物的目标架构**（D-18 的待确认）：`linux/amd64`（与 `mir2go` 镜像一致）
       / `linux/arm64`（Mac M4 上 Docker 的默认）/ 两者。纯 Go + 无 cgo（D-21）让两者都容易出
 

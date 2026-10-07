@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/algotao/mir2"
+
+[workspace.dependencies]
+# D-04：从源码构建并静态链接 SDL3（SDL3 源码随 crate 编入，运行期零依赖 C-7）
+sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static"] }
+
+# D-01：体积优先的发布配置
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

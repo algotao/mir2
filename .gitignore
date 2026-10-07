@@ -52,3 +52,30 @@ go.work.sum
 
 # env
 .env
+
+# ===== macOS =====
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails / resource forks
+._*
+
+# Volume metadata
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Directories created on network / external volumes
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# ===== 编辑器 / 工作区（本地专用，不入库）=====
+mir2.code-workspace

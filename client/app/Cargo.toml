@@ -1,0 +1,12 @@
+[package]
+name = "mir2-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mir2-app"
+path = "src/main.rs"
+
+[dependencies]
+sdl3.workspace = true
