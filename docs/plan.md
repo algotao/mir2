@@ -52,6 +52,7 @@
 | C-5 | 全栈 UTF-8，**运行期零字符集转码** | D-02 |
 | C-6 | 路径全小写、无中文、`/` 分隔 | D-03 |
 | C-7 | 客户端单 exe、**零运行期依赖** | D-01 |
+| C-8 | 客户端两个产物共用 `core`；**e2e 产物禁止依赖 SDL3** | D-18 |
 
 ---
 
@@ -68,13 +69,15 @@ mir2/
 │   ├── internal/  从 mir2go 抽取的领域层（world/entity/magic/script/guild/castle/…）
 │   ├── protocol/  生成的协议代码（入库）
 │   └── cmd/       gamesvr / accountsvc / gate（进程划分见 §4.3）
-├── client/        Rust + SDL3（Cargo workspace）
+├── client/        Rust（Cargo workspace，**两个产物**，见 D-18）
 │   ├── protocol/  生成的协议代码
-│   ├── core/      纯函数：解码/资产/配置，无 IO，可单测
-│   ├── render/    索引纹理 → 调色板查表、Y 序、遮挡、光照
-│   ├── ui/        自绘控件（数据驱动，见 §4.4）
-│   ├── scene/     地图、Actor、动画状态机、特效
-│   └── net/       连接、握手、消息泵（独立线程 → channel）
+│   ├── core/      纯函数：协议、会话状态机、解码、资产、配置（**无 SDL**）
+│   ├── net/       连接、握手、消息泵（独立线程 → channel）
+│   ├── e2e/       ★ 产物 1：headless CLI（docker 里跑，**禁止依赖 SDL3**）
+│   ├── app/       ★ 产物 2：SDL3 界面程序（Windows 发布 / macOS M4 体验）
+│   ├── render/    索引纹理 → 调色板查表、Y 序、遮挡、光照   ┐
+│   ├── ui/        自绘控件（数据驱动，见 §4.4）              ├ 仅 app 依赖 SDL3
+│   └── scene/     地图、Actor、动画状态机、特效              ┘
 └── tools/         资产转换（m2pk）、协议代码生成、数据导入、assetnorm
 ```
 
@@ -89,6 +92,10 @@ mir2/
 
 ### 4.2 客户端分层原则
 
+0. **两个产物，一个 `core`**（D-18）。`client/e2e`（headless CLI，docker 里跑）与
+   `client/app`（SDL3 GUI）**共用 `client/core`**；且 **e2e 必须走与 app 相同的协议编解码与
+   会话状态机**，不允许任何"测试专用捷径"。CI 门禁：
+   `cargo tree -p mir2-e2e | grep -q sdl3 && exit 1`。
 1. **`core` 无 IO**。协议、解码、资产、配置全是纯函数——这是能跑满单测的前提。
 2. **动画数据驱动**。遗留是 70 个手写动画类（`AxeMon` 34 + `magiceff` 15 +
    `HerbActor` 10 + `Actor` 9 = 7.6k 行）。新版 = **一个状态机引擎 + 动作表**。
@@ -126,6 +133,8 @@ mir2/
 - [ ] **基准版本**：`Client/` 还是 `MirClient/`（D-10）
 - [ ] **IDL 核心子集**：握手 / 登录 / 选角 / 进图 / 移动 / 攻击 / 聊天 / 物品
 - [ ] **素材获取**（D-15，**非技术阻塞**，见 §7 R-2）
+- [ ] **验证 SDL3 在 macOS 的依赖形态**（D-04 / R-9）：`sdl3` crate 能否 vendored 构建
+- [ ] **定 e2e 产物的 docker 目标架构**（D-18：`linux/amd64` / `linux/arm64` / 两者）
 
 ### M1「能跑」——可玩纵切片（12–15 天）
 
@@ -137,7 +146,9 @@ mir2/
 - [ ] 地图加载 + 地表/前景两层 + Y 序 + 遮挡过滤
 - [ ] 协议：登录 → 选角 → 进图 → 走路 → 打怪 → 掉落捡取 → 升级
 - [ ] 聊天显示与发送、背包/装备/状态窗口、技能栏
-- [ ] **契约测试跑通**（Go 服务端 ⇄ Rust 客户端）
+- [ ] **`client/e2e` 产物在 docker 里跑通剧本**（Go 服务端 ⇄ Rust 客户端，headless）
+- [ ] CI 门禁就位：`cargo tree -p mir2-e2e` 不含 `sdl3` + 契约测试进流水线
+- [ ] **`client/app` 在 macOS M4 上跑起来、连上 `server/`**（同时验证 SDL3 可用性，D-04）
 - [ ] 与 `server/` 实机联调
 
 ### M2「功能对齐」（+25–35 天）
@@ -188,6 +199,8 @@ mir2/
 | R-6 | 把"行数/天"当目标函数 | 诱导写多行但错的代码（如照搬 70 个动画类） | D-08 用验收点 |
 | R-7 | 边搬边改 | 回归无法定位 | 搬迁只改 module path 与 import |
 | R-8 | 两端串行开发 | 排期翻倍 | M0 定 IDL，两端并行 |
+| R-9 | **SDL3 在 macOS 上的依赖形态**（vendored 构建 vs 系统库） | C-7「零运行期依赖」在 Mac 上可能不成立 | M0 就验证；若必须 `brew install sdl3` 则写明降级；若两者都不顺需重审 D-01（备选纯 Rust 的 `winit` + `wgpu`） |
+| R-10 | e2e 与 app 用了不同的实现路径 | 契约测试失去意义 | D-18 的纪律 + `cargo tree` 门禁 |
 
 ---
 
