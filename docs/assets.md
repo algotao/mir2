@@ -62,7 +62,7 @@ IndexCount × int32         // 每项 = 对应图在 .wil 中的偏移
 
 ### 3.3 `.map`（地图）
 
-**权威实现已存在**：`/data/git/mir2go/internal/world/map.go`（有测试）。新项目照抄语义。
+**权威实现已存在**：`$WS/mir2go/internal/world/map.go`（有测试）。新项目照抄语义。
 
 | 项 | 值 |
 |---|---|

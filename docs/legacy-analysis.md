@@ -1,6 +1,6 @@
 # 遗留客户端实测分析
 
-> 对象：`/data/git/mir2standard/GameOfMir/Client`（Delphi 6，**只读**）
+> 对象：`$WS/mir2standard/GameOfMir/Client`（Delphi 6，**只读**）
 > 方法：全部数字由本文 §8 的命令实测得出，可复现。
 > ⚠️ **源码是 GBK**，直接 grep 中文是静默 0 命中，必须先 `iconv -f GBK -t UTF-8`。
 >
@@ -208,7 +208,7 @@ Graphics/Monster/%d.wil
 
 ```bash
 # 行数
-cd /data/git/mir2standard/GameOfMir/Client && wc -l *.pas *.inc | sort -rn
+cd $WS/mir2standard/GameOfMir/Client && wc -l *.pas *.inc | sort -rn
 
 # GBK → UTF-8（后续 grep 必须走这一步）
 mkdir -p /tmp/mir2cli-utf8
@@ -227,12 +227,12 @@ grep -oP '^\s*\K[A-Za-z0-9_]+(?=\s*:\s*TDWindow)' /tmp/mir2cli-utf8/FState.pas
 grep -cP '^\s*T[A-Za-z0-9_]+\s*=\s*class' AxeMon.pas           # 34
 
 # 资源文件名规范化面（mir2go 侧）
-cd /data/git/mir2go && find data -type f | grep -Pc '[A-Z]'     # 855
+cd $WS/mir2go && find data -type f | grep -Pc '[A-Z]'     # 855
 find data -type f | grep -Pc '[^\x00-\x7F]'                     # 324
 
 # 资产体积与压缩收益
-du -sh /data/git/mir2go/data/map                                # 242M
-gzip -9 -c /data/git/mir2go/data/map/3.map | wc -c              # 0.059x
+du -sh $WS/mir2go/data/map                                # 242M
+gzip -9 -c $WS/mir2go/data/map/3.map | wc -c              # 0.059x
 ```
 
 ---

@@ -23,6 +23,9 @@
 | D-16 | 消息类型用 oneof 信封，**字段号即消息号**，不设独立 `msg_id` | **已定** |
 | D-17 | gate 不做协议感知（只做字节转发 + 限流 + 连接元数据） | **已定** |
 | D-18 | 客户端两个产物（e2e headless / app GUI）共用 `core`，**e2e 禁止依赖 SDL3** | **已定** |
+| D-19 | 构建矩阵：**全部原生在 macOS 上开发与构建**；容器降级为可选 | **已定** |
+| D-20 | 大小写敏感门禁（Mac 默认不敏感，会掩盖大小写 bug） | **已定** |
+| D-21 | **禁 cgo**（`CGO_ENABLED=0`）：静态、可交叉编译、可复现 | **已定** |
 
 ---
 
@@ -51,7 +54,7 @@
 - 服务端配置：`mir2go/data` 全部仅 ~7 MB
 
 **唯一的获取方向**：美术只存在于**原版《传奇》客户端安装目录**（`Data/*.wil`、
-`Graphics/*.wil`、`Wav/`、`Music/`）。`/data/git/Mir2-GeeM2/登陆器/传奇登陆器.zip`（22 MB）
+`Graphics/*.wil`、`Wav/`、`Music/`）。`$WS/Mir2-GeeM2/登陆器/传奇登陆器.zip`（22 MB）
 是登录器不是游戏美术库，不要指望它。
 
 **待你裁决**：素材从哪来（自有副本 / 购买 / 其它来源）。**在素材到位前，
@@ -138,20 +141,34 @@ macOS 默认大小写不敏感，会**掩盖**大小写 bug——由本条一次
 |---|---|---|
 | **Windows** | **发布目标** | 单 exe + 资产目录，零运行期依赖（C-7） |
 | **macOS / Apple Silicon（M4）** | **用户体验端**（开发期的主要体验机） | 能直接跑；target `aarch64-apple-darwin` |
-| Linux（docker） | **只跑 headless 的 e2e 产物**，不跑 GUI | 无显示 / 无音频设备（见 D-18） |
+| Linux / 容器（**可选**） | 只跑 headless 的 e2e 产物，不跑 GUI | 无显示 / 无音频设备（见 D-18） |
 
 **不做**：`.app` bundle、universal2、codesign / notarize、双架构分发（现阶段）。
 
 **代价（反而要求更高）**：mac 会掩盖大小写 bug（D-03 已消灭）；
 路径统一 `/`；UTF-8 无 BOM。
 
-**新增风险（M0 就要验证）**：**SDL3 在 macOS 上的依赖形态**——
-`sdl3` 的 Rust 绑定是否支持 **vendored 构建**（从源码编译，不依赖 Homebrew）。
-这决定 C-7「零运行期依赖」在 Mac 上是否成立：
+**SDL3 在 macOS 的依赖形态 —— 已核实（2026-10-07）**
 
-- 支持 vendored ⇒ C-7 全平台成立；
-- 必须 `brew install sdl3` ⇒ Mac 侧降级为"需要一次 brew 安装"，可接受但要写明；
-- 两者都不顺 ⇒ 需要重新审视 D-01（备选是纯 Rust 的 `winit` + `wgpu`，无系统库依赖）。
+`sdl3` crate（0.20.x）**默认不启用任何 feature**；自带源码构建与静态链接由这些 feature 提供：
+
+| feature | 行为 |
+|---|---|
+| `build-from-source` | 从源码编译 SDL3（动态链接） |
+| **`build-from-source-static`** | **从源码编译并静态链接** ← 采用这个 |
+| `static-link` | 链接**系统已有的**静态 SDL3（仍需先装 SDL3） |
+| `use-pkg-config` / `use-vcpkg` | 查找系统库 |
+| `link-framework` | macOS Framework 形式的 SDL3 |
+
+⇒ 采用 **`build-from-source-static`**：SDL3 源码随 crate 一起编进我们的二进制，
+**C-7「零运行期依赖」在 Mac 上成立**（SDL3 是 zlib 许可，允许静态链接），
+也**不需要** `brew install sdl3`。
+
+**构建期**需要的额外工具：C 编译器（macOS 上 Xcode Command Line Tools 自带 clang）
+与 **CMake**。⚠️ 这是**构建期**依赖，**不违反 C-7**（C-7 说的是运行期）。
+首次编译 SDL3 要几分钟，之后走 cargo 缓存。
+
+**R-9 因此关闭**；D-01 不需要重新审视。
 
 另：macOS 上的**中文输入法**与原版 Windows IME 不等价，属"体感抽查"项，不在 M1 承诺。
 
@@ -500,15 +517,16 @@ Actor.pas     3944 → 3964      AxeMon.pas    2846 → 2913
 
 | 产物 | 形态 | 运行环境 | 依赖 |
 |---|---|---|---|
-| `client/e2e` | CLI 程序（读剧本 → 断言 → 退出码） | **docker（Linux headless）** | **禁止依赖 SDL3** |
+| `client/e2e` | CLI 程序（读剧本 → 断言 → 退出码） | **无显示环境**（Mac 本地 / 容器 / CI 都能跑） | **禁止依赖 SDL3** |
 | `client/app` | GUI 程序 | Windows 发布 / macOS M4 体验 | SDL3 |
 
 两者**共用 `client/core`**：协议编解码、会话状态机、资产解码、配置。
 
 ### 为什么 e2e 不许依赖 SDL3
 
-1. docker 里**没有显示与音频设备**，SDL 初始化会失败（靠 dummy driver 能绕过，但不该靠这个）。
-2. CI 里少一个原生依赖，构建与镜像更稳。
+1. e2e 必须能在**无显示环境**里跑（容器 / CI）。即便在 Mac 上跑，也**不该为了测试拉起
+   窗口与音频设备**——SDL 在无设备时会初始化失败，靠 dummy driver 绕过去是不该依赖的技巧。
+2. 少一个原生依赖：构建更稳、CI 更简单、容器镜像更小。
 3. **职责边界本来就不同**：e2e 验证协议与逻辑；渲染与手感属于"体感抽查"（D-09）。
 
 ### 最重要的一条纪律
@@ -522,7 +540,7 @@ Actor.pas     3944 → 3964      AxeMon.pas    2846 → 2913
 cargo tree -p mir2-e2e | grep -q sdl3 && { echo "e2e 不许依赖 SDL3"; exit 1; }
 ```
 
-### 产物 1 在 docker 里能跑的前提
+### 产物 1 能在无显示环境里跑的前提
 
 **不依赖美术库**（D-15 的素材至今缺失）。所以：
 
@@ -532,7 +550,109 @@ cargo tree -p mir2-e2e | grep -q sdl3 && { echo "e2e 不许依赖 SDL3"; exit 1;
 
 ### 待确认
 
-**产物 1 的 docker 目标架构**：`linux/amd64`（与 `mir2go` 现有镜像一致）
-还是 `linux/arm64`（Mac M4 上的本地 docker），或两者都要？
-影响交叉编译与镜像构建方式，**M0 定**。
+**Linux 侧产物的目标架构**（若日后要容器化部署、或在容器里跑 CI）：
+`linux/amd64`（与 `mir2go` 现有镜像一致）、`linux/arm64`（Mac M4 上 Docker 的默认架构），
+还是两者都要？注意 **Mac M4 上 Docker 默认是 arm64**，与 `mir2go` 的 `linux/amd64` 镜像不一致。
+纯 Go + 无 cgo（D-21）让两者都容易出。**M0 定。**
+
+---
+
+## D-19 构建矩阵：**全部原生在 macOS 上开发与构建**
+
+**状态：已定。**（取代原"docker 为主构建环境"的写法）
+
+**前提**：主力开发机 = macOS（Apple Silicon / M4），**不再用容器做日常开发**。
+
+| 产物 | **构建** | 运行 |
+|---|---|---|
+| `server`（Go） | **Mac 原生**（`CGO_ENABLED=0`） | Mac 本地 / Linux 部署（交叉编译产物） |
+| `client/e2e`（Rust） | **Mac 原生** | Mac 本地（亦可在容器 / CI 里跑，见 D-18） |
+| `client/app`（macOS） | **Mac 原生** | macOS M4 体验 |
+| `client/app`（Windows 发布） | **Mac 原生交叉编译**（`x86_64-pc-windows-gnu` + mingw-w64 + CMake） | Windows |
+
+### 为什么 macOS 产物必须在 macOS 上构建
+
+这条即使容器方案不变也成立：
+
+1. macOS 二进制必须链接 **Apple 的 SDK 与系统框架**（libSystem、CoreFoundation、
+   Cocoa/Metal——SDL3 在 mac 上要用到）。交叉编译到 `aarch64-apple-darwin`
+   需要 macOS SDK 与 `ld64`，Linux 上没有。
+2. 唯一绕法是 **`osxcross`**（把 Apple SDK 塞进 Linux 容器），但：
+   **Apple SDK 的许可不允许再分发**；每次 SDK 升级都要重搭；
+   **Apple Silicon 上任何可执行文件至少要 ad-hoc 签名**，签名要用 Apple 的 `codesign`，
+   `osxcross` 做不了这一步，硬做也很脆。
+3. 即便勉强跑通，迭代体验极差：改一行要等交叉编译 + 手工签名 + 拷回 Mac。
+
+### 容器 / CI 的角色降级为可选
+
+- 只用于 **① Linux 部署产物的可复现构建 ② CI 门禁**（尤其是大小写敏感检查，见 D-20）。
+- 日常开发**不需要**容器：Mac + Go + Rust + CMake 是自足的。
+
+### Mac 上的交叉编译能力（一条命令出目标产物）
+
+```bash
+# Linux 部署产物（纯 Go 才这么轻松，见 D-21）
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./server/...
+# Windows 发布产物
+rustup target add x86_64-pc-windows-gnu
+```
+
+---
+
+## D-20 大小写敏感门禁（Mac 开发特有）
+
+**状态：已定。**
+
+**问题**：macOS 文件系统默认**大小写不敏感**。开发机换成 Mac 之后，
+"大小写 bug 被掩盖"从理论风险变成 **100% 的日常现实**——
+代码里的 import 路径、引用的资源名、`.proto` 文件名，写错了在 Mac 上照样跑，
+**部署到 Linux 才炸**。
+
+**这是 [D-03](#d-03-文件名全小写无中文--分隔) 的互补措施**：
+D-03（全小写命名）**减少风险面**，D-20 **兜住剩下的**（代码/配置里的引用大小写）。
+
+**对策（组合，全部落实）**
+
+| # | 措施 | 说明 |
+|---|---|---|
+| 1 | **用大小写敏感的 APFS 卷放工作区** | 推荐，一劳永逸 |
+| 2 | **CI 里跑一次 Linux 构建 / 测试** | 最终门禁，无法规避 |
+| 3 | 迁移前做冲突自查 | 已实测本工作区 **0 个**冲突 |
+
+**在 Mac 上建大小写敏感卷**
+
+```bash
+diskutil list                                        # 先确认盘号
+diskutil apfs addVolume disk1 APFSX mir2ws -caseSensitive
+```
+
+**冲突自查（在源机器上跑，输出为空即安全）**
+
+```bash
+find $WS -not -path '*/.git/*' -printf '%p\n' | tr 'A-Z' 'a-z' | sort | uniq -d
+```
+
+⚠️ **git 的陷阱**：大小写不敏感的文件系统上，**纯大小写改名会被 git 静默忽略**
+（`core.ignorecase=true`）。必须两步：`git mv a tmp && git mv tmp A`。
+D-03 的资产规范化也会踩到这条。
+
+---
+
+## D-21 禁 cgo（`CGO_ENABLED=0`）
+
+**状态：已定。**
+
+**依据**：`CGO_ENABLED=0` 一次买到三件事：
+
+1. **Mac 上开发、一条命令交叉编译出 Linux 部署产物**——
+   `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build`。有 cgo 就没这么轻松。
+2. **静态二进制**：无 glibc 版本耦合，容器基础镜像可以做到极小。
+3. **构建可复现**：不依赖宿主机的 C 工具链版本。
+
+**现状**：`mir2go` **已符合**，继承即可——它的
+`internal/storage/sqlite/store.go` 开头就写明这个理由，SQLite 用的是
+`modernc.org/sqlite`（纯 Go）而不是 `mattn/go-sqlite3`（cgo）。
+
+**规则**：新增依赖**优先选纯 Go 实现**；确实需要 C 库时**先讨论**，
+不要默默引入 cgo（它会同时破坏上面三件事）。
 

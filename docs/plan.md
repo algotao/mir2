@@ -12,7 +12,7 @@
 
 ### 做
 
-- 传奇（1.76 体系）的**服务端 + 客户端全部重写**，同仓库（`/data/git/mir2`）。
+- 传奇（1.76 体系）的**服务端 + 客户端全部重写**，同仓库（`$WS/mir2`）。
 - server：Go，从 `mir2go`（63,867 行）抽取领域层，**重写协议层**。
 - client：Rust + SDL3，Windows 发布为单 exe + 资产目录，macOS 仅供开发调试。
 - **在体感上与原作一致；在实现上（协议、架构、存储、资产载体）完全自由。**
@@ -73,13 +73,16 @@ mir2/
 │   ├── protocol/  生成的协议代码
 │   ├── core/      纯函数：协议、会话状态机、解码、资产、配置（**无 SDL**）
 │   ├── net/       连接、握手、消息泵（独立线程 → channel）
-│   ├── e2e/       ★ 产物 1：headless CLI（docker 里跑，**禁止依赖 SDL3**）
+│   ├── e2e/       ★ 产物 1：headless CLI（无显示环境，**禁止依赖 SDL3**）
 │   ├── app/       ★ 产物 2：SDL3 界面程序（Windows 发布 / macOS M4 体验）
 │   ├── render/    索引纹理 → 调色板查表、Y 序、遮挡、光照   ┐
 │   ├── ui/        自绘控件（数据驱动，见 §4.4）              ├ 仅 app 依赖 SDL3
 │   └── scene/     地图、Actor、动画状态机、特效              ┘
 └── tools/         资产转换（m2pk）、协议代码生成、数据导入、assetnorm
 ```
+
+**构建矩阵**见 [D-19](./decisions.md)：**全部原生在 macOS（M4）上开发与构建**；
+容器 / CI 降级为**可选**（用途只剩 Linux 部署产物与门禁，尤其大小写敏感检查，见 [D-20](./decisions.md)）。
 
 **Go 模块边界**：**单一模块在仓库根**（`module github.com/algotao/mir2`，`go 1.27`），
 `server/` 与 `tools/` 都在其下——这样 `tools/` 能直接引用协议生成代码与领域包，
@@ -92,7 +95,7 @@ mir2/
 
 ### 4.2 客户端分层原则
 
-0. **两个产物，一个 `core`**（D-18）。`client/e2e`（headless CLI，docker 里跑）与
+0. **两个产物，一个 `core`**（D-18）。`client/e2e`（headless CLI，无显示环境）与
    `client/app`（SDL3 GUI）**共用 `client/core`**；且 **e2e 必须走与 app 相同的协议编解码与
    会话状态机**，不允许任何"测试专用捷径"。CI 门禁：
    `cargo tree -p mir2-e2e | grep -q sdl3 && exit 1`。
@@ -130,11 +133,15 @@ mir2/
 
 - [ ] **消息清单**：216 个 `SM_*` 分「1.76 可达 / 死代码 / 引擎扩展」三档，
       与 28 个窗口交叉核对。**性价比最高的一步**，也是验收点数的校准器
+- [ ] **搭 Mac 开发环境**（D-19 / D-21）：Rust（`aarch64-apple-darwin`）、Go **1.27.x**、
+      CMake + Xcode CLT；**建议用大小写敏感的 APFS 卷放工作区**（D-20）
 - [ ] **基准版本**：`Client/` 还是 `MirClient/`（D-10）
 - [ ] **IDL 核心子集**：握手 / 登录 / 选角 / 进图 / 移动 / 攻击 / 聊天 / 物品
 - [ ] **素材获取**（D-15，**非技术阻塞**，见 §7 R-2）
-- [ ] **验证 SDL3 在 macOS 的依赖形态**（D-04 / R-9）：`sdl3` crate 能否 vendored 构建
-- [ ] **定 e2e 产物的 docker 目标架构**（D-18：`linux/amd64` / `linux/arm64` / 两者）
+- [x] ~~验证 SDL3 在 macOS 的依赖形态~~ ⇒ **已核实**：用 `sdl3` 的 `build-from-source-static`
+      （D-04）。只剩落地验证：Mac 上装 CMake 后跑一次构建
+- [ ] **定 Linux 侧产物的目标架构**（D-18 的待确认）：`linux/amd64`（与 `mir2go` 镜像一致）
+      / `linux/arm64`（Mac M4 上 Docker 的默认）/ 两者。纯 Go + 无 cgo（D-21）让两者都容易出
 
 ### M1「能跑」——可玩纵切片（12–15 天）
 
@@ -146,7 +153,8 @@ mir2/
 - [ ] 地图加载 + 地表/前景两层 + Y 序 + 遮挡过滤
 - [ ] 协议：登录 → 选角 → 进图 → 走路 → 打怪 → 掉落捡取 → 升级
 - [ ] 聊天显示与发送、背包/装备/状态窗口、技能栏
-- [ ] **`client/e2e` 产物在 docker 里跑通剧本**（Go 服务端 ⇄ Rust 客户端，headless）
+- [ ] **`client/e2e` 产物跑通剧本**（Go 服务端 ⇄ Rust 客户端，headless；Mac 本地起步，
+      容器里也跑一次以证明"无显示环境可运行"）
 - [ ] CI 门禁就位：`cargo tree -p mir2-e2e` 不含 `sdl3` + 契约测试进流水线
 - [ ] **`client/app` 在 macOS M4 上跑起来、连上 `server/`**（同时验证 SDL3 可用性，D-04）
 - [ ] 与 `server/` 实机联调
@@ -199,8 +207,9 @@ mir2/
 | R-6 | 把"行数/天"当目标函数 | 诱导写多行但错的代码（如照搬 70 个动画类） | D-08 用验收点 |
 | R-7 | 边搬边改 | 回归无法定位 | 搬迁只改 module path 与 import |
 | R-8 | 两端串行开发 | 排期翻倍 | M0 定 IDL，两端并行 |
-| R-9 | **SDL3 在 macOS 上的依赖形态**（vendored 构建 vs 系统库） | C-7「零运行期依赖」在 Mac 上可能不成立 | M0 就验证；若必须 `brew install sdl3` 则写明降级；若两者都不顺需重审 D-01（备选纯 Rust 的 `winit` + `wgpu`） |
+| R-9 | ~~SDL3 在 macOS 上的依赖形态~~ **已关闭** | — | 核实结论：用 `sdl3` 的 **`build-from-source-static`**（源码随 crate 编入 + 静态链接）⇒ C-7 在 Mac 成立、不需要 brew 装 SDL3。见 [D-04](./decisions.md) |
 | R-10 | e2e 与 app 用了不同的实现路径 | 契约测试失去意义 | D-18 的纪律 + `cargo tree` 门禁 |
+| R-11 | **Mac 大小写不敏感掩盖引用错误**（import 路径、资源名） | 本地全绿、部署到 Linux 才炸 | [D-20](./decisions.md)：大小写敏感 APFS 卷 + CI 上跑一次 Linux 构建 |
 
 ---
 
@@ -220,10 +229,10 @@ mir2/
 
 | 路径 | 角色 | 规则 |
 |---|---|---|
-| `/data/git/mir2go` | 参照系统：抽取来源 + 对拍基准 | **不删、不加功能、禁止双向同步** |
-| `/data/git/mir2standard` | 体感规格唯一权威（Delphi 源码） | **只读**，⚠️ GBK 编码 |
-| `/data/git/Mir2-GeeM2` | 1.76 官方配置全集 | 只读 |
-| `/data/git/OpenMir2` | C# 参考（`sql/mir2_data.sql` 数据金矿） | ⚠️ 6bit 带 XOR，**不可抄** |
+| `$WS/mir2go` | 参照系统：抽取来源 + 对拍基准 | **不删、不加功能、禁止双向同步** |
+| `$WS/mir2standard` | 体感规格唯一权威（Delphi 源码） | **只读**，⚠️ GBK 编码 |
+| `$WS/Mir2-GeeM2` | 1.76 官方配置全集 | 只读 |
+| `$WS/OpenMir2` | C# 参考（`sql/mir2_data.sql` 数据金矿） | ⚠️ 6bit 带 XOR，**不可抄** |
 
 现在共 4 个相关仓库（`mir2` / `mir2go` / `mir2standard` / `Mir2-GeeM2`），
 外加两个待清理的空仓库：`mir2server`（弃用）、`mir2client`（文档已迁出）。

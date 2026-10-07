@@ -1,0 +1,25 @@
+# 统一换行：源码一律 LF（仓库内、检出一致）
+* text=auto eol=lf
+
+# 资源与二进制：显式禁止 git 做任何转换
+# 理由：地图最大单张 23 MB、12 字节格的二进制数据里大量 0 填充，
+# 一旦被当成文本做换行转换就会损坏。不依赖 git 的自动探测。
+*.map   binary
+*.wil   binary
+*.wix   binary
+*.wiz   binary
+*.lib   binary
+*.m2pk  binary
+*.dat   binary
+*.db    binary
+*.png   binary
+*.bmp   binary
+*.jpg   binary
+*.wav   binary
+*.mp3   binary
+*.ogg   binary
+*.zip   binary
+*.7z    binary
+
+# 生成的文本产物：参与 diff 但标记为生成物
+*.pb.go  linguist-generated=true
