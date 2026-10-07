@@ -43,6 +43,8 @@ func main() {
 		dbPath     = flag.String("db", "", "数据库路径；非空则先确保账号存在")
 		newChar    = flag.String("new-char", "", "要创建的角色名（留空则不建）")
 		job        = flag.Int("job", 0, "角色职业 0=战士 1=法师 2=道士")
+		hair       = flag.Int("hair", 1, "发型外观（1.76 里由它编码性别观感）")
+		sex        = flag.Int("sex", 0, "性别 0=男 1=女（选角界面按 (职业,性别) 挑小人图）")
 		server     = flag.String("server", "mir2go", "服务器名")
 		skipGame   = flag.Bool("skip-game", false, "跳过进入游戏阶段（未启动 gamesvr 时使用）")
 		skipMove   = flag.Bool("skip-move", false, "跳过走路测试")
@@ -166,8 +168,9 @@ func main() {
 	//     靠超时重试，不能当致命错误；
 	//   - 失败码 2 是**重名**而不是限流：重试时若上一次其实已建好，
 	//     再发就会拿到 2，应视为成功（否则会一直失败到重试上限）。
-	createChar := func(account, name, job string) {
-		body := fmt.Sprintf("%s/%s/1/%s/0", account, name, job)
+	createChar := func(account, name, job, hair, sex string) {
+		// 正文五段：`账号/角色名/发型/职业/性别`（`accountsvc` 的 `onNewChr` 按这个切）
+		body := fmt.Sprintf("%s/%s/%s/%s/%s", account, name, hair, job, sex)
 		for attempt := 0; attempt < 6; attempt++ {
 			pr := roundTripSoft(c2, &seq, pkt(proto.CM_NEWCHR, body))
 			if pr != nil {
@@ -196,7 +199,7 @@ func main() {
 
 	if *newChar != "" && !strings.Contains(r.Body, *newChar+"/") {
 		fmt.Printf("[5] 创建角色 %q\n", *newChar)
-		createChar(*user, *newChar, strconv.Itoa(*job))
+		createChar(*user, *newChar, strconv.Itoa(*job), strconv.Itoa(*hair), strconv.Itoa(*sex))
 
 		fmt.Println("[6] 重新查询")
 		r = roundTrip(c2, &seq, pkt(proto.CM_QUERYCHR, q))
@@ -366,7 +369,7 @@ func main() {
 		// 并行 + 时间倍速下余量太紧会一直撞上限流。
 		time.Sleep(tscale.D(2400 * time.Millisecond))
 		peerName = chrName + "B"
-		createChar(*user, peerName, "0")
+		createChar(*user, peerName, "0", strconv.Itoa(*hair), strconv.Itoa(*sex))
 		var pr *wire.Packet
 		roundTrip(c2, &seq, pkt(proto.CM_QUERYCHR, q))
 		pr = roundTrip(c2, &seq, pkt(proto.CM_SELCHR, *user+"/"+peerName))
