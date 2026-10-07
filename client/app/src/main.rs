@@ -23,8 +23,9 @@
 //!   （口令怎么过网络未定，见 D-24），所以只能认领一个既有会话；
 //! * 连上之后：相机跟着自己、方向键 = 走一步（离线时仍是平移镜头）、
 //!   视野内的实体画成**标记**（位置/朝向/名字/血量）；
-//! * ⚠️ 实体先画标记而不是精灵：actor 的图号公式属于 M2 的"角色/怪物动画状态机"，
-//!   且本套素材里 `Hair.wzl` 是空壳。换精灵时只改 `draw_entity_marker` 一处。
+//! * 实体画的是**真精灵**（角色/怪物）：图号公式在 `mir2_core::actor`（原版逐条翻译，
+//!   出处都注在那边）。取不到精灵时**退回标记**（`draw_entity_marker`）——
+//!   NPC 要 `Npc.wzl`、头发要 `Hair.wzl`，本套素材缺失（docs/assets.md §2）。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -110,6 +111,16 @@ const C_ENT_NPC: Color = Color::RGB(255, 220, 120);
 const C_ENT_SELF: Color = Color::RGB(120, 255, 140);
 /// 尸体（`Death` 之后、`EntityDisappear` 之前 —— 原版里尸骨会留一会儿）。
 const C_ENT_DEAD: Color = Color::RGB(120, 120, 120);
+/// 精灵纹理缓存上限。与图块缓存同理：越界就整个清掉，不做 LRU ——
+/// 地图比视口大得多，走到哪解到哪，记账成本换不来什么。
+const SPRITE_CACHE_CAP: usize = 512;
+
+/// 走一格的补间时长。
+///
+/// ⚠️ 这是**客户端定的观感参数**：新协议的 `EntityMove` 只给 `from`/`to`，没有时长
+/// （原版靠移动速度算节拍，那个还没下发）。320ms 与"人走两步"大致同量级。
+const MOVE_MS: u32 = 320;
+
 /// 伤害飘字的三档亮度（8x8 调试字体只有一档颜色 ⇒ 用亮度代替透明度淡出）。
 const C_DMG_HOT: Color = Color::RGB(255, 240, 120);
 const C_DMG_MID: Color = Color::RGB(255, 170, 60);
@@ -729,6 +740,10 @@ struct Net {
     /// ⚠️ 世界模型（`core::world`）是**没有时钟**的纯状态，只负责把 `Damage` 记进
     /// 一个队列；计时与淡出是渲染层的事（这里才有帧时钟）。
     floaters: Vec<(String, i32, i32, Instant)>,
+    /// 每个实体的**动画状态**（移动的补间进度、动作播放到哪了）。
+    ///
+    /// ⚠️ 同样只在渲染层：世界模型只存事实（在哪、什么动作），"什么时候发生的"归这里。
+    anims: HashMap<u64, ActorAnim>,
 }
 
 impl Net {
@@ -763,6 +778,7 @@ impl Net {
             status: "连接中…".into(),
             changes: 0,
             floaters: Vec::new(),
+            anims: HashMap::new(),
         })
     }
 
@@ -820,6 +836,8 @@ impl Net {
         self.floaters
             .retain(|f| f.3.elapsed() < Duration::from_millis(900));
 
+        self.sync_anims();
+
         if let Some(why) = self.entrance.failed() {
             if !self.status.starts_with("失败") {
                 self.status = format!("失败：{why}");
@@ -845,6 +863,47 @@ impl Net {
     /// 发一次移动输入（走）。方向用**线上编号**（`core::world` 里也不做 ±1 转换）。
     fn walk(&self, dir: mir2_protocol::Direction) {
         let _ = self.sess.cmds.send(mir2_net::Cmd::Move(dir as i32));
+    }
+
+    /// 把"这一帧看到的"折进各实体的动画状态：移动了就给补间的起止，动作变了就重置计时。
+    ///
+    /// ⚠️ 只在**变化时**刷新 `changed_at`：`EntityMove`/`EntityAction` 不是每帧都来，
+    /// 每帧重置的话走路会永远停在第一帧、动作永远播不完。
+    fn sync_anims(&mut self) {
+        let now = Instant::now();
+        let mut live: Vec<(u64, (i32, i32), Option<u32>)> = self
+            .world
+            .entities
+            .values()
+            .map(|e| (e.id, (e.x, e.y), e.action))
+            .collect();
+        if self.world.in_world() {
+            live.push((
+                self.world.self_id,
+                self.world.self_pos,
+                self.world.self_action,
+            ));
+        }
+        let ids: std::collections::HashSet<u64> = live.iter().map(|(id, _, _)| *id).collect();
+        for (id, cell, action) in live {
+            let a = self.anims.entry(id).or_insert(ActorAnim {
+                cell,
+                from: None,
+                action,
+                changed_at: now,
+            });
+            if a.cell != cell {
+                a.from = Some(a.cell); // 刚动了：记下从哪来（补间要用）
+                a.cell = cell;
+                a.changed_at = now;
+            }
+            if a.action != action {
+                a.action = action;
+                a.changed_at = now;
+            }
+        }
+        // 视野外的实体不再留着（否则跑一圈地图会攒下几百条死账）
+        self.anims.retain(|id, _| ids.contains(id));
     }
 
     /// 某个实体当前所在的格子（用来把飘字摆在它头上）。
@@ -915,9 +974,14 @@ fn walk_if_online(net: &Option<Net>, dir: mir2_protocol::Direction) -> bool {
 /// 两处一旦不一致，人物会朝反方向走，而且不会报错。
 /// 格子坐标 → 视口坐标（地图绘制用的同一套换算：`UNIT_X/UNIT_Y` + 顶部信息条）。
 fn cell_to_screen(cam: (i32, i32), cx: i32, cy: i32) -> (f32, f32) {
+    cell_to_screen_f(cam, cx as f32, cy as f32)
+}
+
+/// 同上，但允许**小数格** —— 走路的补间落在两格之间（见 `ActorAnim::draw_pos`）。
+fn cell_to_screen_f(cam: (i32, i32), cx: f32, cy: f32) -> (f32, f32) {
     (
-        (cx - cam.0) as f32 * UNIT_X as f32,
-        BAR_TOP + (cy - cam.1) as f32 * UNIT_Y as f32,
+        (cx - cam.0 as f32) * UNIT_X as f32,
+        BAR_TOP + (cy - cam.1 as f32) * UNIT_Y as f32,
     )
 }
 
@@ -935,7 +999,291 @@ fn dir_delta(dir: i32) -> (f32, f32) {
     }
 }
 
-/// 画一个实体标记（A/B 阶段用）。
+// ---------- actor 精灵 ----------
+//
+// 图号公式在 `mir2_core::actor`（原版 Delphi 的逐条翻译）。这里只做三件事：
+// 取纹理、**按锚点定位**、按时间推进帧。
+//
+// ⚠️ 落点公式（原版 `PlayScn.pas:1236` 把**格子左上角**交给 actor，再由 `Actor.pas`
+// 里的 `dx + m_nPx, dy + m_nPy` 落笔）：
+//
+//     精灵左上角 = 格子左上角 + 图自带的锚点
+//
+// 锚点**常是负的**（`Hum#0` 是 (8,-48)）：71 像素高的人站在 32 像素的格子上，
+// 脑袋当然得画到格子上面去。别改成"底边对齐格底" —— 那样每一帧都对不上。
+
+/// 精灵纹理缓存键：容器名 + 图号（容器名都是 `&'static str`，见 `core::actor`）。
+type SpriteKey = (&'static str, u32);
+
+struct SpriteTex<'a> {
+    tex: Texture<'a>,
+    /// 图自带锚点（原版 `m_nPx/m_nPy`）。
+    anchor_x: i16,
+    anchor_y: i16,
+}
+
+/// 玩家/怪物精灵的纹理缓存（与图块缓存分开：键是容器名、混合一律普通 alpha）。
+struct SpriteCache<'a> {
+    libs: HashMap<&'static str, Option<Wzl>>,
+    texs: HashMap<SpriteKey, SpriteTex<'a>>,
+}
+
+impl<'a> SpriteCache<'a> {
+    fn new() -> Self {
+        Self {
+            libs: HashMap::new(),
+            texs: HashMap::new(),
+        }
+    }
+
+    /// 保证缓存里有该精灵；容器缺失 / 图号取不出图时返回 `None`（调用方降级成标记）。
+    fn ensure<T>(
+        &mut self,
+        tc: &'a TextureCreator<T>,
+        dir: &Path,
+        lib: &'static str,
+        idx: u32,
+    ) -> Option<()> {
+        if self.texs.contains_key(&(lib, idx)) {
+            return Some(());
+        }
+        if self.texs.len() >= SPRITE_CACHE_CAP {
+            self.texs.clear();
+        }
+        let w = self
+            .libs
+            .entry(lib)
+            .or_insert_with(|| Wzl::open(dir.join(lib)).ok())
+            .as_ref()?;
+        let s = w.decode(idx as usize)?;
+        if s.is_empty() {
+            return None;
+        }
+        let mut t = tc
+            .create_texture(
+                PixelFormat::RGBA32,
+                TextureAccess::Streaming,
+                s.width as u32,
+                s.height as u32,
+            )
+            .ok()?;
+        t.set_blend_mode(BlendMode::Blend);
+        t.set_scale_mode(ScaleMode::Nearest);
+        t.update(None::<Rect>, &s.rgba, s.width as usize * 4).ok()?;
+        self.texs.insert(
+            (lib, idx),
+            SpriteTex {
+                tex: t,
+                anchor_x: s.anchor_x,
+                anchor_y: s.anchor_y,
+            },
+        );
+        Some(())
+    }
+
+    fn get(&self, lib: &'static str, idx: u32) -> Option<&SpriteTex<'a>> {
+        self.texs.get(&(lib, idx))
+    }
+}
+
+/// 一个实体的动画状态（**渲染层**持有 —— 世界模型是不带时钟的纯状态）。
+struct ActorAnim {
+    /// 上次看到的格子（用来判"又动了"）。
+    cell: (i32, i32),
+    /// 上一次移动的来处（补间用）。
+    from: Option<(i32, i32)>,
+    /// 最近一次动作（协议动作 id，见 `protocol.md` §9.5）。
+    action: Option<u32>,
+    /// 上面两者的发生时刻（一个时钟够用：动作与移动不会同时开始）。
+    changed_at: Instant,
+}
+
+impl ActorAnim {
+    fn elapsed_ms(&self, now: Instant) -> u32 {
+        now.duration_since(self.changed_at).as_millis() as u32
+    }
+
+    /// 是不是正走在半路上（决定播走路的动画）。
+    fn moving(&self, now: Instant) -> bool {
+        self.from.is_some() && self.elapsed_ms(now) < MOVE_MS
+    }
+
+    /// 补间后的绘制坐标（格子坐标，浮点）。
+    fn draw_pos(&self, to: (i32, i32), now: Instant) -> (f32, f32) {
+        match self.from {
+            Some(f) if self.moving(now) => {
+                let t = self.elapsed_ms(now) as f32 / MOVE_MS as f32;
+                (
+                    f.0 as f32 + (to.0 - f.0) as f32 * t,
+                    f.1 as f32 + (to.1 - f.1) as f32 * t,
+                )
+            }
+            _ => (to.0 as f32, to.1 as f32),
+        }
+    }
+}
+
+/// 人物动作采样：动作**播完就回到站立/走路**。
+///
+/// ⚠️ 不这么做的话实体会永远停在那一刀的末帧 —— 协议只在"动作变化"时发
+/// `EntityAction`，没有"动作结束"这条消息。时长取自动作表（`ftime × frame`）。
+fn human_sample(held: Option<u32>, held_ms: u32, moving: bool) -> (mir2_core::actor::HAct, u16) {
+    use mir2_core::actor as A;
+    let mut pose = A::human_pose(held, moving);
+    let mut act = pose.act.act();
+    let elapsed = if !pose.looping && held_ms >= act.duration_ms() {
+        pose = A::human_pose(None, moving);
+        act = pose.act.act();
+        0
+    } else {
+        held_ms
+    };
+    let frame = if pose.looping {
+        act.frame_at(elapsed)
+    } else {
+        act.frame_once(elapsed)
+    };
+    (pose.act, frame)
+}
+
+/// 怪物动作采样（同人物：空动作段与"播完"都退回站立/走路）。
+fn monster_sample(
+    race_img: u8,
+    held: Option<u32>,
+    held_ms: u32,
+    moving: bool,
+) -> (mir2_core::actor::MAct, u16) {
+    use mir2_core::actor as A;
+    let mut pose = A::monster_pose(race_img, held, moving);
+    let mut act = A::mon_actions(race_img)[pose.act as usize];
+    let elapsed = if !pose.looping && held_ms >= act.duration_ms() {
+        pose = A::monster_pose(race_img, None, moving);
+        act = A::mon_actions(race_img)[pose.act as usize];
+        0
+    } else {
+        held_ms
+    };
+    let frame = if pose.looping {
+        act.frame_at(elapsed)
+    } else {
+        act.frame_once(elapsed)
+    };
+    (pose.act, frame)
+}
+
+/// 取"本体"精灵（容器名 + 图号）。取不到返回 `None` ⇒ 调用方退回标记。
+///
+/// NPC（kind=2）恒为 `None`：原版走 `Npc.wzl`，本套素材没有（docs/assets.md §2）。
+fn body_sprite(
+    e: &mir2_core::world::Entity,
+    anim: Option<&ActorAnim>,
+    now: Instant,
+) -> Option<(&'static str, u32)> {
+    use mir2_core::actor as A;
+    let f = e.feature.as_ref()?;
+    let dir = A::dir_of(e.dir);
+    let (held, held_ms) = anim.map_or((None, 0), |a| (a.action, a.elapsed_ms(now)));
+    let moving = anim.is_some_and(|a| a.moving(now));
+    match e.kind {
+        // 玩家：本体在 Hum.wzl，部位号 = Dress（服务端已经算成 `Shape*2+性别`）
+        0 => {
+            let (act, frame) = human_sample(held, held_ms, moving);
+            Some((A::HUM_LIB, A::human_index(f.dress as u8, act, dir, frame)))
+        }
+        // 怪物：容器与块起点都由 Appr 定（`Mon<Appr/10+1>`）
+        1 => {
+            let appr = f.appr as u16;
+            let lib = A::mon_container(appr)?;
+            let (act, frame) = monster_sample(f.race_img as u8, held, held_ms, moving);
+            Some((
+                lib,
+                A::monster_index(appr, f.race_img as u8, act, dir, frame),
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// 取"武器层"（只有玩家有；怪物的 `m_btMonsterWeapon` 在我们数据里恒 0）。
+fn weapon_sprite(
+    e: &mir2_core::world::Entity,
+    anim: Option<&ActorAnim>,
+    now: Instant,
+) -> Option<(&'static str, u32)> {
+    use mir2_core::actor as A;
+    if e.kind != 0 {
+        return None;
+    }
+    let f = e.feature.as_ref()?;
+    if f.weapon == 0 {
+        return None; // 空手
+    }
+    let (held, held_ms) = anim.map_or((None, 0), |a| (a.action, a.elapsed_ms(now)));
+    let moving = anim.is_some_and(|a| a.moving(now));
+    let (act, frame) = human_sample(held, held_ms, moving);
+    Some((
+        A::WEAPON_LIB,
+        A::human_index(f.weapon as u8, act, A::dir_of(e.dir), frame),
+    ))
+}
+
+/// 画一个实体：**先精灵、取不到再退标记**，最后统一画名字与血条。
+#[allow(clippy::too_many_arguments)]
+fn draw_actor<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    sprites: &mut SpriteCache<'a>,
+    dir_assets: &Path,
+    cam: (i32, i32),
+    e: &mir2_core::world::Entity,
+    anim: Option<&ActorAnim>,
+    now: Instant,
+    name: &str,
+    hp: u32,
+    max_hp: u32,
+    color: Color,
+) -> Result<(), sdl3::Error> {
+    // 补间后的位置（不做插值的话，精灵是一格一格跳的）
+    let (fx, fy) = anim.map_or((e.x as f32, e.y as f32), |a| a.draw_pos((e.x, e.y), now));
+    let (px, py) = cell_to_screen_f(cam, fx, fy);
+
+    let body = body_sprite(e, anim, now);
+    if body.is_none() {
+        // 没有精灵（NPC / 素材缺失 / 图号取不到）：退回标记，**不静默什么都不画**
+        return draw_entity_marker(canvas, cam, e.x, e.y, color, name, hp, max_hp, e.dir);
+    }
+    // 本体 → 武器（原版层序：武器压在身体上面）
+    for layer in [body, weapon_sprite(e, anim, now)] {
+        let Some((lib, idx)) = layer else { continue };
+        if sprites.ensure(tc, dir_assets, lib, idx).is_none() {
+            continue;
+        }
+        if let Some(t) = sprites.get(lib, idx) {
+            let q = t.tex.query();
+            canvas.copy(
+                &t.tex,
+                None::<FRect>,
+                FRect::new(
+                    px + t.anchor_x as f32,
+                    py + t.anchor_y as f32,
+                    q.width as f32,
+                    q.height as f32,
+                ),
+            )?;
+        }
+    }
+    draw_name_bar(
+        canvas,
+        px + UNIT_X as f32 / 2.0,
+        py,
+        name,
+        hp,
+        max_hp,
+        color,
+    )
+}
+
+/// 画一个实体标记（**降级路径**：拿不到精灵时用，也让人一眼看出"这里本该有东西"）。
 ///
 /// ⚠️ **为什么先画标记而不是精灵**：actor 的图号公式（`raceImg/weapon/hair/dress` →
 /// `Hum.wzl` / `Objects<N>.wzl` 里的第几张，还要按朝向/动作分块）尚未提取，
@@ -979,20 +1327,45 @@ fn draw_entity_marker(
             FPoint::new(mx + dx * 12.0, my + dy * 8.0),
         )?;
     }
-    // 名字与血条（血条只在"受了伤"时画，否则一屏全是条）
-    text(canvas, &trunc(name, 12), sx, sy - 9.0, color)?;
+    draw_name_bar(
+        canvas,
+        sx + UNIT_X as f32 / 2.0,
+        sy,
+        name,
+        hp,
+        max_hp,
+        color,
+    )
+}
+
+/// 名字 + 血条（精灵与标记两条路共用；名字居中在**格子中心**上方）。
+///
+/// 血条只在"受了伤"时画，否则一屏全是条。
+fn draw_name_bar(
+    canvas: &mut WindowCanvas,
+    center_x: f32,
+    cell_top: f32,
+    name: &str,
+    hp: u32,
+    max_hp: u32,
+    color: Color,
+) -> Result<(), sdl3::Error> {
+    let label = trunc(name, 12);
+    text(
+        canvas,
+        &label,
+        center_x - label.chars().count() as f32 * 4.0,
+        cell_top - 9.0,
+        color,
+    )?;
     if max_hp > 0 && hp < max_hp {
         let w = UNIT_X as f32 - 16.0;
         let frac = (hp as f32 / max_hp as f32).clamp(0.0, 1.0);
+        let y = cell_top + UNIT_Y as f32 - 6.0;
         canvas.set_draw_color(Color::RGB(40, 40, 40));
-        canvas.fill_rect(FRect::new(sx + 8.0, sy + UNIT_Y as f32 - 6.0, w, 3.0))?;
+        canvas.fill_rect(FRect::new(center_x - w / 2.0, y, w, 3.0))?;
         canvas.set_draw_color(Color::RGB(220, 60, 60));
-        canvas.fill_rect(FRect::new(
-            sx + 8.0,
-            sy + UNIT_Y as f32 - 6.0,
-            w * frac,
-            3.0,
-        ))?;
+        canvas.fill_rect(FRect::new(center_x - w / 2.0, y, w * frac, 3.0))?;
     }
     Ok(())
 }
@@ -1069,6 +1442,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cam = (0i32, 0i32);
     let mut libs: HashMap<String, Option<Wzl>> = HashMap::new();
     let mut tiles: HashMap<TileKey, TileTex<'_>> = HashMap::new();
+    let mut sprites = SpriteCache::new();
     let mut draws: Vec<TileDraw> = Vec::new();
 
     // 调试叠加层（D 开关）：画格网 + 每层落点框 + 鼠标十字线，并"点哪读哪"
@@ -1303,6 +1677,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &mut libs,
                 &mut tiles,
                 &mut draws,
+                &mut sprites,
                 &asset_dir,
                 &map,
                 &map_err,
@@ -1408,6 +1783,7 @@ fn draw_map_view<'a, T>(
     libs: &mut HashMap<String, Option<Wzl>>,
     tiles: &mut HashMap<TileKey, TileTex<'a>>,
     draws: &mut Vec<TileDraw>,
+    sprites: &mut SpriteCache<'a>,
     asset_dir: &Option<PathBuf>,
     map: &Option<Map>,
     map_err: &str,
@@ -1471,9 +1847,12 @@ fn draw_map_view<'a, T>(
     // 这样按 D 打开叠加层时，格网仍然压在最上面（否则标记会盖住格线，很难读）。
     if let Some(n) = net {
         if n.world.in_world() {
+            let now = Instant::now();
             for e in n.world.entities.values() {
+                // 颜色只用于**降级标记**（精灵走的是图本身）；尸体另给一色，
+                // 这样"素材缺失 + 已死"也能一眼看出来。
                 let color = if e.dead {
-                    C_ENT_DEAD // 尸骨：还在视野里（原版能打尸骨），但已经死了
+                    C_ENT_DEAD
                 } else {
                     match e.kind {
                         0 => C_ENT_PLAYER,
@@ -1481,20 +1860,52 @@ fn draw_map_view<'a, T>(
                         _ => C_ENT_MONSTER,
                     }
                 };
-                draw_entity_marker(canvas, cam, e.x, e.y, color, &e.name, e.hp, e.max_hp, e.dir)?;
+                draw_actor(
+                    canvas,
+                    tc,
+                    sprites,
+                    dir,
+                    cam,
+                    e,
+                    n.anims.get(&e.id),
+                    now,
+                    &e.name,
+                    e.hp,
+                    e.max_hp,
+                    color,
+                )?;
             }
-            let (sx, sy) = n.world.self_pos;
-            let (hp, max_hp) = n.world.ability.map(|a| (a.hp, a.max_hp)).unwrap_or((0, 0));
-            draw_entity_marker(
-                canvas,
-                cam,
-                sx,
-                sy,
-                C_ENT_SELF,
-                "[自己]",
+
+            // 自己：`entities` 里**没有自己**（快照刻意不含，见 core::world 的 self_feature）
+            // ⇒ 在这里造一个临时实体走**同一条**绘制路径，免得"自己的画法"与别人漂成两套。
+            let (hp, max_hp) = n.world.self_hp.unwrap_or((0, 0));
+            let me = mir2_core::world::Entity {
+                id: n.world.self_id,
+                kind: 0,
+                name: "[自己]".to_string(),
+                x: n.world.self_pos.0,
+                y: n.world.self_pos.1,
+                dir: n.world.self_dir,
+                feature: n.world.self_feature,
                 hp,
                 max_hp,
-                n.world.self_dir,
+                status_bits: 0,
+                dead: n.world.self_dead,
+                action: n.world.self_action,
+            };
+            draw_actor(
+                canvas,
+                tc,
+                sprites,
+                dir,
+                cam,
+                &me,
+                n.anims.get(&me.id),
+                now,
+                &me.name,
+                hp,
+                max_hp,
+                C_ENT_SELF,
             )?;
 
             // 伤害飘字（A′：打怪要看得见数字）。往上飘，三档亮度代替淡出 ——
@@ -1797,4 +2208,127 @@ fn draw_login_view<'a, T>(
 
     canvas.set_viewport(None::<Rect>);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mir2_core::actor as A;
+    use mir2_core::world::Entity;
+
+    fn ent(kind: u32, f: mir2_protocol::EntityFeature) -> Entity {
+        Entity {
+            id: 7,
+            kind,
+            name: "甲".into(),
+            x: 3,
+            y: 4,
+            dir: 5, // 协议方向 5 = 下 ⇒ 原版 4
+            feature: Some(f),
+            hp: 10,
+            max_hp: 20,
+            status_bits: 0,
+            dead: false,
+            action: None,
+        }
+    }
+
+    /// 玩家的本体：容器是 `Hum`，图号 = `600*Dress + 站立段 + 方向步长`。
+    #[test]
+    fn 玩家本体走_hum() {
+        let f = mir2_protocol::EntityFeature {
+            dress: 10,
+            ..Default::default()
+        };
+        let (lib, idx) = body_sprite(&ent(0, f), None, Instant::now()).expect("玩家该有精灵");
+        assert_eq!(lib, A::HUM_LIB);
+        assert_eq!(idx, A::human_index(10, A::HAct::Stand, 4, 0));
+        assert_eq!(idx, 600 * 10 + 4 * 8);
+    }
+
+    /// 武器层只有**手上有东西**时才画（`weapon == 0` 是空手）。
+    #[test]
+    fn 武器层_空手不画() {
+        let bare = mir2_protocol::EntityFeature {
+            dress: 1,
+            ..Default::default()
+        };
+        assert!(weapon_sprite(&ent(0, bare), None, Instant::now()).is_none());
+        let armed = mir2_protocol::EntityFeature {
+            dress: 1,
+            weapon: 21,
+            ..Default::default()
+        };
+        let (lib, idx) = weapon_sprite(&ent(0, armed), None, Instant::now()).unwrap();
+        assert_eq!(
+            (lib, idx),
+            (A::WEAPON_LIB, A::human_index(21, A::HAct::Stand, 4, 0))
+        );
+    }
+
+    /// 怪物：容器由图里的 `Appr` 定、动作表由 `RaceImg` 定。
+    #[test]
+    fn 怪物走_appr() {
+        let f = mir2_protocol::EntityFeature {
+            race_img: 19,
+            appr: 151,
+            ..Default::default()
+        };
+        let (lib, idx) = body_sprite(&ent(1, f), None, Instant::now()).unwrap();
+        assert_eq!(lib, A::mon_container(151).unwrap());
+        assert_eq!(idx, A::monster_index(151, 19, A::MAct::Stand, 4, 0));
+        assert!(weapon_sprite(&ent(1, f), None, Instant::now()).is_none());
+    }
+
+    /// NPC 没有精灵（`Npc.wzl` 缺失）⇒ 退回标记，而不是画个错的东西。
+    #[test]
+    fn npc_退回标记() {
+        assert!(body_sprite(&ent(2, Default::default()), None, Instant::now()).is_none());
+    }
+
+    /// 没有外观信息（旧服务端 / 快照还没到）⇒ 退回标记。
+    #[test]
+    fn 缺外观信息退回标记() {
+        let mut e = ent(0, Default::default());
+        e.feature = None;
+        assert!(body_sprite(&e, None, Instant::now()).is_none());
+    }
+
+    /// 补间：刚移动时画在旧格与新格之间，过了时长就到位（且不再播走路）。
+    #[test]
+    fn 移动补间() {
+        let now = Instant::now();
+        let a = ActorAnim {
+            cell: (5, 5),
+            from: Some((4, 5)),
+            action: None,
+            changed_at: now,
+        };
+        let (x, y) = a.draw_pos((5, 5), now);
+        assert!(
+            (x - 4.0).abs() < 0.01 && (y - 5.0).abs() < 0.01,
+            "刚开始还该在来处"
+        );
+        let later = now + Duration::from_millis(MOVE_MS as u64 + 10);
+        assert_eq!(
+            a.draw_pos((5, 5), later),
+            (5.0, 5.0),
+            "过了补间时长就该到位"
+        );
+        assert!(!a.moving(later));
+    }
+
+    /// 动作播完回站立 —— 否则实体会永远停在那一刀的末帧。
+    #[test]
+    fn 动作播完回站立() {
+        assert_eq!(human_sample(Some(1), 0, false).0, A::HAct::Hit);
+        // ActHit 是 6 帧 × 85ms = 510ms ⇒ 600ms 后应回到站立
+        assert_eq!(human_sample(Some(1), 600, false), (A::HAct::Stand, 0));
+    }
+
+    /// 手上的动作播完后，**走路**优先于站立（在走就别站着）。
+    #[test]
+    fn 动作播完且在走就播走路() {
+        assert_eq!(human_sample(Some(1), 600, true).0, A::HAct::Walk);
+    }
 }

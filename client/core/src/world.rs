@@ -134,6 +134,11 @@ pub struct World {
     pub self_dead: bool,
     /// 自己最近一次动作（挥砍…）—— 自己不在 `entities` 里，所以单列。
     pub self_action: Option<u32>,
+    /// 自己的外观（`EnterWorld` / `ChangeMap` 里的 `self_feature`）。
+    ///
+    /// ⚠️ 它**不在** `entities` 里：快照刻意不含自己（见 `snapshot_drops_self`）。
+    /// 但没有它，客户端连"自己长什么样"都不知道（画不出自己的精灵）。
+    pub self_feature: Option<proto::EntityFeature>,
     /// 待消费的伤害事件（调用方 `take_damage()` 取走）。
     damage: Vec<DamageEvent>,
 }
@@ -158,6 +163,8 @@ impl World {
                 self.self_pos = (pos.x, pos.y);
                 self.self_dir = ew.direction;
                 self.server_tick = ew.server_tick;
+                // 自己的外观（服务端单独给，不在 entities 里 —— 见字段说明）
+                self.self_feature = ew.self_feature;
                 // 初始快照：整份替换（换图/重进都走这里）。
                 self.self_dead = false; // 进图（含复活后重新进）自己一定是活的
                 self.entities.clear();
@@ -175,6 +182,7 @@ impl World {
             }
             Body::ChangeMap(cm) => {
                 self.map_name = cm.map_name.clone();
+                self.self_feature = cm.self_feature;
                 // 回城/传送（含死亡回城）走的就是这条 ⇒ 自己恢复为活着的。
                 self.self_dead = false;
                 let pos = cm.position.unwrap_or_default();
@@ -386,6 +394,7 @@ mod tests {
                 state(7, 0, "别人", 5, 5, proto::Direction::DirUp as i32),
             ],
             server_tick: 42,
+            self_feature: None,
         })
     }
 
@@ -532,6 +541,34 @@ mod tests {
             (a.level, a.hp, a.max_hp, a.mp, a.max_mp, a.gold),
             (7, 30, 40, 5, 9, 123)
         );
+    }
+
+    /// 自己的外观由 `self_feature` **单独**给（快照里不含自己）—— 客户端画自己要用它。
+    #[test]
+    fn self_feature_comes_from_snapshot() {
+        let mut w = World::default();
+        let Body::EnterWorld(mut ew) = enter_world() else {
+            panic!("enter_world() 应给出 EnterWorld");
+        };
+        ew.self_feature = Some(proto::EntityFeature {
+            dress: 12,
+            weapon: 3,
+            ..Default::default()
+        });
+        w.apply(&env(Body::EnterWorld(ew)));
+        let f = w.self_feature.as_ref().expect("进图应带上自己的外观");
+        assert_eq!((f.dress, f.weapon), (12, 3));
+
+        // 换图会重发一次（装备/性别显示都可能变了）
+        w.apply(&env(Body::ChangeMap(proto::ChangeMap {
+            map_name: "1".into(),
+            self_feature: Some(proto::EntityFeature {
+                dress: 14,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })));
+        assert_eq!(w.self_feature.unwrap().dress, 14);
     }
 
     #[test]

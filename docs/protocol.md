@@ -359,6 +359,16 @@ TCP 保证送达与顺序，但不保证"语义上的只有一次"。所以按**
 - [ ] 攻击目标不可及（不相邻 / 已死 / 不在视野）时服务端**静默忽略**（只留日志）：
       IDL 里没有 `AttackRejected` 这类消息。客户端只能靠"没看到动作/伤害"自己判断，
       要不要补一条拒绝消息等预测逻辑成型再定。
+- [x] `EntityFeature.appr` 与 `EnterWorld/ChangeMap.self_feature`（**协议版本 3**）：
+      前者是怪物外观号 —— 原版把它打包进了 `hair`/`dress` 两个字节（`Grobal2.pas:2663-2699`），
+      新协议给它自己的字段；后者是**自己的外观** —— 快照刻意不含自己（`self_entity_id` 才代表自己），
+      少了它客户端连"自己长什么样"都不知道。
+      ⚠️ 两者都是"给渲染用的显式字段"，与 §10 的"一个语义一个字段"同一条纪律。
+- [ ] **自己的换装不会重发 `self_feature`**：装备/发型变化目前只在进图与换图时下发一次。
+      要跟上得在 `EntityFeatureChanged`（scene.proto 里已有）上给"自己"也发一份 ——
+      现在不影响观感（换装要走背包，那条链还没接）。
+- [ ] `MapChunk` **还没有发送点**：客户端读本地地图容器（`maps.m2pk`，D-22），
+      服务端下发地图块那条路只在 IDL 里存在。
 - [ ] 新协议入口的**剩余边界**（见 [`netproto.go`](../server/internal/gamesvr/netproto.go) 文件头）：
       物品/聊天/技能输入/组队/交易仍走 legacy；`protoDown` 会把那些 legacy 下行丢掉。
 - [ ] `MoveInput` **没有走/跑标志**（legacy 靠 CM_WALK / CM_RUN 两条消息区分）⇒

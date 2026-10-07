@@ -316,6 +316,39 @@ fridx := fridx + (aniCount mod (ani + ani*anitick)) div (1 + anitick)
 | `.wav` | 音效，标准格式，自解析 |
 | `Music/%d.mp3` | 按地图编号取音乐（`SoundUtil.pas:219`） |
 
+### 3.5 actor 图号（人物 / 怪物）—— **2026-10-07 提取并落地**
+
+`Object` 的图不是一个"图号"字段，而是由**方向 + 动作 + 帧**算出来的。原版公式在这里定案
+（实现见 `client/core/src/actor.rs`，出处行号都注在那边）：
+
+```text
+人物（Hum.wzl / Weapon.wzl，0 基）
+  图号 = 600 * 部位 + HA.<动作>.start + dir * (frame + skip) + 帧序
+怪物（Mon<Appr/10 + 1>.wzl，0 基）
+  图号 = GetOffset(Appr) + MA.<动作>.start + dir * (frame + skip) + 帧序
+```
+
+| 事 | 出处 |
+|---|---|
+| 人物每块 600 张（= 24 个着装块，`Hum.wzl` 共 14400 张） | `Actor.pas:14` `HUMANFRAME`；`ClMain.pas:6280-6293` |
+| 人物 14 个动作段的 (start/frame/skip/ftime) | `Actor.pas:75-91` 的 `HA` 表 |
+| 怪物品种（`RaceImg`）→ 动作表 | `Actor.pas:848-954` `GetRaceByPM`（**参数名却叫 `Race`**，喂的是 `RACEfeature` 低字节） |
+| 怪物图片块起点（`Appr` → 块偏移） | `Actor.pas:1003+` `GetOffset`（块大小按 `Appr/10` 分档：280/230/360/430/440…） |
+| 怪物容器（`Appr/10` → `Mon<N>`） | `Actor.pas:958-1000` `aGetMonImg` + `MShare.pas:832-857` |
+| 落点：**精灵左上角 = 格子左上角 + 图自带锚点** | `PlayScn.pas:1236` + `Actor.pas` 的 `dx + m_nPx, dy + m_nPy` |
+
+⚠️ 三处最容易做错的：`dir` 是原版 0..7（我们的协议枚举是**原版+1**）；`frame + skip` 才是
+每个方向的步长（`skip` 是"没有有效图"的保留格）；怪物表的"品种"其实是 **`RaceImg`**，
+不是服务端那个只用于 AI 的 `Race`。
+
+表是**生成**的、不是手抄的：`client/core/tools/gen_actor_tables.py` 直接解析
+`Actor.pas`（26 张怪物表 + 映射 + `GetOffset`），输出贴进 `actor.rs` 的生成段。
+重跑方式见脚本头部；源在 `mir2standard/GameOfMir/Client/`（仓库外）。
+
+**本套素材的边界**（§2 已记）：`Hum.wzl`/`Weapon.wzl`/`Mon1..34.wzl` 齐全；
+`Hair` **没有这个文件**（`hair_ck.wzl` 只有 64 字节的头、索引却是 5328 条）、
+`Npc` / `Dragon` 缺失 ⇒ 头发层、NPC、龙**画不出来**，实现里**降级成标记**而不是猜。
+
 ---
 
 ## 4. 资产体量与压缩收益（实测）
