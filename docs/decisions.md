@@ -42,6 +42,26 @@
 
 命中的 `.bmp`/`.wav` 全是 `Component/DelphiX/Demos/` 的示例资源，与本项目无关。
 
+### 0.1 实测：`$WS/mir2.exe` 是登录器，**不含**美术（2026-10-07）
+
+`$WS/mir2.exe`（129,739,520 字节，PE32）**不是游戏客户端**，而是**盛大登录器**。
+7-Zip 对它自动识别失败（自定义 SFX stub），但**偏移 `40,876,032`（0x26FB000）处内嵌一个 7z 归档**：
+
+```bash
+tail -c +40876033 mir2.exe > payload.7z    # 从 7z 魔数(37 7A BC AF 27 1C)偏移切出
+7zz x -o./sfx payload.7z
+```
+
+解出 21 个条目，**全部是启动器模块**：`Legend.exe`（29 MB 启动器）、`LaunchLegend*.update` ×11
+（PE DLL 模块）、`MyMirLoader*.update`、`Legend_MirOld.update`、`Launch100m_b.dll`、
+`v1.avi`（26 MB 开场视频）、`Legend.ini` / `LegendCfg.ini`。
+
+- **无任何 `.wil` / `.wix`**；`Legend.exe` 的 PE 资源只有 Delphi VCL 自带位图（`BBABORT.bmp` 等）。
+- `Legend.ini` 的 `[Download] Dir=` **为空**、`[WilImage]` 段为空 ⇒ 登录器尚未配置客户端下载源。
+
+⇒ **不解决 D-15。** 需要的是**游戏客户端目录本体**（含 `Data/*.wil`、`Graphics/*.wil`、`Wav/`、`Music/`），
+而不是登录器。素材来源仍需你裁决（自有副本 / 购买 / 其它来源）。
+
 **后果**：
 
 1. M1 的验收点「调色板查表出图**无色差**」**无法验证**。
