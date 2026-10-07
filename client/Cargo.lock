@@ -277,6 +277,8 @@ name = "mir2-app"
 version = "0.1.0"
 dependencies = [
  "mir2-core",
+ "mir2-net",
+ "mir2-protocol",
  "sdl3",
  "sdl3-sys",
 ]
@@ -287,6 +289,7 @@ version = "0.1.0"
 dependencies = [
  "brotli-decompressor",
  "flate2",
+ "mir2-protocol",
  "sha2",
 ]
 

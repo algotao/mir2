@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# 会话世界状态要读信封类型（见 core/src/world.rs 的文件头：e2e 与 app 必须共用同一份）
+mir2-protocol = { path = "../protocol" }
 flate2.workspace = true
 brotli-decompressor.workspace = true
 

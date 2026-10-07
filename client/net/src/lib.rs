@@ -14,6 +14,9 @@ use std::io::{self, BufReader};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
+pub mod session;
+pub use session::{Cmd, Ev, Session};
+
 use mir2_protocol as proto;
 use proto::envelope::Body;
 use proto::{ClientHello, Envelope};
@@ -161,6 +164,21 @@ impl Conn {
     /// 收一条消息。
     pub fn recv(&mut self) -> Result<Envelope, NetError> {
         Ok(proto::read_frame(&mut self.rd)?)
+    }
+
+    /// 调整读超时（`None` = 不超时）。
+    ///
+    /// ⚠️ 后台会话（`session::Session`）必须设成 `None`：一挂机就超时会**误报断开**。
+    /// 契约测试那种"一条一条对齐"的用法则要保留超时（否则写错了会挂到天荒地老）。
+    pub fn set_read_timeout(&self, t: Option<Duration>) -> io::Result<()> {
+        // `rd`/`wr` 是同一个 socket 的两次 `try_clone`（dup 出来的 fd 共享同一份
+        // 文件描述，SO_RCVTIMEO 是 socket 级选项）⇒ 设哪一个都一样。
+        self.wr.set_read_timeout(t)
+    }
+
+    /// 拿一份底层 socket 的克隆（给写线程用：读线程与写线程各持一个句柄）。
+    pub fn try_clone_stream(&self) -> io::Result<TcpStream> {
+        self.wr.try_clone()
     }
 
     /// 发一条并等"期望的那一类"应答。
