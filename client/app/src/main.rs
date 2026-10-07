@@ -130,8 +130,20 @@ const C_DMG_DIM: Color = Color::RGB(190, 90, 40);
 
 // 图层可见性掩码定义在 core（`map::LAYERS_ALL` / `Layer::bit`）——
 // app 与 e2e 都要用它过滤绘制指令，各写一份迟早不一致（plan §4.2 / R-10）。
-// 语义：bit0 = 地表、bit1 = 中间、bit2 = 前景；`CTRL+1/2/3` **各自独立**开关
-// （排查错位时最常用的动作是"只关掉一层看底下那层在哪"，单选模式要来回切两次）。
+// 语义：bit0 = 地表、bit1 = 中间、bit2 = 前景。
+
+// ---------- 调试功能的开关（**关掉，不是删掉**）----------
+//
+// 这两项是当初为**排查贴图/错位问题**做的：一个按层拆开看、一个把格网与
+// 各层落点框（辅助线 + 格子坐标）叠在画面上。日常游玩时它们只会碍事
+//（遮挡画面、还容易手滑把某一层关掉而以为是渲染坏了）。
+//
+// ⇒ **默认关闭**，代码一行不动地留着。要调试时把下面改成 `true` 重建即可
+//（改这一处就够了：按键、绘制、提示条三处都跟着它走 —— 别去各处注释代码）。
+/// `CTRL+1/2/3`（以及 `L` 循环）逐层显隐。
+const DEBUG_LAYERS: bool = false;
+/// `D` 辅助线与格子坐标叠加层。
+const DEBUG_OVERLAY: bool = false;
 
 /// 掩码 → 三字母缩写（G=地表 M=中间 F=前景），隐藏的层显示为 `-`。
 fn layers_desc(m: u8) -> String {
@@ -1688,7 +1700,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         Some(Keycode::Home) => cam = (0, 0),
                         // ---- 调试叠加层（只在地图模式，避免污染登录输入框）----
-                        Some(Keycode::D) => {
+                        // 辅助线/坐标叠加层：默认关闭（见 `DEBUG_OVERLAY`）
+                        Some(Keycode::D) if DEBUG_OVERLAY => {
                             debug = !debug;
                             println!(
                                 "[debug] 叠加层 {}（L 或 CTRL+1/2/3 控制图层显隐 / P 打印绘制清单 / 左键点哪读哪）",
@@ -1697,8 +1710,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         // 逐层独立显隐：排查错位时最常用的是"关掉一层看底下那层"
                         Some(Keycode::_1) | Some(Keycode::_2) | Some(Keycode::_3)
-                            if keymod.intersects(Mod::LCTRLMOD)
-                                || keymod.intersects(Mod::RCTRLMOD) =>
+                            if DEBUG_LAYERS
+                                && (keymod.intersects(Mod::LCTRLMOD)
+                                    || keymod.intersects(Mod::RCTRLMOD)) =>
                         {
                             let (bit, name) = match keycode {
                                 Some(Keycode::_1) => (1u8, "地表 Tiles"),
@@ -1717,7 +1731,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 layers_desc(layers)
                             );
                         }
-                        Some(Keycode::L) => {
+                        // `L` 是同一个功能的"循环"绑定 —— 只关 CTRL 那三个键等于
+                        // 留了后门，所以一起跟着 `DEBUG_LAYERS` 走。
+                        Some(Keycode::L) if DEBUG_LAYERS => {
                             // 循环：全部 → 仅地表 → 仅中间 → 仅前景 → 全部
                             layers = match layers {
                                 LAYERS_ALL => 1,
@@ -1989,14 +2005,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // 顶部/底部公共条
-        let hint = match mode {
-            2 => {
-                "ARROWS WALK  SPACE HIT  C CONNECT  [ ] MAP  D DEBUG  1/2/3 LAYER  P DUMP  F1 LOGIN  ESC"
-            }
-            1 => "TAB NEXT FIELD   ENTER LOGIN   F2 MAP   F3 ASSETS   M MUSIC   ESC QUIT",
-            4 => "LEFT/RIGHT PICK   ENTER START   F1 LOGIN   F2 MAP   ESC QUIT",
-            _ => "F3 ASSETS   [ ] LIB   , . IMG   F1 LOGIN   F2 MAP   M MUSIC   ESC QUIT",
-        };
+        let hint = hint_text(mode);
         fill(
             &mut canvas,
             0.0,
@@ -2208,7 +2217,8 @@ fn draw_map_view<'a, T>(
         }
     }
 
-    if debug {
+    // 辅助线/坐标叠加层（默认关闭，见 `DEBUG_OVERLAY`）
+    if debug && DEBUG_OVERLAY {
         draw_debug_overlay(canvas, draws, tiles, cam, mouse, layers)?;
     }
 
@@ -2463,6 +2473,28 @@ fn do_select_action(
     }
 }
 
+/// 底部的按键提示。
+///
+/// ⚠️ 抽成函数是为了**能测**：提示条必须跟着 [`DEBUG_LAYERS`] / [`DEBUG_OVERLAY`] 走
+/// —— 关掉的功能还写在提示里，用户就会去按、然后按了没反应（那是另一种 bug 报告）。
+fn hint_text(mode: u8) -> &'static str {
+    match mode {
+        2 => {
+            const PLAY: &str = "ARROWS WALK  SPACE HIT  C CONNECT  [ ] MAP  P DUMP  F1 LOGIN  ESC";
+            const DEBUG_KEYS: &str =
+                "ARROWS WALK  SPACE HIT  C CONNECT  [ ] MAP  D DEBUG  1/2/3 LAYER  P DUMP  F1 LOGIN  ESC";
+            if DEBUG_LAYERS || DEBUG_OVERLAY {
+                DEBUG_KEYS
+            } else {
+                PLAY
+            }
+        }
+        1 => "TAB NEXT FIELD   ENTER LOGIN   F2 MAP   F3 ASSETS   M MUSIC   ESC QUIT",
+        4 => "LEFT/RIGHT PICK   ENTER START   F1 LOGIN   F2 MAP   ESC QUIT",
+        _ => "F3 ASSETS   [ ] LIB   , . IMG   F1 LOGIN   F2 MAP   M MUSIC   ESC QUIT",
+    }
+}
+
 /// 把连接层的原因翻成"人话 + 下一步该查什么"。
 ///
 /// ⚠️ `Connection refused` 与"口令错"是**两回事**：前者是 TCP 层没人监听
@@ -2557,6 +2589,28 @@ mod tests {
         let mut again = Vec::new();
         flush_entrance(&mut e, &mut |b| again.push(b.clone()));
         assert!(again.is_empty(), "同一阶段不该重复发命令");
+    }
+
+    /// 调试功能关掉之后，提示条**不能**还写着那些键。
+    ///
+    /// 这条盯的是"关掉了但界面还在教人按"这种半拉子状态：翻开关时容易忘了
+    /// 同步提示条，而症状是"按了没反应"（用户会当成 bug 来报）。
+    #[test]
+    fn 提示条跟着调试开关走() {
+        let h = hint_text(2);
+        assert!(
+            h.contains("WALK") && h.contains("CONNECT"),
+            "正常玩法提示要还在：{h}"
+        );
+        if DEBUG_LAYERS || DEBUG_OVERLAY {
+            // 开着的时候要**写着**（否则等于藏了一个没人知道的调试入口）
+            if DEBUG_OVERLAY {
+                assert!(h.contains("D DEBUG"), "{h}");
+            }
+        } else {
+            assert!(!h.contains("1/2/3"), "图层键已关，提示里不该还有：{h}");
+            assert!(!h.contains("D DEBUG"), "叠加层已关，提示里不该还有：{h}");
+        }
     }
 
     /// 连不上时要给出"下一步查什么"，而且**不能**把人往"密码错"上引。
