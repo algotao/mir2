@@ -13,6 +13,9 @@ repository = "https://github.com/algotao/mir2"
 sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static"] }
 # 纯 Rust deflate（rust_backend）—— 不引入 C 版 zlib，保持"运行期零依赖"（C-7）
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# 纯 Rust brotli **解压**（客户端从不编码，故不引 brotli 的编码器）——
+# 对应 Go 侧的 andybalholm/brotli，见 docs/assets.md §5.4。同样零 C 依赖（C-7/D-21）。
+brotli-decompressor = { version = "6", default-features = false, features = ["std"] }
 
 # D-01：体积优先的发布配置
 [profile.release]

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 flate2.workspace = true
+brotli-decompressor.workspace = true
 
 [dev-dependencies]
 # 黄金哈希回归用（纯 Rust）
