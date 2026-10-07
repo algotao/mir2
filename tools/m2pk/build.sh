@@ -17,19 +17,25 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="${MIR2_MAP_OUT:-$ROOT/assets/map/maps.m2pk}"
 
-# 源目录探测：环境变量 → 与 mir2 平级的两个候选
-SRC="${MIR2_MAP_SRC:-}"
-if [ -z "$SRC" ]; then
-  for c in "$ROOT/../mir2c/map" "$ROOT/../mir2go/data/map"; do
-    if [ -d "$c" ]; then SRC="$c"; break; fi
-  done
+# 源目录：**唯一真源 = 客户端集**（D-22，SDO 经典版）。
+# 刻意**不**自动回退到 mir2go 的那套——它与客户端集不是同一套（5 张内容不同），
+# 静默换掉整个游戏世界的地形属于最难排查的一类 bug，宁可报错。
+CANON="$ROOT/../mir2c/map"
+SRC="${MIR2_MAP_SRC:-$CANON}"
+
+if [ ! -d "$SRC" ]; then
+  echo "✗ 地图源目录不存在：${SRC}" >&2
+  echo "" >&2
+  echo "  唯一真源是客户端集（见 docs/decisions.md D-22）：" >&2
+  echo "    ${CANON}" >&2
+  echo "  用 MIR2_MAP_SRC=<目录> 可显式覆盖（要有意识地这么做）。" >&2
+  exit 1
 fi
 
-if [ -z "$SRC" ] || [ ! -d "$SRC" ]; then
-  echo "✗ 找不到地图源目录" >&2
-  echo "  用 MIR2_MAP_SRC=<目录> 显式指定" >&2
-  echo "  候选：\$WS/mir2c/map（客户端，770 张）、\$WS/mir2go/data/map（服务端，605 张）" >&2
-  exit 1
+# 注意：变量后紧跟全角字符时必须用 ${}，否则 bash 会把多字节字符并进变量名。
+if [ "$SRC" != "$CANON" ]; then
+  echo "⚠️  源目录被显式覆盖为 ${SRC}" >&2
+  echo "    唯一真源是 ${CANON}（D-22）；覆盖只应出于对照/实验目的。" >&2
 fi
 
 echo "== 源目录 =="
