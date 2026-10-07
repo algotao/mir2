@@ -32,6 +32,10 @@ const WIN_W: u32 = 640;
 const WIN_H: u32 = 480;
 const SAMPLE_RATE: i32 = 44_100;
 
+/// 右侧信息区：每行最大列数（内置字体等宽 8px，面板内容区 224px）与行高
+const INFO_COLS: usize = 28;
+const INFO_LINE_H: f32 = 16.0;
+
 /// 可浏览的图库（都在 `data/` 下）。按 `[` / `]` 切换。
 const LIBS: &[&str] = &[
     "Prguse", "Hum", "Items", "Mon1", "Tiles", "Magic", "ChrSel", "Effect", "Weapon",
@@ -178,6 +182,11 @@ fn text(c: &mut WindowCanvas, s: &str, x: f32, y: f32, col: Color) -> Result<(),
 /// 内置字体固定 8px 宽，用于水平居中
 fn center_x(s: &str, area_x: f32, area_w: f32) -> f32 {
     area_x + (area_w - s.chars().count() as f32 * 8.0) / 2.0
+}
+
+/// 按字符数截断到 `cols` 列（内置字体等宽 8px，防止文字越出面板）
+fn trunc(s: &str, cols: usize) -> String {
+    s.chars().take(cols).collect()
 }
 
 // ---------- 资产 ----------
@@ -353,9 +362,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // ---------- 精灵：按需加载 / 解码 / 上传纹理 ----------
-        let mut sprite_info = String::from("NO ASSETS");
-        let mut sprite_stat = C_ERR;
-        let mut sprite_dims = (0u32, 0u32, 0i32, 0i32, false);
+        // 右侧信息区：逐行 (文本, 颜色)
+        let mut info_lines: Vec<(String, Color)> = vec![("NO ASSETS".to_string(), C_ERR)];
+        let mut sprite_dims = (0u32, 0u32);
         let mut sprite_ready = false;
 
         if let Some(dir) = &asset_dir {
@@ -377,28 +386,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if found != img_idx {
                         img_idx = found;
                     }
-                    sprite_dims = (
-                        s.width as u32,
-                        s.height as u32,
-                        s.anchor_x as i32,
-                        s.anchor_y as i32,
-                        false,
-                    );
-                    let rec = lib.record(img_idx);
-                    let is16 = rec.map(|r| r.is_16bit()).unwrap_or(false);
-                    sprite_dims.4 = is16;
-                    sprite_info = format!(
-                        "{} #{} / {}  {}x{}  ANCHOR({},{})  {}",
-                        name,
-                        img_idx,
-                        total,
-                        s.width,
-                        s.height,
-                        s.anchor_x,
-                        s.anchor_y,
-                        if is16 { "16BIT" } else { "8BIT+PAL" }
-                    );
-                    sprite_stat = C_OK;
+                    sprite_dims = (s.width as u32, s.height as u32);
+                    let is16 = lib.record(img_idx).map(|r| r.is_16bit()).unwrap_or(false);
+                    info_lines = vec![
+                        (format!("{}  #{} / {}", name, img_idx, total), C_TEXT),
+                        (
+                            format!(
+                                "{}x{}   ANCHOR({},{})",
+                                s.width, s.height, s.anchor_x, s.anchor_y
+                            ),
+                            C_DIM,
+                        ),
+                        (
+                            if is16 { "DIRECT 16BIT" } else { "PALETTE 8BIT" }.to_string(),
+                            C_OK,
+                        ),
+                    ];
                     sprite_ready = true;
 
                     // 纹理：尺寸变了就重建
@@ -425,8 +428,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 sprite_tex = Some(t);
                             }
                             Err(e) => {
-                                sprite_info = format!("TEXTURE ERR: {e}");
-                                sprite_stat = C_ERR;
+                                info_lines = vec![(format!("TEXTURE ERR: {e}"), C_ERR)];
                                 sprite_ready = false;
                             }
                         }
@@ -434,18 +436,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if sprite_ready {
                         if let Some(t) = sprite_tex.as_mut() {
                             if let Err(e) = t.update(None::<Rect>, &s.rgba, s.width as usize * 4) {
-                                sprite_info = format!("UPLOAD ERR: {e}");
-                                sprite_stat = C_ERR;
+                                info_lines = vec![(format!("UPLOAD ERR: {e}"), C_ERR)];
                                 sprite_ready = false;
                             }
                         }
                     }
                 } else {
-                    sprite_info = format!("{} #{}  (空壳图)", name, img_idx);
-                    sprite_stat = C_DIM;
+                    info_lines = vec![(format!("{}  #{}  (空壳图)", name, img_idx), C_DIM)];
                 }
             } else {
-                sprite_info = format!("{name}.wzl 打不开");
+                info_lines = vec![(format!("{name}.wzl 打不开"), C_ERR)];
             }
         }
 
@@ -582,7 +582,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         const PX: f32 = RX + 12.0;
         const PY: f32 = 92.0;
         const PW: f32 = RW - 24.0;
-        const PH: f32 = 150.0;
+        const PH: f32 = 132.0;
         checkerboard(&mut canvas, PX, PY, PW, PH)?;
         frame(&mut canvas, PX, PY, PW, PH, C_PANEL_BORDER)?;
 
@@ -612,23 +612,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // 精灵信息（超宽则截断，避免画出面板）
-        let info = if sprite_info.chars().count() > 29 {
-            sprite_info.chars().take(29).collect::<String>()
-        } else {
-            sprite_info.clone()
-        };
-        text(&mut canvas, &info, PX, PY + PH + 8.0, sprite_stat)?;
-        let libl = format!(
-            "[{}/{}]  {}  IMG {}",
-            lib_idx + 1,
-            LIBS.len(),
-            LIBS[lib_idx],
-            img_idx
-        );
-        text(&mut canvas, &libl, PX, PY + PH + 24.0, C_TEXT)?;
-        let nav = "[[ ]] LIB   [, .] OR ARROW  IMG";
-        text(&mut canvas, nav, PX, PY + PH + 40.0, C_DIM)?;
+        // 精灵信息：占 3 行（每行硬限 INFO_COLS 列，避免越出面板）
+        for (i, (line, col)) in info_lines.iter().enumerate().take(3) {
+            let y = PY + PH + 8.0 + i as f32 * INFO_LINE_H;
+            text(&mut canvas, &trunc(line, INFO_COLS), PX, y, *col)?;
+        }
+        // 导航区固定在第 4 / 5 行，保持布局稳定
+        let libl = format!("LIB [{}/{}]   IMG {}", lib_idx + 1, LIBS.len(), img_idx);
+        text(
+            &mut canvas,
+            &libl,
+            PX,
+            PY + PH + 8.0 + 3.0 * INFO_LINE_H,
+            C_TEXT,
+        )?;
+        let nav = "[ ] LIB   , . / ARROWS  IMG";
+        text(
+            &mut canvas,
+            nav,
+            PX,
+            PY + PH + 8.0 + 4.0 * INFO_LINE_H,
+            C_DIM,
+        )?;
 
         // ===== 底部提示 =====
         let hint = "TAB SWITCH  ENTER LOGIN  M MUSIC  ESC QUIT";
