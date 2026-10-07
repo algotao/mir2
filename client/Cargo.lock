@@ -159,6 +159,7 @@ version = "0.1.0"
 dependencies = [
  "mir2-core",
  "sdl3",
+ "sdl3-sys",
 ]
 
 [[package]]

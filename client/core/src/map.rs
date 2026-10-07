@@ -34,8 +34,10 @@ pub const BLOCK_BIT: u16 = 0x8000;
 pub const DOOR_BIT: u8 = 0x80;
 /// `door_offset` 的"有位移"位（开门动画；低 7 位是偏移量）。
 pub const DOOR_OFFSET_BIT: u8 = 0x80;
-/// `ani_frame` 的 Alpha 混合位（低 7 位是动画帧数）。
-pub const ANI_ALPHA_BIT: u8 = 0x80;
+/// `ani_frame` 的**混合标志位**（低 7 位是动画帧数）。
+///
+/// ⚠️ 名字沿用原版的 `blend`；其语义是**滤色（SCREEN）**而非 alpha —— 见 [`crate::blend`]。
+pub const ANI_BLEND_BIT: u8 = 0x80;
 
 fn bad(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
@@ -57,7 +59,7 @@ pub struct Cell {
     pub door_index: u8,
     /// `& 0x80` ⇒ 有位移；低 7 位 = 偏移量。
     pub door_offset: u8,
-    /// `& 0x80` ⇒ Alpha 混合；低 7 位 = 动画帧数。
+    /// `& 0x80` ⇒ 混合（滤色 SCREEN，见 [`crate::blend`]）；低 7 位 = 动画帧数。
     pub ani_frame: u8,
     /// 动画节拍。
     pub ani_tick: u8,
@@ -97,9 +99,9 @@ impl Cell {
         self.door_offset & 0x7F
     }
 
-    /// 是否要求 Alpha 混合。
+    /// 是否要求混合（**滤色 SCREEN**，不是 alpha；见 [`crate::blend`]）。
     pub fn ani_blend(&self) -> bool {
-        self.ani_frame & ANI_ALPHA_BIT != 0
+        self.ani_frame & ANI_BLEND_BIT != 0
     }
 
     /// 动画帧数（低 7 位）。
@@ -318,7 +320,10 @@ pub struct TileDraw {
     /// 前景层的动画帧数（`ani_frame & 0x7F`）；其余层恒为 0。
     pub ani_frames: u8,
     /// `ani_frame & 0x80` ⇒ 官方称"**Alpha 物件**"：用**图自身的锚点**定位，
-    /// 并做半透明混合（`PlayScn.pas:1247-1256` 的 `GetObjsEx` + `DrawBlend` 分支）。
+    /// 并用**滤色（SCREEN）**混合（`PlayScn.pas:1247` 的 `GetObjsEx` + `DrawBlend(...,1)`）。
+    ///
+    /// ⚠️ 官方这里**不是** alpha 混合，而是查 `Color256Anti` 表做 SCREEN ——
+    /// 渲染侧请用 [`crate::blend::screen_source`] 预处理贴图，**不要**用 `alpha_mod`。
     pub blend: bool,
 }
 
@@ -378,15 +383,6 @@ impl TileDraw {
             self.x + anchor_x - 2
         } else {
             self.x
-        }
-    }
-
-    /// Alpha 物件的混合强度（0–255）。官方用 `pmix` 查表做 50% 混色，这里取 128。
-    pub fn alpha(&self) -> u8 {
-        if self.blend {
-            128
-        } else {
-            255
         }
     }
 }
@@ -549,7 +545,7 @@ mod tests {
         assert!(c.door_shifted());
         assert_eq!(c.door_shift(), 3);
 
-        c.ani_frame = ANI_ALPHA_BIT | 4;
+        c.ani_frame = ANI_BLEND_BIT | 4;
         assert!(c.ani_blend());
         assert_eq!(c.ani_frames(), 4);
 
@@ -730,7 +726,7 @@ mod tests {
 
     #[test]
     fn alpha_object_uses_anchor() {
-        // 官方 PlayScn.pas:1247-1256：$80 物件用锚点定位 + 半透明
+        // 官方 PlayScn.pas:1247-1256：$80 物件用锚点定位（混合语义见 crate::blend）
         let d = TileDraw {
             layer: Layer::Front,
             lib: Lib::Objects,
@@ -743,11 +739,10 @@ mod tests {
         };
         assert_eq!(d.top_y(100, 100, -44), 64 + (-44) - 68);
         assert_eq!(d.left_x(7), 100 + 7 - 2);
-        assert_eq!(d.alpha(), 128);
         // 非 Alpha 物件不受锚点影响
         let plain = TileDraw { blend: false, ..d };
         assert_eq!(plain.left_x(7), 100);
-        assert_eq!(plain.alpha(), 255);
+        assert!(!plain.blend);
     }
 
     #[test]

@@ -148,8 +148,8 @@ u32[ImageCount]           // 每项 = 对应图在 .wzl 中的字节偏移（从
    地块是 48×32，横向覆盖 2 个逻辑格。
 3. **通行** = `(BkImg and $8000) + (FrImg and $8000) = 0`（`MapUnit.pas:320`）；
    另有只看前景层的判定（`MapUnit.pas:337`）。
-4. 前景动画：`btAniFrame` 的 `$80` 位 = **Alpha 混合**，低 7 位 = 帧数；
-   `btAniTick` 是节拍；`btDoorOffset` 的 `$80` 位 = **有位移**（开门），低 7 位 = 偏移量。
+4. 前景动画：`btAniFrame` 的 `$80` 位 = **混合标志**（语义见 §3.3a-3，是**滤色不是 alpha**），
+   低 7 位 = 帧数；`btAniTick` 是节拍；`btDoorOffset` 的 `$80` 位 = **有位移**（开门），低 7 位 = 偏移量。
 
 ⚠️ **已推翻的旧疑问**：曾疑"旧客户端只用两层、`mir2go` 却归三层"。
 实测**确实是三层**——`wMidImg` 存在且走 `SmTiles`。
@@ -210,10 +210,47 @@ end;
 
 - 判定：`btAniFrame and $80 <> 0`（低 7 位仍是动画帧数）。
 - 定位：Y = **格原点 + 锚点 y − 68**；X = **格原点 + 锚点 x − 2**。
-- 混合：走 `DrawBlend`（`pmix` 查表，约 50% 混色）。
+- 混合：`DrawBlend(..., 1)` —— ⚠️ **不是 alpha 混合，是滤色（SCREEN）**，见下。
 - 实测占比很小但**可见**：`0.map` 里 28,281 个前景格中仅 **45 格**（0.16%），
   且**全部指向同一个图号 2723**（一块 100×100 的光效 —— 不做混合时会渲染成
   **不透明黑方块**，位置也错，这就是它看起来"错位"的原因）。
+
+##### 混合模式的**真身**：两张查表，都不是 alpha（2026-10-07 定案）
+
+`cliUtil.pas:957` 决定用哪张表：`blendmode = 0` 取 `Color256Mix`，**否则取 `Color256Anti`**；
+而物件路径写死 `DrawBlend(..., 1)` ⇒ 走 **`Color256Anti`**。两张表的生成代码
+（`BuildMix` / `BuildAnti`）化简后是：
+
+```text
+BuildMix  （blendmode 0）: out = (src + dst) / 2               ← 50% 平均
+BuildAnti （blendmode 1）: out = src + (255-src)/255 * dst     ← SCREEN（滤色）
+```
+
+**踩过的坑**：把 `BuildAnti` 当 50% 透明来画。光源贴图 `#2723` 的亮度分布是
+
+| 亮度 | 像素数 | 占比 |
+|---|---:|---:|
+| 0–31（近黑外圈） | 5039 | **56%** |
+| 32–63 | 1790 | 20% |
+| 64–127 | 1675 | 19% |
+| 128–255（中心） | 424 | 5% |
+
+SCREEN 下，占 56% 的近黑外圈满足 `out = src + dst·(1−src/255) ≈ dst` —— **等于透明**，
+只有中心把地面**提亮**，这才是"一盏灯"。50% alpha 下同一片像素把地面**压暗一半**，
+100×100 铺过去就是**一坨半透明黑斑**（用户实测截图即此现象）。
+
+**SDL3 侧的等价实现**：SDL 没有 SCREEN 模式，但
+`SDL_BLENDMODE_BLEND_PREMULTIPLIED` 的公式是 `dstRGBA = srcRGBA + dstRGBA·(1−srcA)`
+（`SDL_blendmode.h`），与官方同形 —— 只要把源像素的 **alpha 换成它的亮度**，
+就得到 `out = src + dst·(1−brightness/255)`。
+⇒ [`client/core/src/blend.rs`](../client/core/src/blend.rs) 的 `screen_source()` +
+`BlendMode` 走底层常量 `SDL_BLENDMODE_BLEND_PREMULTIPLIED`
+（`sdl3::render::BlendMode` 没暴露这一个，见 `client/app/Cargo.toml` 的 `sdl3-sys`）。
+
+⚠️ **已知偏差**：官方对 R/G/B **各自**算 `1−src_c/255`，SDL 只有**一个** alpha 因子，
+故取三通道均值。纯灰像素误差为 0；实测该贴图最大的 `(66,49,16)` 差 **16/255（6%）**，
+均值远小于此（有单测守着，见 `blend.rs` 的 `approximates_official_screen_*`）。
+定点混合管线无法表达逐通道 SCREEN，此为可接受的近似。
 
 ⚠️ Crystal 另用 `BackImage & 0x1FFFFFFF`（29 位，含 `BackIndex` 选库），是**新格式**；
 1.76 用 16 位 + `0x7FFF` 掩码 + `btArea` 选 `Objects<N>`。**以 1.76 为准**。

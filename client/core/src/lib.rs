@@ -5,6 +5,7 @@
 //!
 //! **纪律**：这里不出现窗口 / 音频 / 网络线程。能跑满单测是硬要求。
 
+pub mod blend;
 pub mod m2pk;
 pub mod map;
 pub mod palette;
