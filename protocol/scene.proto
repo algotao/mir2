@@ -108,6 +108,12 @@ message EntityMove {
   Vec2 to = 3;
   Direction direction = 4;
   uint32 server_tick = 5;
+  // 这一步是**跑**（原版是 `SM_RUN` 与 `SM_WALK` 两条消息；这里用一个标志位）。
+  //
+  // 客户端要它才能播对动画：走是 `ActWalk`（6 帧 × 90 ms）、跑是 `ActRun`
+  //（6 帧 × 120 ms），两段的图号差 64（`Actor.pas:77-78`）。少了这个字段，
+  // 跑起来只能放走的动画 —— 而且**连别人跑起来也看不出来**。
+  bool run = 6;
 }
 
 // 动作切换（走/跑/攻击/受击/死亡/骑马…）。用动作 id + 时间戳，取代原版 70 个手写动画类。

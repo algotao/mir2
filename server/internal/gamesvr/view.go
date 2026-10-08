@@ -186,14 +186,14 @@ func (s *Server) sendDisappear(to *Player, id uint32, x, y int) {
 // fromX/fromY 是移动**前**的坐标：新协议的 `EntityMove` 要带 `from`（客户端靠它插值），
 // 而 legacy 的 SM_WALK 只带新位置 ⇒ 这个参数是新协议带出来的需要。
 // 转身时调用方传 from == 当前位置（新协议没有独立的转身消息，见 protoSink.move）。
-func (s *Server) broadcastMove(p *Player, ident uint16, fromX, fromY int) {
+func (s *Server) broadcastMove(p *Player, ident uint16, fromX, fromY int, run bool) {
 	_, x, y, dir := p.Obj.Place() // 一次读全（三次分开读会拿到不自洽的组合）
 	s.broadcastToViewers(p.Obj.MapRef(), x, y, func(other *Player) {
 		if other == p || !other.visible.Contains(p.Obj.ID) {
 			return
 		}
 		if sink := other.protoOut; sink != nil {
-			sink.move(uint32(p.Obj.ID), fromX, fromY, x, y, dir)
+			sink.move(uint32(p.Obj.ID), fromX, fromY, x, y, dir, run)
 			return
 		}
 		s.send(other.conn, ident, int32(p.Obj.ID), uint16(x), uint16(y), uint16(dir), "")

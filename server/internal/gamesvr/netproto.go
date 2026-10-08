@@ -258,7 +258,7 @@ func (k *protoSink) levelUp(level uint32, ab *pb.Ability, gold int64) {
 // ⚠️ 新协议里**没有**独立的"转身"消息，所以转身也用 EntityMove 表达
 // （客户端看到 from == to 就只更新朝向）。补一条专用的动作/转身消息
 // 记在 protocol.md §11。
-func (k *protoSink) move(id uint32, fromX, fromY, toX, toY int, dir uint8) {
+func (k *protoSink) move(id uint32, fromX, fromY, toX, toY int, dir uint8, run bool) {
 	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_EntityMove{
 		EntityMove: &protocol.EntityMove{
 			EntityId:   uint64(id),
@@ -266,6 +266,7 @@ func (k *protoSink) move(id uint32, fromX, fromY, toX, toY int, dir uint8) {
 			To:         &protocol.Vec2{X: int32(toX), Y: int32(toY)},
 			Direction:  directionOf(dir),
 			ServerTick: uint32(time.Now().UnixMilli()),
+			Run:        run,
 		}}})
 }
 
@@ -1157,12 +1158,14 @@ func (ps *protoSession) onMoveInput(m *protocol.MoveInput) bool {
 			To:         &protocol.Vec2{X: int32(newX), Y: int32(newY)},
 			Direction:  directionOf(newDir),
 			ServerTick: uint32(time.Now().UnixMilli()),
+			// 客户端要它才能播对动画（走 ActWalk / 跑 ActRun，见 scene.proto 的说明）
+			Run: running,
 		}}}); err != nil {
 		return false
 	}
 	// 看得见他的人（两条协议各取所需，见 view.go 的分支）。
-	ps.srv.broadcastMove(p, proto.SM_WALK, fromX, fromY)
-	obs.Event("move", "player", p.Char.Name, "x", newX, "y", newY, "dir", newDir, "running", false)
+	ps.srv.broadcastMove(p, proto.SM_WALK, fromX, fromY, running)
+	obs.Event("move", "player", p.Char.Name, "x", newX, "y", newY, "dir", newDir, "running", running)
 
 	// 换格之后视野差集要重算：新进来的（EntityAppear）/ 走出去的（EntityDisappear）。
 	ps.srv.updateVision(p)

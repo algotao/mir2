@@ -144,7 +144,7 @@ pub struct Pose {
 ///
 /// ⚠️ 消息号→段的对应照原版 `Actor.pas:3191+`：`SM_HIT / SM_POWERHIT / SM_LONGHIT /
 /// SM_WIDEHIT / SM_FIREHIT / SM_TWINHIT` **全都进 `ActHit`**，只有 HEAVY / BIG 另有段。
-pub fn human_pose(action_id: Option<u32>, moving: bool) -> Pose {
+pub fn human_pose(action_id: Option<u32>, moving: bool, run: bool) -> Pose {
     match action_id {
         Some(action::HURT) => Pose {
             act: HAct::Struck,
@@ -163,7 +163,12 @@ pub fn human_pose(action_id: Option<u32>, moving: bool) -> Pose {
             looping: false,
         },
         _ if moving => Pose {
-            act: HAct::Walk,
+            // 走 / 跑是**两段不同的图**：`ActWalk` 起点 64、`ActRun` 起点 128，各 6 帧
+            //（帧间隔 90 vs 120 ms，`Actor.pas:77-78`）。原版靠 `CM_RUN`/`SM_RUN` 两条消息
+            // 区分（`Actor.pas:1471`/`3230-3263`），我们的 `EntityMove.run` 就是那个标志
+            //（见 `world::Entity::run`）。⚠️ 段落选错的后果是"跑步放走的图"，
+            // 帧数一样、图号差 64 ⇒ 画面上是另一套动作，**不报错**。
+            act: if run { HAct::Run } else { HAct::Walk },
             looping: true,
         },
         _ => Pose {
@@ -1819,28 +1824,59 @@ mod tests {
     #[test]
     fn 人物图号() {
         // 站立、朝上（dir=0）、第 0 帧 = 块起点
-        assert_eq!(human_index(0, human_pose(None, false).act, 0, 0), 0);
-        assert_eq!(human_index(1, human_pose(None, false).act, 0, 0), 600);
-        assert_eq!(human_index(23, human_pose(None, false).act, 0, 0), 13_800);
-        // 走：start=64、stride=8 ⇒ 朝右（dir=2）首帧 80
-        assert_eq!(human_index(0, human_pose(None, true).act, 2, 0), 80);
+        assert_eq!(human_index(0, human_pose(None, false, false).act, 0, 0), 0);
         assert_eq!(
-            human_index(0, human_pose(None, true).act, 7, 6),
+            human_index(1, human_pose(None, false, false).act, 0, 0),
+            600
+        );
+        assert_eq!(
+            human_index(23, human_pose(None, false, false).act, 0, 0),
+            13_800
+        );
+        // 走：start=64、stride=8 ⇒ 朝右（dir=2）首帧 80
+        assert_eq!(human_index(0, human_pose(None, true, false).act, 2, 0), 80);
+        assert_eq!(
+            human_index(0, human_pose(None, true, false).act, 7, 6),
             64 + 56 + 6
         );
         // 攻击：start=200、stride=8
         assert_eq!(
-            human_index(0, human_pose(Some(1), false).act, 4, 5),
+            human_index(0, human_pose(Some(1), false, false).act, 4, 5),
             200 + 32 + 5
         );
         // 死亡：start=536、stride=8 ⇒ 最后一个方向最后一帧仍在 600 以内（块不越界）
         assert_eq!(
-            human_index(0, human_pose(Some(action::DEATH), false).act, 7, 3),
+            human_index(0, human_pose(Some(action::DEATH), false, false).act, 7, 3),
             536 + 56 + 3
         );
-        assert!(human_index(0, human_pose(Some(action::DEATH), false).act, 7, 3) < HUMAN_FRAME);
+        assert!(
+            human_index(0, human_pose(Some(action::DEATH), false, false).act, 7, 3) < HUMAN_FRAME
+        );
         // 受击（51）走 ActStruck
-        assert_eq!(human_pose(Some(action::HURT), false).act, HAct::Struck);
+        assert_eq!(
+            human_pose(Some(action::HURT), false, false).act,
+            HAct::Struck
+        );
+    }
+
+    /// 走 / 跑选的是**两段不同的图**（起点差 64），`EntityMove.run` 一路传到这儿。
+    ///
+    /// ⚠️ 选错**不报错**：帧数一样（都是 6 帧），只是画面上放着另一套动作 ——
+    /// 用户 2026-10-08 报的"跑起来不像跑"就是这个。
+    #[test]
+    fn 跑和走是两段图() {
+        assert_eq!(human_pose(None, true, false).act, HAct::Walk);
+        assert_eq!(human_pose(None, true, true).act, HAct::Run);
+        // 站着不动时 `run` 没有意义（"这一步是跑的"只在移动中成立）
+        assert_eq!(human_pose(None, false, true).act, HAct::Stand);
+        // **动作优先于移动**：受击时即使在跑也放受击（判断顺序见 `human_pose`）
+        assert_eq!(human_pose(Some(action::HURT), true, true).act, HAct::Struck);
+        // 两段的起点差 64（`HA`：Walk 64 / Run 128，`Actor.pas:77-78`）
+        assert_eq!(
+            HAct::Walk.act().start + 64,
+            HAct::Run.act().start,
+            "原版两段图相差 64 —— 图号公式若改，这条会先红"
+        );
     }
 
     /// 四种攻击消息号里有三种**共用** `ActHit`（原版 `Actor.pas` 的 case 列表）——
@@ -1849,13 +1885,13 @@ mod tests {
     fn 攻击动作都进同一段() {
         for a in [1u32, 4, 5, 6, 7, 8] {
             assert_eq!(
-                human_pose(Some(a), false).act,
+                human_pose(Some(a), false, false).act,
                 HAct::Hit,
                 "动作 {a} 应进 ActHit"
             );
         }
-        assert_eq!(human_pose(Some(2), false).act, HAct::HeavyHit);
-        assert_eq!(human_pose(Some(3), false).act, HAct::BigHit);
+        assert_eq!(human_pose(Some(2), false, false).act, HAct::HeavyHit);
+        assert_eq!(human_pose(Some(3), false, false).act, HAct::BigHit);
     }
 
     /// 帧推进：按 `ftime` 计时，循环的绕回、一次播完的停在末帧。
@@ -2007,7 +2043,7 @@ mod tests {
             hum.len()
         );
         for d in 0..8u8 {
-            let i = human_index(0, human_pose(None, false).act, d, 0);
+            let i = human_index(0, human_pose(None, false, false).act, d, 0);
             let s = hum
                 .decode(i as usize)
                 .unwrap_or_else(|| panic!("站立方向 {d}：图号 {i} 没有图"));
@@ -2015,10 +2051,10 @@ mod tests {
         }
         // 方向步长（frame+skip）写错时，相邻方向会**撞成同一张图**
         let right = hum
-            .decode(human_index(0, human_pose(None, false).act, 2, 0) as usize)
+            .decode(human_index(0, human_pose(None, false, false).act, 2, 0) as usize)
             .unwrap();
         let down_right = hum
-            .decode(human_index(0, human_pose(None, false).act, 3, 0) as usize)
+            .decode(human_index(0, human_pose(None, false, false).act, 3, 0) as usize)
             .unwrap();
         assert_ne!(
             right.rgba, down_right.rgba,
@@ -2026,7 +2062,7 @@ mod tests {
         );
 
         // 走一整个循环：6 帧都要有图（`skip` 那两格才是空的，别把 stride 当成 frame）
-        let walk = human_pose(None, true);
+        let walk = human_pose(None, true, false);
         for k in 0..walk.act.act().frame {
             let i = human_index(0, walk.act, 5, k);
             assert!(

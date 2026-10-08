@@ -46,7 +46,9 @@ func (s *Server) broadcastMonsterMove(mv monsterMove) {
 			return
 		}
 		if sink := p.protoOut; sink != nil {
-			sink.move(mv.id, mv.fromX, mv.fromY, mv.x, mv.y, mv.dir)
+			// 怪物不跑（`run = false`）：原版的怪物 AI 也只有走（`Monster.pas` 无 Run 分支），
+			// 骑兵类要跑是另一件事，真要做时再从这里往后传。
+			sink.move(mv.id, mv.fromX, mv.fromY, mv.x, mv.y, mv.dir, false)
 			return
 		}
 		s.send(p.conn, proto.SM_WALK, int32(mv.id), uint16(mv.x), uint16(mv.y), uint16(mv.dir), "")

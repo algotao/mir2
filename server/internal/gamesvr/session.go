@@ -591,7 +591,7 @@ func (s *Server) handleMove(c net.Conn, p *Player, pkt wire.Packet, running bool
 		ident = proto.SM_RUN
 	}
 	s.send(c, ident, int32(p.Obj.ID), uint16(newX), uint16(newY), uint16(newDir), "")
-	s.broadcastMove(p, ident, fromX, fromY)
+	s.broadcastMove(p, ident, fromX, fromY, running)
 	obs.Event("move", "player", p.Char.Name, "x", newX, "y", newY,
 		"dir", newDir, "running", running)
 	s.updateVision(p)
@@ -612,5 +612,6 @@ func (s *Server) handleTurn(c net.Conn, p *Player, pkt wire.Packet) {
 	p.turnAt = time.Now()
 	s.send(c, proto.SM_TURN, int32(p.Obj.ID), uint16(x), uint16(y), uint16(dir), "")
 	// 转身：from == to（新协议没有独立的转身消息，客户端看到"原地改朝向"就只更新朝向）。
-	s.broadcastMove(p, proto.SM_TURN, x, y)
+	// `run = false`：转身不是移动。
+	s.broadcastMove(p, proto.SM_TURN, x, y, false)
 }

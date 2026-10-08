@@ -30,6 +30,11 @@ pub struct Entity {
     pub feature: Option<proto::EntityFeature>,
     pub hp: u32,
     pub max_hp: u32,
+    /// 最近一次移动是不是**跑**（`EntityMove.run`）—— 决定播 `ActWalk` 还是 `ActRun`。
+    ///
+    /// ⚠️ 它是"这一步"的属性（不是"这个人常常跑"），所以每次移动都会被重写；
+    /// 停下来之后这个值虽然还留着，但渲染层只在**移动中**看它（`ActorAnim::moving`）。
+    pub run: bool,
     pub status_bits: u64,
     /// 已经死了（收到 `Death` 之后、`EntityDisappear` 之前的那段时间 = 尸骨）。
     ///
@@ -66,6 +71,8 @@ impl Entity {
             feature: s.feature,
             hp: s.hp,
             max_hp: s.max_hp,
+            // 快照不带"跑"这个信息（它只属于一次移动）⇒ 出现时一律先当走的
+            run: false,
             status_bits: s.status_bits,
             dead: false,
             action: None,
@@ -73,9 +80,13 @@ impl Entity {
     }
 
     /// 位置更新（`EntityMove` 只给 from/to，不给 kind/名字 ⇒ 就地改）。
-    fn set_pos(&mut self, x: i32, y: i32, dir: i32) {
+    ///
+    /// `run` 是**这一步**是不是跑的 —— 渲染层靠它决定播 `ActWalk` 还是 `ActRun`
+    ///（两段的图号差 64，见 `actor::HAct`）。原地转身（`from == to`）时服务端给 `false`。
+    fn set_pos(&mut self, x: i32, y: i32, dir: i32, run: bool) {
         self.x = x;
         self.y = y;
+        self.run = run;
         if dir != proto::Direction::Unspecified as i32 {
             self.dir = dir;
         }
@@ -138,6 +149,8 @@ pub struct World {
     pub self_hp: Option<(u32, u32)>,
     /// 自己是不是死了（回城 / `Revive` 之后由 `ChangeMap` 那条恢复）。
     pub self_dead: bool,
+    /// 自己最近一次移动是不是**跑**（与 `Entity::run` 同义，自己不在 `entities` 里）。
+    pub self_run: bool,
     /// 自己最近一次动作（挥砍…）—— 自己不在 `entities` 里，所以单列。
     pub self_action: Option<u32>,
     /// 自己的外观（`EnterWorld` / `ChangeMap` 里的 `self_feature`）。
@@ -237,11 +250,12 @@ impl World {
                 if m.entity_id == self.self_id {
                     // 自己的权威回显：客户端预测过，这里以服务端为准。
                     self.self_pos = (to.x, to.y);
+                    self.self_run = m.run;
                     if m.direction != proto::Direction::Unspecified as i32 {
                         self.self_dir = m.direction;
                     }
                 } else if let Some(e) = self.entities.get_mut(&m.entity_id) {
-                    e.set_pos(to.x, to.y, m.direction);
+                    e.set_pos(to.x, to.y, m.direction, m.run);
                 } else {
                     // ⚠️ 没见过的实体在移动：**不要凭空造一个**（那会造出没有名字/外观的幽灵）。
                     // 正常不会发生（先出现后移动），发生了就记数——这通常是服务端的账本有漏。
@@ -463,6 +477,7 @@ mod tests {
             to: Some(proto::Vec2 { x: 5, y: 4 }),
             direction: proto::Direction::DirRight as i32,
             server_tick: 1,
+            run: false,
         })));
         let e = &w.entities[&1_000_002];
         assert_eq!((e.x, e.y, e.dir), (5, 4, proto::Direction::DirRight as i32));
@@ -490,9 +505,47 @@ mod tests {
             to: Some(proto::Vec2 { x: 2, y: 1 }),
             direction: proto::Direction::DirRight as i32,
             server_tick: 2,
+            run: true,
         })));
         assert_eq!(w.self_pos, (2, 1));
         assert_eq!(w.entities.len(), 2, "自己的移动不该往实体表里塞东西");
+        // "这一步是跑的"也要落到自己身上（渲染层靠它播 ActRun）
+        assert!(w.self_run);
+        // ... 而**不是**塞进实体表（自己不在表里）
+        assert_eq!(w.self_action, None);
+    }
+
+    /// `run` 是**这一步**的属性：别人跑步、原地转身，两种都要传对。
+    ///
+    /// ⚠️ 用户 2026-10-08 报的"跑起来不像跑"根因就在这里：`EntityMove` 原先没有这个字段，
+    /// 客户端只能一律播 `ActWalk`（而两段图差 64，看着就是另一套动作）。
+    #[test]
+    fn 移动的跑标记来自服务端() {
+        let mut w = World::default();
+        w.apply(&env(enter_world()));
+        // 别人（快照里的 7 号）跑一步
+        w.apply(&env(Body::EntityMove(proto::EntityMove {
+            entity_id: 7,
+            from: Some(proto::Vec2 { x: 5, y: 5 }),
+            to: Some(proto::Vec2 { x: 7, y: 5 }),
+            direction: proto::Direction::DirRight as i32,
+            server_tick: 3,
+            run: true,
+        })));
+        let e = &w.entities[&7];
+        assert_eq!((e.x, e.y, e.run), (7, 5, true), "跑一步该带上 run");
+
+        // 同一实体改成走一步 ⇒ 标记要跟着变（它是"这一步"的属性，不是"这个人"的属性）
+        w.apply(&env(Body::EntityMove(proto::EntityMove {
+            entity_id: 7,
+            from: Some(proto::Vec2 { x: 7, y: 5 }),
+            to: Some(proto::Vec2 { x: 8, y: 5 }),
+            direction: proto::Direction::DirRight as i32,
+            server_tick: 4,
+            run: false,
+        })));
+        let e = &w.entities[&7];
+        assert_eq!((e.x, e.run), (8, false), "走一步必须把 run 抹掉");
     }
 
     #[test]
@@ -505,6 +558,7 @@ mod tests {
             to: Some(proto::Vec2 { x: 1, y: 0 }),
             direction: 0,
             server_tick: 1,
+            run: false,
         })));
         assert!(
             !w.entities.contains_key(&999),

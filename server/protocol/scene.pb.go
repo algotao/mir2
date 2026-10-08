@@ -692,12 +692,18 @@ func (x *EntityDisappear) GetReason() DisappearReason {
 
 // 服务端权威移动广播（高频位置：可丢弃过期包，按 seq 丢弃）。
 type EntityMove struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	EntityId      uint64                 `protobuf:"varint,1,opt,name=entity_id,json=entityId,proto3" json:"entity_id,omitempty"`
-	From          *Vec2                  `protobuf:"bytes,2,opt,name=from,proto3" json:"from,omitempty"`
-	To            *Vec2                  `protobuf:"bytes,3,opt,name=to,proto3" json:"to,omitempty"`
-	Direction     Direction              `protobuf:"varint,4,opt,name=direction,proto3,enum=mir2.Direction" json:"direction,omitempty"`
-	ServerTick    uint32                 `protobuf:"varint,5,opt,name=server_tick,json=serverTick,proto3" json:"server_tick,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	EntityId   uint64                 `protobuf:"varint,1,opt,name=entity_id,json=entityId,proto3" json:"entity_id,omitempty"`
+	From       *Vec2                  `protobuf:"bytes,2,opt,name=from,proto3" json:"from,omitempty"`
+	To         *Vec2                  `protobuf:"bytes,3,opt,name=to,proto3" json:"to,omitempty"`
+	Direction  Direction              `protobuf:"varint,4,opt,name=direction,proto3,enum=mir2.Direction" json:"direction,omitempty"`
+	ServerTick uint32                 `protobuf:"varint,5,opt,name=server_tick,json=serverTick,proto3" json:"server_tick,omitempty"`
+	// 这一步是**跑**（原版是 `SM_RUN` 与 `SM_WALK` 两条消息；这里用一个标志位）。
+	//
+	// 客户端要它才能播对动画：走是 `ActWalk`（6 帧 × 90 ms）、跑是 `ActRun`
+	//（6 帧 × 120 ms），两段的图号差 64（`Actor.pas:77-78`）。少了这个字段，
+	// 跑起来只能放走的动画 —— 而且**连别人跑起来也看不出来**。
+	Run           bool `protobuf:"varint,6,opt,name=run,proto3" json:"run,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -765,6 +771,13 @@ func (x *EntityMove) GetServerTick() uint32 {
 		return x.ServerTick
 	}
 	return 0
+}
+
+func (x *EntityMove) GetRun() bool {
+	if x != nil {
+		return x.Run
+	}
+	return false
 }
 
 // 动作切换（走/跑/攻击/受击/死亡/骑马…）。用动作 id + 时间戳，取代原版 70 个手写动画类。
@@ -1237,7 +1250,7 @@ const file_scene_proto_rawDesc = "" +
 	"\x06entity\x18\x01 \x01(\v2\x11.mir2.EntityStateR\x06entity\"]\n" +
 	"\x0fEntityDisappear\x12\x1b\n" +
 	"\tentity_id\x18\x01 \x01(\x04R\bentityId\x12-\n" +
-	"\x06reason\x18\x02 \x01(\x0e2\x15.mir2.DisappearReasonR\x06reason\"\xb5\x01\n" +
+	"\x06reason\x18\x02 \x01(\x0e2\x15.mir2.DisappearReasonR\x06reason\"\xc7\x01\n" +
 	"\n" +
 	"EntityMove\x12\x1b\n" +
 	"\tentity_id\x18\x01 \x01(\x04R\bentityId\x12\x1e\n" +
@@ -1247,7 +1260,8 @@ const file_scene_proto_rawDesc = "" +
 	".mir2.Vec2R\x02to\x12-\n" +
 	"\tdirection\x18\x04 \x01(\x0e2\x0f.mir2.DirectionR\tdirection\x12\x1f\n" +
 	"\vserver_tick\x18\x05 \x01(\rR\n" +
-	"serverTick\"d\n" +
+	"serverTick\x12\x10\n" +
+	"\x03run\x18\x06 \x01(\bR\x03run\"d\n" +
 	"\fEntityAction\x12\x1b\n" +
 	"\tentity_id\x18\x01 \x01(\x04R\bentityId\x12\x16\n" +
 	"\x06action\x18\x02 \x01(\rR\x06action\x12\x1f\n" +

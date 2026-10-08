@@ -138,11 +138,56 @@ const C_ENT_DEAD: Color = Color::RGB(120, 120, 120);
 /// 地图比视口大得多，走到哪解到哪，记账成本换不来什么。
 const SPRITE_CACHE_CAP: usize = 512;
 
-/// 走一格的补间时长。
+/// 走路**一格**的补间时长（毫秒）—— 与**服务端的移动节流**对齐。
 ///
-/// ⚠️ 这是**客户端定的观感参数**：新协议的 `EntityMove` 只给 `from`/`to`，没有时长
-/// （原版靠移动速度算节拍，那个还没下发）。320ms 与"人走两步"大致同量级。
-const MOVE_MS: u32 = 320;
+/// ⚠️ 出处是 `server/internal/entity/object.go:483` 的 `MoveLimiter`：`MinWalk = 600ms`、
+/// `MinRun = 400ms`（**一步 2 格**）。改服务端那儿就得改这里：
+/// 补间比它短 = "每格提前到位再干等"（用户 2026-10-08 报的卡顿，原先写死 320 ms 就是这毛病）；
+/// 比它长 = 精灵被下一格"拽着走"。
+const WALK_STEP_MS: u32 = 600;
+
+/// 跑**一步**（`RUN_STEPS` 格）的补间时长。
+///
+/// 注意它**不是**一格的时长：跑一步 2 格 ⇒ 每格 200 ms、比走的 600 ms 快三倍
+/// —— 这就是原版"跑明显更快"的来源（`GetNextRunXY`，`ClFunc.pas:370-382`）。
+const RUN_STEP_MS: u32 = 400;
+
+/// 跑一步的格数（原版 `GetNextRunXY` 一次 +2；斜着跑也是两格）。
+const RUN_STEPS: i32 = 2;
+
+/// 一次移动该补间多久：**按实际格数与走/跑算**（别写死一格）。
+///
+/// 格数用 `max(|dx|,|dy|)`（切比雪夫距离）：斜着走一格 = 一格，斜着跑 = 两格。
+fn move_ms(dx: i32, dy: i32, run: bool) -> u32 {
+    let cells = dx.abs().max(dy.abs()).max(1) as u32;
+    let per_cell = if run {
+        RUN_STEP_MS / RUN_STEPS as u32 // 跑：400/2 = 200 ms 一格
+    } else {
+        WALK_STEP_MS
+    };
+    per_cell * cells
+}
+
+/// 新来一格时，走路动画的相位起点要不要重置。
+///
+/// **接着推**（`prev`）还是**从头**（`now`）只看一件事：上一格还没走到位吗
+/// （`was_moving`）。连贯地走/跑时不重置 —— 原版就是这么推的
+///（`Actor.pas:3230-3263`：`m_dwFrameTime := HA.ActWalk.ftime`，不按"到位"重置）。
+///
+/// ⚠️ 每格都重置的后果：`ActWalk` 一轮 540 ms，而每格 600 ms ⇒ 永远播不到第 5、6 帧，
+/// 看起来像"一瘸一拐"（用户报的）。
+fn next_walk_since(was_moving: bool, prev: Instant, now: Instant) -> Instant {
+    if was_moving {
+        prev
+    } else {
+        now
+    }
+}
+
+// ⚠️ 这里原来有个写死的 `MOVE_MS = 320`（注释说"客户端定的观感参数"）。
+// 它同时是两件事的根源：① 每格**提前到位再干等**（320 < 服务端的 600）；
+// ② 走路动画每格重置。2026-10-08 换成按动作算的 `move_ms()`（见上面）——
+// 时长现在**跟着服务端节流走**，动画则改成连续相位（`next_walk_since`）。
 
 /// 伤害飘字的三档亮度（8x8 调试字体只有一档颜色 ⇒ 用亮度代替透明度淡出）。
 const C_DMG_HOT: Color = Color::RGB(255, 240, 120);
@@ -978,13 +1023,18 @@ impl Net {
         if !a.moving(now) {
             return None;
         }
-        let pose = mir2_core::actor::human_pose(a.action, true);
-        if pose.act != mir2_core::actor::HAct::Walk {
+        let run = self.world.self_run;
+        let pose = mir2_core::actor::human_pose(a.action, true, run);
+        if !matches!(
+            pose.act,
+            mir2_core::actor::HAct::Walk | mir2_core::actor::HAct::Run
+        ) {
             return None;
         }
-        // 跑（`SM_RUN`）在原版是另一段动作、脚步基号 +2（`Actor.pas:2237`）；
-        // 我们目前只发"走"（`Net::walk`）⇒ 恒为走。
-        Some((pose.act.act().frame_at(a.elapsed_ms(now)), false))
+        // 跑在原版是**另一段动作、脚步基号 +2**（`Actor.pas:2237`）⇒ 两个都返回。
+        // ⚠️ 帧号取**移动相位**（与画精灵同一份）：拿"这一格走了多久"会让脚步声
+        // 与动画错开（动画是连续推的，见 `ActorAnim::walk_since`）。
+        Some((pose.act.act().frame_at(a.walk_ms(now)), run))
     }
 
     /// 发一次移动输入（走）。方向用**线上编号**（`core::world` 里也不做 ±1 转换）。
@@ -1003,35 +1053,52 @@ impl Net {
     /// 每帧重置的话走路会永远停在第一帧、动作永远播不完。
     fn sync_anims(&mut self) {
         let now = Instant::now();
-        let mut live: Vec<(u64, (i32, i32), Option<u32>)> = self
+        // `run` 也要带上：它决定走/跑播哪段图（见 `human_pose` 的 run 分支）
+        let mut live: Vec<SeenEntity> = self
             .world
             .entities
             .values()
-            .map(|e| (e.id, (e.x, e.y), e.action))
+            .map(|e| (e.id, (e.x, e.y), e.action, e.run))
             .collect();
         if self.world.in_world() {
             live.push((
                 self.world.self_id,
                 self.world.self_pos,
                 self.world.self_action,
+                self.world.self_run,
             ));
         }
-        let ids: std::collections::HashSet<u64> = live.iter().map(|(id, _, _)| *id).collect();
-        for (id, cell, action) in live {
+        let ids: std::collections::HashSet<u64> = live.iter().map(|(id, ..)| *id).collect();
+        for (id, cell, action, run) in live {
             let a = self.anims.entry(id).or_insert(ActorAnim {
                 cell,
                 from: None,
                 action,
                 changed_at: now,
+                // 刚出现/刚进视野：先按"走一格"算，下一步会据实重算
+                move_ms: WALK_STEP_MS,
+                walk_since: now,
             });
             if a.cell != cell {
-                a.from = Some(a.cell); // 刚动了：记下从哪来（补间要用）
+                // ⚠️ 顺序要紧：`was_moving` 必须在改 `cell`/`from` **之前**问 ——
+                // 它决定走路动画"接着推"还是"从头开始"（见 `next_walk_since`）。
+                let was_moving = a.moving(now);
+                let from = a.cell;
+                // 服务端用 `from == to` 表达**原地转身**（没有独立的转身消息）——
+                // 那不是移动：只更新朝向，别动补间/相位。
+                if from != cell {
+                    a.from = Some(from);
+                    a.changed_at = now;
+                    a.move_ms = move_ms(cell.0 - from.0, cell.1 - from.1, run);
+                    a.walk_since = next_walk_since(was_moving, a.walk_since, now);
+                }
                 a.cell = cell;
-                a.changed_at = now;
             }
             if a.action != action {
                 a.action = action;
                 a.changed_at = now;
+                // 换动作（砍/受击…）就从"走路的相位"里出来了 ⇒ 相位重开
+                a.walk_since = now;
             }
         }
         // 视野外的实体不再留着（否则跑一圈地图会攒下几百条死账）
@@ -1412,6 +1479,12 @@ impl<'a> SpriteCache<'a> {
     }
 }
 
+/// 一帧"看到的"实体状态：`(id, 格子, 动作, 这一步是不是跑)` —— 喂给 `ActorAnim` 的那四个数。
+///
+/// 抽个别名是因为它要四处传（收集 / 遍历 / 调试），写成裸元组 clippy 会报 `type_complexity`，
+/// 更要紧的是读代码时看不出第四个 `bool` 是"跑"。
+type SeenEntity = (u64, (i32, i32), Option<u32>, bool);
+
 /// 一个实体的动画状态（**渲染层**持有 —— 世界模型是不带时钟的纯状态）。
 struct ActorAnim {
     /// 上次看到的格子（用来判"又动了"）。
@@ -1422,6 +1495,16 @@ struct ActorAnim {
     action: Option<u32>,
     /// 上面两者的发生时刻（一个时钟够用：动作与移动不会同时开始）。
     changed_at: Instant,
+    /// 这次移动的补间时长（ms）—— 由 `from → cell` 的格数与走/跑算出（见 `move_ms`）。
+    ///
+    /// **一步一算**（走一格 600 ms、跑一步 400 ms），所以不能再有全局常量。
+    move_ms: u32,
+    /// 走路/跑步动画的**连续相位**起点（见 `next_walk_since`）。
+    ///
+    /// ⚠️ 与 `changed_at` 分工明确：那个是"这一格从哪来"（每步都要重置），
+    /// 这个是"动画播到第几帧了"（只在停下/换动作时重置）。混用一个时钟 =
+    /// 每走一格动画从头开始 = `ActWalk` 的 6 帧只看得见前 4 帧（用户报的"一瘸一拐"）。
+    walk_since: Instant,
 }
 
 impl ActorAnim {
@@ -1431,14 +1514,19 @@ impl ActorAnim {
 
     /// 是不是正走在半路上（决定播走路的动画）。
     fn moving(&self, now: Instant) -> bool {
-        self.from.is_some() && self.elapsed_ms(now) < MOVE_MS
+        self.from.is_some() && self.elapsed_ms(now) < self.move_ms
+    }
+
+    /// 走路/跑步动画已经播了多久（**连续相位**，不随每格重置）。
+    fn walk_ms(&self, now: Instant) -> u32 {
+        now.duration_since(self.walk_since).as_millis() as u32
     }
 
     /// 补间后的绘制坐标（格子坐标，浮点）。
     fn draw_pos(&self, to: (i32, i32), now: Instant) -> (f32, f32) {
         match self.from {
             Some(f) if self.moving(now) => {
-                let t = self.elapsed_ms(now) as f32 / MOVE_MS as f32;
+                let t = self.elapsed_ms(now) as f32 / self.move_ms.max(1) as f32;
                 (
                     f.0 as f32 + (to.0 - f.0) as f32 * t,
                     f.1 as f32 + (to.1 - f.1) as f32 * t,
@@ -1453,17 +1541,28 @@ impl ActorAnim {
 ///
 /// ⚠️ 不这么做的话实体会永远停在那一刀的末帧 —— 协议只在"动作变化"时发
 /// `EntityAction`，没有"动作结束"这条消息。时长取自动作表（`ftime × frame`）。
-fn human_sample(held: Option<u32>, held_ms: u32, moving: bool) -> (mir2_core::actor::HAct, u16) {
+fn human_sample(
+    held: Option<u32>,
+    held_ms: u32,
+    moving: bool,
+    run: bool,
+    move_ms: u32,
+) -> (mir2_core::actor::HAct, u16) {
     use mir2_core::actor as A;
-    let mut pose = A::human_pose(held, moving);
+    let mut pose = A::human_pose(held, moving, run);
     let mut act = pose.act.act();
-    let elapsed = if !pose.looping && held_ms >= act.duration_ms() {
-        pose = A::human_pose(None, moving);
+    let mut elapsed = if !pose.looping && held_ms >= act.duration_ms() {
+        pose = A::human_pose(None, moving, run);
         act = pose.act.act();
         0
     } else {
         held_ms
     };
+    // 走/跑这两段用**移动相位**（连续推进），不是"这一格走了多久"：
+    // 后者每格重置 ⇒ `ActWalk` 的 6 帧只看得见前 4 帧（见 `ActorAnim::walk_since`）。
+    if matches!(pose.act, A::HAct::Walk | A::HAct::Run) {
+        elapsed = move_ms;
+    }
     let frame = if pose.looping {
         act.frame_at(elapsed)
     } else {
@@ -1510,10 +1609,12 @@ fn body_sprite(
     let dir = A::dir_of(e.dir);
     let (held, held_ms) = anim.map_or((None, 0), |a| (a.action, a.elapsed_ms(now)));
     let moving = anim.is_some_and(|a| a.moving(now));
+    // 走/跑动画用**连续相位**（不随每格重置）；`e.run` 决定播 Walk 还是 Run
+    let walk_ms = anim.map_or(0, |a| a.walk_ms(now));
     match e.kind {
         // 玩家：本体在 Hum.wzl，部位号 = Dress（服务端已经算成 `Shape*2+性别`）
         0 => {
-            let (act, frame) = human_sample(held, held_ms, moving);
+            let (act, frame) = human_sample(held, held_ms, moving, e.run, walk_ms);
             Some((A::HUM_LIB, A::human_index(f.dress as u8, act, dir, frame)))
         }
         // 怪物：容器与块起点都由 Appr 定（`Mon<Appr/10+1>`）
@@ -1546,7 +1647,9 @@ fn weapon_sprite(
     }
     let (held, held_ms) = anim.map_or((None, 0), |a| (a.action, a.elapsed_ms(now)));
     let moving = anim.is_some_and(|a| a.moving(now));
-    let (act, frame) = human_sample(held, held_ms, moving);
+    // ⚠️ 与 `body_sprite` **同一份采样**（同样的 run/相位）：各算各的会让武器与身体错帧
+    let walk_ms = anim.map_or(0, |a| a.walk_ms(now));
+    let (act, frame) = human_sample(held, held_ms, moving, e.run, walk_ms);
     Some((
         A::WEAPON_LIB,
         A::human_index(f.weapon as u8, act, A::dir_of(e.dir), frame),
@@ -2681,6 +2784,8 @@ fn draw_map_view<'a, T>(
                 dir: n.world.self_dir,
                 feature: n.world.self_feature,
                 hp,
+                // 自己那份"跑"标记（决定播 ActWalk 还是 ActRun）
+                run: n.world.self_run,
                 max_hp,
                 status_bits: 0,
                 dead: n.world.self_dead,
@@ -3286,6 +3391,7 @@ mod tests {
             feature: Some(f),
             hp: 10,
             max_hp: 20,
+            run: false,
             status_bits: 0,
             dead: false,
             action: None,
@@ -3433,13 +3539,18 @@ mod tests {
             from: Some((4, 5)),
             action: None,
             changed_at: now,
+            move_ms: move_ms(1, 0, false), // 走一格 = 600 ms（见 `move_ms`）
+            walk_since: now,
         };
         let (x, y) = a.draw_pos((5, 5), now);
         assert!(
             (x - 4.0).abs() < 0.01 && (y - 5.0).abs() < 0.01,
             "刚开始还该在来处"
         );
-        let later = now + Duration::from_millis(MOVE_MS as u64 + 10);
+        // 半路在半格附近（600ms 的一半 ⇒ 第 4.5 格）
+        let (hx, _) = a.draw_pos((5, 5), now + Duration::from_millis(300));
+        assert!((hx - 4.5).abs() < 0.01, "300ms 该走到第 4.5 格，实得 {hx}");
+        let later = now + Duration::from_millis(a.move_ms as u64 + 10);
         assert_eq!(
             a.draw_pos((5, 5), later),
             (5.0, 5.0),
@@ -3448,18 +3559,74 @@ mod tests {
         assert!(!a.moving(later));
     }
 
+    /// 补间时长**跟着服务端的移动节流走**（`entity.MoveLimiter`：走 600 / 跑 400 一步）。
+    ///
+    /// ⚠️ 这条是用户 2026-10-08 报的"一瘸一拐"的根源：原先写死 320 ms，
+    /// 每格都提前到位再干等 280 ms。
+    #[test]
+    fn 补间时长跟服务端节流() {
+        assert_eq!(move_ms(1, 0, false), WALK_STEP_MS, "走一格 = 600 ms");
+        assert_eq!(move_ms(0, -1, false), WALK_STEP_MS, "四个方向一样");
+        assert_eq!(
+            move_ms(1, 1, false),
+            WALK_STEP_MS,
+            "斜着走也是一格（切比雪夫）"
+        );
+        assert_eq!(move_ms(2, 0, true), RUN_STEP_MS, "跑一步 2 格 = 400 ms");
+        assert_eq!(move_ms(0, 2, true), RUN_STEP_MS);
+        assert_eq!(move_ms(2, 2, true), RUN_STEP_MS, "斜着跑也是两格");
+        // 每格：走 600 ms、跑 200 ms ⇒ 跑确实快三倍（原版 GetNextRunXY 一步 2 格）
+        assert_eq!(RUN_STEP_MS / RUN_STEPS as u32, 200);
+        assert!(RUN_STEP_MS / RUN_STEPS as u32 * 2 < WALK_STEP_MS * 2);
+        // 距离算不出来（原地转身）也不能是 0 ⇒ 会除零
+        assert!(move_ms(0, 0, false) > 0);
+    }
+
+    /// 走路动画的相位**不随每格重置**（原版就是这么推的：`Actor.pas:3230-3263`）。
+    #[test]
+    fn 走路相位不随每格重置() {
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_millis(600);
+        // 上一格还没走到位（连贯地走）⇒ 接着推：相位起点不动
+        assert_eq!(next_walk_since(true, t0, t1), t0, "连着走时相位要接着推");
+        // 上一格已经走完（停过一下/刚开始走）⇒ 从头开始
+        assert_eq!(next_walk_since(false, t0, t1), t1, "停下来再走要从头");
+    }
+
+    /// 走/跑动画按**移动相位**推帧：6 帧要能播满（而不是每格从第 0 帧重来）。
+    ///
+    /// `ActWalk` 6 帧 × 90 ms、`ActRun` 6 帧 × 120 ms（`Actor.pas:77-78`）。
+    #[test]
+    fn 走跑动画按相位推帧() {
+        // 走：相位 0 → 0 帧、90 → 1 帧、540 → 又回到 0（一轮 = 6×90）
+        assert_eq!(human_sample(None, 0, true, false, 0), (A::HAct::Walk, 0));
+        assert_eq!(human_sample(None, 0, true, false, 90), (A::HAct::Walk, 1));
+        assert_eq!(human_sample(None, 0, true, false, 450), (A::HAct::Walk, 5));
+        assert_eq!(human_sample(None, 0, true, false, 540), (A::HAct::Walk, 0));
+        // 跑：同一套相位走在**另一段图**上（120 ms 一帧）
+        assert_eq!(human_sample(None, 0, true, true, 0), (A::HAct::Run, 0));
+        assert_eq!(human_sample(None, 0, true, true, 480), (A::HAct::Run, 4));
+        // 站着：相位无关（stand 的帧按自己的 200 ms 走）
+        assert_eq!(human_sample(None, 0, false, true, 450).0, A::HAct::Stand);
+    }
+
     /// 动作播完回站立 —— 否则实体会永远停在那一刀的末帧。
     #[test]
     fn 动作播完回站立() {
-        assert_eq!(human_sample(Some(1), 0, false).0, A::HAct::Hit);
+        assert_eq!(human_sample(Some(1), 0, false, false, 0).0, A::HAct::Hit);
         // ActHit 是 6 帧 × 85ms = 510ms ⇒ 600ms 后应回到站立
-        assert_eq!(human_sample(Some(1), 600, false), (A::HAct::Stand, 0));
+        assert_eq!(
+            human_sample(Some(1), 600, false, false, 0),
+            (A::HAct::Stand, 0)
+        );
     }
 
     /// 手上的动作播完后，**走路**优先于站立（在走就别站着）。
     #[test]
     fn 动作播完且在走就播走路() {
-        assert_eq!(human_sample(Some(1), 600, true).0, A::HAct::Walk);
+        assert_eq!(human_sample(Some(1), 600, true, false, 0).0, A::HAct::Walk);
+        // 跑也一样优先于站立，只是换成 ActRun
+        assert_eq!(human_sample(Some(1), 600, true, true, 0).0, A::HAct::Run);
     }
 
     /// **建号那条路的每一步都必须有翻译** —— 用户报的"点了建号没反应"根因就是
@@ -3729,18 +3896,20 @@ mod tests {
             from: Some((10, 20)),
             action: None,
             changed_at: now,
+            move_ms: move_ms(1, 0, false),
+            walk_since: now,
         };
         // 起点那一刻
         assert_eq!(self_render_pos(Some(&anim), (11, 20), now), (10.0, 20.0));
         // 半路（补间中）—— 这一条就是"平滑"的证据
-        let mid = now + Duration::from_millis(MOVE_MS as u64 / 2);
+        let mid = now + Duration::from_millis(anim.move_ms as u64 / 2);
         let (mx, _) = self_render_pos(Some(&anim), (11, 20), mid);
         assert!(
             (10.4..=10.6).contains(&mx),
             "半路该在第 10.5 格附近，实得 {mx}"
         );
         // 过了补间时长 ⇒ 到位
-        let done = now + Duration::from_millis(MOVE_MS as u64 + 10);
+        let done = now + Duration::from_millis(anim.move_ms as u64 + 10);
         assert_eq!(self_render_pos(Some(&anim), (11, 20), done), (11.0, 20.0));
     }
 

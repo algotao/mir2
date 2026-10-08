@@ -221,7 +221,9 @@ TCP 保证送达与顺序，但不保证"语义上的只有一次"。所以按**
 - 客户端**预测**移动并在本地立即表现；服务端**权威**校正。
 - 每个移动输入带 `client_tick`（毫秒）与 `request_id`。
 - 服务端按**速度上限**校验（防加速外挂）；越界则拒绝并回校正包。
-- 广播 `EntityMove { entity_id, from, to, direction, server_tick }`。
+- 广播 `EntityMove { entity_id, from, to, direction, server_tick, run }`。
+  `run` = 这一步是不是跑（原版是 `SM_WALK` / `SM_RUN` 两条消息）—— 客户端靠它选
+  `ActWalk` / `ActRun` 两段图（相差 64 个图号，见 D-41）；原地转身（`from == to`）传 `false`。
 - ⚠️ **视野格数锁死**（D-07）：提高分辨率可以，看到更多格不行——那是玩法平衡。
 
 ---

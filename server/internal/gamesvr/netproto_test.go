@@ -1593,3 +1593,40 @@ func TestProtoCreateDeleteCharacter(t *testing.T) {
 		t.Error("该是软删（Deleted=true），而不是真删")
 	}
 }
+
+// `EntityMove.run` 必须如实带上 —— 客户端靠它决定播 `ActWalk` 还是 `ActRun`
+// （两段图**差 64 个图号**，选错不报错、只是放另一套动作；`scene.proto` 的字段说明）。
+//
+// 这条不碰网络也不碰会话：`protoSink.move` 就是"造那条信封"本身，造出来看一眼字段，
+// 比跑一遍完整握手再猜要稳（也能单独跑：`-run TestEntityMoveCarriesRun`）。
+func TestEntityMoveCarriesRun(t *testing.T) {
+	sink := &protoSink{ch: make(chan *protocol.Envelope, 4)}
+	// 跑一步：5,5 → 7,5（一步 2 格）
+	sink.move(42, 5, 5, 7, 5, 2, true)
+	select {
+	case env := <-sink.ch:
+		m := env.GetEntityMove()
+		if m == nil {
+			t.Fatalf("该是 EntityMove，实得 %T", env.Body)
+		}
+		if !m.GetRun() {
+			t.Error("跑一步没带 run ⇒ 客户端只能播 ActWalk（这就是用户报的\"跑起来不像跑\"）")
+		}
+		if m.GetEntityId() != 42 || m.GetFrom().GetX() != 5 || m.GetTo().GetX() != 7 {
+			t.Errorf("字段串了：id=%d from=%v to=%v", m.GetEntityId(), m.GetFrom(), m.GetTo())
+		}
+	default:
+		t.Fatal("没投出信封")
+	}
+
+	// 走一步：run 必须是 false（不是"没设"—— 客户端读到的就是 false）
+	sink.move(42, 7, 5, 8, 5, 2, false)
+	select {
+	case env := <-sink.ch:
+		if env.GetEntityMove().GetRun() {
+			t.Error("走一步不该带 run")
+		}
+	default:
+		t.Fatal("没投出信封")
+	}
+}
