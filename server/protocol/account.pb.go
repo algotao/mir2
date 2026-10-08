@@ -490,6 +490,137 @@ func (x *ChangePasswordResult) GetResult() *ActionResult {
 	return nil
 }
 
+// 客户端 → 服务端：**创建账号**（D-32）。
+//
+// 用法（**必须**先走一次 D-24① 的取盐）：
+//
+//	① LoginSaltRequest{account} → LoginSalt{salt, iterations, key_len}
+//	② K = PBKDF2-SHA256(口令, salt, iterations, key_len)
+//	③ CreateAccount{account, verifier: hex(K)}
+//
+// ⚠️ **这里必须把 `K` 本身送过去** —— 建号时服务端手里什么都没有，它得拿到一个
+// "以后能用来验登录"的值才能落库（登录侧是拿存着的 K 重算 HMAC 证明来比对）。
+// 因此**建号那一次**的 verifier 就是口令的等价物：D-24 说的"等价物不落网络"只对
+// **登录**成立；建号这条链的机密性是连接级的（明文仍不落网络）。
+//
+// ⚠️ 盐由**服务端**在上一步给出并留存（`protoSession.pendingSalt`），客户端不许自带 ——
+// 否则盐就成了客户端可控的东西，而盐的意义正是"服务端随机"。
+type CreateAccount struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Account string                 `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
+	// hex( K )，K = PBKDF2-SHA256(口令, salt, iterations, key_len)
+	Verifier      string `protobuf:"bytes,2,opt,name=verifier,proto3" json:"verifier,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateAccount) Reset() {
+	*x = CreateAccount{}
+	mi := &file_account_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateAccount) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateAccount) ProtoMessage() {}
+
+func (x *CreateAccount) ProtoReflect() protoreflect.Message {
+	mi := &file_account_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateAccount.ProtoReflect.Descriptor instead.
+func (*CreateAccount) Descriptor() ([]byte, []int) {
+	return file_account_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CreateAccount) GetAccount() string {
+	if x != nil {
+		return x.Account
+	}
+	return ""
+}
+
+func (x *CreateAccount) GetVerifier() string {
+	if x != nil {
+		return x.Verifier
+	}
+	return ""
+}
+
+// 服务端 → 客户端：建号结果。
+//
+// `result.code`：
+//
+//	0 = 成功
+//	1 = 账号已存在（原版 `SM_NEWID_FAIL` 的 nErrCode=0）
+//	2 = 账号名不合规（3..14 位，仅 [a-z0-9_]）
+//	3 = 本服未开放注册（`-allow-new-account` 关着）
+//	4 = 操作过快（同一 IP 5 秒一次，原版是每连接 5 秒）
+//	5 = 服务器暂时建不了（存储错误）
+//	6 = 没先取盐（缺 KDF 盐 ⇒ 无法落库）
+//
+// ⚠️ **没有"口令不合规"这一码**：服务端只收到 `verifier`，从来见不到口令 ⇒
+// 口令长度/强度只能由客户端把关（原版服务端同样不查口令 ——
+// `LMain.pas:1019-1079` 的 `AccountCreate` 只查账号名与重名）。这是挑战应答
+// 必然的代价，写在这里免得以后有人来找"服务端怎么不校验口令"。
+//
+// ⚠️ 成功了也**不自动登录**（原版 `SM_NEWID_SUCCESS` 只是弹个提示，
+// 见 `ClMain.pas:3684-3691`）—— 客户端要把人送回登录框自己登。
+type CreateAccountResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Result        *ActionResult          `protobuf:"bytes,1,opt,name=result,proto3" json:"result,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateAccountResult) Reset() {
+	*x = CreateAccountResult{}
+	mi := &file_account_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateAccountResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateAccountResult) ProtoMessage() {}
+
+func (x *CreateAccountResult) ProtoReflect() protoreflect.Message {
+	mi := &file_account_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateAccountResult.ProtoReflect.Descriptor instead.
+func (*CreateAccountResult) Descriptor() ([]byte, []int) {
+	return file_account_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *CreateAccountResult) GetResult() *ActionResult {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
 // 角色摘要（选角列表用；不含完整存档）。
 type CharacterSummary struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -505,7 +636,7 @@ type CharacterSummary struct {
 
 func (x *CharacterSummary) Reset() {
 	*x = CharacterSummary{}
-	mi := &file_account_proto_msgTypes[6]
+	mi := &file_account_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -517,7 +648,7 @@ func (x *CharacterSummary) String() string {
 func (*CharacterSummary) ProtoMessage() {}
 
 func (x *CharacterSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[6]
+	mi := &file_account_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -530,7 +661,7 @@ func (x *CharacterSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CharacterSummary.ProtoReflect.Descriptor instead.
 func (*CharacterSummary) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{6}
+	return file_account_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *CharacterSummary) GetCharacterId() uint64 {
@@ -583,7 +714,7 @@ type ListCharacters struct {
 
 func (x *ListCharacters) Reset() {
 	*x = ListCharacters{}
-	mi := &file_account_proto_msgTypes[7]
+	mi := &file_account_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -595,7 +726,7 @@ func (x *ListCharacters) String() string {
 func (*ListCharacters) ProtoMessage() {}
 
 func (x *ListCharacters) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[7]
+	mi := &file_account_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -608,7 +739,7 @@ func (x *ListCharacters) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCharacters.ProtoReflect.Descriptor instead.
 func (*ListCharacters) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{7}
+	return file_account_proto_rawDescGZIP(), []int{9}
 }
 
 type CharacterList struct {
@@ -620,7 +751,7 @@ type CharacterList struct {
 
 func (x *CharacterList) Reset() {
 	*x = CharacterList{}
-	mi := &file_account_proto_msgTypes[8]
+	mi := &file_account_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -632,7 +763,7 @@ func (x *CharacterList) String() string {
 func (*CharacterList) ProtoMessage() {}
 
 func (x *CharacterList) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[8]
+	mi := &file_account_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -645,7 +776,7 @@ func (x *CharacterList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CharacterList.ProtoReflect.Descriptor instead.
 func (*CharacterList) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{8}
+	return file_account_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CharacterList) GetCharacters() []*CharacterSummary {
@@ -664,7 +795,7 @@ type SelectCharacter struct {
 
 func (x *SelectCharacter) Reset() {
 	*x = SelectCharacter{}
-	mi := &file_account_proto_msgTypes[9]
+	mi := &file_account_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -676,7 +807,7 @@ func (x *SelectCharacter) String() string {
 func (*SelectCharacter) ProtoMessage() {}
 
 func (x *SelectCharacter) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[9]
+	mi := &file_account_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -689,7 +820,7 @@ func (x *SelectCharacter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectCharacter.ProtoReflect.Descriptor instead.
 func (*SelectCharacter) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{9}
+	return file_account_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *SelectCharacter) GetCharacterId() uint64 {
@@ -710,7 +841,7 @@ type SelectCharacterResult struct {
 
 func (x *SelectCharacterResult) Reset() {
 	*x = SelectCharacterResult{}
-	mi := &file_account_proto_msgTypes[10]
+	mi := &file_account_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -722,7 +853,7 @@ func (x *SelectCharacterResult) String() string {
 func (*SelectCharacterResult) ProtoMessage() {}
 
 func (x *SelectCharacterResult) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[10]
+	mi := &file_account_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -735,7 +866,7 @@ func (x *SelectCharacterResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectCharacterResult.ProtoReflect.Descriptor instead.
 func (*SelectCharacterResult) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{10}
+	return file_account_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SelectCharacterResult) GetCode() SelectCharCode {
@@ -771,7 +902,7 @@ type CreateCharacter struct {
 
 func (x *CreateCharacter) Reset() {
 	*x = CreateCharacter{}
-	mi := &file_account_proto_msgTypes[11]
+	mi := &file_account_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -783,7 +914,7 @@ func (x *CreateCharacter) String() string {
 func (*CreateCharacter) ProtoMessage() {}
 
 func (x *CreateCharacter) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[11]
+	mi := &file_account_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -796,7 +927,7 @@ func (x *CreateCharacter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCharacter.ProtoReflect.Descriptor instead.
 func (*CreateCharacter) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{11}
+	return file_account_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CreateCharacter) GetName() string {
@@ -837,7 +968,7 @@ type CreateCharacterResult struct {
 
 func (x *CreateCharacterResult) Reset() {
 	*x = CreateCharacterResult{}
-	mi := &file_account_proto_msgTypes[12]
+	mi := &file_account_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -849,7 +980,7 @@ func (x *CreateCharacterResult) String() string {
 func (*CreateCharacterResult) ProtoMessage() {}
 
 func (x *CreateCharacterResult) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[12]
+	mi := &file_account_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -862,7 +993,7 @@ func (x *CreateCharacterResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCharacterResult.ProtoReflect.Descriptor instead.
 func (*CreateCharacterResult) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{12}
+	return file_account_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CreateCharacterResult) GetResult() *ActionResult {
@@ -889,7 +1020,7 @@ type DeleteCharacter struct {
 
 func (x *DeleteCharacter) Reset() {
 	*x = DeleteCharacter{}
-	mi := &file_account_proto_msgTypes[13]
+	mi := &file_account_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -901,7 +1032,7 @@ func (x *DeleteCharacter) String() string {
 func (*DeleteCharacter) ProtoMessage() {}
 
 func (x *DeleteCharacter) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[13]
+	mi := &file_account_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -914,7 +1045,7 @@ func (x *DeleteCharacter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCharacter.ProtoReflect.Descriptor instead.
 func (*DeleteCharacter) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{13}
+	return file_account_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *DeleteCharacter) GetCharacterId() uint64 {
@@ -940,7 +1071,7 @@ type DeleteCharacterResult struct {
 
 func (x *DeleteCharacterResult) Reset() {
 	*x = DeleteCharacterResult{}
-	mi := &file_account_proto_msgTypes[14]
+	mi := &file_account_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -952,7 +1083,7 @@ func (x *DeleteCharacterResult) String() string {
 func (*DeleteCharacterResult) ProtoMessage() {}
 
 func (x *DeleteCharacterResult) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[14]
+	mi := &file_account_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -965,7 +1096,7 @@ func (x *DeleteCharacterResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCharacterResult.ProtoReflect.Descriptor instead.
 func (*DeleteCharacterResult) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{14}
+	return file_account_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *DeleteCharacterResult) GetResult() *ActionResult {
@@ -1001,6 +1132,11 @@ const file_account_proto_rawDesc = "" +
 	"\x11old_password_hash\x18\x02 \x01(\tR\x0foldPasswordHash\x12*\n" +
 	"\x11new_password_hash\x18\x03 \x01(\tR\x0fnewPasswordHash\"B\n" +
 	"\x14ChangePasswordResult\x12*\n" +
+	"\x06result\x18\x01 \x01(\v2\x12.mir2.ActionResultR\x06result\"E\n" +
+	"\rCreateAccount\x12\x18\n" +
+	"\aaccount\x18\x01 \x01(\tR\aaccount\x12\x1a\n" +
+	"\bverifier\x18\x02 \x01(\tR\bverifier\"A\n" +
+	"\x13CreateAccountResult\x12*\n" +
 	"\x06result\x18\x01 \x01(\v2\x12.mir2.ActionResultR\x06result\"\xcd\x01\n" +
 	"\x10CharacterSummary\x12!\n" +
 	"\fcharacter_id\x18\x01 \x01(\x04R\vcharacterId\x12\x12\n" +
@@ -1062,7 +1198,7 @@ func file_account_proto_rawDescGZIP() []byte {
 }
 
 var file_account_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_account_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_account_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_account_proto_goTypes = []any{
 	(LoginCode)(0),                // 0: mir2.LoginCode
 	(SelectCharCode)(0),           // 1: mir2.SelectCharCode
@@ -1072,35 +1208,38 @@ var file_account_proto_goTypes = []any{
 	(*LoginResult)(nil),           // 5: mir2.LoginResult
 	(*ChangePassword)(nil),        // 6: mir2.ChangePassword
 	(*ChangePasswordResult)(nil),  // 7: mir2.ChangePasswordResult
-	(*CharacterSummary)(nil),      // 8: mir2.CharacterSummary
-	(*ListCharacters)(nil),        // 9: mir2.ListCharacters
-	(*CharacterList)(nil),         // 10: mir2.CharacterList
-	(*SelectCharacter)(nil),       // 11: mir2.SelectCharacter
-	(*SelectCharacterResult)(nil), // 12: mir2.SelectCharacterResult
-	(*CreateCharacter)(nil),       // 13: mir2.CreateCharacter
-	(*CreateCharacterResult)(nil), // 14: mir2.CreateCharacterResult
-	(*DeleteCharacter)(nil),       // 15: mir2.DeleteCharacter
-	(*DeleteCharacterResult)(nil), // 16: mir2.DeleteCharacterResult
-	(*ActionResult)(nil),          // 17: mir2.ActionResult
-	(CharClass)(0),                // 18: mir2.CharClass
-	(Gender)(0),                   // 19: mir2.Gender
+	(*CreateAccount)(nil),         // 8: mir2.CreateAccount
+	(*CreateAccountResult)(nil),   // 9: mir2.CreateAccountResult
+	(*CharacterSummary)(nil),      // 10: mir2.CharacterSummary
+	(*ListCharacters)(nil),        // 11: mir2.ListCharacters
+	(*CharacterList)(nil),         // 12: mir2.CharacterList
+	(*SelectCharacter)(nil),       // 13: mir2.SelectCharacter
+	(*SelectCharacterResult)(nil), // 14: mir2.SelectCharacterResult
+	(*CreateCharacter)(nil),       // 15: mir2.CreateCharacter
+	(*CreateCharacterResult)(nil), // 16: mir2.CreateCharacterResult
+	(*DeleteCharacter)(nil),       // 17: mir2.DeleteCharacter
+	(*DeleteCharacterResult)(nil), // 18: mir2.DeleteCharacterResult
+	(*ActionResult)(nil),          // 19: mir2.ActionResult
+	(CharClass)(0),                // 20: mir2.CharClass
+	(Gender)(0),                   // 21: mir2.Gender
 }
 var file_account_proto_depIdxs = []int32{
 	0,  // 0: mir2.LoginResult.code:type_name -> mir2.LoginCode
-	17, // 1: mir2.ChangePasswordResult.result:type_name -> mir2.ActionResult
-	18, // 2: mir2.CharacterSummary.class:type_name -> mir2.CharClass
-	19, // 3: mir2.CharacterSummary.gender:type_name -> mir2.Gender
-	8,  // 4: mir2.CharacterList.characters:type_name -> mir2.CharacterSummary
-	1,  // 5: mir2.SelectCharacterResult.code:type_name -> mir2.SelectCharCode
-	18, // 6: mir2.CreateCharacter.class:type_name -> mir2.CharClass
-	19, // 7: mir2.CreateCharacter.gender:type_name -> mir2.Gender
-	17, // 8: mir2.CreateCharacterResult.result:type_name -> mir2.ActionResult
-	17, // 9: mir2.DeleteCharacterResult.result:type_name -> mir2.ActionResult
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	19, // 1: mir2.ChangePasswordResult.result:type_name -> mir2.ActionResult
+	19, // 2: mir2.CreateAccountResult.result:type_name -> mir2.ActionResult
+	20, // 3: mir2.CharacterSummary.class:type_name -> mir2.CharClass
+	21, // 4: mir2.CharacterSummary.gender:type_name -> mir2.Gender
+	10, // 5: mir2.CharacterList.characters:type_name -> mir2.CharacterSummary
+	1,  // 6: mir2.SelectCharacterResult.code:type_name -> mir2.SelectCharCode
+	20, // 7: mir2.CreateCharacter.class:type_name -> mir2.CharClass
+	21, // 8: mir2.CreateCharacter.gender:type_name -> mir2.Gender
+	19, // 9: mir2.CreateCharacterResult.result:type_name -> mir2.ActionResult
+	19, // 10: mir2.DeleteCharacterResult.result:type_name -> mir2.ActionResult
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_account_proto_init() }
@@ -1115,7 +1254,7 @@ func file_account_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_account_proto_rawDesc), len(file_account_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   15,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

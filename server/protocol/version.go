@@ -5,4 +5,4 @@
 package protocol
 
 // Version 与 protocol/version.txt 对应。
-const Version uint32 = 4
+const Version uint32 = 1

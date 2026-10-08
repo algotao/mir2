@@ -42,6 +42,15 @@ pub enum Cmd {
     LoginSaltRequest(String),
     /// 登录第二步：发口令的**证明**（`hex(HMAC(K, nonce‖account))`，不是口令）。
     Login { account: String, proof_hex: String },
+    /// 建号（D-32）：发口令的**校验值** `hex(K)`。
+    ///
+    /// ⚠️ 与 `Login` 的差别要记牢：证明绑在本连接的 nonce 上（重放不了），而校验值
+    /// **就是口令的等价物** —— 服务端得拿它落库才能验以后的登录（见 `account.proto`
+    /// 的 `CreateAccount`）。所以这条只该在"取盐之后、建号那一次"发。
+    CreateAccount {
+        account: String,
+        verifier_hex: String,
+    },
     /// 列出该账号的角色。
     ListCharacters,
     /// 选角（服务端在**这一步**申请角色租约）。
@@ -187,6 +196,13 @@ fn writer_loop(stream: &mut TcpStream, cmds: Receiver<Cmd>) {
                 account,
                 password_hash: proof_hex,
                 client_build: String::new(),
+            }),
+            Cmd::CreateAccount {
+                account,
+                verifier_hex,
+            } => Body::CreateAccount(proto::CreateAccount {
+                account,
+                verifier: verifier_hex,
             }),
             Cmd::ListCharacters => Body::ListCharacters(proto::ListCharacters {}),
             Cmd::SelectCharacter(id) => {

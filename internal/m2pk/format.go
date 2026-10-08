@@ -13,7 +13,7 @@
 //	Header（32 B）
 //	  0   magic      [4]  "M2PK"
 //	  4   version    u16  1
-//	  6   kind       u8   1 = 地图
+//	  6   kind       u8   1 = 地图 / 2 = 音频 / 3 = 美术
 //	  7   codec      u8   0 = brotli
 //	  8   count      u32  块数
 //	  12  namesOff   u32  名字池偏移（相对文件头）
@@ -68,6 +68,15 @@ const (
 	//  2. 音频走 `CodecStore`（**不压缩**）：实测 PCM 用 zlib/xz 只能压到 87~96%，
 	//     4bit ADPCM 更压不动 ⇒ 压缩纯属浪费 CPU（见 D-29）。
 	KindAudio = 2
+	// KindImage 表示美术容器（图库 `.wzl`/`.wzx`）。
+	//
+	// 与地图/音频不同，它的块内容**不是源文件字节**，而是 `image.go` 定义的
+	// IMGP 分组载荷（每库一块，块内已按 N 张一组拼好并各自 brotli），因此：
+	//
+	//  1. codec 恒为 CodecStore —— 再套一层 brotli 毫无意义；
+	//  2. `Verify`（逐字节比对源文件）**不适用**，图库有专门的 `VerifyImage`：
+	//     逐图解出来与直读 `.wzl` 的记录 + raw 像素比对（语义等价，仍是全量无损）。
+	KindImage = 3
 	// CodecBrotli 表示块用 brotli 压缩（地图用）。
 	CodecBrotli = 0
 	// CodecStore 表示块**原样存储**（音频用；见 KindAudio 的说明）。
@@ -418,6 +427,117 @@ func Pack(dst string, srcs []Source, opt Options) (Stats, error) {
 	return st, nil
 }
 
+// GenItem 是一块的内容生成器 —— **写到它的时候才生成**。
+//
+// 与 [`Source`] 的区别就是内存：`Pack` 要求所有块同时在内存里（地图 250 MB、音频 209 MB
+// 都还好），而美术载荷全量 1.4 GB，必须边生成边写、写完即丢（见 `image.go`）。
+type GenItem struct {
+	Name string
+	// Gen 返回**已编码**的块字节（怎么编码由调用方定；本函数只做 CodecStore 的搬运）。
+	Gen func() ([]byte, error)
+}
+
+// PackGen 流式打包：索引区先占位，块逐个生成、写盘、即丢，最后回填索引偏移。
+//
+// 输出与 `Pack` **同一格式**（读侧无感），且对相同输入同样确定性。
+// 只支持 `CodecStore`（内容由 `Gen` 负责编码，再套一层压缩纯属浪费）。
+func PackGen(dst string, items []GenItem, opt Options) (Stats, error) {
+	var st Stats
+	if len(items) == 0 {
+		return st, fmt.Errorf("m2pk: 没有可打包的条目")
+	}
+	for i, it := range items {
+		if it.Name == "" || it.Gen == nil {
+			return st, fmt.Errorf("m2pk: 第 %d 项缺名字或生成器", i)
+		}
+		if i > 0 && items[i-1].Name >= it.Name {
+			return st, fmt.Errorf("%w: %q 之后是 %q", ErrNotSorted, items[i-1].Name, it.Name)
+		}
+	}
+	kind := opt.Kind
+	if kind == 0 {
+		kind = KindMap
+	}
+	if opt.Codec != CodecStore {
+		return st, fmt.Errorf("m2pk: PackGen 只支持 CodecStore（块内容由 Gen 自行编码）")
+	}
+
+	count := len(items)
+	namesOff := HeaderSize + EntrySize*count
+	namesLen := 0
+	for _, it := range items {
+		namesLen += len(it.Name)
+	}
+	dataOff := align8(namesOff + namesLen)
+
+	// 索引区一次算好（名字与偏移在同一块里），先写出去占位，最后 Seek 回来补偏移。
+	idx := make([]byte, dataOff)
+	nameAt := namesOff
+	for i, it := range items {
+		e := idx[HeaderSize+EntrySize*i:]
+		binary.LittleEndian.PutUint32(e[0:], uint32(nameAt-namesOff))
+		e[4] = byte(len(it.Name))
+		copy(idx[nameAt:], it.Name)
+		nameAt += len(it.Name)
+	}
+	copy(idx[0:], Magic)
+	binary.LittleEndian.PutUint16(idx[4:], Version)
+	idx[6] = byte(kind)
+	idx[7] = byte(CodecStore)
+	binary.LittleEndian.PutUint32(idx[8:], uint32(count))
+	binary.LittleEndian.PutUint32(idx[12:], uint32(namesOff))
+	binary.LittleEndian.PutUint32(idx[16:], uint32(namesLen))
+	binary.LittleEndian.PutUint32(idx[20:], uint32(dataOff))
+
+	f, err := os.Create(dst)
+	if err != nil {
+		return st, err
+	}
+	defer f.Close()
+	if _, err := f.Write(idx); err != nil {
+		return st, err
+	}
+
+	off := int64(dataOff)
+	for i, it := range items {
+		blk, err := it.Gen()
+		if err != nil {
+			return st, fmt.Errorf("m2pk: 生成 %q 失败: %w", it.Name, err)
+		}
+		if uint64(len(blk)) > uint64(^uint32(0)) {
+			return st, fmt.Errorf("m2pk: %q 过大（%d 字节）", it.Name, len(blk))
+		}
+		if _, err := f.Write(blk); err != nil {
+			return st, err
+		}
+		e := idx[HeaderSize+EntrySize*i:]
+		binary.LittleEndian.PutUint64(e[8:], uint64(off))
+		binary.LittleEndian.PutUint32(e[16:], uint32(len(blk)))
+		binary.LittleEndian.PutUint32(e[20:], uint32(len(blk)))
+		st.RawTotal += int64(len(blk))
+		st.CompTotal += int64(len(blk))
+		off += int64(len(blk))
+		if pad := (8 - off%8) % 8; pad > 0 {
+			if _, err := f.Write(make([]byte, pad)); err != nil {
+				return st, err
+			}
+			off += pad
+		}
+		if opt.Progress != nil {
+			opt.Progress(i+1, count, it.Name, len(blk), len(blk))
+		}
+	}
+	if _, err := f.Seek(int64(HeaderSize), io.SeekStart); err != nil {
+		return st, err
+	}
+	if _, err := f.Write(idx[HeaderSize:]); err != nil {
+		return st, err
+	}
+	st.Count = count
+	st.FileSize = off
+	return st, nil
+}
+
 // Reader 是容器的只读句柄。
 type Reader struct {
 	f        *os.File
@@ -461,7 +581,7 @@ func Open(path string) (*Reader, error) {
 		f.Close()
 		return nil, fmt.Errorf("%w: 版本 %d", ErrBadVersion, v)
 	}
-	if head[6] != KindMap && head[6] != KindAudio {
+	if head[6] != KindMap && head[6] != KindAudio && head[6] != KindImage {
 		f.Close()
 		return nil, fmt.Errorf("%w: kind=%d", ErrBadKind, head[6])
 	}
@@ -596,6 +716,25 @@ func (r *Reader) ReadName(name string) ([]byte, bool, error) {
 	return b, true, err
 }
 
+// ReadRange 取出某块**内部**的一段字节（`off` 相对块起点）。
+//
+// 只有 `CodecStore` 支持：`CodecBrotli` 的块是一整条流，切一段出来没有意义。
+// 用途是美术容器 —— 图库载荷几十 MB，逐图取像素不该把整块读进内存
+// （`kind=3` 恒为 store，见 KindImage 的说明）。
+func (r *Reader) ReadRange(e Entry, off, length uint32) ([]byte, error) {
+	if r.codec != CodecStore {
+		return nil, fmt.Errorf("m2pk: %w: 块 %q 是压缩块，不能按范围读", ErrBadCodec, e.Name)
+	}
+	if uint64(off)+uint64(length) > uint64(e.CompSize) {
+		return nil, fmt.Errorf("%w: %q 范围 [%d,%d) 超出块长 %d", ErrCorrupt, e.Name, off, off+length, e.CompSize)
+	}
+	buf := make([]byte, length)
+	if _, err := r.f.ReadAt(buf, int64(e.Offset)+int64(off)); err != nil {
+		return nil, fmt.Errorf("m2pk: 读取 %q 的 [%d,%d) 失败: %w", e.Name, off, off+length, err)
+	}
+	return buf, nil
+}
+
 // Verify 逐字节校验容器与源目录是否一致。
 //
 // 检查项：
@@ -614,6 +753,9 @@ func Verify(containerPath, srcDir string, exts []string) error {
 		return err
 	}
 	defer r.Close()
+	if r.kind == KindImage {
+		return fmt.Errorf("m2pk: kind=3（美术）的块不是源文件字节，请用 artpack verify")
+	}
 
 	var probs []string
 	inContainer := make(map[string]bool, r.Count())

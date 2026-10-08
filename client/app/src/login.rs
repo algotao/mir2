@@ -42,14 +42,27 @@ pub enum Action {
     None,
     /// 提交登录（`[提交]` 或回车）。
     Submit,
-    /// 新建账号（原版开 `DLoginNew` 对话框；那条链还没接）。
+    /// 切到了**建号面板**（原版 `DLoginNew` → `DNewAccount`；面板切换由本模块自己完成）。
     NewAccount,
+    /// 提交建号（建号面板的 `[确定]` 或回车；本地校验不过不会产生这条）。
+    SubmitSignup,
+    /// 关掉建号面板回登录（`[取消]` / `[X]` / ESC）。
+    CancelSignup,
     /// 修改密码（原版开 `DLoginChgPw` 对话框；同样还没接）。
     ChangePassword,
     /// 关掉报错弹窗。
     Dismiss,
     /// 退出（`[X]` 或 ESC）。
     Quit,
+}
+
+/// 面板模式（D-32）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// 登录面板（原版 `DLogin`）。
+    Login,
+    /// 建号面板（原版 `DNewAccount`；我们只留 3 个字段，见 `login_ui::Layout::confirm`）。
+    Signup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,13 +72,20 @@ enum Btn {
     ChgPw,
     Close,
     MsgOk,
+    /// 建号面板的 `[确定]` / `[取消]`（原版 `DNewAccountOk/Cancel`）。
+    SignupOk,
+    SignupCancel,
 }
 
 /// 登录界面的状态。
 pub struct Login {
     pub account: String,
     pub password: String,
-    /// 0 = 用户名框，1 = 密码框。
+    /// 建号面板的"确认口令"（只在 `Mode::Signup` 用）。
+    pub confirm: String,
+    /// 当前是哪块面板（登录 / 建号）。
+    pub mode: Mode,
+    /// 0 = 用户名框，1 = 密码框，2 = 确认口令框（**只在建号模式**）。
     pub focus: usize,
     /// 报错弹窗里那句话（`None` = 没有弹窗）。
     pub error: Option<String>,
@@ -88,11 +108,63 @@ impl Login {
         Self {
             account: String::new(),
             password: String::new(),
+            confirm: String::new(),
+            mode: Mode::Login,
             focus: 0,
             error: None,
             busy: false,
             opened_at: None,
             pressed: None,
+        }
+    }
+
+    /// 现在是不是建号面板。
+    pub fn signup(&self) -> bool {
+        self.mode == Mode::Signup
+    }
+
+    /// 切到建号面板（原版 `IntroScn.pas:929-934` 的 `NewClick`）。
+    ///
+    /// 账号**留着**（用户多半是想把这个名字注册掉），口令清掉重输。
+    pub fn enter_signup(&mut self) {
+        self.mode = Mode::Signup;
+        self.password.clear();
+        self.confirm.clear();
+        self.focus = if self.account.is_empty() { 0 } else { 1 };
+        self.error = None;
+        self.pressed = None;
+    }
+
+    /// 关掉建号面板回登录（原版 `NewAccountClose` → `ChangeLoginState(lsLogin)`）。
+    pub fn leave_signup(&mut self) {
+        self.mode = Mode::Login;
+        self.password.clear();
+        self.confirm.clear();
+        self.focus = 0;
+        self.pressed = None;
+    }
+
+    /// 建号面板的**本地校验**（原版 `CheckUserEntrys`，`IntroScn.pas:976-1029`）：
+    /// 账号/口令至少 3 位、两次口令一致。不过关就弹模态框（原版也是弹框）。
+    ///
+    /// ⚠️ 口令长度**只有这里把关**：建号时服务端只收到校验值，从来见不到口令
+    ///（原版服务端同样不查口令，见 D-32 与 `account.proto` 的说明）。
+    fn try_signup(&mut self) -> Action {
+        let why = if self.account.trim().chars().count() < 3 {
+            Some("Please enter at least 3 characters for the account name.")
+        } else if self.password.chars().count() < 3 {
+            Some("Please enter at least 3 characters for the password.")
+        } else if self.password != self.confirm {
+            Some("The two passwords do not match.")
+        } else {
+            None
+        };
+        match why {
+            Some(msg) => {
+                self.error = Some(msg.into());
+                Action::None
+            }
+            None => Action::SubmitSignup,
         }
     }
 
@@ -108,10 +180,12 @@ impl Login {
         if self.busy || self.error.is_some() {
             return;
         }
-        let (field, max) = if self.focus == 0 {
-            (&mut self.account, Art::MAX_ACCOUNT)
-        } else {
-            (&mut self.password, Art::MAX_PASSWORD)
+        let (field, max) = match (self.mode, self.focus) {
+            (_, 0) => (&mut self.account, Art::MAX_ACCOUNT),
+            (_, 1) => (&mut self.password, Art::MAX_PASSWORD),
+            (Mode::Signup, _) => (&mut self.confirm, Art::MAX_PASSWORD),
+            // 登录面板只有两个框，焦点 2 不该出现
+            (Mode::Login, _) => return,
         };
         for ch in t.chars() {
             if !(ch.is_ascii_graphic() || ch == ' ') || field.chars().count() >= max {
@@ -134,19 +208,41 @@ impl Login {
         }
         match k {
             Keycode::Tab => {
-                self.focus = 1 - self.focus;
+                // 建号面板三个框（账号/口令/确认），登录面板两个
+                let n = if self.signup() { 3 } else { 2 };
+                self.focus = (self.focus + 1) % n;
                 Action::None
             }
             Keycode::Backspace => {
-                if self.focus == 0 {
-                    self.account.pop();
-                } else {
-                    self.password.pop();
+                match (self.mode, self.focus) {
+                    (_, 0) => {
+                        self.account.pop();
+                    }
+                    (_, 1) => {
+                        self.password.pop();
+                    }
+                    (Mode::Signup, _) => {
+                        self.confirm.pop();
+                    }
+                    (Mode::Login, _) => {}
                 }
                 Action::None
             }
-            Keycode::Return | Keycode::KpEnter => Action::Submit,
-            Keycode::Escape => Action::Quit,
+            Keycode::Return | Keycode::KpEnter => {
+                if self.signup() {
+                    self.try_signup()
+                } else {
+                    Action::Submit
+                }
+            }
+            Keycode::Escape => {
+                if self.signup() {
+                    self.leave_signup();
+                    Action::CancelSignup
+                } else {
+                    Action::Quit
+                }
+            }
             _ => Action::None,
         }
     }
@@ -155,8 +251,21 @@ impl Login {
     ///
     /// ⚠️ 输入框没有"按下"状态 —— 原版也只是把焦点交给那个 `TEdit`。
     pub fn on_down(&mut self, p: (f32, f32), l: &Layout) {
-        self.pressed = if self.error.is_some() {
-            l.msg_ok.hit(p).then_some(Btn::MsgOk)
+        if self.error.is_some() {
+            self.pressed = l.msg_ok.hit(p).then_some(Btn::MsgOk);
+            return;
+        }
+        // 建号面板只有 [确定]/[取消]/[X] 可点；登录面板是 [提交]/[新用户]/[改密码]/[X]
+        self.pressed = if self.signup() {
+            if l.signup_ok.hit(p) {
+                Some(Btn::SignupOk)
+            } else if l.signup_cancel.hit(p) {
+                Some(Btn::SignupCancel)
+            } else if l.close.hit(p) {
+                Some(Btn::Close)
+            } else {
+                None
+            }
         } else if l.ok.hit(p) {
             Some(Btn::Ok)
         } else if l.new.hit(p) {
@@ -166,13 +275,18 @@ impl Login {
         } else if l.close.hit(p) {
             Some(Btn::Close)
         } else {
+            None
+        };
+        // 输入框点一下就换焦点（原版也只是把焦点交给那个 TEdit）
+        if self.pressed.is_none() {
             if l.account.hit(p) {
                 self.focus = 0;
             } else if l.password.hit(p) {
                 self.focus = 1;
+            } else if self.signup() && l.confirm.hit(p) {
+                self.focus = 2;
             }
-            None
-        };
+        }
     }
 
     /// 鼠标抬起：只有"按下与抬起落在同一颗"才算点中。
@@ -186,11 +300,30 @@ impl Login {
             Btn::ChgPw => (l.chgpw, Action::ChangePassword),
             Btn::Close => (l.close, Action::Quit),
             Btn::MsgOk => (l.msg_ok, Action::Dismiss),
+            Btn::SignupOk => (l.signup_ok, Action::SubmitSignup),
+            Btn::SignupCancel => (l.signup_cancel, Action::CancelSignup),
         };
-        if r.hit(p) {
-            act
-        } else {
-            Action::None
+        if !r.hit(p) {
+            return Action::None;
+        }
+        // ⚠️ 面板的切换在**这里**完成（不是 `main` 的事）：点 [新用户] 就切进建号面板，
+        // 点 [取消]/[X] 就切回登录面板。动作只是"通知"，`main` 不必知道面板状态。
+        match act {
+            Action::NewAccount => {
+                self.enter_signup();
+                Action::NewAccount
+            }
+            Action::SubmitSignup => self.try_signup(),
+            Action::CancelSignup => {
+                self.leave_signup();
+                Action::CancelSignup
+            }
+            // 建号面板上的 [X] = 关掉面板回登录（不是退出程序）
+            Action::Quit if self.signup() => {
+                self.leave_signup();
+                Action::CancelSignup
+            }
+            other => other,
         }
     }
 
@@ -218,16 +351,26 @@ impl Login {
             ui.draw(canvas, tc, dir, bg.0, bg.1, x, y);
         }
 
-        // ② 开门动画（登录成功后盖在背景上）
+        // ② 登录成功 ⇒ **先藏起登录小窗**，只留背景 + 开门动画。
+        //
+        // 原版 `OpenLoginDoor`（`IntroScn.pas:795-801`）就是这三步：
+        //     m_boNowOpening := TRUE; HideLoginBox; PlaySound (s_rock_door_open);
+        // 其中 `HideLoginBox` → `ChangeLoginState(lsCloseAll)` 把 `DLogin` 整块藏掉
+        //（`IntroScn.pas:904/916/923` 都在设 `DLogin.Visible := FALSE`）。
+        // 不藏的话门就画在登录框后面 —— 看起来"压根没有开门动画"（用户报的正是这个）。
         if let Some(t0) = self.opened_at {
             let f = (t0.elapsed().as_millis() / Art::DOOR_MS as u128) as u32;
             let idx = Art::DOOR.1 + f.min(Art::DOOR_FRAMES - 1);
-            // ⚠️ `ChrSel[23]` 在本套素材里是空壳（给不出图）⇒ 取不到就跳过这一帧，
-            // 别退回去把"门口"画没了。
-            if let Some(sz) = ui.size(dir, Art::DOOR.0, idx) {
-                let (x, y) = Layout::bg_at(win, sz);
+            // ⚠️ `ChrSel[23]`（首帧）在本套素材里是空壳 ⇒ 那一帧什么都不画，这是素材
+            // 事实不是 bug；取不到就跳过，别退回去把"门口"画没了。
+            if ui.size(dir, Art::DOOR.0, idx).is_some() {
+                // ⚠️ 门是 496×361 的**局部覆盖**，位置照原版（`IntroScn.pas:845-846`），
+                // 不是"居中贴整屏背景"。
+                let (x, y) = Layout::legacy_at(win, Layout::DOOR_AT);
                 ui.draw(canvas, tc, dir, Art::DOOR.0, idx, x, y);
             }
+            // 门在放：登录小窗（对话框/输入框/按钮/提示）**一律不画** —— 见上面的出处。
+            return Ok(());
         }
 
         let Some(l) = Layout::build(win, |c, i| ui.size(dir, c, i)) else {
@@ -248,9 +391,29 @@ impl Login {
 
         // ④ 输入框（原版是原生 TEdit：黑底白字 + 光标 ⇒ 自绘）
         let caret_on = (started.elapsed().as_millis() / CARET_MS).is_multiple_of(2);
+        if self.signup() {
+            // ⚠️ 建号面板的**面板图**原版是另一张 (`DNewAccount`)，本套素材里没有 ⇒
+            // 复用登录对话框当底，标题与字段名用调试字体画（比原版"丑"，但能用；
+            // 与"中文打不进来"是同一条已知限制）。
+            let title = "NEW ACCOUNT";
+            text(
+                canvas,
+                title,
+                center_x(title, l.dialog.x, l.dialog.x + l.dialog.w),
+                l.dialog.y + 60.0,
+                C_TEXT,
+            )?;
+            for (label, r) in [("ID", l.account), ("PW", l.password), ("PW2", l.confirm)] {
+                text(canvas, label, r.x - 26.0, r.y + 4.0, C_DIM)?;
+            }
+        }
         self.field(canvas, l.account, &self.account, self.focus == 0, caret_on)?;
         let masked = "*".repeat(self.password.chars().count());
         self.field(canvas, l.password, &masked, self.focus == 1, caret_on)?;
+        if self.signup() {
+            let masked = "*".repeat(self.confirm.chars().count());
+            self.field(canvas, l.confirm, &masked, self.focus == 2, caret_on)?;
+        }
 
         // ⑤ 按钮（按下时 +1 位移）
         let down = |b: Btn| self.pressed == Some(b);
@@ -258,9 +421,25 @@ impl Login {
             let (dx, dy) = if pressed { (1.0, 1.0) } else { (0.0, 0.0) };
             ui.draw(canvas, tc, dir, Art::DIALOG.0, idx, r.x + dx, r.y + dy);
         };
-        put(canvas, Art::BTN_OK.1, l.ok, down(Btn::Ok));
-        put(canvas, Art::BTN_NEW.1, l.new, down(Btn::New));
-        put(canvas, Art::BTN_CHGPW.1, l.chgpw, down(Btn::ChgPw));
+        if self.signup() {
+            // 建号面板：[确定] / [取消]（原版 `DNewAccountOk/Cancel`）
+            put(
+                canvas,
+                Art::BTN_SIGNUP_OK.1,
+                l.signup_ok,
+                down(Btn::SignupOk),
+            );
+            put(
+                canvas,
+                Art::BTN_SIGNUP_CANCEL.1,
+                l.signup_cancel,
+                down(Btn::SignupCancel),
+            );
+        } else {
+            put(canvas, Art::BTN_OK.1, l.ok, down(Btn::Ok));
+            put(canvas, Art::BTN_NEW.1, l.new, down(Btn::New));
+            put(canvas, Art::BTN_CHGPW.1, l.chgpw, down(Btn::ChgPw));
+        }
         put(canvas, Art::BTN_CLOSE.1, l.close, down(Btn::Close));
 
         // ⑥ 报错弹窗（模态）
@@ -409,6 +588,116 @@ mod tests {
         assert!(l.error.is_none());
     }
 
+    /// 开门动画：10 帧 × 300ms（原版 `IntroScn.pas:826` 的 `> 300`，帧号 `ChrSel[23+n]`）。
+    #[test]
+    fn 开门动画时长与相位() {
+        use std::time::Duration;
+        let mut l = Login::new();
+        assert!(l.opened_at.is_none(), "没登录前不该开门");
+        assert!(!l.door_done());
+        // 2.9 秒（第 10 帧还没走完）
+        l.opened_at = Some(Instant::now() - Duration::from_millis(2900));
+        assert!(!l.door_done(), "2.9 秒还没放完");
+        // 3.0 秒 = 10 帧 × 300ms
+        l.opened_at = Some(Instant::now() - Duration::from_millis(3000));
+        assert!(l.door_done(), "3 秒（10 帧 × 300ms）该放完了");
+    }
+
+    /// 建号面板：本地校验（原版 `CheckUserEntrys`）——账号/口令 <3 位、两次不一致都拦住。
+    ///
+    /// ⚠️ 口令长度**只有这里把关**：服务端只收到校验值，见不见口令（D-32）。
+    #[test]
+    fn 建号面板本地校验() {
+        let mut l = Login::new();
+        l.enter_signup();
+        assert!(l.signup());
+        // 账号太短
+        l.account = "ab".into();
+        l.password = "pw123".into();
+        l.confirm = "pw123".into();
+        assert_eq!(l.on_key(Keycode::Return), Action::None, "账号太短不该提交");
+        assert!(l.error.is_some(), "该弹模态框说原因");
+        l.error = None;
+        // 口令太短
+        l.account = "newbie".into();
+        l.password = "pw".into();
+        l.confirm = "pw".into();
+        assert_eq!(l.on_key(Keycode::Return), Action::None);
+        assert!(l.error.is_some());
+        l.error = None;
+        // 两次不一致
+        l.password = "pw123".into();
+        l.confirm = "pw124".into();
+        assert_eq!(l.on_key(Keycode::Return), Action::None);
+        assert!(l.error.is_some());
+        l.error = None;
+        // 都对 ⇒ 提交（发送是 main 的事）
+        l.confirm = "pw123".into();
+        assert_eq!(l.on_key(Keycode::Return), Action::SubmitSignup);
+    }
+
+    /// 建号面板：三个框的焦点轮转、确认框能打字、"取消"回登录。
+    #[test]
+    fn 建号面板焦点与取消() {
+        let mut l = Login::new();
+        l.enter_signup();
+        assert_eq!(l.focus, 0);
+        l.on_key(Keycode::Tab);
+        l.on_key(Keycode::Tab);
+        assert_eq!(l.focus, 2, "建号面板有三个框");
+        // 焦点在确认框时，打字进的是确认框
+        l.on_text("a");
+        assert_eq!((l.password.as_str(), l.confirm.as_str()), ("", "a"));
+        l.on_key(Keycode::Tab);
+        assert_eq!(l.focus, 0, "转回第一个");
+
+        // ESC = 关掉面板回登录（不是退出程序）
+        l.password = "x".into();
+        l.confirm = "x".into();
+        assert_eq!(l.on_key(Keycode::Escape), Action::CancelSignup);
+        assert!(!l.signup(), "该切回登录面板");
+        assert!(
+            l.password.is_empty() && l.confirm.is_empty(),
+            "回登录要清掉建号那两格"
+        );
+        assert_eq!(
+            l.on_key(Keycode::Escape),
+            Action::Quit,
+            "登录面板的 ESC 才是退出"
+        );
+    }
+
+    /// 建号面板的两颗按钮：`[确定]` 走校验、`[取消]` 回登录（面板切换在这里完成）。
+    #[test]
+    fn 建号按钮与面板切换() {
+        let l = {
+            let mk = |c: &'static str, i: u32| match (c, i) {
+                ("Prguse", 60) => Some((296, 254)),
+                ("Prguse", 62) => Some((76, 33)),
+                ("Prguse", 61) => Some((100, 32)),
+                ("Prguse", 53) => Some((128, 33)),
+                ("Prguse", 51) => Some((96, 34)),
+                ("Prguse", 52) => Some((96, 33)),
+                ("Prguse", 64) => Some((16, 23)),
+                ("Prguse", 360) => Some((452, 179)),
+                ("Prguse", 363) => Some((80, 34)),
+                _ => None,
+            };
+            Layout::build((1024, 768), mk).unwrap()
+        };
+        let mut s = Login::new();
+        // 点 [新用户] ⇒ 面板切进建号（动作只是通知）
+        let c = (l.new.x + 10.0, l.new.y + 10.0);
+        s.on_down(c, &l);
+        assert_eq!(s.on_up(c, &l), Action::NewAccount);
+        assert!(s.signup(), "面板该切到建号");
+        // 点 [取消] ⇒ 回登录
+        let c = (l.signup_cancel.x + 10.0, l.signup_cancel.y + 10.0);
+        s.on_down(c, &l);
+        assert_eq!(s.on_up(c, &l), Action::CancelSignup);
+        assert!(!s.signup());
+    }
+
     /// 点按：只有"按下与抬起在同一颗按钮"才算点中（原版也是这个语义）。
     #[test]
     fn 点按命中() {
@@ -418,6 +707,8 @@ mod tests {
                 ("Prguse", 62) => Some((76, 33)),
                 ("Prguse", 61) => Some((100, 32)),
                 ("Prguse", 53) => Some((128, 33)),
+                ("Prguse", 51) => Some((96, 34)),
+                ("Prguse", 52) => Some((96, 33)),
                 ("Prguse", 64) => Some((16, 23)),
                 ("Prguse", 360) => Some((452, 179)),
                 ("Prguse", 363) => Some((80, 34)),

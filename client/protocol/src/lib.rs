@@ -145,13 +145,17 @@ mod tests {
     #[test]
     fn golden_frame_bytes_match_go() {
         // 与 Go 侧 `TestGoldenFrameBytes` **逐字节对齐**（两边各钉一份，谁改协议都得两边一起动）：
-        //   1400000008018a100f08041204746573741a057a682d434e
+        //   1400000008018a100f08011204746573741a057a682d434e
+        // ⚠️ 版本号**开发期冻结在 1**（2026-10-08 用户口径：「先固定1，免得测试不匹配」）：
+        //    两端都没发布过，版本协商此时只是"确认两端同源"；首次发版后再 bump。
+        //    冻结前的 schema 改动（Direction 顺序 / EntityFeature.appr /
+        //    LoginSaltRequest / CreateAccount）都不再体现在版本号里 —— 门禁靠这串字节。
         let ver = VERSION;
-        assert_eq!(ver, 4, "version.txt 变了就要连着确认这条黄金报文");
+        assert_eq!(ver, 1, "version.txt 变了就要连着确认这条黄金报文");
         let mut buf = Vec::new();
         write_frame(&mut buf, &hello()).expect("写帧");
         let got: String = buf.iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(got, "1400000008018a100f08041204746573741a057a682d434e");
+        assert_eq!(got, "1400000008018a100f08011204746573741a057a682d434e");
     }
 
     /// 分帧边界：超限**先判长度再分配**、空帧报错、往返一致。

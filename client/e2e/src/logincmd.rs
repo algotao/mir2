@@ -84,12 +84,23 @@ pub fn main(argv: &[String]) -> Result<(), String> {
     let mut out = "/tmp/login.png".to_string();
     let mut win = (1024i32, 768i32);
     let mut err: Option<String> = None;
+    // `-door <ms>`：合成"登录已通过、门正在开"的那一屏（**登录小窗必须消失**）。
+    let mut door_ms: Option<u64> = None;
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
             "-out" => {
                 i += 1;
                 out = argv.get(i).ok_or("-out 缺参数")?.clone();
+            }
+            "-door" => {
+                i += 1;
+                door_ms = Some(
+                    argv.get(i)
+                        .ok_or("-door 缺参数（毫秒）")?
+                        .parse()
+                        .map_err(|_| "-door 要是整数毫秒")?,
+                );
             }
             "-w" => {
                 i += 1;
@@ -129,7 +140,34 @@ pub fn main(argv: &[String]) -> Result<(), String> {
     if !libs.blit_centered(&mut cv, Art::BG.0, Art::BG.1, win) {
         println!("提示：背景缺失，只画对话框");
     }
-    // ② 对话框
+    // ② 开门动画（`-door <ms>`）：原版 `OpenLoginDoor` = **先藏小窗**再开门
+    //（`IntroScn.pas:795-801`：`HideLoginBox` → `PlaySound(s_rock_door_open)`），
+    // 门的位置照 `IntroScn.pas:845-846` 的偏移（局部覆盖，不是居中）。
+    if let Some(ms) = door_ms {
+        let f = (ms / Art::DOOR_MS as u64) as u32;
+        let idx = Art::DOOR.1 + f.min(Art::DOOR_FRAMES - 1);
+        let (x, y) = Layout::legacy_at((win.0 as u32, win.1 as u32), Layout::DOOR_AT);
+        let ok = libs.blit(&mut cv, Art::DOOR.0, idx, x as i32, y as i32);
+        println!(
+            "  开门第 {f} 帧（{ms}ms / 每帧 {}ms）= {}[{}] @ ({:.0},{:.0}){}",
+            Art::DOOR_MS,
+            Art::DOOR.0,
+            idx,
+            x,
+            y,
+            if ok {
+                ""
+            } else {
+                "  ← 空壳帧（本套素材 [23] 就是空壳）"
+            }
+        );
+        png::write_rgb(Path::new(&out), win.0 as u32, win.1 as u32, &cv.to_rgb())
+            .map_err(|e| format!("写 {out}: {e}"))?;
+        println!("开门屏合成完成：{out}（登录小窗**没画** —— 与 app 的 login::draw 同一规则）");
+        return Ok(());
+    }
+
+    // ③ 对话框
     libs.blit(
         &mut cv,
         Art::DIALOG.0,

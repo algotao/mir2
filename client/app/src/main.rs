@@ -64,6 +64,19 @@ use sdl3::render::{
 };
 use sdl3::EventPump;
 
+/// 打开一个图库：**美术容器优先**（`assets/image/images.m2pk`，`kind=3`），
+/// 容器里没有这个库（或压根没容器）就回退裸目录的 `.wzl` + `.wzx`。
+///
+/// 两条载体解出的像素**逐字节相同**（像素解码只有一份，见 `mir2_core::wzl::to_rgba`），
+/// 所以 `app` / `ui` / 各缓存统一走这一个入口，不必各自判断。
+///
+/// 容器句柄是进程级懒打开的（`mir2_core::image_lib::art_archive`）—— 只把索引区
+/// 读进内存（全量 1.4 GB，不能整文件读），图库内容按组取。
+pub(crate) fn open_lib(dir: &Path, name: &str) -> Option<Wzl> {
+    let art = mir2_core::image_lib::art_archive();
+    Wzl::open_preferring(art.as_ref(), dir, name).ok()
+}
+
 const WIN_W: u32 = 1024;
 const WIN_H: u32 = 768;
 
@@ -284,7 +297,7 @@ fn ensure_tile<'a, T>(
     let name = lib_kind.file_name(area);
     let lib = libs
         .entry(name.clone())
-        .or_insert_with(|| Wzl::open(dir.join(&name)).ok())
+        .or_insert_with(|| open_lib(dir, &name))
         .as_ref()?;
     let sprite = lib.decode(idx as usize)?;
     if sprite.is_empty() {
@@ -517,7 +530,7 @@ fn draw_rect_cold(
     let name = d.lib.file_name(d.area);
     let lib = libs
         .entry(name.clone())
-        .or_insert_with(|| Wzl::open(dir.join(&name)).ok())
+        .or_insert_with(|| open_lib(dir, &name))
         .as_ref()?;
     let rec = lib.record(d.index as usize)?;
     if rec.width == 0 || rec.height == 0 {
@@ -741,6 +754,41 @@ impl Net {
             world: mir2_core::world::World::default(),
             session: 0,
             status: format!("登录 {account} …"),
+            changes: 0,
+            floaters: Vec::new(),
+            fail: None,
+            entered_once: false,
+            started: Instant::now(),
+            anims: HashMap::new(),
+            pending_sfx: Vec::new(),
+            died_once: false,
+            gameover: false,
+        })
+    }
+
+    /// **建号**（D-32）：与口令登录同一条连接流程，只是状态机的第一步变成
+    /// "取盐 → 发口令校验值"。建完不自动登录，所以拿到回执后这条连接就没用了。
+    fn connect_for_signup(addr: &str, account: &str, password: &str) -> Result<Net, String> {
+        if account.is_empty() {
+            return Err("账号不能为空".into());
+        }
+        if password.is_empty() {
+            return Err("口令不能为空".into());
+        }
+        println!("[net] 连接 {addr}（建号 {account}）…");
+        let sess = mir2_net::Session::spawn(addr.to_string(), "mir2-app".into(), "zh-CN".into());
+        let mut entrance = mir2_core::entrance::Entrance::new_for_signup(
+            account.to_string(),
+            password.to_string(),
+        );
+        // 建号不涉及选角，但保持与另两条入口一致（免得将来复用这条连接时行为不同）。
+        entrance.set_manual_pick(true);
+        Ok(Net {
+            sess,
+            entrance,
+            world: mir2_core::world::World::default(),
+            session: 0,
+            status: format!("建号 {account} …"),
             changes: 0,
             floaters: Vec::new(),
             fail: None,
@@ -1142,7 +1190,7 @@ impl<'a> SpriteCache<'a> {
         let w = self
             .libs
             .entry(lib)
-            .or_insert_with(|| Wzl::open(dir.join(lib)).ok())
+            .or_insert_with(|| open_lib(dir, lib))
             .as_ref()?;
         let s = w.decode(idx as usize)?;
         if s.is_empty() {
@@ -1656,12 +1704,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 login::Action::Submit => {
                                     submit_login(&mut login, &mut net, &mut status)
                                 }
-                                login::Action::NewAccount => {
-                                    // 原版会开 `DLoginNew` 对话框（`FState.pas:886`）。
-                                    // 那条链要服务端配合建号，还没接 ⇒ 明确说一声，别装作成功。
-                                    status = "NEW ACCOUNT: NOT WIRED YET".into();
-                                    println!("[login] 新建账号尚未接线（原版开 DLoginNew 对话框）");
+                                login::Action::SubmitSignup => {
+                                    submit_signup(&mut login, &mut net, &mut status)
                                 }
+                                login::Action::NewAccount => {
+                                    // 面板切换在 `login` 里已经做完了（`enter_signup`），
+                                    // 这里只给状态栏一句人话（原版是开 `DNewAccount`）。
+                                    status = "NEW ACCOUNT".into();
+                                }
+                                login::Action::CancelSignup => status = String::new(),
                                 login::Action::ChangePassword => {
                                     status = "CHANGE PASSWORD: NOT WIRED YET".into();
                                 }
@@ -1885,11 +1936,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 login::Action::Submit => {
                                     submit_login(&mut login, &mut net, &mut status)
                                 }
+                                login::Action::SubmitSignup => {
+                                    submit_signup(&mut login, &mut net, &mut status)
+                                }
                                 login::Action::Quit => break 'main,
                                 login::Action::Dismiss => {}
                                 login::Action::NewAccount => {
-                                    status = "NEW ACCOUNT: NOT WIRED YET".into();
+                                    status = "NEW ACCOUNT".into();
                                 }
+                                login::Action::CancelSignup => status = String::new(),
                                 login::Action::ChangePassword => {
                                     status = "CHANGE PASSWORD: NOT WIRED YET".into();
                                 }
@@ -1924,12 +1979,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     login.busy = false;
                 }
             }
+            // 登录**通过**（清单在手）⇒ 原版 `OpenLoginDoor`：藏小窗 + 开门 + 开门声。
+            //
+            // ⚠️ 触发点是"登录通过"，**不是"进世界"**：原版由登录成功那条路调
+            // `OpenLoginDoor`（`IntroScn.pas:795-801`），门放完才 `ChangeScene(stSelectChr)`
+            //（`IntroScn.pas:838-847`）。早先挂在 `in_world()` 上 ⇒ 门排在选角与进图之后，
+            // 而且门画在登录框背后 ⇒ 看起来"压根没有开门动画"（用户报的就是这个）。
+            // `login.busy` 的含义正是"这次是口令登录"（`submit_login` 设的）。
+            if login.busy && n.entrance.stage() == &mir2_core::entrance::Stage::AwaitList {
+                login.opened_at = Some(Instant::now());
+                login.busy = false;
+                select_scene = None;
+                mode = 1; // 开门动画在登录屏上播（见 `login::draw` 的说明）
+                sfx(&sound, &sounds, mir2_core::sound::idx::ROCK_DOOR_OPEN);
+            }
+            // 兜底：**认领会话**那条路（没有口令登录这一步）落到世界里时才补一次开门。
             if n.entrance.in_world() && login.opened_at.is_none() {
                 login.opened_at = Some(Instant::now());
                 login.busy = false;
                 select_scene = None;
-                mode = 1; // 开门动画在登录屏上播（否则会在地图里"看不见地"播完）
-                          // 开门声（原版 `IntroScn.pas:801` 的 `s_rock_door_open`）
+                mode = 1;
                 sfx(&sound, &sounds, mir2_core::sound::idx::ROCK_DOOR_OPEN);
             }
             // 登录成功后会停在 `AwaitPick`（`set_manual_pick`）⇒ 切到选角场景。
@@ -1956,7 +2025,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 select_scene = Some(scene);
-                mode = 4;
+                // ⚠️ 门还在放就先不切过去：原版顺序是"门放完 → ChangeScene(stSelectChr)"
+                //（`IntroScn.pas:838-847`）；一上来就切会把门当场掐掉（用户看到的就是"没有开门动画"）。
+                // 门放完那一刻由下面 `mode == 1` 那条分支接手（它会切到 4）。
+                if login.opened_at.is_none() || login.door_done() {
+                    mode = 4;
+                }
             }
             // 选角被拒（例如租约被占）⇒ 弹给用户换一个（状态机会退回 `AwaitPick`）。
             if let Some(why) = n.entrance.take_pick_error() {
@@ -1972,6 +2046,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(tok) = n.entrance.session_token() {
                 n.session = tok;
             }
+        }
+        // 建号回执（D-32）：**不自动登录**（与原版一致 —— 它也只是弹个提示，
+        // `ClMain.pas:3684-3691`）。提示用登录界面那套模态框说，面板切回登录；
+        // 那条"只为建号用过的连接"顺手收尾：登录会另开一条（nonce 要重新握手）。
+        let signup = net.as_mut().and_then(|n| n.entrance.take_signup_msg());
+        if let Some((ok, msg)) = signup {
+            login.leave_signup();
+            login.busy = false;
+            net = None;
+            status = if ok {
+                "ACCOUNT CREATED - PLEASE SIGN IN".into()
+            } else {
+                "SIGN UP FAILED".into()
+            };
+            login.error = Some(msg.clone());
+            println!("[login] 建号{}：{msg}", if ok { "成功" } else { "失败" });
         }
         // 网络侧排出来的音效（挨打 / 死亡）：`pump` 在 `Net` 里，拿不到音频设备。
         if let Some(n) = net.as_mut() {
@@ -1995,7 +2085,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 自己死了就别停：那时该响的是 game over 那首（`Actor.pas:2373-2374`）。
         if mode == 4 {
             bgm(&sound, &sounds, mir2_core::sound::BGM_SELECT);
-        } else if mode == 1 && login.opened_at.is_none() {
+        } else if mode == 1 {
+            // ⚠️ 开门动画期间**继续放**登录曲（原版 `PlayBGM(bmg_intro)` 一放放到换场景，
+            // `IntroScn.pas:518`；门放完 `ChangeScene(stSelectChr)` 才换成选角曲）。
+            // 早先这里多了个 `opened_at.is_none()` ⇒ 门一开就静音三秒（踩过）。
             bgm(&sound, &sounds, mir2_core::sound::BGM_LOGIN);
         } else if mode == 2 && !net.as_ref().is_some_and(|n| n.world.self_dead) && sound.stop_bgm()
         {
@@ -2080,9 +2173,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )?;
             }
         } else if mode == 1 {
-            // 开门动画播完 ⇒ 进地图（原版也是"开门 → 换场景"，`IntroScn.pas:907-914`）
+            // 开门动画播完 ⇒ **换场景**。原版换到的是**选角**
+            //（`ChangeScene(stSelectChr)`，`IntroScn.pas:838-847`），不是地图 ——
+            // 早先这里直接 `mode = 2` 是错的（等于把选角整段跳过）。
             if login.door_done() {
-                mode = 2;
+                if select_scene.is_some() {
+                    mode = 4;
+                } else if net.as_ref().is_some_and(|n| n.world.in_world()) {
+                    // 认领会话那条路没有选角：门放完直接进地图
+                    mode = 2;
+                }
+                // 两个都没有 ⇒ 留在这一屏等（角色列表马上到）
             }
             login.draw(
                 &mut canvas,
@@ -2410,7 +2511,7 @@ fn draw_asset_view<'a, T>(
     if let Some(dir) = asset_dir {
         let name = LIBS[lib_idx];
         if loaded.as_ref().map(|(i, _)| *i) != Some(lib_idx) {
-            *loaded = Wzl::open(dir.join(name)).ok().map(|l| (lib_idx, l));
+            *loaded = open_lib(dir, name).map(|l| (lib_idx, l));
             *sprite_tex = None;
         }
         if let Some((_, lib)) = loaded.as_ref() {
@@ -2687,6 +2788,32 @@ fn submit_login(login: &mut login::Login, net: &mut Option<Net>, status: &mut St
                 "[login] 提交：账号={:?} → 口令挑战应答（D-24①）",
                 login.account
             );
+            *net = Some(n);
+        }
+        Err(e) => login.error = Some(e),
+    }
+}
+
+/// 提交建号（D-32）。
+///
+/// 与 `submit_login` 的差别只有两点：走 `connect_for_signup`，以及提示语措辞 ——
+/// 建完**不自动登录**（原版也只是弹个提示，要用户自己再登一次）。
+fn submit_signup(login: &mut login::Login, net: &mut Option<Net>, status: &mut String) {
+    if login.account.trim().is_empty() {
+        login.error = Some("Please enter your account name.".into());
+        return;
+    }
+    if login.password.is_empty() {
+        login.error = Some("Please enter your password.".into());
+        return;
+    }
+    let addr = std::env::var("MIR2_SERVER").unwrap_or_else(|_| "127.0.0.1:7500".into());
+    match Net::connect_for_signup(&addr, login.account.trim(), &login.password) {
+        Ok(n) => {
+            login.busy = true;
+            login.error = None;
+            *status = format!("SIGN UP {}", login.account.trim());
+            println!("[login] 提交建号：账号={:?}", login.account.trim());
             *net = Some(n);
         }
         Err(e) => login.error = Some(e),

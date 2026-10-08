@@ -1,6 +1,9 @@
-//! `.wzl` —— 盛大图库**数据**文件（每张图独立 zlib 压缩）。
+//! 图库（`.wzl` + `.wzx`）读取 —— **两种载体，一套解码**。
 //!
-//! 规格见 `docs/assets.md §3.2b`；参考实现 `$WS/Crystal/LibraryEditor/Graphics/WeMadeLibrary.cs`。
+//! 1. **裸目录**（`mir2c/data`）：每张图各自一个 zlib 流。规格见 `docs/assets.md §3.2b`；
+//!    参考实现 `$WS/Crystal/LibraryEditor/Graphics/WeMadeLibrary.cs`。
+//! 2. **美术容器**（`assets/image/images.m2pk`，`kind=3`）：把每张图的 raw 像素解出来、
+//!    按 N 张一组拼接、每组一条 brotli 流（见 `crate::image_lib` 与 `docs/assets.md §5c`）。
 //!
 //! ```text
 //! 头部 64 字节（可忽略——偏移一律以 .wzx 为准）
@@ -16,11 +19,17 @@
 //! 解压后为原始像素：**行按 4 字节对齐**、**数据自下而上**（第一行是图像底行）。
 //! 8 位图用经典 MIR2 256 色（[`crate::palette::PALETTE`]），**索引 0 = 透明**；
 //! 16 位图是 RGB565 小端，不需要调色板。
+//!
+//! ⚠️ **两条载体必须解出逐字节相同的结果**：所以"raw → RGBA"只有一份实现
+//!（[`to_rgba`]），行距也只有一份（[`stride_of`]）—— 容器那条路只是换了个
+//! "从哪儿拿到 raw"，绝不许自己再写一遍像素换算。
 
 use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
+use std::rc::Rc;
 
+use crate::m2pk::Archive;
 use crate::palette::PALETTE;
 use crate::wzx::Wzx;
 
@@ -79,7 +88,7 @@ impl Sprite {
 pub type BBox = (i32, i32, u32, u32);
 
 /// 单条图像记录（16 字节）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Record {
     pub type_flag: u8,
     pub width: u16,
@@ -106,19 +115,144 @@ impl Record {
         self.type_flag == TYPE_16BIT
     }
 
-    /// 每行在解压数据中占用的字节数（**4 字节对齐**）。
-    fn stride(&self) -> usize {
-        let bits = if self.is_16bit() { 16 } else { 8 };
-        ((self.width as usize * bits + 31) >> 5) * 4
+    /// 空白图（直读路径的判据：宽/高为 0，或没有压缩数据）。
+    ///
+    /// ⚠️ 只对**直读** `.wzl` 有意义：容器里的 IMGP 记录不带 `packed_size`
+    ///（恒为 0），那边判空白只看宽高（见 `image_lib::PackedLib::decode`）。
+    fn is_blank(&self) -> bool {
+        self.width == 0 || self.height == 0 || self.packed_size == 0
     }
 }
 
-pub struct Wzl {
+/// 每行在 raw 数据里占的字节数（**4 字节对齐**）。
+///
+/// 与 Go 侧 `m2pk.ImageRecord.Stride` 同一条公式：`((w*bits + 31) >> 5) * 4`。
+pub fn stride_of(type_flag: u8, width: u16) -> usize {
+    let bits = if type_flag == TYPE_16BIT { 16 } else { 8 };
+    ((width as usize * bits + 31) >> 5) * 4
+}
+
+/// raw 像素 → RGBA8888（行序**自上而下**）。
+///
+/// 直读 `.wzl` 与容器里的 IMGP 载荷**共用**这一份：两条路的解码结果必须逐字节
+/// 一致（`真实素材_黄金哈希` 与 `image_lib` 的对拍测试都盯着这点）。
+pub fn to_rgba(type_flag: u8, width: u16, height: u16, raw: &[u8]) -> Option<Vec<u8>> {
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let stride = stride_of(type_flag, width);
+    if raw.len() < stride * h {
+        return None;
+    }
+    let is16 = type_flag == TYPE_16BIT;
+    let mut rgba = vec![0u8; w * h * 4];
+    for row in 0..h {
+        let y = h - 1 - row; // ★ 数据自下而上
+        let ro = row * stride;
+        for x in 0..w {
+            let (r, g, b, a) = if is16 {
+                let i = ro + x * 2;
+                let v = u16::from_le_bytes([raw[i], raw[i + 1]]);
+                // 与参考实现一致：5/6/5 → 8 位用左移（不做位复制）
+                (
+                    (((v >> 11) & 0x1F) as u8) << 3,
+                    (((v >> 5) & 0x3F) as u8) << 2,
+                    ((v & 0x1F) as u8) << 3,
+                    255,
+                )
+            } else {
+                let px = raw[ro + x] as usize;
+                let [r, g, b] = PALETTE[px];
+                (r, g, b, if px == 0 { 0 } else { 255 })
+            };
+            let q = (y * w + x) * 4;
+            rgba[q] = r;
+            rgba[q + 1] = g;
+            rgba[q + 2] = b;
+            rgba[q + 3] = a;
+        }
+    }
+    Some(rgba)
+}
+
+/// 一个图库的句柄 —— **同一套 API，两种载体**。
+///
+/// 上层（`app` / `e2e`）只认这个类型：`len` / `record` / `decode` 的语义与返回值
+/// 在两种载体下**完全一致**，所以换载体不需要改渲染代码。
+pub enum Wzl {
+    /// 裸目录里的 `.wzl` + `.wzx`（每图一个 zlib 流）。
+    Raw(Raw),
+    /// 容器里的 IMGP 分组载荷（见 [`crate::image_lib`]）。
+    Packed(crate::image_lib::PackedLib),
+}
+
+impl Wzl {
+    /// 打开一对 `{base}.wzl` + `{base}.wzx`。
+    pub fn open<P: AsRef<Path>>(base: P) -> io::Result<Self> {
+        Ok(Wzl::Raw(Raw::open(base)?))
+    }
+
+    pub fn from_bytes(data: Vec<u8>, wzx_bytes: &[u8]) -> io::Result<Self> {
+        Ok(Wzl::Raw(Raw::from_bytes(data, wzx_bytes)?))
+    }
+
+    /// 从美术容器里打开（`Ok(None)` = 容器里没有这个库）。
+    pub fn open_packed(archive: Rc<Archive>, name: &str) -> io::Result<Option<Self>> {
+        Ok(crate::image_lib::PackedLib::open(archive, name)?.map(Wzl::Packed))
+    }
+
+    /// **容器优先**打开图库；容器里没有（或压根没容器）就回退裸目录。
+    ///
+    /// 这是上层唯一该用的入口：产物在就用产物，不在就直读原始素材 ——
+    /// 两条路解出的像素逐字节相同（见 `to_rgba` 的说明）。
+    pub fn open_preferring(
+        archive: Option<&Rc<Archive>>,
+        dir: &Path,
+        name: &str,
+    ) -> io::Result<Self> {
+        if let Some(a) = archive {
+            if let Some(lib) = Self::open_packed(a.clone(), name)? {
+                return Ok(lib);
+            }
+        }
+        Self::open(dir.join(name))
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Wzl::Raw(r) => r.len(),
+            Wzl::Packed(p) => p.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn record(&self, index: usize) -> Option<Record> {
+        match self {
+            Wzl::Raw(r) => r.record(index),
+            Wzl::Packed(p) => p.record(index),
+        }
+    }
+
+    /// 解码第 `index` 张图。空白图（宽/高为 0 或没有像素数据）返回 `None`。
+    pub fn decode(&self, index: usize) -> Option<Sprite> {
+        match self {
+            Wzl::Raw(r) => r.decode(index),
+            Wzl::Packed(p) => p.decode(index),
+        }
+    }
+}
+
+/// 裸目录载体：`.wzl` + `.wzx`。
+pub struct Raw {
     data: Vec<u8>,
     index: Wzx,
 }
 
-impl Wzl {
+impl Raw {
     /// 打开一对 `{base}.wzl` + `{base}.wzx`。
     pub fn open<P: AsRef<Path>>(base: P) -> io::Result<Self> {
         let base = base.as_ref();
@@ -158,53 +292,20 @@ impl Wzl {
     /// 解码第 `index` 张图。空白图（宽/高为 0 或压缩长度为 0）返回 `None`。
     pub fn decode(&self, index: usize) -> Option<Sprite> {
         let o = self.index.offset(index)? as usize;
-        let rec_end = o.checked_add(RECORD_LEN)?;
-        if o < HEADER_LEN || rec_end > self.data.len() {
+        if o < HEADER_LEN {
             return None;
         }
-        let rec = Record::parse(&self.data[o..rec_end]);
-        let (w, h) = (rec.width as usize, rec.height as usize);
-        if w == 0 || h == 0 || rec.packed_size == 0 {
+        let rec = self.record(index)?;
+        if rec.is_blank() {
             return None;
         }
-        let start = rec_end;
+        let start = o + RECORD_LEN;
         let end = start.checked_add(rec.packed_size as usize)?;
         if end > self.data.len() {
             return None;
         }
         let raw = inflate(&self.data[start..end]).ok()?;
-        let stride = rec.stride();
-        if raw.len() < stride * h {
-            return None;
-        }
-
-        let mut rgba = vec![0u8; w * h * 4];
-        for row in 0..h {
-            let y = h - 1 - row; // ★ 数据自下而上
-            let ro = row * stride;
-            for x in 0..w {
-                let (r, g, b, a) = if rec.is_16bit() {
-                    let i = ro + x * 2;
-                    let v = u16::from_le_bytes([raw[i], raw[i + 1]]);
-                    // 与参考实现一致：5/6/5 → 8 位用左移（不做位复制）
-                    (
-                        (((v >> 11) & 0x1F) as u8) << 3,
-                        (((v >> 5) & 0x3F) as u8) << 2,
-                        ((v & 0x1F) as u8) << 3,
-                        255,
-                    )
-                } else {
-                    let px = raw[ro + x] as usize;
-                    let [r, g, b] = PALETTE[px];
-                    (r, g, b, if px == 0 { 0 } else { 255 })
-                };
-                let q = (y * w + x) * 4;
-                rgba[q] = r;
-                rgba[q + 1] = g;
-                rgba[q + 2] = b;
-                rgba[q + 3] = a;
-            }
-        }
+        let rgba = to_rgba(rec.type_flag, rec.width, rec.height, &raw)?;
         Some(Sprite {
             width: rec.width,
             height: rec.height,
@@ -283,7 +384,8 @@ mod tests {
         let [r1, g1, b1] = PALETTE[1];
         assert_eq!(p(0, 1), [r1, g1, b1, 255]);
         // 行对齐：宽 2 ⇒ 8 位 stride = ((2*8+31)>>5)*4 = 4（即每行 4 字节，含 2 字节填充）
-        assert_eq!(rec.stride(), 4);
+        assert_eq!(stride_of(rec.type_flag, rec.width), 4);
+        assert_eq!(stride_of(TYPE_16BIT, 3), 8);
     }
 
     #[test]

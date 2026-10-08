@@ -566,6 +566,6 @@ mod tests {
         let clip = decode_asset(&bgm).expect("该能解码 BGM");
         let secs = (clip.len() / CHANNELS) as f32 / SAMPLE_RATE as f32;
         assert!(secs > 5.0, "登录 BGM 该有几十秒，实测 {secs:.1}s");
-        assert_eq!(bgm_key, "log-in-long2");
+        assert_eq!(bgm_key, "main_theme");
     }
 }

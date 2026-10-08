@@ -4297,7 +4297,10 @@ func main() {
 	fmt.Println("\n✓ 完整链路通过（登录 → 选角 → 进入游戏 → 走路）")
 }
 
-// ensureAccount 确保账号存在（直接写库，绕过 CM_ADDNEWUSER——该命令尚未实现）。
+// ensureAccount 确保账号存在（**直接写库**，不走协议）。
+//
+// ⚠️ 它是**运维旁路**：新协议的建号（`CreateAccount`，D-32）走 `gamesvr`；legacy 的
+// `CM_ADDNEWUSER` 仍然没人接。这条命令给的是"建个号好开测"的便利，不是注册入口。
 func ensureAccount(dbPath, name, pw string) error {
 	st, err := sqlite.Open(dbPath)
 	if err != nil {

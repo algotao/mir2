@@ -273,6 +273,11 @@ func (p *Player) Pos() (int, int) { return p.Obj.Pos() }
 // 与 dataState 的分工：这里回答"怎么跑"（视野半径、存档间隔、各项开关、掉落率、GM 名单），
 // 那里回答"跑什么数据"（静态表）。两者都在启动时由 flag 决定，之后基本只读。
 type configState struct {
+	// allowNewAccount 决定**是否开放注册**（原版 `Config.boEnableMakingID`，D-32）。
+	//
+	// ⚠️ 默认**关**（原版默认是开，`LSShare.pas:96`）：开着的服务端在公网上就是
+	// 一个自助注册入口。要用 `-allow-new-account` 显式打开。
+	allowNewAccount bool
 	// viewRange 是玩家视野半径（切比雪夫距离）。
 	viewRange int
 	// proxyProtocol 决定**怎么取得可信的客户端 IP**（D-23）：
@@ -473,6 +478,14 @@ type Server struct {
 	data dataState
 
 	mu sync.RWMutex
+
+	// createMu/createLast 是**建号节流**（D-32）：同一 IP 在 `newAccountCooldown`
+	// 内只允许建一个号。见 allowAccountCreate。
+	//
+	// ⚠️ 挂在 Server 上而不是挂连接：节流必须是全局的，否则"多开几条连接"就绕过去了。
+	// 原版是每连接 5 秒（`LoginSrv/LMain.pas:977-986`）—— 公网上那等于没限。
+	createMu   sync.Mutex
+	createLast map[string]time.Time
 
 	// dealMu 串行化**交易**（deal.go）。为什么要单独一把锁：
 	//

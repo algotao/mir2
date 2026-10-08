@@ -124,6 +124,7 @@ cd client && cargo run -p mir2-e2e -- world -addr 127.0.0.1:7500 \
 | 登录界面弹 `Connection refused (os error 61)` | **不是鉴权失败**（那会弹"账号或口令不正确"），是 TCP 层没人监听：`gamesvr` 没起，或者起的时候**没带 `-proto-addr`** |
 | `accountsvc` 报 `bind: address already in use`（:7000） | macOS 的 **AirPlay 接收器（ControlCenter）占着 7000**。把 `-login-addr` 换成 `:17000` 之类，mir2cli 跟着改 `-login` |
 | 服务端要 `<地图号>.map` 目录，可仓库里只有 `assets/map/maps.m2pk` | 用**客户端集** `$WS/mir2c/map`（[D-22](./docs/decisions.md)：两套地图以客户端集为准；它里面 `0.map` 就是边界村） |
+| 登录报**协议版本不匹配**（日志里是 `version_fail`） | **服务端二进制是旧的**：`protocol/version.txt` 一改，`gamesvr` 就得重编（`go build -o /tmp/mir2dev/bin/gamesvr ./cmd/gamesvr`）。当前版本号是**开发期冻结的 1**（[D-34](./docs/decisions.md)） |
 | 起 gamesvr 刷一堆 `缺少怪物模板 "红野猪3"` | 刷怪表引用了我们数据里没有的怪，**无害**（那些刷怪点空着） |
 
 ## 音频（音乐 / 音效）
@@ -132,17 +133,17 @@ cd client && cargo run -p mir2-e2e -- world -addr 127.0.0.1:7500 \
 `MShare.pas:213-214`）。终端里会打两行，听不见时靠它们判断到底有没有在放：
 
 ```
-[mir2-app] 音频资产 = 容器 776 块（kind=2 codec=1），编号表 753 条（能取到 741 条）
-[audio] BGM = log-in-long2.wav
+[mir2-app] 音频资产 = 容器 777 块（kind=2 codec=1），编号表 753 条（能取到 741 条）
+[audio] BGM = main_theme.wav
 ```
 
-**资产是一个文件**：`assets/audio/sounds.m2pk`（209.0 MB 原始 → **17.92 MB**），
-由 `tools/wavpack/build.sh` 产出（约 2 秒）：
+**资产是一个文件**：`assets/audio/sounds.m2pk`（209.0 MB 原始 → **41.6 MB**，**音乐无损**：
+BGM 四首是 16bit PCM，只有音效走 4bit ADPCM），由 `tools/wavpack/build.sh` 产出（约 2 秒）：
 
 ```bash
-tools/wavpack/build.sh                              # 默认：4bit IMA ADPCM，17.92 MB
-MIR2_AUDIO_CODEC=pcm tools/wavpack/build.sh         # 想无损：73.5 MB
-MIR2_AUDIO_BGM_PCM=1 tools/wavpack/build.sh         # 音乐无损 + 音效 ADPCM ⇒ 35.2 MB
+tools/wavpack/build.sh                              # 默认：音乐无损 PCM + 音效 ADPCM ⇒ 41.6 MB
+MIR2_AUDIO_BGM_PCM=0 tools/wavpack/build.sh          # 音乐也用 ADPCM ⇒ 19.45 MB（瘦，但音乐有损）
+MIR2_AUDIO_CODEC=pcm tools/wavpack/build.sh          # 全无损（音效也 PCM）⇒ 79.8 MB
 tools/wavpack survey -src DIR                       # 只量不改：格式/最大的文件/重复/估算
 ```
 

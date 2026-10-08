@@ -47,18 +47,23 @@ import (
 	"github.com/algotao/mir2/internal/m2pk"
 )
 
-// 原版写死的 BGM 文件名（`SoundUtil.pas:31-34`）。这四首**保持原样**（不降采样）。
+// BGM 文件（不降采样，保持立体声原样）。
+//
+// ⚠️ `main_theme.wav` 是**用户指定**收进来的（2026-10-08）：原版从不播它
+// （播它的定时器被注释掉了，`PlayScn.pas:485-486`），但用户要求"服务器选择到登录
+// 那一段的背景音是 main_theme"。收它只多 6.3 MB —— 比 `-keep-all` 把
+// `Field2.wav`（33.8 MB，确实没人播）也拉进来划算得多。
 var bgmNames = map[string]bool{
 	"log-in-long2.wav":  true,
 	"sellect-loop2.wav": true,
 	"field2.wav":        true, // 只在 survey 里用得上；pack 默认跳过它
 	"game over2.wav":    true,
+	"main_theme.wav":    true, // 用户指定：登录屏用它（见上）
 }
 
 // 原版**从不播**的长文件：默认不产出（`-keep-all` 覆盖）。
 var unusedNames = map[string]string{
 	"Field2.wav":     "bmg_field 定义了但全代码未使用（SoundUtil.pas:33）",
-	"main_theme.wav": "播它的定时器被注释掉了（PlayScn.pas:485-486）",
 	"Game-over2.wav": "与 log-in-long2.wav 逐字节相同（md5 已验）",
 }
 

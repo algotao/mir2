@@ -6,9 +6,12 @@
 //! |---|---|---|---|
 //! | 1 地图 | 0 brotli | `tools/m2pk` | `.map`（压缩收益大）|
 //! | 2 音频 | 1 原样 | `tools/wavpack` | 音效/BGM + 编号表（**不压缩**：实测音频压不动，见 D-29）|
+//! | 3 美术 | 1 原样 | `tools/artpack` | 图库（`.wzl`+`.wzx`）的 IMGP 分组载荷（见 D-31）|
 //!
-//! 规格见 `docs/assets.md §5`，决策见 `docs/decisions.md D-11 / D-22`。
-//! 单一真源 = 原始 `.map` 文件；容器是它的**逐字节无损**打包（可用 `m2pk verify` 回验）。
+//! 规格见 `docs/assets.md §5`，决策见 `docs/decisions.md D-11 / D-22 / D-31`。
+//! kind 1/2 的单一真源是源文件，容器是它的**逐字节无损**打包（可用 `m2pk verify` 回验）；
+//! kind 3 的块内容**重排过**（每图 zlib → 分组 brotli），因此校验方式也不同：
+//! 逐图比记录 + raw 像素（`artpack verify`）。
 //!
 //! ```text
 //! Header（32 B，小端）
@@ -34,8 +37,9 @@
 //! **块内容 = 源文件字节**：本模块不理解块内语义（那是 [`crate::map`] 的事），
 //! 因此容器对 `.map` 的三种布局变体一视同仁。
 
+use std::cell::RefCell;
 use std::fs;
-use std::io::{self, Cursor, Read};
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use brotli_decompressor::Decompressor;
@@ -52,6 +56,9 @@ pub const ENTRY_LEN: usize = 24;
 pub const KIND_MAP: u8 = 1;
 /// `kind` = 音频容器（音效/BGM + 编号表，见 `crate::sound`）。
 pub const KIND_AUDIO: u8 = 2;
+/// `kind` = 美术容器（图库）。块内容是 `crate::image_lib` 的 IMGP 分组载荷，
+/// **不是**源文件字节，因此 `codec` 恒为 [`CODEC_STORE`]（见该模块的规格）。
+pub const KIND_IMAGE: u8 = 3;
 /// `codec` = brotli（地图）。
 pub const CODEC_BROTLI: u8 = 0;
 /// `codec` = 原样存储（音频：压不动，别浪费 CPU）。
@@ -87,22 +94,73 @@ pub fn canonical_name(file_name: &str) -> String {
     stem.to_ascii_lowercase()
 }
 
-/// 打开的容器（整文件读入内存：地图容器 ~9 MB 量级，见 assets.md §5）。
+/// 容器的**后备存储**。
+///
+/// 地图（~9 MB）与音频整文件读进内存最省事；美术容器 **1.4 GB** 不行 ——
+/// 那里用 `File` 后备：索引区进内存，块内容按需 `seek` + `read`
+///（`kind=3` 恒为 [`CODEC_STORE`]，所以"按范围读"天然可行）。
+enum Backing {
+    Mem(Vec<u8>),
+    File(RefCell<fs::File>),
+}
+
+/// 打开的容器。
 pub struct Archive {
-    data: Vec<u8>,
+    backing: Backing,
     entries: Vec<Entry>,
     kind: u8,
     codec: u8,
+    /// 容器文件总长（越界校验用；`Mem` 时等于 `data.len()`）。
+    file_len: u64,
 }
 
 impl Archive {
-    /// 打开容器文件。
+    /// 打开容器文件（整文件读入内存）。
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         Self::from_bytes(fs::read(path)?)
     }
 
+    /// 打开容器文件，**只把索引区读进内存**，块内容按需读。
+    ///
+    /// 用于美术容器（[`KIND_IMAGE`]）：全量 1.4 GB，整文件读会直接顶爆内存。
+    pub fn open_lazy<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let mut f = fs::File::open(&path)?;
+        let file_len = f.metadata()?.len();
+        let mut head = [0u8; HEADER_LEN];
+        f.read_exact(&mut head)?;
+        if &head[0..4] != MAGIC {
+            return Err(bad("M2PK 魔数不匹配"));
+        }
+        let count = u32::from_le_bytes([head[8], head[9], head[10], head[11]]) as usize;
+        let names_off = u32::from_le_bytes([head[12], head[13], head[14], head[15]]) as usize;
+        let names_len = u32::from_le_bytes([head[16], head[17], head[18], head[19]]) as usize;
+        if count == 0 || names_off != HEADER_LEN + ENTRY_LEN * count {
+            return Err(bad(format!(
+                "M2PK 索引区不自洽：count={count} namesOff={names_off}"
+            )));
+        }
+        let prefix_len = names_off
+            .checked_add(names_len)
+            .ok_or_else(|| bad("M2PK 名字池长度溢出"))?;
+        if prefix_len as u64 > file_len {
+            return Err(bad("M2PK 索引区越界"));
+        }
+        let mut prefix = vec![0u8; prefix_len];
+        f.seek(SeekFrom::Start(0))?;
+        f.read_exact(&mut prefix)?;
+        let mut a = Self::parse_prefix(prefix, file_len)?;
+        a.backing = Backing::File(RefCell::new(f));
+        Ok(a)
+    }
+
     /// 从内存构造并校验。
     pub fn from_bytes(data: Vec<u8>) -> io::Result<Self> {
+        let file_len = data.len() as u64;
+        Self::parse_prefix(data, file_len)
+    }
+
+    /// 解析**索引区**（头部 + 条目 + 名字池）并校验；`file_len` 用于越界判断。
+    fn parse_prefix(data: Vec<u8>, file_len: u64) -> io::Result<Self> {
         if data.len() < HEADER_LEN {
             return Err(bad(format!(
                 "M2PK 太短（{} 字节，至少需 {HEADER_LEN}）",
@@ -117,7 +175,7 @@ impl Archive {
             return Err(bad(format!("M2PK 版本不支持：{version}")));
         }
         let kind = data[6];
-        if kind != KIND_MAP && kind != KIND_AUDIO {
+        if kind != KIND_MAP && kind != KIND_AUDIO && kind != KIND_IMAGE {
             return Err(bad(format!("M2PK kind 不支持：{kind}")));
         }
         let codec = data[7];
@@ -137,7 +195,10 @@ impl Archive {
         let names_end = names_off
             .checked_add(names_len)
             .ok_or_else(|| bad("M2PK 名字池长度溢出"))?;
-        if names_end > data.len() || data_off < names_end || data_off > data.len() {
+        if names_end as u64 > file_len
+            || (data_off as u64) < names_end as u64
+            || data_off as u64 > file_len
+        {
             return Err(bad("M2PK 索引区越界"));
         }
 
@@ -152,7 +213,7 @@ impl Archive {
             let offset = u64::from_le_bytes([e[8], e[9], e[10], e[11], e[12], e[13], e[14], e[15]]);
             let raw_size = u32::from_le_bytes([e[16], e[17], e[18], e[19]]);
             let comp_size = u32::from_le_bytes([e[20], e[21], e[22], e[23]]);
-            if offset + comp_size as u64 > data.len() as u64 {
+            if offset + comp_size as u64 > file_len {
                 return Err(bad(format!("M2PK 第 {i} 项数据越界")));
             }
             let name =
@@ -174,10 +235,11 @@ impl Archive {
             });
         }
         Ok(Self {
-            data,
+            backing: Backing::Mem(data),
             entries,
             kind,
             codec,
+            file_len,
         })
     }
 
@@ -212,16 +274,58 @@ impl Archive {
             .map(|i| &self.entries[i])
     }
 
+    /// 读容器文件的一段字节（`Mem` 直接切，`File` seek + read）。
+    fn slice(&self, off: u64, len: usize) -> io::Result<Vec<u8>> {
+        match &self.backing {
+            Backing::Mem(d) => {
+                let s = off as usize;
+                let e = s.checked_add(len).ok_or_else(|| bad("M2PK 偏移溢出"))?;
+                if e > d.len() {
+                    return Err(bad("M2PK 读取越界"));
+                }
+                Ok(d[s..e].to_vec())
+            }
+            Backing::File(f) => {
+                if off + len as u64 > self.file_len {
+                    return Err(bad("M2PK 读取越界"));
+                }
+                let mut f = f.borrow_mut();
+                f.seek(SeekFrom::Start(off))?;
+                let mut buf = vec![0u8; len];
+                f.read_exact(&mut buf)?;
+                Ok(buf)
+            }
+        }
+    }
+
+    /// 取某块**内部**的一段字节（`off` 相对块起点）。
+    ///
+    /// 只有 [`CODEC_STORE`] 支持：压缩块是一整条流，切一段出来没有意义。
+    /// 美术图库靠它"按范围取表、取一组"，而不是把几十 MB 的块整个读进内存。
+    pub fn read_range(&self, e: &Entry, off: u32, len: u32) -> io::Result<Vec<u8>> {
+        if self.codec != CODEC_STORE {
+            return Err(bad(format!("M2PK 块 {:?} 是压缩块，不能按范围读", e.name)));
+        }
+        if off as u64 + len as u64 > e.comp_size as u64 {
+            return Err(bad(format!(
+                "M2PK {:?} 范围 [{off}, {}) 超出块长 {}",
+                e.name,
+                off as u64 + len as u64,
+                e.comp_size
+            )));
+        }
+        self.slice(e.offset + off as u64, len as usize)
+    }
+
     /// 取出一块，并校验长度与 `raw_size` 一致。
     ///
     /// 块编码看容器头（[`CODEC_STORE`] 直接返回原字节，[`CODEC_BROTLI`] 才解压）。
     pub fn read(&self, e: &Entry) -> io::Result<Vec<u8>> {
-        let off = e.offset as usize;
-        let comp = &self.data[off..off + e.comp_size as usize];
+        let comp = self.slice(e.offset, e.comp_size as usize)?;
         let mut out = Vec::with_capacity(e.raw_size as usize);
         if self.codec == CODEC_STORE {
-            // 音频容器走这条：原样切片（`Cursor`/`Decompressor` 都不需要）
-            out.extend_from_slice(comp);
+            // 音频/美术走这条：原样（`Cursor`/`Decompressor` 都不需要）
+            out.extend_from_slice(&comp);
         } else {
             let mut dec = Decompressor::new(Cursor::new(comp), 4096);
             dec.read_to_end(&mut out)

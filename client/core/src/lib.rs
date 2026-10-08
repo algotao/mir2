@@ -12,6 +12,8 @@ pub mod auth;
 pub mod blend;
 /// 进世界的握手流程（纯状态机）：喂进收到的信封，吐出下一条要发的消息。
 pub mod entrance;
+/// 美术容器里的图库载荷（IMGP）：按组懒解压 + 缓存，像素解码与 `wzl` 共用。
+pub mod image_lib;
 pub mod login_ui;
 pub mod m2pk;
 pub mod map;

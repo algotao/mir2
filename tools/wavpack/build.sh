@@ -11,7 +11,8 @@
 #      （`game-over2.wav` vs `Game-over2.wav`）那类坑，在容器里根本不存在。
 #
 # 用法：
-#   tools/wavpack/build.sh
+#   tools/wavpack/build.sh                          # 音乐 16bit PCM 无损 + 音效 ADPCM（默认）
+#   MIR2_AUDIO_BGM_PCM=0 tools/wavpack/build.sh     # 音乐也用 ADPCM（瘦到 19.45 MB）
 #   MIR2_WAV_SRC=/path/to/wav tools/wavpack/build.sh
 #   MIR2_AUDIO_OUT=/tmp/sounds.m2pk MIR2_AUDIO_CODEC=pcm tools/wavpack/build.sh
 #
@@ -22,8 +23,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="${MIR2_AUDIO_OUT:-$ROOT/assets/audio/sounds.m2pk}"
 CODEC="${MIR2_AUDIO_CODEC:-adpcm}"
-# 音乐优先：BGM 保持 16bit PCM（无损），只对音效用 ADPCM（35.2 MB）
-BGM_PCM="${MIR2_AUDIO_BGM_PCM:-0}"
+# 音乐无损：BGM 保持 16bit PCM，只对音效用 ADPCM（41.6 MB）。
+#
+# ⚠️ 默认是 **1**（2026-10-08 用户口径：登录曲 main_theme 要无损；
+# 一并受益的还有 game over2 / log-in-long2 / sellect-loop2 四首）。
+# 想瘦回 19.45 MB：MIR2_AUDIO_BGM_PCM=0
+BGM_PCM="${MIR2_AUDIO_BGM_PCM:-1}"
 
 # 源目录：**唯一真源 = 客户端集**（同 tools/m2pk/build.sh 的做法）。
 CANON="$ROOT/../mir2c/wav"

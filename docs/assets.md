@@ -406,16 +406,20 @@ fridx := fridx + (aniCount mod (ani + ani*anitick)) div (1 + anitick)
 
 ## 5. M2PK v1（资产容器，**已实现**）
 
-> 一个格式，两种用途（靠头里的 `kind` / `codec` 区分）：
+> 一个格式，三种用途（靠头里的 `kind` / `codec` 区分）：
 >
 > | kind | codec | 谁写 | 内容 | 体积 |
 > |---|---|---|---|---|
 > | 1 地图 | 0 brotli | [`tools/m2pk`](../tools/m2pk) | 770 张 `.map` | 253.73 → **8.83 MB**（−96.5%）|
-> | 2 音频 | 1 原样 | [`tools/wavpack`](../tools/wavpack) | 音效 + BGM + 编号表 | 209.0 → **17.92 MB**（−91.4%）|
+> | 2 音频 | 1 原样 | [`tools/wavpack`](../tools/wavpack) | 音效 + BGM + 编号表 | 209.0 → **41.6 MB**（−80.1%，音乐无损；见 §6b）|
+> | 3 美术 | 1 原样 | [`tools/artpack`](../tools/artpack) | 236 个图库（`.wzl`+`.wzx`）| 1776.2 → **1346.0 MB**（−24.2%，见 §5c）|
 >
-> 美术 `.wzl` 仍然**直读**（D-11）。
-> 实现 = [`internal/m2pk`](../internal/m2pk)（Go 库）+ 两个 CLI + 各自的 `build.sh`；
+> 实现 = [`internal/m2pk`](../internal/m2pk)（Go 库）+ 三个 CLI + 各自的 `build.sh`；
 > 读侧在客户端的 [`core/src/m2pk.rs`](../client/core/src/m2pk.rs)。
+>
+> ⚠️ **kind=3 与其他两种有一处根本差别**：它的块内容**不是源文件字节**（每图 zlib 被
+> 重排成"每 32 张一组"的 brotli 流），所以校验方式也不同（逐图比记录 + raw 像素，
+> 见 §5c），`m2pk.Verify` 对 kind=3 会**明确拒绝**。
 
 **目标**：逐字节可回验、随机访问、确定性、体积最小。
 
@@ -425,7 +429,7 @@ fridx := fridx + (aniCount mod (ani + ani*anitick)) div (1 + anitick)
 Header（32 B，小端）
   0   magic      [4]  "M2PK"
   4   version    u16  1
-  6   kind       u8   1 = 地图 / 2 = 音频
+  6   kind       u8   1 = 地图 / 2 = 音频 / 3 = 美术
   7   codec      u8   0 = brotli / 1 = 原样存储
   8   count      u32  块数
   12  namesOff   u32  名字池偏移（相对文件头）
@@ -484,15 +488,104 @@ m2pk info   -in FILE [-list]
   且实测 **Go 版输出与 C 版逐字节相同**（`3.map` 均为 351,163 B）。
 - 打包慢（260 s CPU）是**离线一次性**代价；解码并不慢。
 
+### 5c 美术（kind=3）：**每 32 张一组拼接 + brotli**，1776 → 1346 MB
+
+> 由 [D-31](./decisions.md) 引入，**取代 D-11 里"美术直读"那一行**。
+
+**问题**：`.wzl` 是**每张图各自一个 zlib 流** —— deflate 的窗口只有 32 KB，**跨不了图**；
+而图库恰恰是"同一动作的连续帧高度相似"⇒ 上下文全被浪费。所以"重新压一遍"没用
+（实测 deflate-9 = **101.2%**，已经压到位了），**换摆放方式**才有用。
+
+**做法**：把每张图的 raw 像素解出来、按 **32 张一组**拼接、每组一条 brotli 流，一库一块
+（`kind=3`、`codec=1` 原样）。像素格式**一个字没改**（行 4 字节对齐、自下而上、索引 0 透明），
+所以像素解码只有一份：[`core/src/wzl.rs::to_rgba`](../client/core/src/wzl.rs)，两条载体共用。
+
+**载荷（IMGP v1，写侧 [`internal/m2pk/image.go`](../internal/m2pk/image.go)）**：
+
+```
+Header（16 B）
+  0   magic      [4]  "IMGP"
+  4   version    u8   1
+  5   reserved   [3]
+  8   count      u32  图数（与源 .wzx 一致 ⇒ 索引语义按位对齐）
+  12  groupSize  u16  每组图数
+  14  reserved2  u16
+组表（groups × 12 B）：offset / compLen / rawLen（offset 相对数据区）
+记录表（count × 16 B）：与 .wzl 记录同构（packed_size 恒 0，宽高为 0 = 空白图）
+数据区（8 对齐）：每组一条独立 brotli 流，组内是各图 raw 的顺序拼接
+```
+
+组号 = `i / groupSize`、组内偏移 = 组内前若干张 raw 长度之和 —— 都能推导，所以记录表
+不必存它们（那 6 字节省下来，记录表与 `.wzl` 记录同为 16 字节）。
+
+**实测（全量 236 库 / 2,873,878 张图，2026-10-08）**：
+
+| | 体积 |
+|---|---|
+| 现状 `.wzl` + `.wzx` | 1776.2 MB |
+| **容器** `assets/image/images.m2pk` | **1346.0 MB（75.8%，省 430 MB）** |
+| 像素数据（解压后） | 4.76 GB → 1.21 GB |
+
+| 代表库 | 类型 | 图数 | 像素 | 压缩后 | 比率 |
+|---|---|---:|---:|---:|---:|
+| `objects25` | type 5（RGB565 大图）| 19,965 | 174.31 MB | 68.24 MB | 0.39 |
+| `smtiles4` | type 5 | 32,913 | 95.59 MB | 50.69 MB | 0.53 |
+| `tiles` | type 5 | 31,775 | 103.07 MB | 42.39 MB | 0.41 |
+
+**每组多大（实测拐点）**：type 3 子集（hum/prguse/weapon）
+
+| 每组 | 8 | 16 | 32 | 64 |
+|---|---:|---:|---:|---:|
+| 相对现状 | 88.1% | 85.7% | **84.2%** | 83.1% |
+
+组越大越省，但一组是**随机访问单位**（取一张 = 解一组）⇒ 取 **32**：
+type 5 大图 `objects25` 8 张一组 69.5%、32 张 **65.3%**，再大就要为"取一张"解几 MB。
+`groupSize` 存在**每个库**的载荷头里 ⇒ 将来按库调粒度不用改格式。
+
+**试过并否掉的（都有实测）**：
+
+| 手段 | type 5 | type 3 | 结论 |
+|---|---:|---:|---|
+| PNG 逐行滤波 + deflate | 114~127% | 124% | ✗ 索引值不是空间平滑量 |
+| 本地调色板 + k 位打包 | 106~111% | 142% | ✗ 破坏字节对齐，deflate 反而更差 |
+| 裁透明包围盒 | — | 100.6% | ✗ 透明区对 deflate 本来就是"免费"的 |
+| 高位/低位拆平面 | 95.6% | — | 只一点点，不值 |
+| 帧间 XOR | — | 99.7% | ✗ 帧间没那么像 |
+| **WebP Lossless** `cwebp -z 9 -exact` | 77.7% | **116.9%** | ✗ 小精灵反而膨胀 |
+| **JPEG XL** `cjxl -d 0 -e 7` | 79.3% | **119%** | ✗ 同上，还要引更重的解码器 |
+| **分组拼接 + brotli** | **76.5%** | **83.8%** | ✓ 采用 |
+
+WebP/JXL 在 type 3 上变差的原因量得很清楚：喂进去要**展开成 RGBA**（4 字节/像素），
+且**每个文件有 26~38 字节固定开销**，而我们的精灵中位只有几百字节、63% 是透明像素。
+喂"索引调色板 PNG"与喂 RGBA **结果完全一样**（libjxl 内部归一化）。两者都**逐像素校验过
+确实无损** —— 它们只是不适配这种小图，不是实现问题。
+
+**用法**：
+
+```bash
+tools/artpack/build.sh                        # 打包 + 逐图回验（约 15 分钟，14 核）
+artpack pack   -src DIR -out FILE [-group N] [-workers N] [-lib a,b] [-quiet]
+artpack verify -in FILE -src DIR              # 不一致 ⇒ 非零退出码（D-06）
+artpack info   -in FILE [-list]
+```
+
+**客户端**：`assets/image/images.m2pk` 走 [`core/src/image_lib.rs`](../client/core/src/image_lib.rs)
+（只读索引 + 按组懒解压 + 24 组 FIFO 缓存）；容器不在就回退裸目录的 `.wzl`/`.wzx`
+（[`paths::image_container`](../client/core/src/paths.rs)），两条路**像素逐字节相同**。
+
+**已知取舍**：容器是构建产物 ⇒ 客户端**必须**两路都能跑（这条已经用对拍测试钉住：
+`真素材_容器与直读逐字节一致`，实测 54,306 张逐字节一致）；渲染级的回归仍靠裸目录那条
+（e2e 用的是 `Wzl::open`），要不要让 e2e 也吃容器，等有需要再说。
+
 ---
 
 ## 6. 资产树布局
 
 ```
 assets/                    # 由 tools/ 生成，**不入库**（.gitignore 已含 /assets/）
-├── image/                 # ★ 不放 m2pk —— 直接放原始 .wzl/.wzx（D-11 美术直读）
+├── image/images.m2pk      # ★ 单文件容器，1346 MB（tools/artpack/build.sh 产出，D-31）
 ├── map/maps.m2pk          # ★ 单文件容器，8.83 MB（tools/m2pk/build.sh 产出）
-├── audio/sounds.m2pk      # ★ 音效 + BGM + 编号表，17.92 MB（tools/wavpack/build.sh 产出）
+├── audio/sounds.m2pk      # ★ 音效 + BGM + 编号表，41.6 MB（音乐无损；tools/wavpack/build.sh 产出）
 └── font/                  # 点阵字库（bitmap）
 ```
 
@@ -500,9 +593,9 @@ assets/                    # 由 tools/ 生成，**不入库**（.gitignore 已�
   （同输入 ⇒ 同字节，有单测守着）⇒ 一条 `build.sh` 重建即可。
 - 命名规则遵循 [D-03](./decisions.md)：**全小写、无中文、`/` 分隔**。
 
-### 6b 音频产物：**一个容器文件**，里面是 4bit ADPCM
+### 6b 音频产物：**一个容器文件**，BGM 无损 PCM + 音效 4bit ADPCM
 
-来源 209.0 MB（777 个未压缩 PCM wav）→ 产物 **17.92 MB（−91.4%）**，
+来源 209.0 MB（777 个未压缩 PCM wav）→ 产物 **41.6 MB（−80.1%）**，
 由 `tools/wavpack/build.sh` 产出**一个** `assets/audio/sounds.m2pk`
 （M2PK，`kind=2 音频` / `codec=1 原样存储`）。三点理由与做法：
 
@@ -512,18 +605,31 @@ assets/                    # 由 tools/ 生成，**不入库**（.gitignore 已�
    **根本不存在**。
 2. **不压缩**（`codec=1`）。实测：PCM 用 zlib 只能到 87~96%、xz 82~93%；
    4bit ADPCM 更压不动 ⇒ 压缩纯属浪费 CPU（见 D-29）。
-3. **编码用 4bit IMA ADPCM**（`fmt=0x11`，波形域、无预回声、**样本精确**）：
+3. **编码：BGM 16bit PCM 无损，音效 4bit IMA ADPCM**（`fmt=0x11`，波形域、无预回声、
+   **样本精确**）：
    - 音效 → 22.05 kHz 单声道（原版没有 pan/距离衰减 ⇒ 单声道不丢游戏信息）；
-   - BGM 三首**不动**采样率与声道（音乐降采样听得出来）；
-   - **原版从不播的长文件不产出**（省 40.1 MB）：`Field2.wav`（`bmg_field` 定义了
-     但全代码未用）、`main_theme.wav`（播它的定时器被注释掉）。⚠️ 但**清单引用了的
-     绝不跳**：`Game-over2.wav` 原版代码不播、清单第 49 号却指向它 ⇒ 照常进容器。
+   - BGM **四首不动采样率与声道、且不编码**（音乐降采样/下混听得出来）：
+     `main_theme` / `log-in-long2` / `sellect-loop2` / `game over2`（`bgmNames`）。
+     由 `-bgm-pcm` 控制，**默认开**（见下）。
+   - **原版从不播的长文件不产出**（省 33.8 MB）：`Field2.wav`（`bmg_field` 定义了
+     但全代码未用）。⚠️ 但**清单引用了的绝不跳**：`Game-over2.wav`（**连字符**那个，
+     与 `game over2.wav` 是两个文件）原版从没播过 —— 它只被清单第 49 号引用，
+     而 `SoundUtil.pas` 里**没有任何常量等于 49** ⇒ 谁都不会播它 ⇒ 它按**音效**处理
+     （0.38 MB，而不是无损的 6.04 MB，省 5.7 MB）。
 
-**质量是有代价的，所以有数字**：解码回来与原 PCM 的 SNR —— 最小 6.8 dB /
-**中位 17.5 dB** / 均值 18.0 dB。最差的是**噪声型**素材（`470-1.wav` 零交叉
-18012 次/秒，Nyquist 才 22050），4bit 差分编码对它天生不友好。换回无损只需
-`MIR2_AUDIO_CODEC=pcm tools/wavpack/build.sh`（→ 73.5 MB），
-或 `-bgm-pcm`（音乐无损、音效 ADPCM → 35.2 MB）。
+**质量是有代价的，所以有数字**：**音效**解码回来与原 PCM 的 SNR —— 最小 6.8 dB /
+**中位 17.5 dB** / 均值 17.9 dB（BGM 现在是 PCM，无损，不参与这项统计）。
+最差的是**噪声型**素材（`470-1.wav` 零交叉 18012 次/秒，Nyquist 才 22050），
+4bit 差分编码对它天生不友好。三档口径（默认第一档）：
+
+| 口径 | 产物 | 命令 |
+|---|---|---|
+| **音乐无损 + 音效 ADPCM**（默认） | **41.6 MB** | `tools/wavpack/build.sh` |
+| 音乐也 ADPCM（瘦，音乐有损） | 19.45 MB | `MIR2_AUDIO_BGM_PCM=0 tools/wavpack/build.sh` |
+| 全无损（音效也 PCM） | 79.8 MB | `MIR2_AUDIO_CODEC=pcm tools/wavpack/build.sh` |
+
+> ⚠️ 默认值是 **2026-10-08 用户口径**（登录曲 `main_theme` 要无损）改过来的，
+> 之前默认是"全部 ADPCM"（17.92 MB，不含 `main_theme`）。
 
 **验证**（每次 build 都跑，两条）：
 

@@ -74,6 +74,50 @@ message ChangePasswordResult {
   ActionResult result = 1;
 }
 
+// 客户端 → 服务端：**创建账号**（D-32）。
+//
+// 用法（**必须**先走一次 D-24① 的取盐）：
+//
+//    ① LoginSaltRequest{account} → LoginSalt{salt, iterations, key_len}
+//    ② K = PBKDF2-SHA256(口令, salt, iterations, key_len)
+//    ③ CreateAccount{account, verifier: hex(K)}
+//
+// ⚠️ **这里必须把 `K` 本身送过去** —— 建号时服务端手里什么都没有，它得拿到一个
+// "以后能用来验登录"的值才能落库（登录侧是拿存着的 K 重算 HMAC 证明来比对）。
+// 因此**建号那一次**的 verifier 就是口令的等价物：D-24 说的"等价物不落网络"只对
+// **登录**成立；建号这条链的机密性是连接级的（明文仍不落网络）。
+//
+// ⚠️ 盐由**服务端**在上一步给出并留存（`protoSession.pendingSalt`），客户端不许自带 ——
+// 否则盐就成了客户端可控的东西，而盐的意义正是"服务端随机"。
+message CreateAccount {
+  string account = 1;
+  // hex( K )，K = PBKDF2-SHA256(口令, salt, iterations, key_len)
+  string verifier = 2;
+}
+
+// 服务端 → 客户端：建号结果。
+//
+// `result.code`：
+//
+//    0 = 成功
+//    1 = 账号已存在（原版 `SM_NEWID_FAIL` 的 nErrCode=0）
+//    2 = 账号名不合规（3..14 位，仅 [a-z0-9_]）
+//    3 = 本服未开放注册（`-allow-new-account` 关着）
+//    4 = 操作过快（同一 IP 5 秒一次，原版是每连接 5 秒）
+//    5 = 服务器暂时建不了（存储错误）
+//    6 = 没先取盐（缺 KDF 盐 ⇒ 无法落库）
+//
+// ⚠️ **没有"口令不合规"这一码**：服务端只收到 `verifier`，从来见不到口令 ⇒
+// 口令长度/强度只能由客户端把关（原版服务端同样不查口令 ——
+// `LMain.pas:1019-1079` 的 `AccountCreate` 只查账号名与重名）。这是挑战应答
+// 必然的代价，写在这里免得以后有人来找"服务端怎么不校验口令"。
+//
+// ⚠️ 成功了也**不自动登录**（原版 `SM_NEWID_SUCCESS` 只是弹个提示，
+// 见 `ClMain.pas:3684-3691`）—— 客户端要把人送回登录框自己登。
+message CreateAccountResult {
+  ActionResult result = 1;
+}
+
 // ---------- 0x03xx 角色 ----------
 
 // 角色摘要（选角列表用；不含完整存档）。

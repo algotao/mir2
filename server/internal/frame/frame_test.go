@@ -37,25 +37,28 @@ func helloEnvelope() *protocol.Envelope {
 //	Envelope.seq = 1                      →  08 01
 //	Envelope.body 字段号 0x0101（=257）    →  8A 10            （LEN 类型：257<<3|2 = 2058）
 //	ClientHello 长度 15                   →  0F
-//	  protocol_version = 4                →  08 04
+//	  protocol_version = 1                →  08 01
 //	  client_build = "test"               →  12 04 74 65 73 74
 //	  locale = "zh-CN"                    →  1A 05 7A 68 2D 43 4E
 //	帧头 = u32 小端长度 20                  →  14 00 00 00
 //
-// ⚠️ 版本号的字节是唯一随 `protocol/version.txt` 变的字段（其余都是定长字符串）。
-// 这正是它作为"改协议的门"的用法：
+// ⚠️ 版本号**开发期冻结在 1**（2026-10-08 用户口径：「先固定1，免得测试不匹配」）：
+// 两端都还没对外发布过，版本协商此时的作用只是"确认两端同源"；首次发版后再开始 bump。
+// 下面这些 schema 改动都发生在冻结之前，因此**都不再体现在版本号里**（留作记录）：
 //
-//	version 1 → 2  修 `Direction` 枚举顺序
-//	version 2 → 3  给 `EntityFeature` 加 `appr`（怪物外观号，见 common.proto 的说明）
-//	version 3 → 4  加 `LoginSaltRequest` / `LoginSalt`（D-24① 挑战应答的第一步）
+//	(曾) version 1 → 2  修 `Direction` 枚举顺序
+//	(曾) version 2 → 3  给 `EntityFeature` 加 `appr`（怪物外观号，见 common.proto）
+//	(曾) version 3 → 4  加 `LoginSaltRequest` / `LoginSalt`（D-24① 挑战应答）
+//	(曾) version 4 → 5  加 `CreateAccount` / `CreateAccountResult`（D-32 建号）
 //
-// 每次都必须**看着**这一行确认改的只有它，而不是盲抄一遍新哈希。
+// ⇒ 现在随 `protocol/version.txt` 变的**只有**这一行（`08 01`）；schema 改动的门禁交给
+// 下面那串 sha256 与 §9 的其它防线 —— 改协议仍然必须"看着"改，只是不再靠版本号喊。
 func TestGoldenFrameBytes(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Write(&buf, helloEnvelope()); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	const wantHex = "1400000008018a100f08041204746573741a057a682d434e"
+	const wantHex = "1400000008018a100f08011204746573741a057a682d434e"
 	got := hex.EncodeToString(buf.Bytes())
 	if got != wantHex {
 		t.Fatalf("黄金报文不符（协议一改这里必须同步确认）\n  want %s\n  got  %s", wantHex, got)
@@ -64,7 +67,7 @@ func TestGoldenFrameBytes(t *testing.T) {
 	// ⚠️ 这里用了 protocol.Version（= version.txt）⇒ **一次 schema/版本变更就应该让
 	// 这条测试红**，这正是它存在的意义：改协议不能"顺手改过去"。
 	sum := sha256.Sum256(buf.Bytes())
-	const wantSum = "db637e5560e858a6dc2fcb964601a3726935299f5588aac01241c28ced33f417"
+	const wantSum = "3586942026cb29f7f0f3db3c83f766b63f35da8afff403806020f1b15932ad27"
 	if hex.EncodeToString(sum[:]) != wantSum {
 		t.Logf("帧字节 = %s", got)
 		t.Logf("sha256  = %s", hex.EncodeToString(sum[:]))

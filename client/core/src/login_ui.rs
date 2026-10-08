@@ -44,6 +44,14 @@ impl Art {
     pub const BTN_NEW: (&'static str, u32) = ("Prguse", 61);
     /// [修改密码]。
     pub const BTN_CHGPW: (&'static str, u32) = ("Prguse", 53);
+    /// 建号面板的 [确定]（原版 `DNewAccountOk`，`FState.pas:868`：`g_WMainImages` 51）。
+    pub const BTN_SIGNUP_OK: (&'static str, u32) = ("Prguse", 51);
+    /// 建号面板的 [取消]（原版 `DNewAccountCancel`，`FState.pas:872`：52）。
+    ///
+    /// ⚠️ 原版建号面板还有一颗 [X]（图号 83），但**本套素材里它是空壳**（0×0）——
+    /// 与 `ChrSel[23]` 同一现象。所以这里只有 [确定]/[取消]，关掉建号面板用
+    /// 登录框自己那颗 [X]（`BTN_CLOSE`）。
+    pub const BTN_SIGNUP_CANCEL: (&'static str, u32) = ("Prguse", 52);
     /// [X]。
     pub const BTN_CLOSE: (&'static str, u32) = ("Prguse", 64);
     /// 通用消息框背景。
@@ -63,6 +71,12 @@ const BTN_CHGPW_AT: (f32, f32) = (130.0, 207.0);
 const FIELD_X: f32 = 98.0;
 const FIELD_TOP_A: f32 = 85.0;
 const FIELD_TOP_P: f32 = 117.0;
+/// 建号面板的"确认口令"框。
+///
+/// ⚠️ 这一格**没有原版出处**：原版建号面板（`DNewAccount`）是另一张面板图 + 12 个
+/// 字段（`IntroScn.pas:929-1067`），我们只留 3 个字段，所以直接沿用登录框的行距
+/// （85/117/149 = 每行 32px），落在底下那排按钮（y=207）之上、不与它们相撞。
+const FIELD_TOP_C: f32 = 149.0;
 const FIELD_W: f32 = 112.0;
 const FIELD_H: f32 = 16.0;
 
@@ -92,6 +106,12 @@ pub struct Layout {
     pub close: Rect,
     pub account: Rect,
     pub password: Rect,
+    /// 建号面板的"确认口令"框（只在建号模式画；见 `FIELD_TOP_C` 的说明）。
+    pub confirm: Rect,
+    /// 建号面板的 [确定]（原版 `DNewAccountOk`）。
+    pub signup_ok: Rect,
+    /// 建号面板的 [取消]。
+    pub signup_cancel: Rect,
     pub msgbox: Rect,
     pub msg_ok: Rect,
 }
@@ -124,6 +144,10 @@ impl Layout {
         // ⚠️ 名字必须与上面那组区分开：同叫 `okw/okh` 的话后者会**遮蔽**前者，
         // 于是"提交"按钮会拿到消息框 [Ok] 的尺寸（80×34 而不是 76×33）——
         // 第一次这么写就被编译器的 unused 警告抓住了。
+        // 建号面板那两颗（原版 `DNewAccountOk/Cancel`）—— 缺了就整体 None，
+        // 与其它素材同一条纪律：宁可写"素材缺失"，也不画一个歪掉的登录框。
+        let (sow, soh) = measure(Art::BTN_SIGNUP_OK.0, Art::BTN_SIGNUP_OK.1)?;
+        let (scw, sch) = measure(Art::BTN_SIGNUP_CANCEL.0, Art::BTN_SIGNUP_CANCEL.1)?;
         let (mokw, mokh) = measure(Art::MSGBOX_OK.0, Art::MSGBOX_OK.1)?;
         let msgbox = Rect {
             x: (cw - mw as f32) / 2.0,
@@ -169,6 +193,26 @@ impl Layout {
                 w: FIELD_W,
                 h: FIELD_H,
             },
+            confirm: Rect {
+                x: dialog.x + FIELD_X,
+                y: dialog.y + FIELD_TOP_C,
+                w: FIELD_W,
+                h: FIELD_H,
+            },
+            // [确定]/[取消] 摆在原版 [新用户]/[修改密码] 那两个槽位上（同一排，
+            // 25/130 + 207）—— 建号模式下那两颗不画，位置正好空出来。
+            signup_ok: Rect {
+                x: dialog.x + BTN_NEW_AT.0,
+                y: dialog.y + BTN_NEW_AT.1,
+                w: sow as f32,
+                h: soh as f32,
+            },
+            signup_cancel: Rect {
+                x: dialog.x + BTN_CHGPW_AT.0,
+                y: dialog.y + BTN_CHGPW_AT.1,
+                w: scw as f32,
+                h: sch as f32,
+            },
             // ⚠️ 消息框的 [Ok] 位置**不是查证过的数字**：`FState.pas:750-760` 只列了素材，
             // 没给偏移。这里按"框底居中、留 8px"推 —— 与登录框那几颗按钮的可靠性不同。
             msg_ok: Rect {
@@ -188,6 +232,24 @@ impl Layout {
             (win.1 as f32 - size.1 as f32) / 2.0,
         )
     }
+
+    /// 开门动画相对 800×600 画布的偏移（原版 `IntroScn.pas:845-846`）：
+    ///
+    /// ```text
+    /// MSurface.Draw ((SCREENWIDTH - 800) div 2 + 252, (SCREENHEIGHT - 600) div 2 + 106, ...)
+    /// ```
+    ///
+    /// ⚠️ 门**不是**整屏背景：帧是 **496×361** 的局部覆盖（实测 `ChrSel[24..32]`），
+    /// 按"居中贴"画会把它糊到屏幕正中间去（踩过）。
+    pub const DOOR_AT: (f32, f32) = (252.0, 106.0);
+
+    /// 原版 800×600 画布上的坐标 → 实际窗口坐标（画布居中后加偏移）。
+    pub fn legacy_at(win: (u32, u32), off: (f32, f32)) -> (f32, f32) {
+        (
+            (win.0 as f32 - 800.0) / 2.0 + off.0,
+            (win.1 as f32 - 600.0) / 2.0 + off.1,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -201,6 +263,8 @@ mod tests {
             ("Prguse", 60) => Some((296, 254)),
             ("Prguse", 62) => Some((76, 33)),
             ("Prguse", 61) => Some((100, 32)),
+            ("Prguse", 51) => Some((96, 34)), // 建号面板 [确定]（D-32）
+            ("Prguse", 52) => Some((96, 33)), // 建号面板 [取消]
             ("Prguse", 64) => Some((16, 23)),
             ("Prguse", 53) => Some((128, 33)),
             ("Prguse", 360) => Some((452, 179)),
@@ -228,6 +292,9 @@ mod tests {
                 ("[X]", l.close),
                 ("用户名框", l.account),
                 ("密码框", l.password),
+                ("确认口令框", l.confirm),
+                ("建号[确定]", l.signup_ok),
+                ("建号[取消]", l.signup_cancel),
             ] {
                 assert!(inside(&r), "{win:?} 里 {name} 跑到对话框外面了: {r:?}");
             }
@@ -238,6 +305,25 @@ mod tests {
             assert_eq!((l.account.x, l.account.w), (l.password.x, l.password.w));
             assert!(l.password.y > l.account.y);
         }
+    }
+
+    /// 开门动画的位置照原版（`IntroScn.pas:845-846`）—— 门是**局部覆盖**，不是居中贴。
+    ///
+    /// 踩过的坑：按 `bg_at` 居中画，496×361 的门会跑到屏幕正中间，看着像"没有开门动画"。
+    #[test]
+    fn 开门位置照原版偏移() {
+        // 800×600 窗口 ⇒ 画布原点 (0,0)
+        assert_eq!(
+            Layout::legacy_at((800, 600), Layout::DOOR_AT),
+            (252.0, 106.0)
+        );
+        // 1024×768 ⇒ 画布原点 (112, 84)，再加原版偏移
+        assert_eq!(
+            Layout::legacy_at((1024, 768), Layout::DOOR_AT),
+            (112.0 + 252.0, 84.0 + 106.0)
+        );
+        // ⚠️ "门帧会不会画出 800×600 画布"不在这里断言：那要靠**实测帧尺寸**，
+        // 归 `真素材_登录素材齐全`（写死数字会被 clippy 判成"恒真断言"）。
     }
 
     /// 素材缺一个就整体 `None`（宁可写"素材缺失"，也不画歪框）。
@@ -289,6 +375,12 @@ mod tests {
             (Art::BTN_OK.0, Art::BTN_OK.1, "[提交]"),
             (Art::BTN_NEW.0, Art::BTN_NEW.1, "[新用户]"),
             (Art::BTN_CHGPW.0, Art::BTN_CHGPW.1, "[修改密码]"),
+            (Art::BTN_SIGNUP_OK.0, Art::BTN_SIGNUP_OK.1, "建号 [确定]"),
+            (
+                Art::BTN_SIGNUP_CANCEL.0,
+                Art::BTN_SIGNUP_CANCEL.1,
+                "建号 [取消]",
+            ),
             (Art::BTN_CLOSE.0, Art::BTN_CLOSE.1, "[X]"),
             (Art::MSGBOX.0, Art::MSGBOX.1, "消息框"),
             (Art::MSGBOX_OK.0, Art::MSGBOX_OK.1, "消息框 [Ok]"),
@@ -298,6 +390,18 @@ mod tests {
                 .unwrap_or_else(|| panic!("{what} = {name}[{idx}] 取不出图"));
             assert!(!s.is_empty(), "{what} = {name}[{idx}] 是空图");
         }
+
+        // 开门帧要落在 800×600 画布内：原版偏移是**硬编码**的（`IntroScn.pas:845-846`
+        // 的 +252/+106），帧一旦变大就会画到屏幕外 —— 用实测尺寸兜住这条。
+        let door = dec(&mut libs, &dir, Art::DOOR.0, Art::DOOR.1 + 1).expect("开门第二帧");
+        assert!(
+            Layout::DOOR_AT.0 + door.width as f32 <= 800.0
+                && Layout::DOOR_AT.1 + door.height as f32 <= 600.0,
+            "开门帧 {}×{} + 偏移 {:?} 会画出 800×600 画布",
+            door.width,
+            door.height,
+            Layout::DOOR_AT
+        );
 
         // 开门动画：首帧 `ChrSel[23]` 在本套素材里是**空壳**（跳过它是对的），
         // 后面那几帧要拿得到 —— 哪天 23 补上了这条会红，提醒把首帧也算进来。

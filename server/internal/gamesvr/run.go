@@ -69,6 +69,8 @@ func Main() {
 			"GM 名单（AdminList.txt）：不在名单里的人不能用 @ 命令")
 		gmOpen = flag.Bool("gm-open", false,
 			"【仅测试】忽略 GM 名单，人人可用 @ 命令（回归用例全靠 @ 驱动）")
+		allowNewAccount = flag.Bool("allow-new-account", false,
+			"开放注册（原版 boEnableMakingID；默认**关**——开着等于把注册入口挂公网）")
 		mapPreload = flag.Bool("map-preload", true,
 			"兼容旧参数；完整初始化始终在启动时预加载所有地图")
 		buildGuildGold = flag.Int64("build-guild-gold", 1_000_000,
@@ -260,6 +262,10 @@ func Main() {
 		srv.cfg.adminList = &data.AdminList{}
 	}
 	srv.cfg.gmOpen = *gmOpen
+	srv.cfg.allowNewAccount = *allowNewAccount
+	if srv.cfg.allowNewAccount {
+		log.Printf("⚠️ -allow-new-account 已开启：**任何人都能建号**（每 IP 5 秒一个）")
+	}
 	if srv.cfg.gmOpen {
 		log.Printf("⚠️ -gm-open 已开启：**所有**玩家都能用 @ 命令（仅测试用）")
 	} else {

@@ -975,6 +975,156 @@ func TestProtoRustCombat(t *testing.T) {
 // 并验三件事：拿到的 token 真的能用（Reconnect 回去）、错口令被拒、
 // 错够次数会锁（策略与 accountsvc 共用 `authn` 那一份）。
 //
+// 建号（D-32）的线上契约：开关、先取盐、重名、节流、非法名，五条都要对，
+// 而且**建完立刻能用它登录**（这条一通，说明盐/K/落库整条链是对齐的）。
+//
+// ⚠️ 节流是**按 IP** 的，而契约测试全走 127.0.0.1 ⇒ 用例之间必须显式清掉节流表，
+// 否则第二条会被第一条的 5 秒窗口挡住（"测试互相干扰"是最难查的那类）。
+func TestProtoCreateAccount(t *testing.T) {
+	srv, store, addr := protoContractServer(t)
+
+	// 直连发一条建号；`takeSalt=false` 模拟"没先取盐"。
+	create := func(t *testing.T, account, password string, takeSalt bool) *protocol.CreateAccountResult {
+		t.Helper()
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("连接: %v", err)
+		}
+		defer c.Close()
+		rd := bufio.NewReader(c)
+		write := func(env *protocol.Envelope) {
+			if err := frame.Write(c, env); err != nil {
+				t.Fatalf("发帧: %v", err)
+			}
+		}
+		read := func() *protocol.Envelope {
+			env, err := frame.Read(rd)
+			if err != nil {
+				t.Fatalf("读帧: %v", err)
+			}
+			return env
+		}
+		write(&protocol.Envelope{Body: &protocol.Envelope_ClientHello{ClientHello: &protocol.ClientHello{
+			ProtocolVersion: protocol.Version, ClientBuild: "test", Locale: "zh-CN",
+		}}})
+		read() // ServerHello
+
+		verifier := hex.EncodeToString(make([]byte, sha256.Size))
+		if takeSalt {
+			write(&protocol.Envelope{Body: &protocol.Envelope_LoginSaltRequest{
+				LoginSaltRequest: &protocol.LoginSaltRequest{Account: account}}})
+			s := read().GetLoginSalt()
+			if len(s.GetSalt()) == 0 || s.GetIterations() == 0 || s.GetKeyLen() == 0 {
+				t.Fatalf("LoginSalt 不完整: %v", s)
+			}
+			k, err := pbkdf2.Key(sha256.New, password, s.GetSalt(),
+				int(s.GetIterations()), int(s.GetKeyLen()))
+			if err != nil {
+				t.Fatalf("PBKDF2: %v", err)
+			}
+			verifier = hex.EncodeToString(k)
+		}
+		write(&protocol.Envelope{Body: &protocol.Envelope_CreateAccount{CreateAccount: &protocol.CreateAccount{
+			Account: account, Verifier: verifier}}})
+		return read().GetCreateAccountResult()
+	}
+	clearThrottle := func() {
+		srv.createMu.Lock()
+		srv.createLast = nil
+		srv.createMu.Unlock()
+	}
+	code := func(r *protocol.CreateAccountResult) uint32 { return r.GetResult().GetCode() }
+
+	// ① 开关默认关 ⇒ 拒（而且这一判**先于**取盐，所以不取盐也回同一码）
+	if got := create(t, "newbie", "pw123", false); code(got) != createAccountDisabled {
+		t.Fatalf("开关关着该拒，实得 code=%d %s", code(got), got.GetResult().GetMessage())
+	}
+
+	srv.cfg.allowNewAccount = true
+
+	// ② 没先取盐 ⇒ 拒（否则会存下一个"永远登不上"的号）
+	clearThrottle()
+	if got := create(t, "newbie", "pw123", false); code(got) != createAccountNoSalt {
+		t.Fatalf("没取盐该拒，实得 code=%d %s", code(got), got.GetResult().GetMessage())
+	}
+
+	// ③ 正常建号：账号名**统一转小写**（原版客户端也 LowerCase，见 IntroScn.pas:1035）
+	clearThrottle()
+	if got := create(t, "NewBie", "pw123", true); code(got) != createAccountOK {
+		t.Fatalf("建号该成功，实得 code=%d %s", code(got), got.GetResult().GetMessage())
+	}
+	ctx := context.Background()
+	if _, err := store.Accounts().GetByName(ctx, "newbie"); err != nil {
+		t.Fatalf("建完该以**小写**入库: %v", err)
+	}
+
+	// ④ 重名 ⇒ 拒（原版 AccountDB.Index >= 0 走的就是这条）
+	clearThrottle()
+	if got := create(t, "newbie", "other", true); code(got) != createAccountExists {
+		t.Fatalf("重名该拒，实得 code=%d %s", code(got), got.GetResult().GetMessage())
+	}
+
+	// ⑤ 节流：不清表连发两条，第二条必须被挡（每 IP 5 秒）
+	//
+	// ⚠️ 节流记的是**尝试**（失败也占额度）—— 那正是防刷的意义。所以这里要先清表，
+	// 否则上一用例（重名那次尝试）已经把额度占了。
+	clearThrottle()
+	if got := create(t, "another1", "pw123", true); code(got) != createAccountOK {
+		t.Fatalf("节流窗口内第一条该放行，实得 code=%d", code(got))
+	}
+	if got := create(t, "another2", "pw123", true); code(got) != createAccountTooFast {
+		t.Fatalf("5 秒内第二条该被挡，实得 code=%d %s", code(got), got.GetResult().GetMessage())
+	}
+
+	// ⑥ 非法账号名
+	for _, bad := range []string{"ab", "0123456789abcde", "有中文", "a b", "a-b"} {
+		clearThrottle()
+		if got := create(t, bad, "pw123", true); code(got) != createAccountBadName {
+			t.Fatalf("非法名 %q 该拒，实得 code=%d", bad, code(got))
+		}
+	}
+
+	// ⑦ 建完的号**立刻能登录**（盐、K、库三者对齐的终点断言）
+	clearThrottle()
+	{
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("连接: %v", err)
+		}
+		defer c.Close()
+		rd := bufio.NewReader(c)
+		write := func(env *protocol.Envelope) {
+			if err := frame.Write(c, env); err != nil {
+				t.Fatalf("发帧: %v", err)
+			}
+		}
+		read := func() *protocol.Envelope {
+			env, err := frame.Read(rd)
+			if err != nil {
+				t.Fatalf("读帧: %v", err)
+			}
+			return env
+		}
+		write(&protocol.Envelope{Body: &protocol.Envelope_ClientHello{ClientHello: &protocol.ClientHello{
+			ProtocolVersion: protocol.Version, ClientBuild: "test"}}})
+		nonce := read().GetServerHello().GetSessionKey()
+		write(&protocol.Envelope{Body: &protocol.Envelope_LoginSaltRequest{
+			LoginSaltRequest: &protocol.LoginSaltRequest{Account: "newbie"}}})
+		s := read().GetLoginSalt()
+		k, err := pbkdf2.Key(sha256.New, "pw123", s.GetSalt(), int(s.GetIterations()), int(s.GetKeyLen()))
+		if err != nil {
+			t.Fatalf("PBKDF2: %v", err)
+		}
+		write(&protocol.Envelope{Body: &protocol.Envelope_Login{Login: &protocol.Login{
+			Account:      "newbie",
+			PasswordHash: hex.EncodeToString(authn.ExpectedProof(k, nonce, "newbie")),
+		}}})
+		if got := read().GetLoginResult(); got.GetCode() != protocol.LoginCode_LOGIN_OK {
+			t.Fatalf("新建的号该能登录，实得 %v %s", got.GetCode(), got.GetMessage())
+		}
+	}
+}
+
 // ⚠️ 这里手搓每一步，**故意不复用** `core::entrance`：服务端测试要对的是线上字节，
 // 客户端状态机错的时候这条不该跟着错。
 func TestProtoLoginChallenge(t *testing.T) {
@@ -1165,6 +1315,34 @@ func TestCharacterSummaryGender(t *testing.T) {
 	// 没有存档详情也不能崩（损坏/半初始化的数据）
 	if sum := characterSummary(&storage.Character{ID: 2, Name: "空档"}); sum.Gender != protocol.Gender_GENDER_UNSPECIFIED {
 		t.Errorf("无 Data 时 Gender=%v，期望未指定", sum.Gender)
+	}
+}
+
+// TestProtoRustSignup 是**建号**的跨实现验收（D-32）：Rust 客户端建号 + 就地用同一个
+// 口令登录，服务端只看线上字节 —— 与 `TestProtoRustLogin` 同一套路。
+//
+// ⚠️ 这里必须把服务端开成 `-allow-new-account`：**默认关**是产品默认（公网上开着等于
+// 把注册入口挂出去），测试里显式打开它；"关着就拒"那条在 `TestProtoCreateAccount` 里。
+func TestProtoRustSignup(t *testing.T) {
+	bin, why := findE2EBin()
+	if bin == "" {
+		t.Skipf("跳过：%s", why)
+	}
+	srv, _, addr := protoContractServer(t)
+	srv.cfg.allowNewAccount = true
+
+	out, err := exec.Command(bin, "signup",
+		"-addr", addr,
+		"-account", "rustsignup",
+		"-password", "pw123",
+		"-expect-msg", "账号已建立，请登录",
+		"-timeout-ms", "8000",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("Rust 建号链路失败: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "跨语言链路 OK") {
+		t.Fatalf("没看到成功标志：\n%s", out)
 	}
 }
 

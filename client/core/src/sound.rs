@@ -339,7 +339,16 @@ pub fn monster(appr: u16, kind: MonsterSound) -> u16 {
 // ---------- BGM ----------
 
 /// 登录界面的 BGM（`SoundUtil.pas:31`，`IntroScn.pas:518` 播、循环）。
-pub const BGM_LOGIN: &str = "log-in-long2.wav";
+/// 登录界面的循环 BGM（**用户指定**，2026-10-08）。
+///
+/// 口径：「吹箫 / 服务器选择到登录，背景音 `main_theme`」。
+///
+/// ⚠️ 与原版的差别记在这里，免得以后有人翻代码时以为抄错了：原版登录场景播的是
+/// `PlayBGM(bmg_intro)` = `log-in-long2.wav`（`IntroScn.pas:518` + `SoundUtil.pas:31`），
+/// 而 `main_theme.wav` 原版**从不播**（播它的定时器被注释掉了，`PlayScn.pas:485-486`）。
+/// 用户要这首 ⇒ 它在打包器的 BGM 白名单里（`tools/wavpack/main.go` 的 `bgmNames`），
+/// 容器里有一份 PCM 原样（改回原版只需把这里换成 `log-in-long2.wav`）。
+pub const BGM_LOGIN: &str = "main_theme.wav";
 /// 选角界面的 BGM（`SoundUtil.pas:32`，`IntroScn.pas:1152`）。
 pub const BGM_SELECT: &str = "sellect-loop2.wav";
 /// 自己死亡时的 BGM（`SoundUtil.pas:34`，`Actor.pas:2374`）。
@@ -773,7 +782,8 @@ mod tests {
     /// BGM 与进图音乐的文件名（`SoundUtil.pas:31-34`、`:219`）。
     #[test]
     fn 音乐文件名() {
-        assert_eq!(BGM_LOGIN, "log-in-long2.wav");
+        // 用户指定（见 `BGM_LOGIN` 的说明：原版是 log-in-long2）。
+        assert_eq!(BGM_LOGIN, "main_theme.wav");
         assert_eq!(BGM_SELECT, "sellect-loop2.wav");
         assert_eq!(BGM_GAMEOVER, "game over2.wav");
         assert_eq!(map_music(7).as_deref(), Some("Music/7.mp3"));

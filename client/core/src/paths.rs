@@ -127,6 +127,23 @@ pub fn map_container() -> Option<PathBuf> {
     guess.canonicalize().ok().filter(|p| p.is_file())
 }
 
+/// 美术容器（`tools/artpack/build.sh` 的产物，见 docs/assets.md §5c）。
+///
+/// `$MIR2_IMAGE_CONTAINER` → 仓库的 `assets/image/images.m2pk`。
+///
+/// ⚠️ 与地图/音频容器一样**不入库**（`.gitignore` 里有 `/assets/`），所以它可能
+/// 不存在 —— 调用方要能退化到目录（[`asset_dir`]）：那条路跑的是**原始** `.wzl`。
+pub fn image_container() -> Option<PathBuf> {
+    if let Ok(v) = std::env::var("MIR2_IMAGE_CONTAINER") {
+        let p = PathBuf::from(v);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let guess = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/image/images.m2pk");
+    guess.canonicalize().ok().filter(|p| p.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +167,10 @@ mod tests {
         if let Some(p) = audio_container() {
             assert_eq!(p.file_name().unwrap(), "sounds.m2pk");
             assert!(p.is_file(), "音频容器必须是个文件");
+        }
+        if let Some(p) = image_container() {
+            assert_eq!(p.file_name().unwrap(), "images.m2pk");
+            assert!(p.is_file(), "美术容器必须是个文件");
         }
     }
 }

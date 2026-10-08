@@ -48,7 +48,7 @@ impl<'a> UiCache<'a> {
     fn lib(&mut self, dir: &Path, name: &'static str) -> Option<&Wzl> {
         self.libs
             .entry(name)
-            .or_insert_with(|| Wzl::open(dir.join(name)).ok())
+            .or_insert_with(|| crate::open_lib(dir, name))
             .as_ref()
     }
 

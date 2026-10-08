@@ -49,6 +49,15 @@ pub enum Stage {
     AwaitCreate,
     /// 已发 `DeleteCharacter`，等 `DeleteCharacterResult`（之后要重新拉一次列表）。
     AwaitDelete,
+    /// 已发 `LoginSaltRequest`，等盐（**建号**那一路，D-32）。
+    AwaitSignupSalt,
+    /// 已发 `CreateAccount`（口令校验值），等 `CreateAccountResult`。
+    AwaitSignup,
+    /// 建号有了结果，**停在原地等调用方**。
+    ///
+    /// ⚠️ 刻意不自动登录（原版 `SM_NEWID_SUCCESS` 也只是弹个提示，
+    /// `ClMain.pas:3684-3691`）：取走提示后由调用方决定是 `begin_login` 还是再建一个。
+    SignedUp,
     /// 进世界了（收到 `EnterWorld`）。
     InWorld,
     /// 走不下去（服务端明确拒绝 / 协议错）。
@@ -81,6 +90,12 @@ pub struct Entrance {
     nonce: Vec<u8>,
     /// 登录成功后服务端签发的会话号（之后重连用它，不必再输口令）。
     session_token: Option<i32>,
+    /// 建号那一路（D-32）：账号与口令。`None` = 不在建号。
+    ///
+    /// ⚠️ 口令同样只在内存里活到"算出校验值"那一刻（见 `on_signup_salt`）。
+    signup: Option<LoginState>,
+    /// 建号结果的提示：`(是否成功, 一句话)`。由调用方取走弹窗（同 `pick_err` 的路数）。
+    signup_msg: Option<(bool, String)>,
     /// 登录时算出的**口令证明**（hex）。
     ///
     /// ⚠️ 留它只为删角色的**二次确认**：`DeleteCharacter.password_hash` 要的就是它。
@@ -106,6 +121,8 @@ impl Entrance {
             pick_err: None,
             stage: Stage::Start,
             login: None,
+            signup: None,
+            signup_msg: None,
             nonce: Vec::new(),
             session_token: None,
             proof: None,
@@ -125,10 +142,45 @@ impl Entrance {
             pick_err: None,
             stage: Stage::Start,
             login: Some(LoginState { account, password }),
+            signup: None,
+            signup_msg: None,
             nonce: Vec::new(),
             session_token: None,
             proof: None,
         }
+    }
+
+    /// 用**新建账号**（D-32）：`LoginSaltRequest` →（客户端算校验值）→ `CreateAccount`。
+    ///
+    /// ⚠️ 建完**不自动登录**（与原版一致）：走到 [`Stage::SignedUp`] 就停住，
+    /// 调用方取走提示、再自己走一次登录（[`Entrance::begin_login`]）。
+    pub fn new_for_signup(account: String, password: String) -> Self {
+        let mut e = Self::new(0, None);
+        e.signup = Some(LoginState { account, password });
+        e
+    }
+
+    /// 就地开始一次**建号**（同一条连接 ⇒ nonce 不变；建号不碰 nonce，但省得重连）。
+    pub fn begin_signup(&mut self, account: String, password: String) {
+        self.signup = Some(LoginState { account, password });
+        self.login = None;
+        self.stage = Stage::Start;
+    }
+
+    /// 就地开始一次**口令登录**（`Reconnect` 之外的另一条路）。
+    ///
+    /// 建号成功后界面就是用它接着登的（不重开连接 ⇒ nonce 还是那一个）。
+    pub fn begin_login(&mut self, account: String, password: String) {
+        self.login = Some(LoginState { account, password });
+        self.signup = None;
+        self.stage = Stage::Start;
+    }
+
+    /// 取走建号结果的提示：`(是否成功, 一句话)`。没有则 `None`。
+    ///
+    /// 与 `pick_err` 同一套路数：状态机只记账，弹窗是界面的事。
+    pub fn take_signup_msg(&mut self) -> Option<(bool, String)> {
+        self.signup_msg.take()
     }
 
     /// 登录时那条口令证明（hex，没登录过就是 `None`）。
@@ -241,6 +293,14 @@ impl Entrance {
     pub fn next_cmd(&mut self) -> Option<Body> {
         match self.stage.clone() {
             Stage::Start => {
+                if let Some(s) = &self.signup {
+                    // 建号第一步同样是**先要盐**（D-32 复用 D-24① 的第一步）：
+                    // 盐是服务端随机给的，客户端拿不到就算不出与服务端存储一致的 K。
+                    self.stage = Stage::AwaitSignupSalt;
+                    return Some(Body::LoginSaltRequest(proto::LoginSaltRequest {
+                        account: s.account.clone(),
+                    }));
+                }
                 if let Some(l) = &self.login {
                     // 口令登录第一步：**先要盐**（客户端拿不到服务端的随机盐，
                     // 就没有 K，也就没有证明 —— 这正是 D-24 当初卡住的地方）
@@ -258,6 +318,8 @@ impl Entrance {
                 }))
             }
             Stage::AwaitReconnect | Stage::AwaitSalt | Stage::AwaitLogin => None,
+            // 建号一路也都是"等对端"；`SignedUp` 是**到站**（等界面决定下一步）。
+            Stage::AwaitSignupSalt | Stage::AwaitSignup | Stage::SignedUp => None,
             Stage::AwaitList | Stage::AwaitSelect => None,
             // 停在选角：**没有待发命令** —— 要发什么由调用方 `pick()` 决定
             //（这就是"手动选角"的全部机制：把选择权交出去）。
@@ -302,6 +364,25 @@ impl Entrance {
                         Some(Body::ListCharacters(proto::ListCharacters {}))
                     }
                 }
+            }
+            // 建号结果（D-32）：不管成败都停在 `SignedUp` —— 不自动登录
+            //（原版 `SM_NEWID_SUCCESS` 也只是弹个提示），提示给界面，下一步界面定。
+            Some(Body::CreateAccountResult(r)) => {
+                if self.stage != Stage::AwaitSignup {
+                    return None;
+                }
+                let a = r.result.clone().unwrap_or_default();
+                let msg = if !a.message.is_empty() {
+                    a.message.clone()
+                } else if a.ok {
+                    "账号已建立，请登录".to_string()
+                } else {
+                    format!("建号失败（code={}）", a.code)
+                };
+                self.signup = None; // 丢掉口令那一份
+                self.signup_msg = Some((a.ok, msg));
+                self.stage = Stage::SignedUp;
+                None
             }
             Some(Body::LoginSalt(salt)) => self.on_salt(salt),
             Some(Body::LoginResult(r)) => self.on_login_result(r),
@@ -381,6 +462,9 @@ impl Entrance {
 
     /// 收到盐 ⇒ 算出口令证明并发出去（D-24① 的第二步）。
     fn on_salt(&mut self, salt: &proto::LoginSalt) -> Option<Body> {
+        if self.stage == Stage::AwaitSignupSalt {
+            return self.on_signup_salt(salt);
+        }
         if self.stage != Stage::AwaitSalt {
             return None; // 意外的/重复的，忽略
         }
@@ -415,6 +499,33 @@ impl Entrance {
             account,
             password_hash: crate::auth::to_hex(&proof),
             client_build: String::new(),
+        }))
+    }
+
+    /// 建号的盐回来了 ⇒ 算 `K` 并把**校验值**发出去（D-32）。
+    ///
+    /// ⚠️ 这里发的 `hex(K)` 是**口令的等价物**，与登录路径"只发绑在 nonce 上的证明"
+    /// 不同 —— 建号时服务端手里什么都没有，它得拿到一个以后能验登录的值才能落库。
+    /// 协议注释（`account.proto` 的 `CreateAccount`）把这条差别写在明面上。
+    fn on_signup_salt(&mut self, salt: &proto::LoginSalt) -> Option<Body> {
+        let Some(s) = self.signup.as_mut() else {
+            self.stage = Stage::Failed("没在建号流程里却收到了盐".into());
+            return None;
+        };
+        // 迭代数与派生长**用服务端下发的**（同登录：客户端不写死）。
+        let k = crate::auth::pbkdf2_sha256(
+            s.password.as_bytes(),
+            &salt.salt,
+            salt.iterations,
+            salt.key_len as usize,
+        );
+        let account = s.account.clone();
+        // 口令用完就丢（与登录同一条纪律：状态机不该长期握着它）
+        s.password.clear();
+        self.stage = Stage::AwaitSignup;
+        Some(Body::CreateAccount(proto::CreateAccount {
+            account,
+            verifier: crate::auth::to_hex(&k),
         }))
     }
 
@@ -589,6 +700,107 @@ mod tests {
         }));
         e.on(&rejected);
         assert!(e.failed().is_some());
+    }
+
+    /// 建号走的是 D-24① 的同一条取盐链，但第二步发的是**校验值**（D-32）。
+    #[test]
+    fn 建号_取盐后发校验值() {
+        let mut e = Entrance::new_for_signup("newbie".into(), "pw123".into());
+        // 第一步：要盐
+        match e.next_cmd().expect("该吐出 LoginSaltRequest") {
+            Body::LoginSaltRequest(r) => assert_eq!(r.account, "newbie"),
+            other => panic!("期望 LoginSaltRequest，实得 {other:?}"),
+        }
+        assert_eq!(*e.stage(), Stage::AwaitSignupSalt);
+
+        // 盐回来 ⇒ 吐 CreateAccount，校验值 = hex(PBKDF2(口令, 盐, 迭代, 派生长))
+        let salt = proto::LoginSalt {
+            salt: vec![1, 2, 3, 4],
+            iterations: 1000,
+            key_len: 32,
+        };
+        let cmd = e
+            .on(&env(Body::LoginSalt(salt.clone())))
+            .expect("该吐出 CreateAccount");
+        let want = crate::auth::to_hex(&crate::auth::pbkdf2_sha256(
+            b"pw123",
+            &salt.salt,
+            salt.iterations,
+            salt.key_len as usize,
+        ));
+        match cmd {
+            Body::CreateAccount(c) => {
+                assert_eq!(c.account, "newbie");
+                assert_eq!(c.verifier, want, "校验值必须与服务端存储的那一份算法一致");
+            }
+            other => panic!("期望 CreateAccount，实得 {other:?}"),
+        }
+        assert_eq!(*e.stage(), Stage::AwaitSignup);
+        // 口令用完就丢：状态机不长期握着它
+        assert!(e.signup.as_ref().is_some_and(|s| s.password.is_empty()));
+    }
+
+    /// 建号回执：**不自动登录**，只留一条提示；随后由界面接着登（同一条连接）。
+    #[test]
+    fn 建号回执_只给提示不自动登录() {
+        let mut e = Entrance::new_for_signup("newbie".into(), "pw123".into());
+        e.next_cmd();
+        e.on(&env(Body::LoginSalt(proto::LoginSalt {
+            salt: vec![9; 16],
+            iterations: 1000,
+            key_len: 32,
+        })));
+
+        let sent = e.on(&env(Body::CreateAccountResult(
+            proto::CreateAccountResult {
+                result: Some(proto::ActionResult {
+                    ok: true,
+                    code: 0,
+                    message: "账号已建立，请登录".into(),
+                }),
+            },
+        )));
+        assert!(sent.is_none(), "建号成功不该顺带发登录");
+        assert_eq!(*e.stage(), Stage::SignedUp);
+        assert!(e.next_cmd().is_none(), "到站之后没有待发命令");
+        assert_eq!(
+            e.take_signup_msg(),
+            Some((true, "账号已建立，请登录".into()))
+        );
+        assert!(e.take_signup_msg().is_none(), "提示取走一次就没了");
+
+        // 接着登录：同一条连接（nonce 不变）继续走 D-24① 那一路
+        e.begin_login("newbie".into(), "pw123".into());
+        assert!(matches!(e.next_cmd(), Some(Body::LoginSaltRequest(_))));
+        assert_eq!(*e.stage(), Stage::AwaitSalt);
+    }
+
+    /// 建号失败也一样**停住**（不断连接、不判死）—— 用户还要重填或去登录。
+    #[test]
+    fn 建号失败_停住不判死() {
+        let mut e = Entrance::new_for_signup("newbie".into(), "pw123".into());
+        e.next_cmd();
+        e.on(&env(Body::LoginSalt(proto::LoginSalt {
+            salt: vec![9; 16],
+            iterations: 1000,
+            key_len: 32,
+        })));
+        e.on(&env(Body::CreateAccountResult(
+            proto::CreateAccountResult {
+                result: Some(proto::ActionResult {
+                    ok: false,
+                    code: 1,
+                    message: "这个账号已经被使用了".into(),
+                }),
+            },
+        )));
+        assert_eq!(*e.stage(), Stage::SignedUp, "失败也停在原地，不是 Failed");
+        assert_eq!(
+            e.take_signup_msg(),
+            Some((false, "这个账号已经被使用了".into()))
+        );
+        assert!(e.failed().is_none(), "建号失败不是致命错误");
+        assert!(e.signup.is_none(), "失败也要把口令丢掉");
     }
 
     /// 建角 / 删角：发出去 → 等回执 → **自动重拉列表**（原版建完也要重查，

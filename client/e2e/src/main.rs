@@ -23,6 +23,7 @@ mod canvas;
 mod contract;
 mod logincmd;
 mod png;
+mod signupcmd;
 mod worldcmd;
 
 use std::path::{Path, PathBuf};
@@ -50,6 +51,8 @@ fn main() {
         // world 走**会话层**（消息泵 + core 的握手/世界状态机），参数集同样独立。
         Some("world") => worldcmd::main(&argv[1..]),
         // 无头合成登录界面（照原版版式）—— "照原版"这件事的可视验收
+        // 建号的跨语言验收（D-32）：取盐 → 校验值 → 回执 → 再用同一口令登录
+        Some("signup") => std::process::exit(signupcmd::main(&argv[1..])),
         Some("login") => match logincmd::main(&argv[1..]) {
             Ok(()) => 0,
             Err(e) => {

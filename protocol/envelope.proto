@@ -47,6 +47,9 @@ message Envelope {
     // D-24① 挑战应答的第一步：取盐（见 account.proto 的说明）
     LoginSaltRequest login_salt_request = 0x0205;
     LoginSalt login_salt = 0x0206;
+    // D-32 建号（必须先取盐，见 account.proto）
+    CreateAccount create_account = 0x0207;
+    CreateAccountResult create_account_result = 0x0208;
 
     // ---------- 0x03xx 角色 ----------
     ListCharacters list_characters = 0x0301;
