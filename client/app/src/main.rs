@@ -1,6 +1,6 @@
 //! MIR2 1.76 客户端 —— 开发期查看器（两个模式）
 //!
-//! * **登录界面**：窗口 / 文本输入 / 2D 渲染 / 程序化音乐（M0 的 SDL3 落地验证）
+//! * **登录界面**：窗口 / 文本输入 / 2D 渲染（M0 的 SDL3 落地验证）
 //! * **地图视图**：从 M2PK 容器加载真实 `.map`，绘制**三层**（地表 `Tiles` /
 //!   中间 `SmTiles` / 前景 `Objects<N>`）—— M1「地图加载」的验收
 //!
@@ -12,6 +12,17 @@
 //! 容器路径：`$MIR2_MAP_CONTAINER` → `assets/map/maps.m2pk`。找不到就降级显示，不崩。
 //!
 //! 屏幕文字用 SDL3 内置 8x8 调试字体，**只认 ASCII**。
+//!
+//! **音频**（`M` 切音乐 / `N` 切音效）：
+//!
+//! * **规格**在 `mir2_core::sound`（原版 `SoundUtil.pas` 的编号表、`Actor.pas` 的地形→脚步、
+//!   `sound.lst` 的"编号 → 文件"）；**发声**在 `audio.rs`（SDL3 软件混音：多路叠加 + 循环）；
+//! * 音频目录：`$MIR2_AUDIO_DIR` / `$MIR2C_WAV` → 美术目录旁 → 仓库旁的 `mir2c/wav`；
+//! * 场景 BGM：登录 `log-in-long2.wav`、选角 `sellect-loop2.wav`、自己死亡 `game over2.wav`
+//!   （`SoundUtil.pas:31-34`）；
+//! * ⚠️ **进图音乐没接**：原版走"服务端下发地图音乐号 + `Music/<号>.mp3`"
+//!   （`SoundUtil.pas:219`、`ClMain.pas:5222`），我们协议里还没有那个字段、
+//!   手上也没有 mp3（`sound::map_music` 里有实测）。
 //!
 //! **连服务端**（B 阶段，`C` 键或环境变量）：
 //!
@@ -29,19 +40,17 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mir2_core::m2pk::Archive;
 use mir2_core::map::{Layer, Lib, Map, TileDraw, LAYERS_ALL, UNIT_X, UNIT_Y};
 use mir2_core::wzl::Wzl;
 
-use sdl3::audio::{AudioCallback, AudioFormat, AudioSpec, AudioStream};
 use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod};
 use sdl3::mouse::MouseButton;
 
+mod audio;
 mod font;
 mod login;
 mod select;
@@ -57,7 +66,6 @@ use sdl3::EventPump;
 
 const WIN_W: u32 = 1024;
 const WIN_H: u32 = 768;
-const SAMPLE_RATE: i32 = 44_100;
 
 /// 地图视图的顶部信息条高度。
 const BAR_TOP: f32 = 24.0;
@@ -149,97 +157,6 @@ const DEBUG_OVERLAY: bool = false;
 fn layers_desc(m: u8) -> String {
     let ch = |bit: u8, on: char| if m & bit != 0 { on } else { '-' };
     format!("{}{}{}", ch(1, 'G'), ch(2, 'M'), ch(4, 'F'))
-}
-
-// ---------- 程序化音乐 ----------
-const TEMPO_SEC: f32 = 0.34;
-/// (MIDI 音高, 拍数)；音高 0 表示休止
-const MELODY: &[(u8, f32)] = &[
-    (72, 1.0),
-    (74, 1.0),
-    (76, 1.0),
-    (79, 1.0),
-    (76, 1.0),
-    (74, 1.0),
-    (72, 2.0),
-    (69, 1.0),
-    (72, 1.0),
-    (76, 1.0),
-    (74, 2.0),
-    (72, 1.0),
-    (69, 1.0),
-    (67, 2.0),
-    (0, 1.0),
-];
-
-struct Music {
-    sr: f32,
-    phase: f32,
-    note: usize,
-    elapsed: f32,
-    muted: Arc<AtomicBool>,
-}
-
-impl Music {
-    fn new(sr: f32, muted: Arc<AtomicBool>) -> Self {
-        Self {
-            sr,
-            phase: 0.0,
-            note: 0,
-            elapsed: 0.0,
-            muted,
-        }
-    }
-
-    fn freq(midi: u8) -> f32 {
-        if midi == 0 {
-            0.0
-        } else {
-            440.0 * 2f32.powf((midi as f32 - 69.0) / 12.0)
-        }
-    }
-}
-
-impl AudioCallback<f32> for Music {
-    fn callback(&mut self, stream: &mut AudioStream, requested: i32) {
-        let n = requested.max(0) as usize;
-        let mut out = Vec::with_capacity(n);
-        let silent = self.muted.load(Ordering::Relaxed);
-
-        for _ in 0..n {
-            let (midi, beats) = MELODY[self.note];
-            let dur = (beats * TEMPO_SEC).max(0.05);
-            let t = self.elapsed / dur;
-            let env = if t < 0.03 {
-                t / 0.03
-            } else {
-                (1.0 - (t - 0.03) / 0.97).clamp(0.0, 1.0)
-            };
-
-            let f = Self::freq(midi);
-            let s = if f > 0.0 && !silent {
-                let sq = if (self.phase % 1.0) < 0.5 { 1.0 } else { -1.0 };
-                sq * env * 0.10
-            } else {
-                0.0
-            };
-            out.push(s);
-
-            if f > 0.0 {
-                self.phase += f / self.sr;
-                if self.phase >= 1.0 {
-                    self.phase -= 1.0;
-                }
-            }
-            self.elapsed += 1.0 / self.sr;
-            if self.elapsed >= dur {
-                self.elapsed = 0.0;
-                self.note = (self.note + 1) % MELODY.len();
-            }
-        }
-
-        let _ = stream.put_data_f32(&out);
-    }
 }
 
 // ---------- 绘制辅助 ----------
@@ -772,6 +689,16 @@ struct Net {
     ///
     /// ⚠️ 同样只在渲染层：世界模型只存事实（在哪、什么动作），"什么时候发生的"归这里。
     anims: HashMap<u64, ActorAnim>,
+    /// 世界侧排出来的音效编号（挨打 / 死亡），由主循环取走播放。
+    ///
+    /// ⚠️ 为什么要绕这一道：`pump()` 在 `Net` 里，**拿不到音频设备**（那在 `main`
+    /// 的作用域）—— 与 `take_damage`（伤害飘字）同一套路：世界只记账，
+    /// 谁有时钟/设备谁去表现。
+    pending_sfx: Vec<u16>,
+    /// 已经为自己死放过一次声（`self_dead` 会一直为真，不能每帧放）。
+    died_once: bool,
+    /// 刚死 ⇒ 主循环切 game over 音乐（原版 `Actor.pas:2373-2374`）。
+    gameover: bool,
 }
 
 impl Net {
@@ -820,6 +747,9 @@ impl Net {
             entered_once: false,
             started: Instant::now(),
             anims: HashMap::new(),
+            pending_sfx: Vec::new(),
+            died_once: false,
+            gameover: false,
         })
     }
 
@@ -856,6 +786,9 @@ impl Net {
             entered_once: false,
             started: Instant::now(),
             anims: HashMap::new(),
+            pending_sfx: Vec::new(),
+            died_once: false,
+            gameover: false,
         })
     }
 
@@ -930,6 +863,19 @@ impl Net {
             let (x, y) = self.pos_of(d.target_id);
             self.floaters
                 .push((format!("{}", d.value), x, y, Instant::now()));
+            // 挨打的是自己 ⇒ 惨叫（按性别，`Actor.pas:2243-2247`）
+            if d.target_id == self.world.self_id {
+                self.pending_sfx
+                    .push(mir2_core::sound::scream(self.self_sex()));
+            }
+        }
+        // 自己死了 ⇒ 死亡声 + game over 音乐（`Actor.pas:2368-2376`）。
+        // **只放一次**：`self_dead` 会一直为真（尸体还在），每帧放就成了噪音。
+        if self.world.self_dead && !self.died_once {
+            self.died_once = true;
+            self.pending_sfx
+                .push(mir2_core::sound::die(self.self_sex()));
+            self.gameover = true;
         }
         self.floaters
             .retain(|f| f.3.elapsed() < Duration::from_millis(900));
@@ -964,6 +910,43 @@ impl Net {
         if let Some(c) = cmd {
             let _ = self.sess.cmds.send(c);
         }
+    }
+
+    /// 取走"这一帧该响的音效"（世界只记账，设备在主循环里）。
+    fn take_sfx(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.pending_sfx)
+    }
+
+    /// 是不是**刚**死了（取走后清空）：主循环据此切 game over 音乐。
+    fn take_gameover(&mut self) -> bool {
+        std::mem::take(&mut self.gameover)
+    }
+
+    /// 自己的性别（`0` 男 `1` 女）——协议里 `dress = 形状*2 + 性别`
+    /// （`core/src/actor.rs:31`）；拿不到特征时按男（原版 `m_btSex = 0` 是男）。
+    fn self_sex(&self) -> u8 {
+        self.world
+            .self_feature
+            .as_ref()
+            .map_or(0, |f| (f.dress & 1) as u8)
+    }
+
+    /// 自己这一帧的**走路动画帧号**（原版脚步按帧 1 / 帧 4 播，`Actor.pas:2659-2660`）。
+    ///
+    /// `None` = 没在走（站着 / 攻击 / 受击…）⇒ 调用方清掉"上一帧"的记录，
+    /// 免得停下再走时被当成"帧号没变"。
+    fn self_walk_frame(&self, now: Instant) -> Option<(u16, bool)> {
+        let a = self.anims.get(&self.world.self_id)?;
+        if !a.moving(now) {
+            return None;
+        }
+        let pose = mir2_core::actor::human_pose(a.action, true);
+        if pose.act != mir2_core::actor::HAct::Walk {
+            return None;
+        }
+        // 跑（`SM_RUN`）在原版是另一段动作、脚步基号 +2（`Actor.pas:2237`）；
+        // 我们目前只发"走"（`Net::walk`）⇒ 恒为走。
+        Some((pose.act.act().frame_at(a.elapsed_ms(now)), false))
     }
 
     /// 发一次移动输入（走）。方向用**线上编号**（`core::world` 里也不做 ±1 转换）。
@@ -1491,16 +1474,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tex_creator = canvas.texture_creator();
 
     // ---------- 音频 ----------
-    let audio = sdl.audio()?;
-    let muted = Arc::new(AtomicBool::new(false));
-    let spec = AudioSpec {
-        freq: Some(SAMPLE_RATE),
-        channels: Some(1),
-        format: Some(AudioFormat::F32LE),
-    };
-    let device =
-        audio.open_playback_stream(&spec, Music::new(SAMPLE_RATE as f32, muted.clone()))?;
-    device.resume()?;
+    // 规格（编号表 / 地形 → 脚步 / `sound.lst`）在 `mir2_core::sound`，这里只开设备。
+    // ⚠️ `_stream` 就是声卡：**必须活在这个作用域里** —— drop 掉即静音。
+    let sdl_audio = sdl.audio()?;
+    // `AudioSubsystem` 是 sdl3 的私有类型 ⇒ 开流这一步只能在这里写（见 `audio::spec`）
+    let (sound, _stream) = audio::Audio::open_with(true, true, |m| {
+        sdl_audio.open_playback_stream(&audio::spec(), m)
+    })?;
 
     // ---------- 资产 ----------
     let asset_dir = mir2_core::paths::asset_dir();
@@ -1525,8 +1505,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(d) => println!("[mir2-app] 资产目录 = {}", d.display()),
         None => println!("[mir2-app] 未找到资产目录：设 MIR2_ASSET_DIR=<mir2c/data>"),
     }
-    println!("[mir2-app] 音频驱动 = {}", audio.current_audio_driver());
-    println!("[mir2-app] 操作：F1 登录界面 / F2 地图视图 / F3 素材浏览器 / M 音乐 / ESC 退出");
+    // 音效库：`sound.lst`（编号 → wav）。找不到就静默降级（界面照旧能用）。
+    let audio_dir = mir2_core::paths::audio_dir();
+    let sounds: Option<mir2_core::sound::Library> = match &audio_dir {
+        Some(d) => match mir2_core::sound::Library::load(d) {
+            Some(lib) => {
+                println!(
+                    "[mir2-app] 音效库 = {}（{} 条可播，清单里缺 {} 条）",
+                    d.display(),
+                    lib.len(),
+                    lib.missing()
+                );
+                Some(lib)
+            }
+            None => {
+                println!("[mir2-app] {} 里没有 sound.lst ⇒ 没有音效", d.display());
+                None
+            }
+        },
+        None => {
+            println!("[mir2-app] 未找到音频目录：设 MIR2_AUDIO_DIR=<mir2c/wav>（或 MIR2C_DATA）");
+            None
+        }
+    };
+    println!("[mir2-app] 音频驱动 = {}", sdl_audio.current_audio_driver());
+    println!(
+        "[mir2-app] 操作：F1 登录界面 / F2 地图视图 / F3 素材浏览器 / M 音乐 / N 音效 / ESC 退出"
+    );
 
     let mut events: EventPump = sdl.event_pump()?;
 
@@ -1562,6 +1567,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut mouse = (0.0f32, 0.0f32);
 
     let mut music_on = true;
+    // 音效开关：原版是**两个独立开关**（音效 / 音乐，`MShare.pas:213-214`），
+    // 所以这里也是两个（`N` 切音效）。
+    let mut sfx_on = true;
+    // 上一步的走路动画帧号 —— 脚步只在**帧号变到 1 / 4** 时响一次
+    //（原版就是这么对齐的，`Actor.pas:2659-2660`）。
+    let mut last_foot_frame: Option<u16> = None;
     // ⚠️ "现在"必须在**每帧开头**取（见循环里的重取）。原来只在循环外取一次，
     // 于是它是个常量：选角场景按 `now - last` 算 dt ⇒ dt 恒为 0 ⇒ **动画永不推进**
     //（实测踩过：选中角色后小人一动不动）。
@@ -1608,8 +1619,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(Keycode::F3) => mode = 3,
                     Some(Keycode::M) => {
                         music_on = !music_on;
-                        muted.store(!music_on, Ordering::Relaxed);
-                        status = format!("MUSIC {}", if music_on { "ON" } else { "OFF" });
+                        sound.set_music_on(music_on);
+                        // 带上"正在响几路 / 有没有 BGM"：一眼看出混音器是不是活的
+                        let (voices, bgm, ..) = sound.stats();
+                        status = format!(
+                            "MUSIC {}  [sfx {} voices, bgm {}]",
+                            if music_on { "ON" } else { "OFF" },
+                            voices,
+                            if bgm { "ON" } else { "OFF" }
+                        );
+                    }
+                    Some(Keycode::N) => {
+                        sfx_on = !sfx_on;
+                        sound.set_sfx_on(sfx_on);
+                        let (voices, bgm, ..) = sound.stats();
+                        status = format!(
+                            "SOUND {}  [sfx {} voices, bgm {}]",
+                            if sfx_on { "ON" } else { "OFF" },
+                            voices,
+                            if bgm { "ON" } else { "OFF" }
+                        );
                     }
                     // 选角：键盘是**我们的扩展**（原版选角场景只认鼠标）
                     _ if mode == 4 => {
@@ -1618,7 +1647,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Some(s) => s.on_key(k),
                                 None => select::Action::None,
                             };
-                            if do_select_action(act, &mut net, &mut select_scene)? {
+                            if do_select_action(act, &mut net, &mut select_scene, &sound, &sounds)?
+                            {
                                 break 'main;
                             }
                         }
@@ -1627,7 +1657,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // 它给出的动作翻译成"接下来干什么"。
                     _ if mode == 1 => {
                         if let Some(k) = keycode {
-                            match login.on_key(k) {
+                            let act = login.on_key(k);
+                            // 按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` ⇒ 103）
+                            if act != login::Action::None {
+                                sfx(&sound, &sounds, mir2_core::sound::idx::NORM_BUTTON_CLICK);
+                            }
+                            match act {
                                 login::Action::Submit => {
                                     submit_login(&mut login, &mut net, &mut status)
                                 }
@@ -1686,7 +1721,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // 空格：打一下身边的目标（A′：走 + 砍 = 能玩）。
                         Some(Keycode::Space) => {
                             if let Some(n) = net.as_ref().filter(|n| n.world.in_world()) {
-                                if !n.attack_adjacent() {
+                                if n.attack_adjacent() {
+                                    // 挥刀声：按**武器形状**分类（`Actor.pas:2254-2261`）。
+                                    // 原版在攻击动画的**帧 2** 播（`:2396-2401`），我们在
+                                    // 按下这一帧就播 —— 差几十毫秒，接线简单得多。
+                                    let shape = n
+                                        .world
+                                        .self_feature
+                                        .as_ref()
+                                        .map_or(0, |f| (f.weapon / 2) as u16);
+                                    sfx(&sound, &sounds, mir2_core::sound::swing(shape));
+                                } else {
                                     println!("[net] 身边没有可打的目标（八格内）");
                                 }
                             }
@@ -1810,7 +1855,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         _ => select::Action::None,
                     };
-                    if do_select_action(act, &mut net, &mut select_scene)? {
+                    if do_select_action(act, &mut net, &mut select_scene, &sound, &sounds)? {
                         break 'main;
                     }
                 }
@@ -1841,7 +1886,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ui.size(dir, c, i)
                         });
                         if let Some(l) = l {
-                            match login.on_up((x, y), &l) {
+                            let act = login.on_up((x, y), &l);
+                            // 按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` ⇒ 103）
+                            if act != login::Action::None {
+                                sfx(&sound, &sounds, mir2_core::sound::idx::NORM_BUTTON_CLICK);
+                            }
+                            match act {
                                 login::Action::Submit => {
                                     submit_login(&mut login, &mut net, &mut status)
                                 }
@@ -1889,6 +1939,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 login.busy = false;
                 select_scene = None;
                 mode = 1; // 开门动画在登录屏上播（否则会在地图里"看不见地"播完）
+                          // 开门声（原版 `IntroScn.pas:801` 的 `s_rock_door_open`）
+                sfx(&sound, &sounds, mir2_core::sound::idx::ROCK_DOOR_OPEN);
             }
             // 登录成功后会停在 `AwaitPick`（`set_manual_pick`）⇒ 切到选角场景。
             //
@@ -1931,6 +1983,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 n.session = tok;
             }
         }
+        // 网络侧排出来的音效（挨打 / 死亡）：`pump` 在 `Net` 里，拿不到音频设备。
+        if let Some(n) = net.as_mut() {
+            for s in n.take_sfx() {
+                sfx(&sound, &sounds, s);
+            }
+            if n.take_gameover() {
+                // 自己死亡 ⇒ game over 音乐（原版 `Actor.pas:2373-2374`）
+                bgm(&sound, &audio_dir, mir2_core::sound::BGM_GAMEOVER);
+            }
+        }
+        // 选角场景排出来的音效（选中一个槽 ⇒ 解冻声 `101`，`IntroScn.pas:1170`）
+        if let Some(scene) = select_scene.as_mut() {
+            for s in scene.take_sfx() {
+                sfx(&sound, &sounds, s);
+            }
+        }
+        // 场景 BGM：登录（`IntroScn.pas:518`）与选角（`:1152`）各一首**循环**。
+        // 进图音乐 `Music/<地图音乐号>.mp3` **暂时没有声音**（协议没有那个字段、
+        // 手上也没有 mp3）⇒ 进地图就停掉上一首，而不是放错一首。
+        // 自己死了就别停：那时该响的是 game over 那首（`Actor.pas:2373-2374`）。
+        if mode == 4 {
+            bgm(&sound, &audio_dir, mir2_core::sound::BGM_SELECT);
+        } else if mode == 1 && login.opened_at.is_none() {
+            bgm(&sound, &audio_dir, mir2_core::sound::BGM_LOGIN);
+        } else if mode == 2 && !net.as_ref().is_some_and(|n| n.world.self_dead) && sound.stop_bgm()
+        {
+            println!("[audio] BGM 停（进图音乐这条路还没接：手上没有 mp3、协议里也没有音乐号）");
+        }
+        // 脚步：原版在走路动画的**帧 1 / 帧 4** 各响一次（`Actor.pas:2659-2660`），
+        // 音色按**自己脚下那一格**定（原版把坐标对齐到偶数格，`Actor.pas:2146-2147`）。
+        match (net.as_ref(), map.as_ref()) {
+            (Some(n), Some(m)) if n.world.in_world() => match n.self_walk_frame(started) {
+                Some((frame, running)) => {
+                    if let Some(second_foot) = footstep_of(frame, last_foot_frame) {
+                        let (mx, my) = (n.world.self_pos.0, n.world.self_pos.1);
+                        let cell = m.at((mx.max(0) / 2 * 2) as usize, (my.max(0) / 2 * 2) as usize);
+                        if let Some(c) = cell {
+                            let t =
+                                mir2_core::sound::terrain(c.bk_img, c.area, c.mid_img, c.fr_img);
+                            sfx(
+                                &sound,
+                                &sounds,
+                                mir2_core::sound::footstep(t, running, second_foot),
+                            );
+                        }
+                    }
+                    last_foot_frame = Some(frame);
+                }
+                None => last_foot_frame = None,
+            },
+            _ => last_foot_frame = None,
+        }
+
         // 进了世界就让相机跟着自己（离线时保持手动镜头）。
         if let Some(c) = net.as_ref().and_then(|n| n.follow_cam()) {
             cam = c;
@@ -2458,7 +2563,14 @@ fn do_select_action(
     act: select::Action,
     net: &mut Option<Net>,
     select_scene: &mut Option<select::Select>,
+    sound: &audio::Audio,
+    sounds: &Option<mir2_core::sound::Library>,
 ) -> Result<bool, sdl3::Error> {
+    // 点下去的按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` = 103）。
+    // 槽上那一下的**解冻声**（101）由场景自己排出来（见 `Select::take_sfx`）。
+    if act != select::Action::None {
+        sfx(sound, sounds, mir2_core::sound::idx::NORM_BUTTON_CLICK);
+    }
     match act {
         select::Action::None => Ok(false),
         select::Action::Exit => Ok(true),
@@ -2500,6 +2612,46 @@ fn hint_text(mode: u8) -> &'static str {
         1 => "TAB NEXT FIELD   ENTER LOGIN   F2 MAP   F3 ASSETS   M MUSIC   ESC QUIT",
         4 => "LEFT/RIGHT PICK   ENTER START   F1 LOGIN   F2 MAP   ESC QUIT",
         _ => "F3 ASSETS   [ ] LIB   , . IMG   F1 LOGIN   F2 MAP   M MUSIC   ESC QUIT",
+    }
+}
+
+/// 走路动画帧号 → 这一步该不该响、响的是不是**第二只脚**。
+///
+/// 原版：走路动画的**帧 1** 响一声、**帧 4** 再响一声（`Actor.pas:2659-2660`），
+/// 两声差 1 号（`_l` / `_r`）。`last` 是上一帧的帧号 —— 同一个帧号只响一次
+/// （帧率比 `ftime` 快时，帧号会连续几帧不变）。
+///
+/// 抽成函数是为了能单测这条"边沿判定"（循环里测不到）。
+fn footstep_of(frame: u16, last: Option<u16>) -> Option<bool> {
+    if last == Some(frame) {
+        return None;
+    }
+    match frame {
+        1 => Some(false),
+        4 => Some(true),
+        _ => None,
+    }
+}
+
+/// 按原版编号播一条音效：**没有音效库 / 没有这一条 ⇒ 静默跳过**（不报错、不崩）。
+///
+/// ⚠️ 静默是**有意的**：原版 `PlaySound` 也是先 `FileExists` 再放
+/// （`SoundUtil.pas:183-186`），缺素材是常态（我们手上 778 个 wav 里，
+/// 清单还有 12 条编号找不到文件）。
+fn sfx(sound: &audio::Audio, sounds: &Option<mir2_core::sound::Library>, number: u16) {
+    if let Some(lib) = sounds {
+        sound.play_idx(lib, number);
+    }
+}
+
+/// 切场景 BGM（循环）。目录没找到 / 文件缺 ⇒ 静默（同上）。
+///
+/// 真的换上了一首就打一行 —— 听不见的时候，"有没有音乐"总得有个可观测的东西。
+fn bgm(sound: &audio::Audio, dir: &Option<PathBuf>, name: &str) {
+    if let Some(d) = dir {
+        if sound.bgm(&d.join(name)) {
+            println!("[audio] BGM = {name}");
+        }
     }
 }
 
@@ -2619,6 +2771,20 @@ mod tests {
             assert!(!h.contains("1/2/3"), "图层键已关，提示里不该还有：{h}");
             assert!(!h.contains("D DEBUG"), "叠加层已关，提示里不该还有：{h}");
         }
+    }
+
+    /// 脚步的边沿判定：**帧 1 / 帧 4 各一次，同一帧号只响一次**。
+    ///
+    /// 原版就是这么对齐的（`Actor.pas:2659-2660`）；帧 4 那一声是第二只脚。
+    #[test]
+    fn 脚步只在帧1帧4响() {
+        assert_eq!(footstep_of(1, Some(0)), Some(false), "帧 1 ⇒ 第一只脚");
+        assert_eq!(footstep_of(1, Some(1)), None, "同一个帧号只响一次");
+        assert_eq!(footstep_of(2, Some(1)), None);
+        assert_eq!(footstep_of(3, Some(2)), None);
+        assert_eq!(footstep_of(4, Some(3)), Some(true), "帧 4 ⇒ 第二只脚");
+        assert_eq!(footstep_of(4, Some(4)), None);
+        assert_eq!(footstep_of(0, None), None, "站立/起手不响");
     }
 
     /// 连不上时要给出"下一步查什么"，而且**不能**把人往"密码错"上引。

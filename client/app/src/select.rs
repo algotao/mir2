@@ -101,6 +101,9 @@ pub struct Select {
     /// 弹窗文本（原版 `DMessageDlg`）。`Some` 时挡住其它点击。
     pub msg: Option<String>,
     down: Option<Hit>,
+    /// 每个槽上一次看到的相位 —— 用来在**解冻那一刻**响一声 `101`
+    ///（原版是"点了某个槽"就响一次：`IntroScn.pas:1170/1187` 的 `PlaySound(s_meltstone)`）。
+    last_phase: [su::SlotPhase; su::Art::SLOTS],
     last: Instant,
     /// 点过开始了（进世界后由主循环切场景）。
     pub start_clicked: bool,
@@ -120,6 +123,9 @@ impl Select {
                 su::SlotAnim::new_frozen(job, sex)
             }
         });
+        // 初值就是"现在这两个槽的相位"（第 0 个站立、其余石化）—— 不能写死成
+        // `Freeze`，否则进场景那一帧会被当成"刚从石化里化出来"、白响一声。
+        let last_phase = std::array::from_fn(|i| anims[i].phase());
         Self {
             chars,
             picked: 0,
@@ -127,6 +133,7 @@ impl Select {
             menu_cursor: 0,
             msg: None,
             down: None,
+            last_phase,
             last: Instant::now(),
             start_clicked: false,
         }
@@ -135,6 +142,26 @@ impl Select {
     /// 当前选中的角色（空槽 ⇒ `None`）。
     pub fn picked_char(&self) -> Option<&CharEntry> {
         self.chars.get(self.picked)
+    }
+
+    /// 取走这一帧该响的音效（原版编号，交给主循环去播）。
+    ///
+    /// 目前只有**石化解冻**那一声 `101`：原版在"点中某个槽"时就放
+    /// （`IntroScn.pas:1170/1187`），我们等效成"相位从别处变成 `Unfreezing`"。
+    /// 点按钮的通用声（`103`）由主循环在拿到 [`Action`] 时放 —— 那属于交互，
+    /// 不属于这个场景的动画状态。
+    pub fn take_sfx(&mut self) -> Vec<u16> {
+        let mut out = Vec::new();
+        for (i, a) in self.anims.iter().enumerate() {
+            let p = a.phase();
+            if p != self.last_phase[i] {
+                if p == su::SlotPhase::Unfreezing {
+                    out.push(mir2_core::sound::idx::MELTSTONE);
+                }
+                self.last_phase[i] = p;
+            }
+        }
+        out
     }
 
     /// 弹一条提示（错误/占位说明都走它）。

@@ -26,6 +26,37 @@ pub fn asset_dir() -> Option<PathBuf> {
     guess.canonicalize().ok().filter(|p| p.is_dir())
 }
 
+/// 音频目录（`sound.lst` + 那 778 个 `.wav` 所在）。
+///
+/// `$MIR2_AUDIO_DIR` → `$MIR2C_WAV` → **美术目录旁边**的 `wav`
+/// （`mir2c/data` 的兄弟目录 `mir2c/wav`，两种布局都试）→ 与仓库并列的 `mir2c/wav`。
+///
+/// ⚠️ **不能**用 `asset_dir()` 直接拼：美术目录是 `mir2c/data`，而音频在
+/// `mir2c/wav`（同级，不是子目录）—— 原版清单里的路径 `wav\103.wav` 正是
+/// **相对游戏根目录**写的（`SoundUtil.pas:151-178`）。
+pub fn audio_dir() -> Option<PathBuf> {
+    for key in ["MIR2_AUDIO_DIR", "MIR2C_WAV"] {
+        if let Ok(v) = std::env::var(key) {
+            let p = PathBuf::from(v);
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+    }
+    if let Some(a) = asset_dir() {
+        for cand in [
+            a.join("wav"),
+            a.parent().map(|p| p.join("wav")).unwrap_or(a.clone()),
+        ] {
+            if cand.is_dir() {
+                return Some(cand);
+            }
+        }
+    }
+    let guess = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mir2c/wav");
+    guess.canonicalize().ok().filter(|p| p.is_dir())
+}
+
 /// 地图容器（`tools/m2pk/build.sh` 的产物，见 docs/assets.md §5）。
 ///
 /// `$MIR2_MAP_CONTAINER` → 仓库的 `assets/map/maps.m2pk`。
@@ -57,6 +88,11 @@ mod tests {
         }
         if let Some(p) = asset_dir() {
             assert!(p.is_dir(), "资产目录必须是目录");
+        }
+        if let Some(p) = audio_dir() {
+            assert!(p.is_dir(), "音频目录必须是目录");
+            // 光有目录不算：清单文件才是"这批 wav 是原版那套"的证据
+            assert!(p.join("sound.lst").is_file(), "音频目录里该有 sound.lst");
         }
     }
 }
