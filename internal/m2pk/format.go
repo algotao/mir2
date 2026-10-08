@@ -58,8 +58,20 @@ const (
 
 	// KindMap 表示地图容器。
 	KindMap = 1
-	// CodecBrotli 表示块用 brotli 压缩。
+	// KindAudio 表示音频容器（音效 + BGM + 清单）。
+	//
+	// 为什么音频也进容器（而不是一堆散文件）：
+	//  1. 一个文件好分发/好校验，也不再受**文件名大小写**影响 —— 容器里的键是
+	//     `CanonicalName` 规范化过的（小写、无扩展名），`Game-over2.wav` 与
+	//     `game-over2.wav` 在里面**就是同一个键**（这正是客户端集素材的坑，
+	//     见 docs/assets.md §6b）；
+	//  2. 音频走 `CodecStore`（**不压缩**）：实测 PCM 用 zlib/xz 只能压到 87~96%，
+	//     4bit ADPCM 更压不动 ⇒ 压缩纯属浪费 CPU（见 D-29）。
+	KindAudio = 2
+	// CodecBrotli 表示块用 brotli 压缩（地图用）。
 	CodecBrotli = 0
+	// CodecStore 表示块**原样存储**（音频用；见 KindAudio 的说明）。
+	CodecStore = 1
 
 	// DefaultQuality 是 brotli 质量档（0–11）。11 = 体积优先。
 	DefaultQuality = 11
@@ -88,10 +100,14 @@ type Entry struct {
 	CompSize uint32 // 压缩后字节数
 }
 
-// Source 是一个待打包的源文件。
+// Source 是一个待打包的块。
+//
+// `Data` 非空则**直接用内存里的字节**（不复读磁盘）—— 音频转换器就是这么用的：
+// 它一边转换一边攒字节，最后一把打包，中间不落临时文件。
 type Source struct {
 	Name string // 规范化名字
-	Path string // 源文件路径
+	Path string // 源文件路径（`Data` 为空时用它）
+	Data []byte // 内存数据（优先）
 }
 
 // Options 控制打包行为。
@@ -99,7 +115,11 @@ type Source struct {
 // 零值是"体积优先"（brotli q11）：打包是离线一次性动作，CPU 不敏感，
 // 而体积直接决定安装包大小。运行期的解码开销才是需要顾及的，brotli 解码并不慢。
 type Options struct {
-	// Quality 是 brotli 质量档（0–11）；0 = DefaultQuality(11)。
+	// Kind 是容器类型；0 = KindMap。
+	Kind int
+	// Codec 是块编码；0 = CodecBrotli（地图），CodecStore = 原样存储（音频）。
+	Codec int
+	// Quality 是 brotli 质量档（0–11）；0 = DefaultQuality(11)。CodecStore 时忽略。
 	Quality int
 	// Workers 是并行压缩的 goroutine 数；0 = GOMAXPROCS。
 	Workers int
@@ -226,6 +246,14 @@ func Pack(dst string, srcs []Source, opt Options) (Stats, error) {
 		}
 	}
 
+	kind := opt.Kind
+	if kind == 0 {
+		kind = KindMap
+	}
+	codec := opt.Codec
+	if codec != CodecStore {
+		codec = CodecBrotli
+	}
 	quality := opt.Quality
 	if quality <= 0 {
 		quality = DefaultQuality
@@ -267,7 +295,11 @@ func Pack(dst string, srcs []Source, opt Options) (Stats, error) {
 				if failed {
 					continue
 				}
-				raw, err := os.ReadFile(s.Path)
+				raw := s.Data
+				var err error
+				if raw == nil {
+					raw, err = os.ReadFile(s.Path)
+				}
 				if err != nil {
 					mu.Lock()
 					if firstErr == nil {
@@ -284,29 +316,34 @@ func Pack(dst string, srcs []Source, opt Options) (Stats, error) {
 					mu.Unlock()
 					continue
 				}
-				var buf bytes.Buffer
-				buf.Grow(len(raw)/16 + 64)
-				bw := brotli.NewWriterOptions(&buf, brotli.WriterOptions{
-					Quality: quality,
-					LGWin:   DefaultLGWin,
-				})
-				if _, err := bw.Write(raw); err != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = fmt.Errorf("m2pk: 压缩 %s 失败: %w", s.Path, err)
+				var comp []byte
+				if codec == CodecStore {
+					comp = raw // 不压缩：音频压不动（见 KindAudio 的说明）
+				} else {
+					var buf bytes.Buffer
+					buf.Grow(len(raw)/16 + 64)
+					bw := brotli.NewWriterOptions(&buf, brotli.WriterOptions{
+						Quality: quality,
+						LGWin:   DefaultLGWin,
+					})
+					if _, err := bw.Write(raw); err != nil {
+						mu.Lock()
+						if firstErr == nil {
+							firstErr = fmt.Errorf("m2pk: 压缩 %s 失败: %w", s.Path, err)
+						}
+						mu.Unlock()
+						continue
 					}
-					mu.Unlock()
-					continue
-				}
-				if err := bw.Close(); err != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = fmt.Errorf("m2pk: 压缩 %s 失败: %w", s.Path, err)
+					if err := bw.Close(); err != nil {
+						mu.Lock()
+						if firstErr == nil {
+							firstErr = fmt.Errorf("m2pk: 压缩 %s 失败: %w", s.Path, err)
+						}
+						mu.Unlock()
+						continue
 					}
-					mu.Unlock()
-					continue
+					comp = buf.Bytes()
 				}
-				comp := buf.Bytes()
 				blocks[idx] = block{
 					name:     s.Name,
 					rawSize:  uint32(len(raw)),
@@ -343,8 +380,8 @@ func Pack(dst string, srcs []Source, opt Options) (Stats, error) {
 	out := make([]byte, dataOff)
 	copy(out[0:], Magic)
 	binary.LittleEndian.PutUint16(out[4:], Version)
-	out[6] = KindMap
-	out[7] = CodecBrotli
+	out[6] = byte(kind)
+	out[7] = byte(codec)
 	binary.LittleEndian.PutUint32(out[8:], uint32(count))
 	binary.LittleEndian.PutUint32(out[12:], uint32(namesOff))
 	binary.LittleEndian.PutUint32(out[16:], uint32(namesLen))
@@ -388,7 +425,15 @@ type Reader struct {
 	entries  []Entry
 	names    []byte
 	namesLen int
+	kind     uint8
+	codec    uint8
 }
+
+// Kind 返回容器类型（`KindMap` / `KindAudio`）。
+func (r *Reader) Kind() uint8 { return r.kind }
+
+// Codec 返回块编码（`CodecBrotli` / `CodecStore`）。
+func (r *Reader) Codec() uint8 { return r.codec }
 
 // Open 打开容器并校验头部与索引结构。
 func Open(path string) (*Reader, error) {
@@ -416,14 +461,16 @@ func Open(path string) (*Reader, error) {
 		f.Close()
 		return nil, fmt.Errorf("%w: 版本 %d", ErrBadVersion, v)
 	}
-	if head[6] != KindMap {
+	if head[6] != KindMap && head[6] != KindAudio {
 		f.Close()
 		return nil, fmt.Errorf("%w: kind=%d", ErrBadKind, head[6])
 	}
-	if head[7] != CodecBrotli {
+	if head[7] != CodecBrotli && head[7] != CodecStore {
 		f.Close()
 		return nil, fmt.Errorf("%w: codec=%d", ErrBadCodec, head[7])
 	}
+	r.kind = head[6]
+	r.codec = head[7]
 	count := int(binary.LittleEndian.Uint32(head[8:]))
 	namesOff := int(binary.LittleEndian.Uint32(head[12:]))
 	namesLen := int(binary.LittleEndian.Uint32(head[16:]))
@@ -517,15 +564,21 @@ func (r *Reader) Lookup(name string) (Entry, bool) {
 	return Entry{}, false
 }
 
-// Read 解压指定条目并校验长度。
+// Read 取出指定条目并校验长度。
+//
+// 块编码由**容器头**决定：`CodecStore` 直接返回原字节，`CodecBrotli` 才解压。
 func (r *Reader) Read(e Entry) ([]byte, error) {
 	comp := make([]byte, e.CompSize)
 	if _, err := r.f.ReadAt(comp, int64(e.Offset)); err != nil {
 		return nil, fmt.Errorf("m2pk: 读取 %q 失败: %w", e.Name, err)
 	}
-	raw, err := io.ReadAll(brotli.NewReader(bytes.NewReader(comp)))
-	if err != nil {
-		return nil, fmt.Errorf("m2pk: 解压 %q 失败: %w", e.Name, err)
+	raw := comp
+	if r.codec == CodecBrotli {
+		var err error
+		raw, err = io.ReadAll(brotli.NewReader(bytes.NewReader(comp)))
+		if err != nil {
+			return nil, fmt.Errorf("m2pk: 解压 %q 失败: %w", e.Name, err)
+		}
 	}
 	if uint32(len(raw)) != e.RawSize {
 		return nil, fmt.Errorf("%w: %q 期望 %d 实得 %d", ErrSizeMismatch, e.Name, e.RawSize, len(raw))

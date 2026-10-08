@@ -28,6 +28,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::m2pk::Archive;
+
 /// 原版写死的音效编号（`SoundUtil.pas:36-142`）。
 ///
 /// 只列**有语义、且我们接得上**的那些；脚步与攻击的分类值见下面的函数。
@@ -352,97 +354,239 @@ pub fn map_music(number: i32) -> Option<String> {
     (number > 0).then(|| format!("Music/{number}.mp3"))
 }
 
-// ---------- `sound.lst`：编号 → 文件 ----------
+// ---------- 资产：一个容器（或退化为目录） ----------
 
-/// 音效库：`sound.lst`（`<编号>: wav\X.wav`）解析出来的"编号 → 文件"。
+/// 把文件名变成**容器内的键**。
 ///
-/// 原版是**外部文本**驱动的（`SoundUtil.pas:151-178`）：`;` 开头是注释，行首是编号，
-/// 其余是路径（分隔符 `:`/空格/制表符）。路径是**相对游戏根目录**的（`wav\X.wav`），
-/// 而我们 `sound.lst` 与那 778 个 wav **同在一个目录**里 ⇒ 这里只取文件名，
-/// 拼到该目录上。
-#[derive(Debug, Default)]
+/// 规则与写侧（Go `tools/wavpack` 的 `assetKey`）**逐条一致**：取 basename、
+/// 砍掉最后一个扩展名、转小写、把 `[a-z0-9_~-]` 之外的字符换成 `_`
+/// （`Game over2.wav` → `game_over2`）。
+///
+/// 这条规则是"把音频打成一个文件"的**主要收益之一**：客户端集里那类
+/// "清单写小写、文件写大写"的坑（`game-over2.wav` vs `Game-over2.wav`）
+/// 在容器里根本不存在 —— 键只有一个。
+pub fn asset_key(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let stem = match base.rfind('.') {
+        Some(i) if i > 0 => &base[..i],
+        _ => base,
+    };
+    stem.chars()
+        .map(|c| {
+            let c = c.to_ascii_lowercase();
+            match c {
+                'a'..='z' | '0'..='9' | '_' | '-' | '~' => c,
+                _ => '_',
+            }
+        })
+        .collect()
+}
+
+/// 编号表：`sound.lst` 里的"编号 → 文件名"（原版 `SoundUtil.pas:151-178`）。
+///
+/// 只保存**清单里写的文件名**（不解析成路径）：真正取字节由 [`SoundBank`] 负责 ——
+/// 容器里按 [`asset_key`] 查、目录里按文件名找。这样同一张表两地都能用。
+#[derive(Debug, Default, Clone)]
 pub struct Library {
-    files: HashMap<u16, PathBuf>,
-    /// `sound.lst` 里有、但磁盘上没有的编号（统计用；原版每次播放都要 `FileExists`，
-    /// 我们装载时查一次就够）。
-    missing: usize,
+    names: HashMap<u16, String>,
+    /// 清单里有多少行没解析出来（坏行/注释之外的东西）—— 起服务时打一行。
+    skipped: usize,
 }
 
 impl Library {
-    /// 从 `sound.lst` 的**字节**解析（不碰磁盘，方便单测）。
+    /// 解析 `sound.lst` 的字节：`;` 开头是注释，行首是编号，其余是路径
+    ///（分隔符 `:`/空格/制表符，与原版 `GetValidStr3` 一致）。
     ///
-    /// `wav_dir` = `sound.lst` 与那堆 wav 所在目录。
-    pub fn parse(list: &[u8], wav_dir: &Path) -> Library {
+    /// ⚠️ 刻意**不查磁盘**：容器里没有"文件是否存在"这回事（条目就是存在）。
+    pub fn parse(list: &[u8]) -> Library {
         let text = String::from_utf8_lossy(list);
         let mut lib = Library::default();
         for line in text.lines() {
-            let line = line.trim(); // 原版清单是 CRLF，`lines()` 已剥 `\r`
+            let line = line.trim();
             if line.is_empty() || line.starts_with(';') {
                 continue;
             }
-            // 原版用 `GetValidStr3(str, data, [':', ' ', #9])`：第一个 token 是编号，
-            // 剩下的是路径。
-            let (head, rest) = match line.find([':', ' ', '\t']) {
-                Some(i) => (&line[..i], line[i + 1..].trim()),
-                None => continue,
-            };
-            let Ok(number) = head.trim().parse::<u16>() else {
+            let Some(i) = line.find([':', ' ', '\t']) else {
+                lib.skipped += 1;
                 continue;
             };
-            let Some(name) = file_name_of(rest) else {
+            let Ok(number) = line[..i].trim().parse::<u16>() else {
+                lib.skipped += 1;
                 continue;
             };
-            let path = wav_dir.join(name);
-            if path.is_file() {
-                lib.files.insert(number, path);
-            } else {
-                lib.missing += 1;
+            let rest = line[i + 1..].trim();
+            let name = rest.rsplit(['\\', '/']).next().unwrap_or(rest).trim();
+            if name.is_empty() || name.contains("..") {
+                lib.skipped += 1;
+                continue;
             }
+            lib.names.insert(number, name.to_string());
         }
         lib
     }
 
-    /// 从目录里的 `sound.lst` 装载。没有清单文件就 `None`（调用方降级）。
-    pub fn load(wav_dir: &Path) -> Option<Library> {
-        let list = std::fs::read(wav_dir.join("sound.lst")).ok()?;
-        Some(Library::parse(&list, wav_dir))
+    /// 清单里这一编号对应的**文件名**。
+    pub fn name_of(&self, number: u16) -> Option<&str> {
+        self.names.get(&number).map(|s| s.as_str())
     }
 
-    /// 该编号对应的文件（**已确认存在**）。原版 `PlaySound` 就先查这个
-    /// （`SoundUtil.pas:183-186`）。
-    pub fn playable(&self, number: u16) -> Option<&Path> {
-        self.files.get(&number).map(|p| p.as_path())
-    }
-
-    /// 能播的编号数。
+    /// 清单里能查到名字的编号数。
     pub fn len(&self) -> usize {
-        self.files.len()
+        self.names.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.files.is_empty()
+        self.names.is_empty()
     }
 
-    /// 清单里有、磁盘上没有的条数（起服务时打一行，方便"以为有声音其实没装全"）。
-    pub fn missing(&self) -> usize {
-        self.missing
+    /// 解析不出来的行数。
+    pub fn skipped(&self) -> usize {
+        self.skipped
     }
 }
 
-/// 从 `wav\103.wav` / `wav/103.wav` 这种清单里取**文件名**。
+/// 音频资产的取字节入口：**容器优先**（一个文件），目录退化（原始素材/调试）。
 ///
-/// 原版路径是相对**游戏根目录**的（`.\wav\...`），而我们的 wav 与该清单同目录，
-/// 所以只留文件名；带目录分隔的（`..\`）一律不认 —— 不让清单指到别处去。
-fn file_name_of(entry: &str) -> Option<&str> {
-    // `..` 要拦在**整条**路径上：`..\..\evil.wav` 的最后一段是干净的 `evil.wav`
-    if entry.contains("..") {
-        return None;
+/// 容器由 `tools/wavpack/build.sh` 产出（M2PK，`kind=audio` / `codec=store`），
+/// 里面装着所有 wav 与编号表（键 `soundlist`）。
+pub enum SoundBank {
+    /// 一个容器文件里的全部音频。
+    Container { archive: Archive },
+    /// 一个目录里的散装 wav（原始客户端集，或 `-codec pcm` 时代的旧产物）。
+    Dir {
+        /// 小写文件名 → 路径（大小写不敏感的查找表，避免 Linux 上被文件名大小写坑到）。
+        files: HashMap<String, PathBuf>,
+    },
+}
+
+impl SoundBank {
+    /// 按 `paths` 的约定打开：容器优先，其次目录。
+    pub fn open() -> Option<SoundBank> {
+        if let Some(p) = crate::paths::audio_container() {
+            if let Ok(b) = SoundBank::open_container(&p) {
+                return Some(b);
+            }
+        }
+        crate::paths::audio_dir().and_then(|d| SoundBank::open_dir(&d))
     }
-    let last = entry.rsplit(['\\', '/']).next()?.trim();
-    if last.is_empty() {
-        return None;
+
+    /// 打开一个音频容器。
+    pub fn open_container(path: &Path) -> std::io::Result<SoundBank> {
+        Ok(SoundBank::Container {
+            archive: Archive::open(path)?,
+        })
     }
-    Some(last)
+
+    /// 扫一个目录里的 `*.wav`（大小写不敏感的文件名表）。
+    pub fn open_dir(dir: &Path) -> Option<SoundBank> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        let mut files = HashMap::new();
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.to_ascii_lowercase().ends_with(".wav") {
+                files.insert(name.to_ascii_lowercase(), e.path());
+            }
+        }
+        (!files.is_empty()).then_some(SoundBank::Dir { files })
+    }
+
+    /// 编号表：容器里的 `soundlist`，或目录里的 `sound.lst`。
+    pub fn library(&self) -> Option<Library> {
+        match self {
+            SoundBank::Container { archive } => {
+                let bytes = archive.read_name("soundlist").ok().flatten()?;
+                Some(Library::parse(&bytes))
+            }
+            SoundBank::Dir { .. } => {
+                let dir = crate::paths::audio_dir()?;
+                let bytes = std::fs::read(dir.join("sound.lst")).ok()?;
+                Some(Library::parse(&bytes))
+            }
+        }
+    }
+
+    /// 按**清单里的文件名**取字节。
+    pub fn data_name(&self, name: &str) -> Option<Vec<u8>> {
+        match self {
+            SoundBank::Container { archive } => archive.read_name(&asset_key(name)).ok().flatten(),
+            SoundBank::Dir { files } => {
+                // 容器有规范化键，目录没有 ⇒ 这里**大小写不敏感**地找一遍
+                // （客户端集里 `Game-over2.wav` 与清单的 `game-over2.wav` 就是这么错开的）
+                let key = name
+                    .rsplit(['\\', '/'])
+                    .next()
+                    .unwrap_or(name)
+                    .to_ascii_lowercase();
+                std::fs::read(files.get(&key)?).ok()
+            }
+        }
+    }
+
+    /// 按编号取字节。
+    pub fn data(&self, library: &Library, number: u16) -> Option<Vec<u8>> {
+        self.data_name(library.name_of(number)?)
+    }
+
+    /// 给终端打的一行"我在用哪一套"。
+    pub fn describe(&self) -> String {
+        match self {
+            SoundBank::Container { archive } => format!(
+                "容器 {} 块（kind={} codec={}）",
+                archive.len(),
+                archive.kind(),
+                archive.codec()
+            ),
+            SoundBank::Dir { files } => format!("目录 {} 个 wav", files.len()),
+        }
+    }
+}
+
+/// 音频资产包：**取字节的两件套**（容器/目录 + 编号表）。
+///
+/// 抽出来是为了让调用方（app / e2e）少写两次 "Option 展开 + 查表 + 规范化" ——
+/// 那三件事每次都要做对，尤其是 [`asset_key`] 那一步（容器里靠它查）。
+pub struct SoundAssets {
+    pub bank: SoundBank,
+    pub library: Library,
+}
+
+impl SoundAssets {
+    /// 按 `paths` 的约定打开（容器优先，其次目录）。取不到编号表 ⇒ `None`。
+    pub fn open() -> Option<SoundAssets> {
+        let bank = SoundBank::open()?;
+        let library = bank.library()?;
+        Some(SoundAssets { bank, library })
+    }
+
+    /// 按原版编号取字节，同时给出**容器里的键**（调用方拿它做缓存/去重的键）。
+    pub fn bytes(&self, number: u16) -> Option<(String, Vec<u8>)> {
+        let name = self.library.name_of(number)?;
+        self.bytes_name(name)
+    }
+
+    /// 按文件名取字节（BGM 用的是写死的文件名，不是编号）。
+    pub fn bytes_name(&self, name: &str) -> Option<(String, Vec<u8>)> {
+        let data = self.bank.data_name(name)?;
+        Some((asset_key(name), data))
+    }
+
+    /// 能取到字节的编号数（起着服务时打一行，方便"以为有声音其实没装全"）。
+    pub fn available(&self) -> usize {
+        (0..=u16::MAX)
+            .filter(|n| self.library.name_of(*n).is_some())
+            .filter(|n| self.bank.data(&self.library, *n).is_some())
+            .count()
+    }
+
+    /// 给终端打的一行。
+    pub fn describe(&self) -> String {
+        format!(
+            "{}，编号表 {} 条（能取到 {} 条）",
+            self.bank.describe(),
+            self.library.len(),
+            self.available()
+        )
+    }
 }
 
 #[cfg(test)]
@@ -596,28 +740,34 @@ mod tests {
     }
 
     /// `sound.lst` 的解析：注释、CRLF、`wav\` 前缀、坏行。
+    ///
+    /// ⚠️ 现在**不查磁盘**了（容器里没有"文件是否存在"这回事，条目就是存在）；
+    /// 取字节由 [`SoundBank`] 负责。
     #[test]
     fn 清单解析() {
-        let dir = std::env::temp_dir().join("mir2-sound-清单解析");
-        let _ = std::fs::create_dir_all(&dir);
-        std::fs::write(dir.join("103.wav"), b"RIFF").unwrap();
-
-        // ⚠️ 原版清单是 GBK + CRLF；解析只认 ASCII 部分，所以这里用字符串再取字节。
+        // ⚠️ 原版清单是 GBK + CRLF；解析只取 ASCII 部分，所以这里用字符串再取字节。
         let list = "; 这是注释\r\n103:\twav\\103.wav\r\n1: wav\\1.wav\r\nbad line\r\n104: wav\\104.wav\r\n";
-        let lib = Library::parse(list.as_bytes(), &dir);
+        let lib = Library::parse(list.as_bytes());
+        assert_eq!(lib.len(), 3, "三条有效行");
+        assert_eq!(lib.skipped(), 1, "bad line 解析不出来，要计数而不是静默");
+        assert_eq!(lib.name_of(103), Some("103.wav"));
+        assert_eq!(lib.name_of(1), Some("1.wav"), "路径前缀要剥掉");
+        assert_eq!(lib.name_of(999), None);
+    }
 
-        // 103 存在 ⇒ 收录；1/104 不存在 ⇒ 只计数
-        assert_eq!(lib.len(), 1);
-        assert_eq!(lib.missing(), 2);
-        assert_eq!(lib.playable(103).unwrap().file_name().unwrap(), "103.wav");
-        assert!(
-            lib.playable(1).is_none(),
-            "磁盘上没有的不给播（原版也是先 FileExists）"
+    /// 容器内的键：与写侧（Go `assetKey`）同规则 —— 大小写与非法字符都归一。
+    #[test]
+    fn 容器键() {
+        assert_eq!(asset_key("103.wav"), "103");
+        assert_eq!(asset_key("Game-over2.wav"), "game-over2");
+        assert_eq!(
+            asset_key("game-over2.wav"),
+            "game-over2",
+            "大小写归一 ⇒ 同一个键"
         );
-        assert!(lib.playable(999).is_none());
-        // 越界的目录（`..\`）不认，不让清单指到别处
-        assert!(file_name_of("..\\..\\evil.wav").is_none());
-        assert_eq!(file_name_of("wav\\M100-0.wav"), Some("M100-0.wav"));
+        assert_eq!(asset_key("Game over2.wav"), "game_over2", "空格换成下划线");
+        assert_eq!(asset_key("M55-2.WAV"), "m55-2");
+        assert_eq!(asset_key("wav\\1370-2-1.wav"), "1370-2-1");
     }
 
     /// BGM 与进图音乐的文件名（`SoundUtil.pas:31-34`、`:219`）。
@@ -631,24 +781,29 @@ mod tests {
         assert_eq!(map_music(-1), None, "-1 = 停");
     }
 
-    /// **真素材验收**：手上的 `mir2c/wav` 真能对上原版这套编号。
+    /// **真素材验收（端到端）**：从音频资产里取字节 → 用 [`crate::wave`] 解码。
     ///
-    /// 门控是 `MIR2C_DATA`（同 `login_ui.rs` / `select_ui.rs`）：没装素材的机器跳过。
+    /// 这条同时**跨语言验证**了两件事：容器是 Go 写的（`tools/wavpack`）、
+    /// ADPCM 是 Go 编的，而这里是 Rust 读 + Rust 解 —— 任何一边写歪了，
+    /// 这里的帧数/峰值/时长都会立刻不对。
+    ///
+    /// 门控同别处：没装资产（`assets/audio` 与 `mir2c/wav` 都没有）就跳过。
     #[test]
     fn 真素材_音效清单与关键编号() {
-        let Some(dir) = crate::paths::audio_dir() else {
-            eprintln!("跳过：没找到音频目录（设 MIR2C_DATA 或 MIR2_ASSET_DIR）");
+        let Some(bank) = SoundBank::open() else {
+            eprintln!("跳过：没找到音频资产（先跑 tools/wavpack/build.sh）");
             return;
         };
-        let lib = Library::load(&dir).expect("音频目录里该有 sound.lst");
-        eprintln!(
-            "音效库：{}（可播 {} 条，清单里有 {} 条缺文件）",
-            dir.display(),
-            lib.len(),
-            lib.missing()
+        let Some(lib) = bank.library() else {
+            panic!("有资产却读不到编号表（容器里的 soundlist / 目录里的 sound.lst）");
+        };
+        eprintln!("音频资产：{}，编号表 {} 条", bank.describe(), lib.len());
+        assert!(
+            lib.len() > 700,
+            "原版清单有一千多条，手上该有 700+ 个能播的编号"
         );
-        assert!(lib.len() > 700, "原版清单有一千多条，手上该有 778 个 wav");
-        // 我们接上的那些编号，一条条都要真的能播
+
+        // 我们接上的那些编号，一条条都要**真的解得出声音**
         for (n, why) in [
             (idx::NORM_BUTTON_CLICK, "UI 按钮"),
             (idx::ROCK_DOOR_OPEN, "开门"),
@@ -664,26 +819,72 @@ mod tests {
             (footstep(Terrain::Water, true, true), "水里跑（第二只脚）"),
             (magic(1, MagicStage::Start), "技能起手"),
         ] {
+            let bytes = bank
+                .data(&lib, n)
+                .unwrap_or_else(|| panic!("编号 {n}（{why}）取不到字节"));
+            let pcm = crate::wave::decode(&bytes)
+                .unwrap_or_else(|e| panic!("编号 {n}（{why}）解码失败：{e}"));
+            assert!(pcm.frames() > 0, "编号 {n}（{why}）解出来是空的");
+            assert!(pcm.peak() > 655, "编号 {n}（{why}）峰值只有 {}", pcm.peak());
             assert!(
-                lib.playable(n).is_some(),
-                "编号 {n}（{why}）在清单里没有可播的文件"
+                pcm.rate >= 8000 && pcm.rate <= 48000,
+                "编号 {n} 采样率 {} 离谱",
+                pcm.rate
             );
         }
-        // 三个场景 BGM（原版写死的文件名，同目录）
+
+        // 三首场景 BGM（原版写死的文件名）：能从资产里取到、解得出、且是"一首歌"的长度
         for bgm in [BGM_LOGIN, BGM_SELECT, BGM_GAMEOVER] {
-            assert!(dir.join(bgm).is_file(), "缺少 BGM：{bgm}");
+            let bytes = bank
+                .data_name(bgm)
+                .unwrap_or_else(|| panic!("取不到 BGM：{bgm}"));
+            let pcm = crate::wave::decode(&bytes).unwrap_or_else(|e| panic!("{bgm} 解码失败：{e}"));
+            let secs = pcm.frames() as f32 / pcm.rate as f32;
+            assert!(secs > 5.0, "{bgm} 只有 {secs:.1}s，不像一首 BGM");
         }
-        // 进图音乐：**实测过没有** —— 手上一个 mp3 都没有。
-        // 不断言"必须没有"（以后补了资产这条就会变），只把现状打出来。
-        let mp3 = map_music(1).unwrap();
+
+        // `fact` 截断：ADPCM 最后一块会补零，解码器必须按真实帧数截断。
+        // 这里自己解析同一个字节流里 `fact` 的值，与解码结果的帧数对上。
+        let bytes = bank.data(&lib, idx::NORM_BUTTON_CLICK).unwrap();
+        let fact = fact_frames(&bytes);
+        if let Some(f) = fact {
+            let pcm = crate::wave::decode(&bytes).unwrap();
+            assert_eq!(
+                pcm.frames(),
+                f,
+                "解码帧数必须等于 fact（否则最后一块的补零混进来了）"
+            );
+            eprintln!("fact 截断检查 ✓（{f} 帧）");
+        }
+
+        // 进图音乐：**素材里根本没有 mp3**（客户端集只有 wav/），这条路没有素材。
+        // 不断言"必须没有"（真补了资产这条就该变），只把现状打出来。
         eprintln!(
-            "进图音乐 {}：{}（协议里也还没有地图音乐号）",
-            mp3,
-            if dir.join(&mp3).is_file() {
-                "在"
-            } else {
-                "没有 —— 这条路暂时没声音"
-            }
+            "进图音乐 {}：素材不存在（客户端集里没有 mp3，协议里也还没有地图音乐号）",
+            map_music(1).unwrap()
         );
+    }
+
+    /// 从 wav 字节里取 `fact` 段声明的帧数（压缩格式的真实长度）。
+    fn fact_frames(bytes: &[u8]) -> Option<usize> {
+        let mut off = 12usize;
+        while off + 8 <= bytes.len() {
+            let id = &bytes[off..off + 4];
+            let size = u32::from_le_bytes([
+                bytes[off + 4],
+                bytes[off + 5],
+                bytes[off + 6],
+                bytes[off + 7],
+            ]) as usize;
+            if id == b"fact" && size >= 4 {
+                let b = off + 8;
+                return Some(
+                    u32::from_le_bytes([bytes[b], bytes[b + 1], bytes[b + 2], bytes[b + 3]])
+                        as usize,
+                );
+            }
+            off = off + 8 + size + (size & 1);
+        }
+        None
     }
 }

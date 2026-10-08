@@ -21,6 +21,7 @@ pub mod select_ui;
 /// 音效/音乐的**规格**：编号表、地形→脚步、`sound.lst` 解析（不出声）。
 pub mod sound;
 pub mod text;
+pub mod wave;
 /// 会话世界状态：收到一条信封 → 世界变成什么样（纯函数）。
 ///
 /// `client/app` 与 `client/e2e` **共用这一份** —— 见 D-18 与 `world.rs` 的文件头。

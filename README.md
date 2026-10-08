@@ -129,41 +129,47 @@ cd client && cargo run -p mir2-e2e -- world -addr 127.0.0.1:7500 \
 ## 音频（音乐 / 音效）
 
 窗口里按 **`M`** 切音乐、**`N`** 切音效（原版只有这两个开关，**没有音量滑条** ——
-`MShare.pas:213-214`）。终端里会打一行 `[audio] BGM = log-in-long2.wav`，
-听不见的时候靠它判断到底有没有在放。
+`MShare.pas:213-214`）。终端里会打两行，听不见时靠它们判断到底有没有在放：
 
-素材：原始是 `$WS/mir2c/wav`（777 个 `.wav` + **`sound.lst`** 索引表，**209 MB**）。
-路径解析：`$MIR2_AUDIO_DIR` / `$MIR2C_WAV` → **`assets/audio`（产物，优先）** →
-`mir2c/wav`（原件），规则在 `client/core/src/paths.rs`（与美术目录同一套约定）。
-
-**瘦身**（`tools/wavpack/build.sh`，**209 MB → 73.5 MB，2.8×**，1.5 秒）：
-
-```bash
-tools/wavpack/build.sh              # 源自动探测 = 客户端集
-tools/wavpack survey -src DIR       # 只量不改：格式分布 / 最大的文件 / 重复 / 估算
+```
+[mir2-app] 音频资产 = 容器 776 块（kind=2 codec=1），编号表 753 条（能取到 741 条）
+[audio] BGM = log-in-long2.wav
 ```
 
-* 音效 → **22.05 kHz 单声道**（原版没有 pan/距离衰减 ⇒ 单声道不丢游戏信息），
-  BGM 三首**保持原样**（音乐降采样听得出来）；
-* 原版**从不播**的长文件不产出（省 40 MB）：`Field2.wav`、`main_theme.wav`
-  —— 但**清单引用了的绝不跳**（`Game-over2.wav` 就属于这种）；
-* ⚠️ **无损压缩白费**（实测 zlib 87~96%、xz 82~93%）—— 音效是宽带噪声，压不动，
-  所以这条路根本没做；
-* 自检两条：每个文件读回核对（头/帧数/峰值）+ **清单里源能播的编号产物一个不少**
-  （实测 741 → 741）；顺手把 7 个文件的大小写按清单拼写对齐（Linux 上才找得到）。
+**资产是一个文件**：`assets/audio/sounds.m2pk`（209.0 MB 原始 → **17.92 MB**），
+由 `tools/wavpack/build.sh` 产出（约 2 秒）：
 
-* **规格**在 `client/core/src/sound.rs`：编号表、地形→脚步、被击中/技能/怪物编号、
-  `sound.lst` 的"编号 → 文件"。全部照抄原版（`SoundUtil.pas:36-142`、`Actor.pas:2144-2396`），
-  文件头有出处表；测试里逐条对齐了原版的数字列表。
-* **发声**在 `client/app/src/audio.rs`：SDL3 流回调 + **软件混音**（多路叠加、BGM 循环、
-  两组开关互不牵连）。用 SDL3 自带的 WAV 加载，**没有引入任何新依赖**。
-* 已接上的事件：登录/选角/死亡三首场景 BGM、按钮声(103)、开门(100)、选角解冻(101)、
+```bash
+tools/wavpack/build.sh                              # 默认：4bit IMA ADPCM，17.92 MB
+MIR2_AUDIO_CODEC=pcm tools/wavpack/build.sh         # 想无损：73.5 MB
+MIR2_AUDIO_BGM_PCM=1 tools/wavpack/build.sh         # 音乐无损 + 音效 ADPCM ⇒ 35.2 MB
+tools/wavpack survey -src DIR                       # 只量不改：格式/最大的文件/重复/估算
+```
+
+为什么是**一个文件**（而不是一堆 wav）：好分发、好校验，而且容器里的键是**规范化**的
+（小写、去扩展名）⇒ 客户端集里"清单写小写、文件写大写"（`game-over2.wav` vs
+`Game-over2.wav`，**Linux 上直接找不到**）那类坑**不存在**。容器不压缩
+（实测音频压不动：PCM 用 zlib 只有 87~96%）。
+
+| 层 | 在哪 | 管什么 |
+|---|---|---|
+| 规格 | `client/core/src/sound.rs` | 编号表、地形→脚步、武器/性别/技能编号、**资产从哪取**（容器优先，目录退化）|
+| 解码 | `client/core/src/wave.rs` | WAV 字节 → PCM（PCM 8/16bit + **IMA ADPCM 4bit**），纯逻辑、可单测 |
+| 发声 | `client/app/src/audio.rs` | SDL3 流回调 + **软件混音**（多路叠加、BGM 循环、两个开关）|
+
+- 规格全部照抄原版（`SoundUtil.pas:36-142`、`Actor.pas:2144-2396`，文件头有出处表）；
+- **已接上**：登录/选角/死亡三首场景 BGM、按钮声(103)、开门(100)、选角解冻(101)、
   走路脚步（按地形 1..32，帧 1/4 各一声）、攻击挥刀（按武器形状 50..57）、
-  自己挨打惨叫（138/139）、自己死亡（144/145 + `game over2.wav`）。
+  自己挨打惨叫（138/139）、自己死亡（144/145 + `game over2.wav`）；
+- **质量代价有数字**：4bit ADPCM 解码回来与原 PCM 的 SNR 中位 **17.5 dB**
+  （最差的是噪声型短音效；原版素材本来就是 16bit PCM）⇒ 想无损就用 `-codec pcm`；
+- 自检两条（每次 build 跑）：① 解码回来比 SNR；② **从容器里读回来**，清单里源能播的
+  编号一个不少（741 → 741 ✓）。另做过一次**独立对拍**：`afconvert` 解我们的产物与
+  我们的解码器**逐样本一致**。
 
 | 还没接的 | 为什么 |
 |---|---|
-| 进图音乐 `Music/<地图音乐号>.mp3` | **素材不存在**：客户端集里**没有任何 mp3**（`.mp3/.ogg/.wma/.mid` 全 `find` 过，只有 `wav/`）；协议里 `MapDescription` 也**没有音乐号字段**（原版是服务端 `SM_MAPDESCRIPTION.Recog` 下发，`ClMain.pas:5222`）。管道位置已留好：`sound::map_music` |
+| 进图音乐 `Music/<地图音乐号>.mp3` | **素材不存在**：客户端集里**没有任何 mp3**（`.mp3/.ogg/.wma/.mid` 全 `find` 过，只有 `wav/`）；协议里 `MapDescription` 也**没有音乐号字段**（原版靠服务端 `SM_MAPDESCRIPTION.Recog` 下发，`ClMain.pas:5222`）。管道位置已留好：`sound::map_music` |
 | 物品/技能/金币音（106/107/108/111..118、`10000+技能号*10`） | 那几套系统还没接，没有触发点（编号与算法都已写在 `sound.rs` 里） |
 
 ## 三条最容易踩的

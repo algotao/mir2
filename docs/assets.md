@@ -337,7 +337,7 @@ fridx := fridx + (aniCount mod (ani + ani*anitick)) div (1 + anitick)
 | 格式 | 规格 |
 |---|---|
 | `lig*.dat` | 6 档光照掩膜（`PlayScn.pas:28-35`），索引色小图；掩膜矩阵在 `PlayScn.pas:37-120`（`LightMask0..5`） |
-| `.wav` + `sound.lst` | 音效：**编号 → 文件**的清单（`SoundUtil.pas:151-192`）。实测 777 个 / 209.0 MB，**全部是未压缩 PCM**（775×16bit + 2×8bit；44.1k×771；257 立体声 / 520 单声道）。转换见 §6b |
+| `.wav` + `sound.lst` | 音效：**编号 → 文件**的清单（`SoundUtil.pas:151-192`）。实测 777 个 / 209.0 MB，**全部是未压缩 PCM**（775×16bit + 2×8bit；44.1k×771；257 立体声 / 520 单声道）。产物 = **一个容器**（§6b）|
 | `Music/%d.mp3` | 原版按地图编号取音乐（`SoundUtil.pas:219`）—— ⚠️ **客户端集里没有任何 mp3**（`find` 过：`.mp3/.ogg/.wma/.mid` 全无，`mir2c` 只有 `wav/`），所以**这条路没有素材**，见 §6b |
 
 ### 3.5 actor 图号（人物 / 怪物）—— **2026-10-07 提取并落地**
@@ -404,10 +404,18 @@ fridx := fridx + (aniCount mod (ani + ani*anitick)) div (1 + anitick)
 
 ---
 
-## 5. M2PK v1（地图容器，**已实现**）
+## 5. M2PK v1（资产容器，**已实现**）
 
-> **范围只管地图**：美术 `.wzl` **直读**、音频直读，都不走 M2PK（D-11）。
-> 实现 = [`internal/m2pk`](../internal/m2pk)（库）+ [`tools/m2pk`](../tools/m2pk)（CLI + `build.sh`）。
+> 一个格式，两种用途（靠头里的 `kind` / `codec` 区分）：
+>
+> | kind | codec | 谁写 | 内容 | 体积 |
+> |---|---|---|---|---|
+> | 1 地图 | 0 brotli | [`tools/m2pk`](../tools/m2pk) | 770 张 `.map` | 253.73 → **8.83 MB**（−96.5%）|
+> | 2 音频 | 1 原样 | [`tools/wavpack`](../tools/wavpack) | 音效 + BGM + 编号表 | 209.0 → **17.92 MB**（−91.4%）|
+>
+> 美术 `.wzl` 仍然**直读**（D-11）。
+> 实现 = [`internal/m2pk`](../internal/m2pk)（Go 库）+ 两个 CLI + 各自的 `build.sh`；
+> 读侧在客户端的 [`core/src/m2pk.rs`](../client/core/src/m2pk.rs)。
 
 **目标**：逐字节可回验、随机访问、确定性、体积最小。
 
@@ -417,8 +425,8 @@ fridx := fridx + (aniCount mod (ani + ani*anitick)) div (1 + anitick)
 Header（32 B，小端）
   0   magic      [4]  "M2PK"
   4   version    u16  1
-  6   kind       u8   1 = 地图
-  7   codec      u8   0 = brotli
+  6   kind       u8   1 = 地图 / 2 = 音频
+  7   codec      u8   0 = brotli / 1 = 原样存储
   8   count      u32  块数
   12  namesOff   u32  名字池偏移（相对文件头）
   16  namesLen   u32  名字池字节数
@@ -434,7 +442,7 @@ Entry（24 B × count，紧随 Header，按名字升序 ⇒ 读侧可二分）
   20  compSize   u32  压缩后字节数
 
 名字池   各块名字（去扩展名 + 小写）顺序拼接，无分隔符
-数据区   每块一个独立的 brotli 流，块起始 8 字节对齐
+数据区   每块一个独立的流（codec=0 时 brotli、codec=1 时**原样**），块起始 8 字节对齐
 ```
 
 ### 5.2 设计要点
@@ -484,7 +492,7 @@ m2pk info   -in FILE [-list]
 assets/                    # 由 tools/ 生成，**不入库**（.gitignore 已含 /assets/）
 ├── image/                 # ★ 不放 m2pk —— 直接放原始 .wzl/.wzx（D-11 美术直读）
 ├── map/maps.m2pk          # ★ 单文件容器，8.83 MB（tools/m2pk/build.sh 产出）
-├── audio/*.wav            # ★ 转换过的音效 + sound.lst，73.5 MB（tools/wavpack/build.sh 产出）
+├── audio/sounds.m2pk      # ★ 音效 + BGM + 编号表，17.92 MB（tools/wavpack/build.sh 产出）
 └── font/                  # 点阵字库（bitmap）
 ```
 
@@ -492,26 +500,41 @@ assets/                    # 由 tools/ 生成，**不入库**（.gitignore 已�
   （同输入 ⇒ 同字节，有单测守着）⇒ 一条 `build.sh` 重建即可。
 - 命名规则遵循 [D-03](./decisions.md)：**全小写、无中文、`/` 分隔**。
 
-### 6b 音频产物：**转换**，不是打包压缩
+### 6b 音频产物：**一个容器文件**，里面是 4bit ADPCM
 
-原始音频 209.0 MB，产物 **73.5 MB（2.8×）**，由 `tools/wavpack/build.sh` 产出，
-取舍写在 `tools/wavpack/main.go` 的文件头（决策见 [D-29](./decisions.md)）。三条要点：
+来源 209.0 MB（777 个未压缩 PCM wav）→ 产物 **17.92 MB（−91.4%）**，
+由 `tools/wavpack/build.sh` 产出**一个** `assets/audio/sounds.m2pk`
+（M2PK，`kind=2 音频` / `codec=1 原样存储`）。三点理由与做法：
 
-1. **无损压缩这条路直接排除**（实测）：对原始 PCM，zlib 只有 87~96%、xz 82~93%
-   —— 音效是宽带噪声，本来就压不动。所以别花时间"打包 + 压缩"。
-2. **降的是采样率与声道**：音效 → 22.05 kHz 单声道（原版**没有 pan、没有距离衰减**，
-   `SoundUtil.pas:180-192` ⇒ 单声道不丢游戏信息）；**BGM 三首保持原样**（音乐降采样听得出来）。
-3. **原版从不播的长文件不产出**（省 40.1 MB）：`Field2.wav`（`bmg_field` 定义了但全代码未用）、
-   `main_theme.wav`（播它的定时器被注释掉，`PlayScn.pas:485-486`）。
-   ⚠️ 但**清单里引用了的绝不跳**（`Game-over2.wav` 就是这种：原版代码不播它，
-   可 `sound.lst` 有编号指向它）—— 工具会照常转换并说明。
+1. **一个文件，不是一堆**。好分发、好校验；而且容器里的键是**规范化**的
+   （小写、去扩展名、非法字符→`_`）⇒ 客户端集里那类"清单写小写、文件写大写"
+   （`game-over2.wav` vs `Game-over2.wav`，**Linux 上会直接找不到**）在容器里
+   **根本不存在**。
+2. **不压缩**（`codec=1`）。实测：PCM 用 zlib 只能到 87~96%、xz 82~93%；
+   4bit ADPCM 更压不动 ⇒ 压缩纯属浪费 CPU（见 D-29）。
+3. **编码用 4bit IMA ADPCM**（`fmt=0x11`，波形域、无预回声、**样本精确**）：
+   - 音效 → 22.05 kHz 单声道（原版没有 pan/距离衰减 ⇒ 单声道不丢游戏信息）；
+   - BGM 三首**不动**采样率与声道（音乐降采样听得出来）；
+   - **原版从不播的长文件不产出**（省 40.1 MB）：`Field2.wav`（`bmg_field` 定义了
+     但全代码未用）、`main_theme.wav`（播它的定时器被注释掉）。⚠️ 但**清单引用了的
+     绝不跳**：`Game-over2.wav` 原版代码不播、清单第 49 号却指向它 ⇒ 照常进容器。
 
-另外两件顺手做的事（都有自检守着）：
+**质量是有代价的，所以有数字**：解码回来与原 PCM 的 SNR —— 最小 6.8 dB /
+**中位 17.5 dB** / 均值 18.0 dB。最差的是**噪声型**素材（`470-1.wav` 零交叉
+18012 次/秒，Nyquist 才 22050），4bit 差分编码对它天生不友好。换回无损只需
+`MIR2_AUDIO_CODEC=pcm tools/wavpack/build.sh`（→ 73.5 MB），
+或 `-bgm-pcm`（音乐无损、音效 ADPCM → 35.2 MB）。
 
-- **大小写对齐**：清单写 `wav\game-over2.wav`、真文件叫 `Game-over2.wav`，macOS 上碰巧能播、
-  **Linux 上找不到**。产物按清单的拼写输出（7 个文件受影响）。
-- **自检**：每个文件读回核对（头 / 帧数 / 峰值同量级），外加一条"**清单里源能播的编号，
-  产物一个都不能少**"（实测 741 → 741 ✓）。
+**验证**（每次 build 都跑，两条）：
+
+- **自检①**：把产物解码回来与原 PCM 比 SNR（同时报告最差的五个文件）；
+- **自检②**：**从容器里读回来**，清单里源能播的编号**一个都不能少**
+  （实测 741 → 741 ✓）。
+- 另外做过一次**独立对拍**：用 macOS 自带的 `afconvert`（MS-IMA 解码器）解我们的
+  产物，与本项目的解码器**逐样本一致**（2932/2932，最大差 0）⇒ 码流是标准合规的，
+  SNR 是真实水平而非实现错误。
+- 客户端侧还有一条跨语言验收：Rust 解码器读 Go 写的 `fact`（真实帧数）并断言帧数相等
+  —— 两边任何一处镜像错了都会红。
 
 ---
 

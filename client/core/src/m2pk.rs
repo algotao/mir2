@@ -1,4 +1,11 @@
-//! M2PK —— 地图容器读取（**只读；写侧在 Go 的 `tools/m2pk`**）。
+//! M2PK —— 资产容器读取（**只读；写侧在 Go 的 `tools/m2pk` / `tools/wavpack`**）。
+//!
+//! 目前两种用途（同一个格式，靠头里的 `kind` / `codec` 区分）：
+//!
+//! | kind | codec | 谁写 | 内容 |
+//! |---|---|---|---|
+//! | 1 地图 | 0 brotli | `tools/m2pk` | `.map`（压缩收益大）|
+//! | 2 音频 | 1 原样 | `tools/wavpack` | 音效/BGM + 编号表（**不压缩**：实测音频压不动，见 D-29）|
 //!
 //! 规格见 `docs/assets.md §5`，决策见 `docs/decisions.md D-11 / D-22`。
 //! 单一真源 = 原始 `.map` 文件；容器是它的**逐字节无损**打包（可用 `m2pk verify` 回验）。
@@ -7,8 +14,8 @@
 //! Header（32 B，小端）
 //!   0   magic      [4]  "M2PK"
 //!   4   version    u16  1
-//!   6   kind       u8   1 = 地图
-//!   7   codec      u8   0 = brotli
+//!   6   kind       u8   1 = 地图 / 2 = 音频
+//!   7   codec      u8   0 = brotli / 1 = 原样存储
 //!   8   count      u32  块数
 //!   12  namesOff   u32  名字池偏移（相对文件头）
 //!   16  namesLen   u32  名字池字节数
@@ -43,8 +50,12 @@ pub const HEADER_LEN: usize = 32;
 pub const ENTRY_LEN: usize = 24;
 /// `kind` = 地图容器。
 pub const KIND_MAP: u8 = 1;
-/// `codec` = brotli。
+/// `kind` = 音频容器（音效/BGM + 编号表，见 `crate::sound`）。
+pub const KIND_AUDIO: u8 = 2;
+/// `codec` = brotli（地图）。
 pub const CODEC_BROTLI: u8 = 0;
+/// `codec` = 原样存储（音频：压不动，别浪费 CPU）。
+pub const CODEC_STORE: u8 = 1;
 
 fn bad(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
@@ -80,6 +91,8 @@ pub fn canonical_name(file_name: &str) -> String {
 pub struct Archive {
     data: Vec<u8>,
     entries: Vec<Entry>,
+    kind: u8,
+    codec: u8,
 }
 
 impl Archive {
@@ -103,11 +116,13 @@ impl Archive {
         if version != VERSION {
             return Err(bad(format!("M2PK 版本不支持：{version}")));
         }
-        if data[6] != KIND_MAP {
-            return Err(bad(format!("M2PK kind 不支持：{}", data[6])));
+        let kind = data[6];
+        if kind != KIND_MAP && kind != KIND_AUDIO {
+            return Err(bad(format!("M2PK kind 不支持：{kind}")));
         }
-        if data[7] != CODEC_BROTLI {
-            return Err(bad(format!("M2PK codec 不支持：{}", data[7])));
+        let codec = data[7];
+        if codec != CODEC_BROTLI && codec != CODEC_STORE {
+            return Err(bad(format!("M2PK codec 不支持：{codec}")));
         }
         let count = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
         let names_off = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
@@ -158,7 +173,22 @@ impl Archive {
                 comp_size,
             });
         }
-        Ok(Self { data, entries })
+        Ok(Self {
+            data,
+            entries,
+            kind,
+            codec,
+        })
+    }
+
+    /// 容器类型（[`KIND_MAP`] / [`KIND_AUDIO`]）。
+    pub fn kind(&self) -> u8 {
+        self.kind
+    }
+
+    /// 块编码（[`CODEC_BROTLI`] / [`CODEC_STORE`]）。
+    pub fn codec(&self) -> u8 {
+        self.codec
     }
 
     pub fn len(&self) -> usize {
@@ -182,14 +212,21 @@ impl Archive {
             .map(|i| &self.entries[i])
     }
 
-    /// 解压一块，并校验长度与 `raw_size` 一致。
+    /// 取出一块，并校验长度与 `raw_size` 一致。
+    ///
+    /// 块编码看容器头（[`CODEC_STORE`] 直接返回原字节，[`CODEC_BROTLI`] 才解压）。
     pub fn read(&self, e: &Entry) -> io::Result<Vec<u8>> {
         let off = e.offset as usize;
         let comp = &self.data[off..off + e.comp_size as usize];
         let mut out = Vec::with_capacity(e.raw_size as usize);
-        let mut dec = Decompressor::new(Cursor::new(comp), 4096);
-        dec.read_to_end(&mut out)
-            .map_err(|err| bad(format!("M2PK 解压 {:?} 失败：{err}", e.name)))?;
+        if self.codec == CODEC_STORE {
+            // 音频容器走这条：原样切片（`Cursor`/`Decompressor` 都不需要）
+            out.extend_from_slice(comp);
+        } else {
+            let mut dec = Decompressor::new(Cursor::new(comp), 4096);
+            dec.read_to_end(&mut out)
+                .map_err(|err| bad(format!("M2PK 解压 {:?} 失败：{err}", e.name)))?;
+        }
         if out.len() != e.raw_size as usize {
             return Err(bad(format!(
                 "M2PK {:?} 解压后 {} 字节，rawSize 声明 {}",

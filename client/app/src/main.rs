@@ -1505,26 +1505,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(d) => println!("[mir2-app] 资产目录 = {}", d.display()),
         None => println!("[mir2-app] 未找到资产目录：设 MIR2_ASSET_DIR=<mir2c/data>"),
     }
-    // 音效库：`sound.lst`（编号 → wav）。找不到就静默降级（界面照旧能用）。
-    let audio_dir = mir2_core::paths::audio_dir();
-    let sounds: Option<mir2_core::sound::Library> = match &audio_dir {
-        Some(d) => match mir2_core::sound::Library::load(d) {
-            Some(lib) => {
-                println!(
-                    "[mir2-app] 音效库 = {}（{} 条可播，清单里缺 {} 条）",
-                    d.display(),
-                    lib.len(),
-                    lib.missing()
-                );
-                Some(lib)
-            }
-            None => {
-                println!("[mir2-app] {} 里没有 sound.lst ⇒ 没有音效", d.display());
-                None
-            }
-        },
+    // 音频资产：**一个容器**（`assets/audio/sounds.m2pk`，`tools/wavpack` 产出），
+    // 取不到就退化到目录（原始素材 / 旧产物）。都没有 ⇒ 静音降级，界面照旧能用。
+    let sounds: Option<mir2_core::sound::SoundAssets> = match mir2_core::sound::SoundAssets::open()
+    {
+        Some(a) => {
+            println!("[mir2-app] 音频资产 = {}", a.describe());
+            Some(a)
+        }
         None => {
-            println!("[mir2-app] 未找到音频目录：设 MIR2_AUDIO_DIR=<mir2c/wav>（或 MIR2C_DATA）");
+            println!("[mir2-app] 未找到音频资产：跑 tools/wavpack/build.sh（或设 MIR2_AUDIO_DIR）");
             None
         }
     };
@@ -1990,7 +1980,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if n.take_gameover() {
                 // 自己死亡 ⇒ game over 音乐（原版 `Actor.pas:2373-2374`）
-                bgm(&sound, &audio_dir, mir2_core::sound::BGM_GAMEOVER);
+                bgm(&sound, &sounds, mir2_core::sound::BGM_GAMEOVER);
             }
         }
         // 选角场景排出来的音效（选中一个槽 ⇒ 解冻声 `101`，`IntroScn.pas:1170`）
@@ -2004,9 +1994,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 手上也没有 mp3）⇒ 进地图就停掉上一首，而不是放错一首。
         // 自己死了就别停：那时该响的是 game over 那首（`Actor.pas:2373-2374`）。
         if mode == 4 {
-            bgm(&sound, &audio_dir, mir2_core::sound::BGM_SELECT);
+            bgm(&sound, &sounds, mir2_core::sound::BGM_SELECT);
         } else if mode == 1 && login.opened_at.is_none() {
-            bgm(&sound, &audio_dir, mir2_core::sound::BGM_LOGIN);
+            bgm(&sound, &sounds, mir2_core::sound::BGM_LOGIN);
         } else if mode == 2 && !net.as_ref().is_some_and(|n| n.world.self_dead) && sound.stop_bgm()
         {
             println!("[audio] BGM 停（进图音乐这条路还没接：手上没有 mp3、协议里也没有音乐号）");
@@ -2564,7 +2554,7 @@ fn do_select_action(
     net: &mut Option<Net>,
     select_scene: &mut Option<select::Select>,
     sound: &audio::Audio,
-    sounds: &Option<mir2_core::sound::Library>,
+    sounds: &Option<mir2_core::sound::SoundAssets>,
 ) -> Result<bool, sdl3::Error> {
     // 点下去的按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` = 103）。
     // 槽上那一下的**解冻声**（101）由场景自己排出来（见 `Select::take_sfx`）。
@@ -2633,23 +2623,22 @@ fn footstep_of(frame: u16, last: Option<u16>) -> Option<bool> {
     }
 }
 
-/// 按原版编号播一条音效：**没有音效库 / 没有这一条 ⇒ 静默跳过**（不报错、不崩）。
+/// 按原版编号播一条音效：**没有资产 / 没有这一条 ⇒ 静默跳过**（不报错、不崩）。
 ///
 /// ⚠️ 静默是**有意的**：原版 `PlaySound` 也是先 `FileExists` 再放
-/// （`SoundUtil.pas:183-186`），缺素材是常态（我们手上 778 个 wav 里，
-/// 清单还有 12 条编号找不到文件）。
-fn sfx(sound: &audio::Audio, sounds: &Option<mir2_core::sound::Library>, number: u16) {
-    if let Some(lib) = sounds {
-        sound.play_idx(lib, number);
+/// （`SoundUtil.pas:183-186`），缺素材是常态（清单里就有 13 条编号在源里没文件）。
+fn sfx(sound: &audio::Audio, assets: &Option<mir2_core::sound::SoundAssets>, number: u16) {
+    if let Some(a) = assets {
+        sound.play_idx(a, number);
     }
 }
 
-/// 切场景 BGM（循环）。目录没找到 / 文件缺 ⇒ 静默（同上）。
+/// 切场景 BGM（循环）。资产里没有 ⇒ 静默（同上）。
 ///
 /// 真的换上了一首就打一行 —— 听不见的时候，"有没有音乐"总得有个可观测的东西。
-fn bgm(sound: &audio::Audio, dir: &Option<PathBuf>, name: &str) {
-    if let Some(d) = dir {
-        if sound.bgm(&d.join(name)) {
+fn bgm(sound: &audio::Audio, assets: &Option<mir2_core::sound::SoundAssets>, name: &str) {
+    if let Some(a) = assets {
+        if sound.bgm_name(a, name) {
             println!("[audio] BGM = {name}");
         }
     }

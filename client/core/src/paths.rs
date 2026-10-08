@@ -49,9 +49,12 @@ pub fn audio_dir() -> Option<PathBuf> {
             }
         }
     }
-    // 脚本产物：<ws>/mir2/assets/audio（由 client/core 反推两级）
+    // 脚本产物：<ws>/mir2/assets/audio —— ⚠️ 只有当它**真的是散装 wav 目录**时才算数。
+    // 现在的产物是 `assets/audio/sounds.m2pk`（一个容器，见 D-30），那个目录里
+    // 没有 wav 也没有 sound.lst ⇒ 这里必须跳过，否则会返回一个"取不到任何音效"的目录
+    //（测试 `resolved_paths_have_expected_shape` 抓的就是这个）。
     let built = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/audio");
-    if let Some(p) = built.canonicalize().ok().filter(|p| p.is_dir()) {
+    if let Some(p) = built.canonicalize().ok().filter(|p| looks_like_wav_dir(p)) {
         return Some(p);
     }
     if let Some(a) = asset_dir() {
@@ -66,6 +69,45 @@ pub fn audio_dir() -> Option<PathBuf> {
     }
     let guess = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mir2c/wav");
     guess.canonicalize().ok().filter(|p| p.is_dir())
+}
+
+/// 音频容器（`tools/wavpack/build.sh` 的产物，见 docs/assets.md §6b）。
+///
+/// `$MIR2_AUDIO_CONTAINER` → 仓库的 `assets/audio/sounds.m2pk`。
+///
+/// ⚠️ 与地图容器一样**不入库**（`.gitignore` 里有 `/assets/`），所以它可能不存在 ——
+/// 调用方要能退化到目录（[`audio_dir`]）：那条路跑的是**原始**未转换的素材。
+pub fn audio_container() -> Option<PathBuf> {
+    if let Ok(v) = std::env::var("MIR2_AUDIO_CONTAINER") {
+        let p = PathBuf::from(v);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let guess = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/audio/sounds.m2pk");
+    guess.canonicalize().ok().filter(|p| p.is_file())
+}
+
+/// 这个目录像不像"散装 wav 目录"：有 `sound.lst`，或者至少有一个 `.wav`。
+///
+/// `assets/audio` 现在放的是**容器**（`sounds.m2pk`）⇒ 它不该被当成音频目录。
+fn looks_like_wav_dir(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    if dir.join("sound.lst").is_file() {
+        return true;
+    }
+    std::fs::read_dir(dir)
+        .map(|it| {
+            it.flatten().any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .ends_with(".wav")
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// 地图容器（`tools/m2pk/build.sh` 的产物，见 docs/assets.md §5）。
@@ -104,6 +146,10 @@ mod tests {
             assert!(p.is_dir(), "音频目录必须是目录");
             // 光有目录不算：清单文件才是"这批 wav 是原版那套"的证据
             assert!(p.join("sound.lst").is_file(), "音频目录里该有 sound.lst");
+        }
+        if let Some(p) = audio_container() {
+            assert_eq!(p.file_name().unwrap(), "sounds.m2pk");
+            assert!(p.is_file(), "音频容器必须是个文件");
         }
     }
 }

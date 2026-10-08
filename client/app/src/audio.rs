@@ -1,25 +1,29 @@
 //! SDL3 音频引擎：**软件混音** + 循环 BGM。
 //!
+//! 分工（三块刻意分开）：
+//!
+//! | 层 | 在哪 | 管什么 |
+//! |---|---|---|
+//! | 规格 | `mir2_core::sound` | 编号表、地形→脚步、资产从哪取（容器/目录）|
+//! | 解码 | `mir2_core::wave` | WAV 字节 → PCM（PCM 8/16bit + **IMA ADPCM**，纯逻辑可测）|
+//! | 发声 | 本模块 | SDL3 设备 + 软件混音（多路叠加、循环、两组开关）|
+//!
 //! 为什么自己混音：原版是"每个音效 `new` 一个 DirectSound buffer 叠着播"
-//! （`DXSounds.pas:1852-1881`）—— 也就是**天然多路叠加、无固定通道数**。
-//! SDL3 的流回调给我们的是一块"要填满的缓冲"，所以叠加这件事得自己做：
-//! 把每条正在响的音效按自己的进度**加**进同一块缓冲。
+//! （`DXSounds.pas:1852-1881`）—— 天然多路叠加、无固定通道数。SDL3 的流回调
+//! 给我们的是一块"要填满的缓冲"，叠加就得自己做：把每条正在响的音效按自己的
+//! 进度**加**进同一块缓冲。
 //!
-//! 规格（哪条编号是什么音）在 `mir2_core::sound`（纯数据、可单测）；
-//! 这里只管"把 f32 采样混出来"与"设备开关"。
-//!
-//! 原版**没有**的，我们也不加：音量滑条、距离衰减、左右声道 pan。
+//! 原版**没有**的，我们也不加：音量滑条、距离衰减、左右声道 pan（只有两个开关，
+//! `MShare.pas:213-214`）。
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use sdl3::audio::{
-    AudioCallback, AudioFormat, AudioSpec, AudioSpecWAV, AudioStream, AudioStreamWithCallback,
-};
+use mir2_core::sound::SoundAssets;
+use sdl3::audio::{AudioCallback, AudioFormat, AudioSpec, AudioStream, AudioStreamWithCallback};
 
-/// 设备采样率（与原来的测试音一致）。
+/// 设备采样率。
 pub const SAMPLE_RATE: i32 = 44_100;
 /// 我们固定输出**立体声交错** f32（原版 DirectSound 也是立体声缓冲）。
 const CHANNELS: usize = 2;
@@ -32,83 +36,19 @@ const MAX_SFX: usize = 24;
 
 /// 同一条音效在多少毫秒内不重复触发。
 ///
-/// ⚠️ 原版**没有**这个（它的去重是**动作级**的 `m_boRunSound`，
-/// `Actor.pas:2357-2359`，一招只响一次）。但我们的触发点是"每帧看一次世界状态"，
-/// 少了它，一次按键重复或几帧内的状态抖动就会叠出七八声同一个音。
+/// ⚠️ 原版**没有**这个（它的去重是**动作级**的 `m_boRunSound`，`Actor.pas:2357-2359`，
+/// 一招只响一次）。但我们的触发点是"每帧看一次世界状态"，少了它，一次按键重复
+/// 或几帧内的状态抖动就会叠出七八声同一个音。
 const SAME_SFX_MS: u64 = 30;
 
 /// 一段已解码的音频：**交错立体声**、已重采样到 [`SAMPLE_RATE`]。
 type Clip = Arc<Vec<f32>>;
 
-// ---------- 采样格式 → f32 ----------
-
-/// 把 wav 的原始字节按它的格式摊成 f32（`-1.0..=1.0`）。
-///
-/// 支持的格式就是 SDL 给的 `AudioFormat` 那些；`UNKNOWN` 或长度不整 ⇒ `None`
-/// （**不猜**：宁可没这声，也不放出杂音）。
-fn samples_of(format: AudioFormat, bytes: &[u8]) -> Option<Vec<f32>> {
-    match format {
-        AudioFormat::U8 => Some(bytes.iter().map(|b| (*b as f32 - 128.0) / 128.0).collect()),
-        AudioFormat::S8 => Some(bytes.iter().map(|b| (*b as i8) as f32 / 128.0).collect()),
-        // `as_chunks::<N>()` 直接从 `&[u8]` 得到 `&[[u8; N]]`（尾巴不足 N 的丢掉，
-        // 与 `chunks_exact` 同义）—— clippy 也要求用这个写法。
-        AudioFormat::S16LE => Some(
-            bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|c| i16::from_le_bytes(*c) as f32 / 32768.0)
-                .collect(),
-        ),
-        AudioFormat::S16BE => Some(
-            bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|c| i16::from_be_bytes(*c) as f32 / 32768.0)
-                .collect(),
-        ),
-        AudioFormat::S32LE => Some(
-            bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| i32::from_le_bytes(*c) as f32 / 2_147_483_648.0)
-                .collect(),
-        ),
-        AudioFormat::S32BE => Some(
-            bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| i32::from_be_bytes(*c) as f32 / 2_147_483_648.0)
-                .collect(),
-        ),
-        AudioFormat::F32LE => Some(
-            bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| f32::from_le_bytes(*c))
-                .collect(),
-        ),
-        AudioFormat::F32BE => Some(
-            bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| f32::from_be_bytes(*c))
-                .collect(),
-        ),
-        AudioFormat::UNKNOWN => None,
-    }
-}
-
 /// 重采样成 `SAMPLE_RATE` 的**交错立体声**（单声道复制成两声道）。
 ///
-/// 线性插值就够了：原版这些 wav 本来就是 22k/44k 的短音效，且原版是**直接交给
-/// 声卡**（DirectSound 自己转）—— 我们只是把这一步挪到自己手上，别指望高保真。
-/// 采样率相同、声道数相同的情况走的是"原样拷贝"（`ratio = 1`、`frac = 0`）。
+/// 线性插值就够了：原版这些本来就是 22k/44k 的短音效，且原版是**直接交给声卡**
+/// （DirectSound 自己转）—— 我们只是把这一步挪到自己手上，别指望高保真。
+/// 采样率与声道数都相同的情况走的是"原样拷贝"（`ratio = 1`、`frac = 0`）。
 fn to_stereo_44k(src: &[f32], channels: usize, rate: i32) -> Vec<f32> {
     if channels == 0 || src.is_empty() || rate <= 0 {
         return Vec::new();
@@ -142,11 +82,13 @@ fn to_stereo_44k(src: &[f32], channels: usize, rate: i32) -> Vec<f32> {
     out
 }
 
-/// 读一个 wav 成 [`Clip`]。读不动（缺文件 / 格式不认）⇒ `None`。
-fn decode_wav(path: &Path) -> Option<Clip> {
-    let wav = AudioSpecWAV::load_wav(path).ok()?;
-    let flat = samples_of(wav.format, wav.buffer())?;
-    let stereo = to_stereo_44k(&flat, wav.channels as usize, wav.freq);
+/// 把一份资产字节（容器里取出来的 WAV：PCM 或 IMA ADPCM）解成 [`Clip`]。
+///
+/// 读不动（坏数据 / 不认的编码）⇒ `None`：**宁可没这声，也不放杂音**。
+fn decode_asset(bytes: &[u8]) -> Option<Clip> {
+    let pcm = mir2_core::wave::decode(bytes).ok()?;
+    let flat: Vec<f32> = pcm.samples.iter().map(|s| *s as f32 / 32768.0).collect();
+    let stereo = to_stereo_44k(&flat, pcm.channels as usize, pcm.rate as i32);
     (!stereo.is_empty()).then(|| Arc::new(stereo))
 }
 
@@ -201,17 +143,17 @@ impl Voice {
 
 /// 混音器的全部状态（回调线程与主线程共享）。
 struct Inner {
-    /// 解码缓存：`None` = 试过、读不动（别每次播放都去读一遍磁盘）。
-    cache: HashMap<PathBuf, Option<Clip>>,
+    /// 解码缓存：键是**资产键**（`sound::asset_key`），`None` = 试过、读不动。
+    cache: HashMap<String, Option<Clip>>,
     sfx: Vec<Voice>,
     music: Option<Voice>,
-    /// 当前 BGM 的文件（判断"要不要换一首"；同一首不重开）。
-    bgm_path: Option<PathBuf>,
+    /// 当前 BGM 的键（判断"要不要换一首"；同一首不重开）。
+    bgm_key: Option<String>,
     /// 同一条音效的上次播放时刻（见 [`SAME_SFX_MS`]）。
-    last_played: HashMap<PathBuf, Instant>,
+    last_played: HashMap<String, Instant>,
     music_on: bool,
     sfx_on: bool,
-    /// 统计：播过多少次、丢了几个（调试用，终端里打一眼就知道有没有在响）。
+    /// 统计：播过多少次、丢了几个。
     played: u64,
     dropped: u64,
 }
@@ -222,7 +164,7 @@ impl Inner {
             cache: HashMap::new(),
             sfx: Vec::new(),
             music: None,
-            bgm_path: None,
+            bgm_key: None,
             last_played: HashMap::new(),
             music_on,
             sfx_on,
@@ -231,27 +173,27 @@ impl Inner {
         }
     }
 
-    fn clip(&mut self, path: &Path) -> Option<Clip> {
-        if let Some(c) = self.cache.get(path) {
+    fn clip(&mut self, key: &str, bytes: &[u8]) -> Option<Clip> {
+        if let Some(c) = self.cache.get(key) {
             return c.clone();
         }
-        let c = decode_wav(path);
-        self.cache.insert(path.to_path_buf(), c.clone());
+        let c = decode_asset(bytes);
+        self.cache.insert(key.to_string(), c.clone());
         c
     }
 
-    fn play_sfx(&mut self, path: &Path, gain: f32) {
+    fn play_sfx(&mut self, key: &str, bytes: &[u8], gain: f32) {
         // 节流：同一条音效紧接着重复触发就不放（见 `SAME_SFX_MS` 的说明）。
         let now = Instant::now();
-        if let Some(t) = self.last_played.get(path) {
+        if let Some(t) = self.last_played.get(key) {
             if now.duration_since(*t) < Duration::from_millis(SAME_SFX_MS) {
                 return;
             }
         }
-        let Some(clip) = self.clip(path) else {
+        let Some(clip) = self.clip(key, bytes) else {
             return;
         };
-        self.last_played.insert(path.to_path_buf(), now);
+        self.last_played.insert(key.to_string(), now);
         if self.sfx.len() >= MAX_SFX {
             self.sfx.remove(0);
             self.dropped += 1;
@@ -265,16 +207,15 @@ impl Inner {
         self.played += 1;
     }
 
-    /// 返回"是不是真的换了/开始播了"（同一首正在播 ⇒ `false`，缺文件 ⇒ `false`）。
-    fn play_bgm(&mut self, path: &Path) -> bool {
-        // 同一首要播着就别重开（调用方按场景每帧调都可能调到这里）
-        if self.bgm_path.as_deref() == Some(path) && self.music.is_some() {
+    /// 返回"是不是真的换了/开始播了"（同一首正在播 ⇒ `false`，解不开 ⇒ `false`）。
+    fn play_bgm(&mut self, key: &str, bytes: &[u8]) -> bool {
+        if self.bgm_key.as_deref() == Some(key) && self.music.is_some() {
             return false;
         }
-        let Some(clip) = self.clip(path) else {
+        let Some(clip) = self.clip(key, bytes) else {
             return false;
         };
-        self.bgm_path = Some(path.to_path_buf());
+        self.bgm_key = Some(key.to_string());
         self.music = Some(Voice {
             clip,
             frame: 0,
@@ -289,7 +230,7 @@ impl Inner {
     fn stop_bgm(&mut self) -> bool {
         let had = self.music.is_some();
         self.music = None;
-        self.bgm_path = None;
+        self.bgm_key = None;
         had
     }
 
@@ -301,7 +242,7 @@ impl Inner {
             v.mix_into(out, music_gain);
             if v.finished() {
                 self.music = None;
-                self.bgm_path = None;
+                self.bgm_key = None;
             }
         }
         // `retain_mut`：边混边清掉播完的（原版也是靠定时器回收 buffer，
@@ -336,11 +277,6 @@ impl AudioCallback<f32> for Mixer {
     }
 }
 
-/// 主线程侧的门面：往混音器里塞声音、开关两组。
-pub struct Audio {
-    inner: Arc<Mutex<Inner>>,
-}
-
 /// 播放流的参数：44.1kHz、立体声、f32。
 ///
 /// ⚠️ `sdl3::audio::AudioSubsystem` 是**私有类型**（与 `WindowContext` 同一类问题，
@@ -353,6 +289,11 @@ pub fn spec() -> AudioSpec {
         channels: Some(CHANNELS as i32),
         format: Some(AudioFormat::F32LE),
     }
+}
+
+/// 主线程侧的门面：往混音器里塞声音、开关两组。
+pub struct Audio {
+    inner: Arc<Mutex<Inner>>,
 }
 
 impl Audio {
@@ -377,22 +318,23 @@ impl Audio {
         Ok((Audio { inner }, stream))
     }
 
-    /// 播一条音效（不循环）。返回"是否真的放上了"（缺文件 / 格式不认 ⇒ `false`）。
-    pub fn play(&self, path: &Path) -> bool {
+    /// 播一条音效（不循环）。`key` = 资产键（做缓存与去重），`bytes` = 它的字节。
+    /// 返回"是否真的放上了"（解不开 / 被节流 ⇒ `false`）。
+    pub fn play_bytes(&self, key: &str, bytes: &[u8]) -> bool {
         match self.inner.lock() {
             Ok(mut g) => {
                 let before = g.played;
-                g.play_sfx(path, 1.0);
+                g.play_sfx(key, bytes, 1.0);
                 g.played != before
             }
             Err(_) => false,
         }
     }
 
-    /// 按原版编号播放（`sound.lst` 里查不到就什么都不做）。
-    pub fn play_idx(&self, lib: &mir2_core::sound::Library, number: u16) -> bool {
-        match lib.playable(number) {
-            Some(p) => self.play(p),
+    /// 按原版编号播放：从资产包里取字节（取不到就什么都不做）。
+    pub fn play_idx(&self, assets: &SoundAssets, number: u16) -> bool {
+        match assets.bytes(number) {
+            Some((key, bytes)) => self.play_bytes(&key, &bytes),
             None => false,
         }
     }
@@ -401,10 +343,18 @@ impl Audio {
     ///
     /// 返回"这一下**真的**开始播了" —— 调用方每帧调，只有变化时才是 `true`
     ///（听不见的时候，这是唯一能看出"到底有没有在放"的线索）。
-    pub fn bgm(&self, path: &Path) -> bool {
+    pub fn bgm_bytes(&self, key: &str, bytes: &[u8]) -> bool {
         match self.inner.lock() {
-            Ok(mut g) => g.play_bgm(path),
+            Ok(mut g) => g.play_bgm(key, bytes),
             Err(_) => false,
+        }
+    }
+
+    /// 按**文件名**切 BGM（原版那三首是写死文件名的，不是编号）。
+    pub fn bgm_name(&self, assets: &SoundAssets, name: &str) -> bool {
+        match assets.bytes_name(name) {
+            Some((key, bytes)) => self.bgm_bytes(&key, &bytes),
+            None => false,
         }
     }
 
@@ -428,7 +378,7 @@ impl Audio {
         }
     }
 
-    /// `(正在响的音效数, 有没有 BGM, 播过多少次, 丢过多少)` —— 调试与 e2e 断言用。
+    /// `(正在响的音效数, 有没有 BGM, 播过多少次, 丢过多少)` —— 调试用。
     pub fn stats(&self) -> (usize, bool, u64, u64) {
         match self.inner.lock() {
             Ok(g) => (g.sfx.len(), g.music.is_some(), g.played, g.dropped),
@@ -440,28 +390,6 @@ impl Audio {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 采样格式转换：三种典型格式的边界值。
-    #[test]
-    fn 采样格式() {
-        // U8：128 是零点
-        assert_eq!(
-            samples_of(AudioFormat::U8, &[128, 255, 0]).unwrap(),
-            vec![0.0, 0.9921875, -1.0]
-        );
-        // S8
-        assert_eq!(
-            samples_of(AudioFormat::S8, &[0, 127, 0x80]).unwrap(),
-            vec![0.0, 127.0 / 128.0, -1.0]
-        );
-        // S16LE：0 与满量程
-        let s16 = samples_of(AudioFormat::S16LE, &[0, 0, 0xFF, 0x7F, 0x00, 0x80]).unwrap();
-        assert_eq!(s16[0], 0.0);
-        assert!((s16[1] - 32767.0 / 32768.0).abs() < 1e-6);
-        assert_eq!(s16[2], -1.0);
-        // 不认的格式 ⇒ None（不猜、不放杂音）
-        assert!(samples_of(AudioFormat::UNKNOWN, &[1, 2, 3, 4]).is_none());
-    }
 
     /// 重采样：单声道 → 立体声、22k → 44k（帧数翻倍，且两声道相同）。
     #[test]
@@ -573,66 +501,71 @@ mod tests {
         );
     }
 
-    /// 节流：同一条音效紧接着重复触发只放一次（见 `SAME_SFX_MS`）。
+    /// 节流：同一条音效紧接着重复触发只放一次（见 [`SAME_SFX_MS`]）。
     #[test]
     fn 同一音效不叠加() {
-        let dir = std::env::temp_dir().join("mir2-audio-节流");
-        let _ = std::fs::create_dir_all(&dir);
         // 造一个 44.1k 单声道 16 位的小 wav（8 帧常数 0.5）
-        let path = dir.join("t.wav");
-        let mut wav = Vec::new();
-        wav.extend_from_slice(b"RIFF");
-        let data: Vec<u8> = (0..8).flat_map(|_| 16384i16.to_le_bytes()).collect();
-        wav.extend_from_slice(&((36 + data.len()) as u32).to_le_bytes());
-        wav.extend_from_slice(b"WAVEfmt ");
-        wav.extend_from_slice(&16u32.to_le_bytes());
-        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
-        wav.extend_from_slice(&1u16.to_le_bytes()); // 单声道
-        wav.extend_from_slice(&(SAMPLE_RATE as u32).to_le_bytes());
-        wav.extend_from_slice(&(SAMPLE_RATE as u32 * 2).to_le_bytes()); // byte rate
-        wav.extend_from_slice(&2u16.to_le_bytes()); // block align
-        wav.extend_from_slice(&16u16.to_le_bytes()); // bits
-        wav.extend_from_slice(b"data");
-        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        wav.extend_from_slice(&data);
-        std::fs::write(&path, &wav).unwrap();
+        let wav = {
+            let data: Vec<u8> = (0..8).flat_map(|_| 16384i16.to_le_bytes()).collect();
+            let mut v = Vec::new();
+            v.extend_from_slice(b"RIFF");
+            v.extend_from_slice(&((36 + data.len()) as u32).to_le_bytes());
+            v.extend_from_slice(b"WAVEfmt ");
+            v.extend_from_slice(&16u32.to_le_bytes());
+            v.extend_from_slice(&1u16.to_le_bytes()); // PCM
+            v.extend_from_slice(&1u16.to_le_bytes()); // 单声道
+            v.extend_from_slice(&(SAMPLE_RATE as u32).to_le_bytes());
+            v.extend_from_slice(&(SAMPLE_RATE as u32 * 2).to_le_bytes());
+            v.extend_from_slice(&2u16.to_le_bytes());
+            v.extend_from_slice(&16u16.to_le_bytes());
+            v.extend_from_slice(b"data");
+            v.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            v.extend_from_slice(&data);
+            v
+        };
 
         let mut g = Inner::new(true, true);
-        g.play_sfx(&path, 1.0);
+        g.play_sfx("t", &wav, 1.0);
         assert_eq!(g.sfx.len(), 1);
-        g.play_sfx(&path, 1.0);
+        g.play_sfx("t", &wav, 1.0);
         assert_eq!(g.sfx.len(), 1, "30ms 内的第二次不该再叠一条");
         assert_eq!(g.played, 1);
-        // 上限：塞满之后丢最旧的（⚠️ 每轮要清掉节流表，否则全被 30ms 那条挡住，
-        // 测的就不是上限而是节流了 —— 第一版就是这么写错的）
+        // 上限：塞满之后丢最旧的（⚠️ 每轮要清掉节流表，否则测的是节流不是上限）
         for _ in 0..MAX_SFX + 3 {
             g.last_played.clear();
-            g.play_sfx(&path, 1.0);
+            g.play_sfx("t", &wav, 1.0);
         }
         assert!(g.sfx.len() <= MAX_SFX);
         assert!(g.dropped > 0, "超上限要丢最旧的");
     }
 
-    /// **真素材**：读我们自己的 `103.wav`（UI 按钮声）—— 证明"文件 → 采样"这条路通，
-    /// 不需要声卡。门控同 core：设了 `MIR2C_DATA` 才跑。
+    /// **真素材**：从资产包（容器或目录）取 `103.wav`（UI 按钮声）与登录 BGM，
+    /// 走完整链路 —— **Go 写的容器 → Rust 解 ADPCM → 重采样 → 混音器**。
+    /// 不需要声卡。没装资产就跳过。
     #[test]
     fn 真素材_能解码按钮声() {
-        let Some(dir) = mir2_core::paths::audio_dir() else {
-            eprintln!("跳过：没找到音频目录");
+        let Some(assets) = SoundAssets::open() else {
+            eprintln!("跳过：没找到音频资产（先跑 tools/wavpack/build.sh）");
             return;
         };
-        let lib = mir2_core::sound::Library::load(&dir).expect("该有 sound.lst");
-        let path = lib
-            .playable(mir2_core::sound::idx::NORM_BUTTON_CLICK)
+        eprintln!("音频资产：{}", assets.describe());
+
+        let (key, bytes) = assets
+            .bytes(mir2_core::sound::idx::NORM_BUTTON_CLICK)
             .expect("103.wav 该在");
-        let clip = decode_wav(path).expect("该能解码");
+        let clip = decode_asset(&bytes).expect("该能解码");
         assert!(clip.len() >= 2 * CHANNELS, "至少一帧");
         let peak = clip.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(peak > 0.02, "整段全静音不正常（峰值 {peak}）");
+        assert_eq!(key, "103");
 
         // BGM 也能解（登录那首），且长度是"一首歌"的量级
-        let bgm = decode_wav(&dir.join(mir2_core::sound::BGM_LOGIN)).expect("该能解码 BGM");
-        let secs = (bgm.len() / CHANNELS) as f32 / SAMPLE_RATE as f32;
+        let (bgm_key, bgm) = assets
+            .bytes_name(mir2_core::sound::BGM_LOGIN)
+            .expect("该有登录 BGM");
+        let clip = decode_asset(&bgm).expect("该能解码 BGM");
+        let secs = (clip.len() / CHANNELS) as f32 / SAMPLE_RATE as f32;
         assert!(secs > 5.0, "登录 BGM 该有几十秒，实测 {secs:.1}s");
+        assert_eq!(bgm_key, "log-in-long2");
     }
 }

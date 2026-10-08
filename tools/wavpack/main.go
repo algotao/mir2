@@ -43,6 +43,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/algotao/mir2/internal/m2pk"
 )
 
 // 原版写死的 BGM 文件名（`SoundUtil.pas:31-34`）。这四首**保持原样**（不降采样）。
@@ -61,12 +63,17 @@ var unusedNames = map[string]string{
 }
 
 type wav struct {
-	format   int // 1 = PCM
+	format   int // 1 = PCM，0x11 = IMA ADPCM
 	channels int
 	rate     int
 	bits     int
-	pcm      []int16
+	/// `fact` 段里的**真实帧数**（压缩格式才有；见 `readWav` 的说明）。
+	fact int
+	pcm  []int16
 }
+
+// WAVE 的 IMA ADPCM 编码号（`fmt` 的 `wFormatTag`）。
+const wavFormatIMA = 0x11
 
 const trimThreshold = 32 // |样本| < 32 ⇒ 视为静音（int16 满量程 ≈ 0.1%）
 
@@ -81,6 +88,8 @@ func main() {
 		err = cmdSurvey(os.Args[2:])
 	case "pack":
 		err = cmdPack(os.Args[2:])
+	case "decode":
+		err = cmdDecode(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -94,10 +103,19 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `wavpack —— 音频资产转换（源 = 客户端集的 mir2c/wav，产物 = assets/audio）
+	fmt.Fprint(os.Stderr, `wavpack —— 音频资产转换（源 = 客户端集的 mir2c/wav，产物 = 一个容器文件）
 
   wavpack survey -src DIR
-  wavpack pack   -src DIR -out DIR [-rate 22050] [-keep-all] [-no-verify]
+  wavpack decode -in FILE -out FILE     # 解成 16bit PCM（与外部解码器对拍用）
+  wavpack pack   -src DIR -out FILE [-codec adpcm|pcm] [-rate 22050] [-keep-all] [-bgm-pcm]
+
+  -out 是【一个容器文件】（M2PK，kind=audio / codec=store，不压缩 —— 音频压不动）：
+  所有 wav + 编号表 sound.lst（键 soundlist）都装在里面，客户端按规范化名字取。
+  容器里的键是小写的 ⇒「清单写小写、文件写大写」那类问题【不存在】。
+
+  -codec adpcm（默认）  4bit IMA ADPCM：体积 1/4，波形域编码（无预回声）、样本精确
+  -codec pcm           16bit PCM：音效 22.05k 单声道，BGM 原样搬
+  -bgm-pcm             BGM 保持 16bit PCM（音质优先），只对音效用 ADPCM
 `)
 }
 
@@ -108,6 +126,13 @@ func readWav(path string) (*wav, error) {
 	if err != nil {
 		return nil, err
 	}
+	return readWavBytes(b)
+}
+
+// readWavBytes 解析一份 wav 字节（PCM 或 IMA ADPCM）。
+//
+// 分两层是因为打包时**不落盘**：转换后的字节直接在内存里被自检读回。
+func readWavBytes(b []byte) (*wav, error) {
 	if len(b) < 12 || string(b[0:4]) != "RIFF" || string(b[8:12]) != "WAVE" {
 		return nil, errors.New("不是 RIFF/WAVE")
 	}
@@ -129,6 +154,12 @@ func readWav(path string) (*wav, error) {
 			w.channels = int(binary.LittleEndian.Uint16(b[body+2:]))
 			w.rate = int(binary.LittleEndian.Uint32(b[body+4:]))
 			w.bits = int(binary.LittleEndian.Uint16(b[body+14:]))
+		case "fact":
+			// 压缩格式（含 IMA ADPCM）用它记**真实帧数**：块是定长的，
+			// 最后一块的补零会解出多余样本，只能靠这个数截断。
+			if size >= 4 {
+				w.fact = int(binary.LittleEndian.Uint32(b[body:]))
+			}
 		case "data":
 			dataOff, dataLen = body, size
 		}
@@ -137,8 +168,16 @@ func readWav(path string) (*wav, error) {
 	if w.format == 0 || w.channels == 0 || w.rate == 0 || dataOff < 0 {
 		return nil, errors.New("缺 fmt/data 块")
 	}
+	if w.format == wavFormatIMA {
+		w.pcm = decodeIMA(b[dataOff:dataOff+dataLen], w.channels)
+		if w.fact > 0 && w.fact*w.channels <= len(w.pcm) {
+			w.pcm = w.pcm[:w.fact*w.channels]
+		}
+		w.bits = 4 // 报告用：这是 4bit 编码
+		return &w, nil
+	}
 	if w.format != 1 {
-		return nil, fmt.Errorf("非 PCM（format=%d）", w.format)
+		return nil, fmt.Errorf("不认识的编码（format=0x%X）", w.format)
 	}
 	raw := b[dataOff : dataOff+dataLen]
 	switch w.bits {
@@ -159,75 +198,143 @@ func readWav(path string) (*wav, error) {
 	return &w, nil
 }
 
-func writeWav16(path string, mono []int16, rate int) error {
-	buf := make([]byte, 44+len(mono)*2)
+func writeWav16(path string, pcm []int16, channels, rate int) error {
+	return os.WriteFile(path, wav16Bytes(pcm, channels, rate), 0o644)
+}
+
+// wav16Bytes 生成 16bit PCM WAV 的字节。
+func wav16Bytes(pcm []int16, channels, rate int) []byte {
+	if channels < 1 {
+		channels = 1
+	}
+	buf := make([]byte, 44+len(pcm)*2)
 	copy(buf[0:4], "RIFF")
-	binary.LittleEndian.PutUint32(buf[4:], uint32(36+len(mono)*2))
+	binary.LittleEndian.PutUint32(buf[4:], uint32(36+len(pcm)*2))
 	copy(buf[8:12], "WAVE")
 	copy(buf[12:16], "fmt ")
 	binary.LittleEndian.PutUint32(buf[16:], 16)
 	binary.LittleEndian.PutUint16(buf[20:], 1) // PCM
-	binary.LittleEndian.PutUint16(buf[22:], 1) // 单声道
+	binary.LittleEndian.PutUint16(buf[22:], uint16(channels))
 	binary.LittleEndian.PutUint32(buf[24:], uint32(rate))
-	binary.LittleEndian.PutUint32(buf[28:], uint32(rate*2)) // byte rate
-	binary.LittleEndian.PutUint16(buf[32:], 2)              // block align
+	binary.LittleEndian.PutUint32(buf[28:], uint32(rate*channels*2)) // byte rate
+	binary.LittleEndian.PutUint16(buf[32:], uint16(channels*2))      // block align
 	binary.LittleEndian.PutUint16(buf[34:], 16)
 	copy(buf[36:40], "data")
-	binary.LittleEndian.PutUint32(buf[40:], uint32(len(mono)*2))
-	for i, v := range mono {
+	binary.LittleEndian.PutUint32(buf[40:], uint32(len(pcm)*2))
+	for i, v := range pcm {
 		binary.LittleEndian.PutUint16(buf[44+i*2:], uint16(v))
 	}
-	return os.WriteFile(path, buf, 0o644)
+	return buf
+}
+
+// writeWavIMA 写一个**标准**的 IMA ADPCM WAV（`wFormatTag = 0x11`）。
+//
+// 头按微软那套：fmt 20 字节（含 cbSize 与 wSamplesPerBlock）+ **fact**（真实帧数，
+// 压缩格式必需）+ data。写成标准格式还有个额外好处：外部工具也能读它来对拍
+// （本机就拿 `afconvert` 验过一遍）。
+func writeWavIMA(path string, pcm []int16, channels, rate int) error {
+	return os.WriteFile(path, imaBytes(pcm, channels, rate), 0o644)
+}
+
+// imaBytes 生成 IMA ADPCM WAV（`wFormatTag = 0x11`）的字节。
+func imaBytes(pcm []int16, channels, rate int) []byte {
+	data := encodeIMA(pcm, channels)
+	ba := imaBlockAlign(channels)
+	perBlock := imaSamplesPerBlock(channels)
+	frames := len(pcm) / channels
+	avg := ba * rate / perBlock
+
+	buf := make([]byte, 0, 12+8+20+8+4+8+len(data))
+	le16 := func(v int) { buf = append(buf, byte(v), byte(v>>8)) }
+	le32 := func(v int) { buf = append(buf, byte(v), byte(v>>8), byte(v>>16), byte(v>>24)) }
+	ck := func(id string, size int) { buf = append(buf, id...); le32(size) }
+
+	buf = append(buf, "RIFF"...)
+	le32(4 + (8 + 20) + (8 + 4) + (8 + len(data)))
+	buf = append(buf, "WAVE"...)
+	ck("fmt ", 20)
+	le16(wavFormatIMA)
+	le16(channels)
+	le32(rate)
+	le32(avg)      // nAvgBytesPerSec（由块长与每块样本数推出）
+	le16(ba)       // nBlockAlign
+	le16(4)        // wBitsPerSample：ADPCM 写 4
+	le16(2)        // cbSize
+	le16(perBlock) // wSamplesPerBlock
+	ck("fact", 4)
+	le32(frames)
+	ck("data", len(data))
+	buf = append(buf, data...)
+	return buf
 }
 
 // ---------- 转换 ----------
 
-// toMonoRate 下混成单声道 + 线性重采样到 dstRate。
+// convert 把交错 PCM 变成"目标声道数 + 目标采样率"。
 //
-// 用线性插值就够：原版这些是短音效，且我们只是"把 44.1k 降到 22.05k"，
-// 不是做母带处理。采样率相同则原样返回（只下混）。
+//	音效：44.1k 立体声 → 22.05k **单声道**（原版没有 pan/距离衰减 ⇒ 不丢游戏信息）
+//	BGM ：**两者都不动**（dstCh = 源声道、dstRate = 源采样率 ⇒ 只走编码那一步）
+//
+// 重采样用线性插值就够：这些是短音效/循环音乐，不是母带处理。
 //
 // ⚠️ 返回值第二项 = "为了避开**相位相消**改用了较响的那一路"。立体声两声道反相时，
-// 平均会**变成静音**（真实存在的一类素材 bug）—— 那时单声道下混等于把这条音效弄丢，
+// 平均会**变成静音**（真实存在的一类素材 bug）—— 那时下混等于把这条音效弄丢，
 // 所以宁可只留一路（听感上比静音好得多）。
-func toMonoRate(src []int16, ch, srcRate, dstRate int) ([]int16, bool) {
-	frames := len(src) / ch
+func convert(src []int16, srcCh, srcRate, dstCh, dstRate int) ([]int16, bool) {
+	if srcCh < 1 || dstCh < 1 {
+		return nil, false
+	}
+	frames := len(src) / srcCh
 	if frames == 0 {
 		return nil, false
 	}
-	mono := make([]int16, frames)
-	for i := 0; i < frames; i++ {
-		s := 0
-		for c := 0; c < ch; c++ {
-			s += int(src[i*ch+c])
-		}
-		mono[i] = int16(s / ch)
-	}
+
+	var mid []int16
 	fellBack := false
-	if ch > 1 && peak(src) > 0 && peak(mono)*4 < peak(src) {
-		loudest := 0
-		best := 0
-		for c := 0; c < ch; c++ {
-			var col []int16
-			for i := 0; i < frames; i++ {
-				col = append(col, src[i*ch+c])
-			}
-			if p := peak(col); p > best {
-				best, loudest = p, c
-			}
-		}
-		picked := make([]int16, frames)
+	switch {
+	case dstCh == srcCh:
+		mid = src
+	case dstCh == 1:
+		mid = make([]int16, frames)
 		for i := 0; i < frames; i++ {
-			picked[i] = src[i*ch+loudest]
+			s := 0
+			for c := 0; c < srcCh; c++ {
+				s += int(src[i*srcCh+c])
+			}
+			mid[i] = int16(s / srcCh)
 		}
-		mono = picked
-		fellBack = true
+		if srcCh > 1 && peak(src) > 0 && peak(mid)*4 < peak(src) {
+			loudest, best := 0, 0
+			for c := 0; c < srcCh; c++ {
+				col := make([]int16, frames)
+				for i := 0; i < frames; i++ {
+					col[i] = src[i*srcCh+c]
+				}
+				if p := peak(col); p > best {
+					best, loudest = p, c
+				}
+			}
+			for i := 0; i < frames; i++ {
+				mid[i] = src[i*srcCh+loudest]
+			}
+			fellBack = true
+		}
+	default:
+		// 单声道 → 多声道：复制（目前用不到，留着免得静默出错）
+		mid = make([]int16, frames*dstCh)
+		for i := 0; i < frames; i++ {
+			for c := 0; c < dstCh; c++ {
+				mid[i*dstCh+c] = src[i]
+			}
+		}
 	}
+
 	if srcRate == dstRate {
-		return mono, fellBack
+		return mid, fellBack
 	}
-	out := make([]int16, int(float64(frames)*float64(dstRate)/float64(srcRate)))
-	for j := range out {
+	outFrames := int(float64(frames) * float64(dstRate) / float64(srcRate))
+	out := make([]int16, outFrames*dstCh)
+	for j := 0; j < outFrames; j++ {
 		pos := float64(j) * float64(srcRate) / float64(dstRate)
 		i0 := int(pos)
 		if i0 > frames-2 {
@@ -237,9 +344,11 @@ func toMonoRate(src []int16, ch, srcRate, dstRate int) ([]int16, bool) {
 			i0 = 0
 		}
 		frac := pos - float64(i0)
-		a := float64(mono[i0])
-		b := float64(mono[min(i0+1, frames-1)])
-		out[j] = int16(a + (b-a)*frac)
+		for c := 0; c < dstCh; c++ {
+			a := float64(mid[i0*dstCh+c])
+			b := float64(mid[min(i0+1, frames-1)*dstCh+c])
+			out[j*dstCh+c] = int16(a + (b-a)*frac)
+		}
 	}
 	return out, fellBack
 }
@@ -375,6 +484,61 @@ func cmdSurvey(args []string) error {
 	return nil
 }
 
+// cmdDecode 把任意支持的 wav（PCM / IMA ADPCM）解成 16bit PCM WAV。
+//
+// 存在的理由：**与外部解码器对拍**。我们就是这么用 macOS 自带的 `afconvert`
+// 验过一遍 —— 它解出来的样本与本解码器逐字节一致，才敢相信 SNR 那些数字。
+func cmdDecode(args []string) error {
+	fs := flag.NewFlagSet("decode", flag.ExitOnError)
+	in := fs.String("in", "", "输入 wav")
+	out := fs.String("out", "", "输出 PCM wav")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *in == "" || *out == "" {
+		return errors.New("要 -in FILE 与 -out FILE")
+	}
+	w, err := readWav(*in)
+	if err != nil {
+		return err
+	}
+	if err := writeWav16(*out, w.pcm, w.channels, w.rate); err != nil {
+		return err
+	}
+	fmt.Printf("%s: fmt=0x%X %dch %dHz %d 帧 → %s\n",
+		filepath.Base(*in), w.format, w.channels, w.rate, len(w.pcm)/w.channels, filepath.Base(*out))
+	return nil
+}
+
+// assetKey 把文件名变成**容器内的键**（与客户端 `sound::asset_key` 同一套规则）。
+//
+// 规则：取 basename、砍掉最后一个扩展名、转小写、把 `[a-z0-9_~-]` 之外的字符
+// 换成 `_`（`Game over2.wav` → `game_over2`）。
+//
+// 为什么要有它：容器里的键是唯一的真相，客户端集里那些
+// "清单写小写、文件写大写"的坑（`game-over2.wav` vs `Game-over2.wav`）在容器里
+// **根本不存在** —— 这也是把这些 wav 打成一个文件的好处之一。
+func assetKey(name string) string {
+	base := name
+	if i := strings.LastIndexAny(base, `\/`); i >= 0 {
+		base = base[i+1:]
+	}
+	if i := strings.LastIndexByte(base, '.'); i > 0 {
+		base = base[:i]
+	}
+	base = strings.ToLower(base)
+	var b strings.Builder
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_', r == '-', r == '~':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
 // ---------- pack ----------
 
 // soundList 读 `sound.lst`（`<编号>: wav\X.wav`，见 `SoundUtil.pas:151-178`）。
@@ -423,36 +587,49 @@ func soundList(dir string) (map[int]string, map[string]string, error) {
 func cmdPack(args []string) error {
 	fs := flag.NewFlagSet("pack", flag.ExitOnError)
 	src := fs.String("src", "", "原始 wav 目录（含 sound.lst）")
-	out := fs.String("out", "", "输出目录（assets/audio）")
+	out := fs.String("out", "", "输出**容器文件**（如 assets/audio/sounds.m2pk）")
 	rate := fs.Int("rate", 22050, "音效目标采样率（BGM 不动）")
+	codec := fs.String("codec", "adpcm", "adpcm（4bit IMA，体积 1/4）| pcm（16bit）")
 	keepAll := fs.Bool("keep-all", false, "连原版从不播的长文件也一起产出")
 	noVerify := fs.Bool("no-verify", false, "跳过自检")
+	snrMin := fs.Float64("snr-min", 5, "ADPCM 自检的 SNR 下限（dB）：只抓「彻底写坏」")
+	bgmPcm := fs.Bool("bgm-pcm", false, "BGM 保持 16bit PCM（音质优先），只对音效用 ADPCM")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *src == "" || *out == "" {
-		return errors.New("要 -src DIR 与 -out DIR")
+		return errors.New("要 -src DIR 与 -out FILE")
 	}
-	if err := os.MkdirAll(*out, 0o755); err != nil {
-		return err
+	if *codec != "adpcm" && *codec != "pcm" {
+		return fmt.Errorf("-codec 只认 adpcm / pcm，给了 %q", *codec)
 	}
 	names, err := wavNames(*src)
 	if err != nil {
 		return err
 	}
-	byNum, spelled, err := soundList(*src)
+	byNum, _, err := soundList(*src)
 	if err != nil {
-		fmt.Printf("  ⚠️ 读不到 sound.lst（%v）：跳过规则与大小写对齐都失效\n", err)
-		byNum, spelled = map[int]string{}, map[string]string{}
+		fmt.Printf("  ⚠️ 读不到 sound.lst（%v）：跳过规则与自检都失效\n", err)
+		byNum = map[int]string{}
 	}
-	// 清单引用了哪些文件（小写比较，用于"别把清单要的文件跳掉"）
+	// 清单引用了哪些文件名（小写比较，用于"别把清单要的文件跳掉"）
 	referenced := map[string]bool{}
 	for _, name := range byNum {
 		referenced[strings.ToLower(name)] = true
 	}
 
-	var inBytes, outBytes, skippedBytes int64
-	var nConv, nCopy, nSkip, nFall, nRespell int
+	var inBytes, skippedBytes int64
+	var nConv, nCopy, nSkip, nFall int
+	var snrs []float64
+	type snrOf struct {
+		name string
+		db   float64
+	}
+	var snrList []snrOf
+	var srcs []m2pk.Source         // 容器条目（名字 → 字节）
+	keyOf := map[string]string{}   // 原始文件名 → 容器键（自检②用）
+	keySeen := map[string]string{} // 容器键 → 原始文件名（查重名）
+
 	for _, n := range names {
 		p := filepath.Join(*src, n)
 		fi, err := os.Stat(p)
@@ -461,19 +638,11 @@ func cmdPack(args []string) error {
 		}
 		inBytes += fi.Size()
 
-		// 产出文件名：清单里引用它 ⇒ 用**清单的拼写**（填 Linux 上的大小写坑）
-		outName := n
-		if s, ok := spelled[strings.ToLower(n)]; ok && s != n {
-			outName = s
-			nRespell++
-		}
-		dst := filepath.Join(*out, outName)
-
 		if why, unused := unusedNames[n]; unused && !*keepAll {
 			if referenced[strings.ToLower(n)] {
-				// 原版代码不播它，但清单里**有编号指向它** ⇒ 照常转换（少一个音效
-				// 比多占几 MB 糟糕得多；而且这正是自检要抓的那类遗漏）。
-				fmt.Printf("  注意 %-18s 原版不播（%s），但 sound.lst 引用了它 ⇒ 照常转换\n", n, why)
+				// 原版代码不播它，但清单里**有编号指向它** ⇒ 照常进容器（少一个音效
+				// 比多占几 MB 糟糕得多；这正是自检②要抓的那类遗漏）。
+				fmt.Printf("  注意 %-18s 原版不播（%s），但 sound.lst 引用了它 ⇒ 照常进容器\n", n, why)
 			} else {
 				skippedBytes += fi.Size()
 				nSkip++
@@ -481,123 +650,190 @@ func cmdPack(args []string) error {
 				continue
 			}
 		}
-		if bgmNames[strings.ToLower(n)] || *rate <= 0 {
-			// BGM：原样搬（音乐不动它）
-			if err := copyFile(p, dst); err != nil {
-				return err
+
+		key := assetKey(n)
+		if prev, dup := keySeen[key]; dup {
+			return fmt.Errorf("容器键冲突：%q 与 %q 都规范化成 %q", prev, n, key)
+		}
+		keySeen[key] = n
+		keyOf[n] = key
+
+		isBgm := bgmNames[strings.ToLower(n)]
+		w, err := readWav(p)
+		if err != nil {
+			// 不认识的（既非 PCM 也非 ADPCM）原样进容器，别把素材弄丢
+			fmt.Printf("  ⚠️ %s: %v ⇒ 原样进容器\n", n, err)
+			b, err2 := os.ReadFile(p)
+			if err2 != nil {
+				return err2
 			}
-			outBytes += fi.Size()
+			srcs = append(srcs, m2pk.Source{Name: key, Data: b})
 			nCopy++
 			continue
 		}
 
-		w, err := readWav(p)
-		if err != nil {
-			// 不认识的（非 PCM）原样搬，别把素材弄丢
-			fmt.Printf("  ⚠️ %s: %v ⇒ 原样搬\n", n, err)
-			if err := copyFile(p, dst); err != nil {
-				return err
-			}
-			outBytes += fi.Size()
-			nCopy++
-			continue
+		// BGM **不动采样率与声道**（音乐降采样/下混听得出来）；音效降到目标采样率、
+		// 单声道（原版没有 pan/距离衰减 ⇒ 单声道不丢游戏信息）。
+		dstCh, dstRate := 1, *rate
+		if isBgm {
+			dstCh, dstRate = w.channels, w.rate
 		}
-		flat, fellBack := toMonoRate(w.pcm, w.channels, w.rate, *rate)
+		flat, fellBack := convert(w.pcm, w.channels, w.rate, dstCh, dstRate)
 		if fellBack {
 			nFall++
 			fmt.Printf("  ⚠️ %-20s 两声道相消 ⇒ 只留较响的那一路\n", n)
 		}
-		mono := trimTail(flat, *rate)
-		if err := writeWav16(dst, mono, *rate); err != nil {
-			return err
-		}
-		outBytes += 44 + int64(len(mono))*2
-		nConv++
+		flat = trimTail(flat, dstRate)
 
+		// BGM 在 `-bgm-pcm` 下保持 16bit PCM（音乐优先），其余按 `-codec`：
+		// 一个开关就能给出"音乐无损 + 音效小"这个折中。
+		perCodec := *codec
+		if isBgm && *bgmPcm {
+			perCodec = "pcm"
+		}
+		var data []byte
+		if perCodec == "pcm" {
+			data = wav16Bytes(flat, dstCh, dstRate)
+		} else {
+			data = imaBytes(flat, dstCh, dstRate)
+		}
 		if !*noVerify {
-			if err := verifyWav(dst, w, mono, *rate); err != nil {
+			snr, err := verifyWav(data, w, flat, dstCh, dstRate, perCodec, *snrMin)
+			if err != nil {
 				return fmt.Errorf("自检失败（%s）：%w", n, err)
 			}
+			if perCodec == "adpcm" {
+				snrs = append(snrs, snr)
+				snrList = append(snrList, snrOf{name: n, db: snr})
+			}
 		}
+		srcs = append(srcs, m2pk.Source{Name: key, Data: data})
+		nConv++
 	}
 
-	// sound.lst 原样带过去（编号不变、文件名不变 ⇒ 客户端零改动）
-	lst := filepath.Join(*src, "sound.lst")
-	if fi, err := os.Stat(lst); err == nil {
-		if err := copyFile(lst, filepath.Join(*out, "sound.lst")); err != nil {
-			return err
-		}
-		outBytes += fi.Size()
+	// 清单也进容器：客户端从容器里读它（键固定 `soundlist`）。
+	lstPath := filepath.Join(*src, "sound.lst")
+	if lst, err := os.ReadFile(lstPath); err == nil {
+		srcs = append(srcs, m2pk.Source{Name: "soundlist", Data: lst})
 	} else {
 		fmt.Println("  ⚠️ 源目录里没有 sound.lst —— 客户端会找不到编号表")
 	}
+	// ⚠️ 名字必须升序：读侧靠它二分（`Archive::lookup`）
+	sort.Slice(srcs, func(i, j int) bool { return srcs[i].Name < srcs[j].Name })
 
-	// ---- 自检②：源里"清单能播的编号"，产物里**一个都不能少** ----
-	//
-	// 这条是防"瘦身顺手把某个音效弄丢"的：清单里有 13 条编号在源里就没有文件
-	//（与我们无关），剩下的每一条，源能播的产物也必须能播。
+	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
+		return err
+	}
+	st, err := m2pk.Pack(*out, srcs, m2pk.Options{Kind: m2pk.KindAudio, Codec: m2pk.CodecStore})
+	if err != nil {
+		return err
+	}
+
+	// ---- 自检②：**从容器里读回来**，源能播的编号一个都不能少 ----
+	r, err := m2pk.Open(*out)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
 	if len(byNum) > 0 {
-		var lost []int
 		srcOK, outOK := 0, 0
+		var lost []int
 		for num, name := range byNum {
 			if _, err := os.Stat(filepath.Join(*src, name)); err != nil {
-				continue
+				continue // 源里就没有（清单里有 13 条这样），与我们无关
 			}
 			srcOK++
-			if _, err := os.Stat(filepath.Join(*out, name)); err != nil {
-				lost = append(lost, num)
-			} else {
+			if _, ok := r.Lookup(assetKey(name)); ok {
 				outOK++
+			} else {
+				lost = append(lost, num)
 			}
 		}
 		if len(lost) > 0 {
 			sort.Ints(lost)
-			return fmt.Errorf("产物丢了 %d 个清单编号（源能播、产物没有）：%v", len(lost), lost)
+			return fmt.Errorf("容器丢了 %d 个清单编号（源能播、容器里没有）：%v", len(lost), lost)
 		}
-		fmt.Printf("自检②：清单编号 源可播 %d → 产物 %d ✓\n", srcOK, outOK)
+		fmt.Printf("自检②：清单编号 源可播 %d → 容器 %d ✓\n", srcOK, outOK)
+	}
+	if _, ok := r.Lookup("soundlist"); !ok {
+		return errors.New("容器里没有 soundlist（客户端读不到编号表）")
 	}
 
-	fmt.Printf("\n转换 %d 个（其中 %d 个因两声道相消只留一路），原样搬 %d 个（BGM），跳过 %d 个\n",
-		nConv, nFall, nCopy, nSkip)
-	if nRespell > 0 {
-		fmt.Printf("另有 %d 个文件名按 sound.lst 的拼写输出（大小写对齐，Linux 上才找得到）\n", nRespell)
+	// ---- 自检①的汇总：ADPCM 是有损的，得有个数字说话 ----
+	if len(snrs) > 0 {
+		sorted := append([]float64(nil), snrs...)
+		sort.Float64s(sorted)
+		sum := 0.0
+		for _, v := range sorted {
+			sum += v
+		}
+		// 4bit IMA 的 SNR 大致 15~25 dB（看素材）；很低的多半是"噪声型内容"或
+		// "本来就只有 8bit"的短音效 —— 那种 SNR 没有意义。所以下限定得低，
+		// 只抓"编码器系统性写错"，并把分布打出来让人自己判断。
+		fmt.Printf("自检①：解码回来 vs 原 PCM 的 SNR —— 最小 %.1f dB / 中位 %.1f dB / 均值 %.1f dB\n",
+			sorted[0], sorted[len(sorted)/2], sum/float64(len(sorted)))
+		// 把最差的几个点名：4bit 对"噪声型"素材最吃亏，这几条值得**用耳朵**复核。
+		sort.Slice(snrList, func(i, j int) bool { return snrList[i].db < snrList[j].db })
+		worst := min(5, len(snrList))
+		names := make([]string, 0, worst)
+		for _, x := range snrList[:worst] {
+			names = append(names, fmt.Sprintf("%s %.1fdB", x.name, x.db))
+		}
+		fmt.Printf("      最差 %d 个：%s\n", worst, strings.Join(names, "、"))
 	}
-	fmt.Printf("源 %.1f MB  →  %s %.1f MB  （省 %.1f MB，%.1f×）\n",
-		float64(inBytes)/1e6, *out, float64(outBytes)/1e6,
-		float64(inBytes-outBytes)/1e6, float64(inBytes)/float64(outBytes))
+
+	fmt.Printf("\n[%s] 转换 %d 个（%d 个两声道相消只留一路），原样进容器 %d 个，跳过 %d 个\n",
+		*codec, nConv, nFall, nCopy, nSkip)
+	fmt.Printf("源 %.1f MB  →  %s  %.1f MB（%d 块，含清单）  （省 %.1f MB，%.1f×）\n",
+		float64(inBytes)/1e6, *out, float64(st.FileSize)/1e6, st.Count,
+		float64(inBytes-int64(st.FileSize))/1e6, float64(inBytes)/float64(st.FileSize))
 	if nSkip > 0 {
 		fmt.Printf("  （另有 %.1f MB 未产出：原版从不播，-keep-all 可保留）\n", float64(skippedBytes)/1e6)
 	}
 	return nil
 }
 
-// verifyWav 自检：读回产出的文件，核对头与内容**没走样**。
+// verifyWav 自检：**把产出的文件读回来**（ADPCM 会解码成 PCM），核对三件事：
 //
-// 检查三件（都能抓出"接错声道/算错长度/变成静音"这类真错误）：
-//  1. 头：PCM、单声道、16bit、采样率对；
-//  2. 长度：与预期帧数一致（允许 1 帧舍入）；
-//  3. 内容：峰值与源**同量级**。下界放到 40% 是因为下混本身会降峰（两个声道
-//     不相关时平均后自然变小），而上界 120% 抓"越界/放大"。真正的灾难
-//     ——"产出整段静音" —— 单独判（下面那条），那才是最该抓的。
-func verifyWav(path string, src *wav, want []int16, rate int) error {
-	got, err := readWav(path)
+//  1. 头：编码号（PCM 记 1 / IMA 记 0x11）、声道数、采样率、（PCM 时）16bit；
+//  2. 长度：帧数与预期一致（允许声道数那么多帧的取整）；
+//  3. 内容：**解码结果与预期 PCM 的 SNR**（ADPCM 有量化噪声，低于 15 dB 说明
+//     编码器或头写坏了），外加峰值同量级、不能整段静音。
+//
+// 返回 SNR（dB）供调用方汇总 —— ADPCM 是有损的，得有个数字说话。
+// 下界之所以放到 40%：下混本身会降峰（两声道不相关时平均后自然变小）；
+// 上界 130% 抓"越界/放大"。真正该抓的灾难是"整段静音"，单独判。
+func verifyWav(data []byte, src *wav, want []int16, channels, rate int, codec string, snrMin float64) (float64, error) {
+	got, err := readWavBytes(data)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if got.format != 1 || got.channels != 1 || got.bits != 16 || got.rate != rate {
-		return fmt.Errorf("头不对：fmt=%d ch=%d bits=%d rate=%d", got.format, got.channels, got.bits, got.rate)
+	if got.channels != channels || got.rate != rate {
+		return 0, fmt.Errorf("头不对：ch=%d（期望 %d）rate=%d（期望 %d）",
+			got.channels, channels, got.rate, rate)
 	}
-	if len(got.pcm) != len(want) {
-		return fmt.Errorf("帧数不符：%d ≠ %d", len(got.pcm), len(want))
+	if codec == "pcm" && (got.format != 1 || got.bits != 16) {
+		return 0, fmt.Errorf("PCM 模式下头不对：fmt=%d bits=%d", got.format, got.bits)
+	}
+	if codec == "adpcm" && got.format != wavFormatIMA {
+		return 0, fmt.Errorf("ADPCM 模式下头不对：fmt=0x%X", got.format)
+	}
+	if d := len(got.pcm) - len(want); d > channels || d < -channels {
+		return 0, fmt.Errorf("帧数不符：%d ≠ %d", len(got.pcm), len(want))
 	}
 	ps, pg := peak(src.pcm), peak(got.pcm)
-	if ps > 0 && (pg < ps*40/100 || pg > ps*120/100) {
-		return fmt.Errorf("峰值走样：源 %d → 产出 %d", ps, pg)
+	if ps > 0 && (pg < ps*40/100 || pg > ps*130/100) {
+		return 0, fmt.Errorf("峰值走样：源 %d → 产出 %d", ps, pg)
 	}
 	if pg == 0 && ps != 0 {
-		return errors.New("产出是静音")
+		return 0, errors.New("产出是静音")
 	}
-	return nil
+	n := min(len(got.pcm), len(want))
+	snr := snrDB(want[:n], got.pcm[:n])
+	if codec == "adpcm" && snr < snrMin {
+		return snr, fmt.Errorf("SNR 太低：%.1f dB（下限 %.1f；编码器或头写坏了？）", snr, snrMin)
+	}
+	return snr, nil
 }
 
 // ---------- 小工具 ----------
