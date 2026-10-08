@@ -1124,27 +1124,68 @@ fn ctrl(m: sdl3::keyboard::Mod) -> bool {
 /// 小地图在屏幕右上角的边长（原版就是 120×120，`PlayScn.pas:815-817`）。
 const MINIMAP_PX: f32 = 120.0;
 
-/// 自己在缩略图上的标记色（原版是把那个像素直接写 255）。
+/// 大地图的**放大倍数**。
+///
+/// 取 2 的理由：缩略图（mmap）一张约 540×360（原版把整张塞进 540×360 的
+/// `g_MiniMapSurface`，`ClMain.pas:1030`），1 倍时整张图还没窗口大 ⇒ 没得滚动，
+/// "跟着人物滑"就看不出来。2 倍 ⇒ 1080×720 > 窗口 ⇒ 站在图中间看得见四周，
+/// 跑起来图会滑（这正是用户要的手感）。
+const BIGMAP_ZOOM: f32 = 2.0;
+
+/// 自己在缩略图上的标记色（原版是把那个像素直接写 255，`PlayScn.pas:790+32`）。
 const C_SELF_DOT: Color = Color::RGB(255, 255, 255);
 
-/// 格坐标 → 缩略图像素（原版 `PlayScn.pas:808-813`：**X 是 48/32 = 1.5 倍、Y 是 1 倍**）。
+/// 格坐标 → 缩略图像素（原版 `PlayScn.pas:808-813`：
+/// `mx := (x*48) div 32`、`my := (y*32) div 32` ⇒ **X 是 1.5 倍、Y 是 1 倍**）。
 ///
 /// 这个不对称的宽高比是**原版就有的**（地图格在缩略图上不是方的），不是笔误。
-fn minimap_point(px: i32, py: i32) -> (i32, i32) {
-    (px * 48 / 32, py)
+/// 收 `f32` 是为了能吃**补间中的小数格**（否则图会一格一格跳，见 `self_render_pos`）。
+fn minimap_point(px: f32, py: f32) -> (f32, f32) {
+    (px * 48.0 / 32.0, py)
 }
 
 /// 以小地图上的 `(cx, cy)` 为中心取 `size` 见方的**源裁剪框**，夹在图内。
 ///
 /// 返回 `(x, y, w, h)`：贴边时四个数都会被夹（不许露出图外 —— 原版用的是
 /// `_MAX(0, mx-60)` + `_MIN(图宽, left+120)`，同一件事）。
-fn minimap_crop(cx: i32, cy: i32, img: (u32, u32), size: i32) -> (i32, i32, i32, i32) {
-    let (iw, ih) = (img.0 as i32, img.1 as i32);
-    let w = size.clamp(1, iw.max(1));
-    let h = size.clamp(1, ih.max(1));
-    let x = (cx - w / 2).clamp(0, (iw - w).max(0));
-    let y = (cy - h / 2).clamp(0, (ih - h).max(0));
+fn minimap_crop(cx: f32, cy: f32, img: (u32, u32), size: f32) -> (f32, f32, f32, f32) {
+    let (iw, ih) = (img.0 as f32, img.1 as f32);
+    let w = size.clamp(1.0, iw.max(1.0));
+    let h = size.clamp(1.0, ih.max(1.0));
+    let x = (cx - w / 2.0).clamp(0.0, (iw - w).max(0.0));
+    let y = (cy - h / 2.0).clamp(0.0, (ih - h).max(0.0));
     (x, y, w, h)
+}
+
+/// 大地图的贴图矩形：**人物永远落在窗口正中**，图比窗口大 ⇒ 跑动时图会滑。
+///
+/// 与 `minimap_crop` 的取舍相反：那儿要把图夹在图内（小地图不许露白），
+/// 这儿**故意不夹** —— 用户要的是"人物总是处于地图中间"（靠近地图边缘时，
+/// 边缘之外就是空的，也不许把人物从正中挪走）。
+fn bigmap_dst(
+    px: f32,
+    py: f32,
+    img: (u32, u32),
+    win: (u32, u32),
+    zoom: f32,
+) -> (f32, f32, f32, f32) {
+    (
+        win.0 as f32 / 2.0 - px * zoom,
+        win.1 as f32 / 2.0 - py * zoom,
+        img.0 as f32 * zoom,
+        img.1 as f32 * zoom,
+    )
+}
+
+/// 自己的**渲染位置**（浮点格）：有动画状态就走补间，否则就是服务端给的那一格。
+///
+/// ⚠️ 小地图/大地图取它、**不能取 `world.self_pos`**：后者只在**服务端确认到位**时才变
+///（走一格要等一个来回）⇒ 图上是"到位才跳一格"（用户 2026-10-08 报的）。
+/// 这里与画精灵用的是同一份补间（`ActorAnim::draw_pos`）⇒ 图上的移动和人的动作**同步**。
+///
+/// 抽成自由函数就是为了能单测（`Net` 不好在单测里造）。
+fn self_render_pos(anim: Option<&ActorAnim>, to: (i32, i32), now: Instant) -> (f32, f32) {
+    anim.map_or((to.0 as f32, to.1 as f32), |a| a.draw_pos(to, now))
 }
 
 /// 画小地图（Tab）/ 大地图（M）。
@@ -1162,7 +1203,8 @@ fn draw_minimaps<'a, T>(
     tc: &'a TextureCreator<T>,
     ui: &mut ui::UiCache<'a>,
     asset_dir: &Option<std::path::PathBuf>,
-    world: Option<(u32, (i32, i32))>,
+    // `(小地图图号, **补间后**的自己位置)` —— 位置见 `self_render_pos`
+    world: Option<(u32, (f32, f32))>,
     minimap_on: bool,
     bigmap_on: bool,
     win: (u32, u32),
@@ -1183,7 +1225,7 @@ fn draw_minimaps<'a, T>(
     };
 
     if minimap_on {
-        let (sx, sy, sw, sh) = minimap_crop(mx, my, img, MINIMAP_PX as i32);
+        let (sx, sy, sw, sh) = minimap_crop(mx, my, img, MINIMAP_PX);
         let (dx, dy) = (win.0 as f32 - MINIMAP_PX, 0.0);
         let _ = ui.draw_src(
             canvas,
@@ -1191,20 +1233,21 @@ fn draw_minimaps<'a, T>(
             dir,
             "mmap",
             lib_idx,
-            FRect::new(sx as f32, sy as f32, sw as f32, sh as f32),
-            FRect::new(dx, dy, sw as f32, sh as f32),
+            FRect::new(sx, sy, sw, sh),
+            FRect::new(dx, dy, sw, sh),
+            255,
         );
-        let cx = dx + (mx - sx) as f32;
-        let cy = dy + (my - sy) as f32;
+        // 自己那个点（原版：`surface.Pixels[mx, my] := 255`）
+        let cx = dx + (mx - sx);
+        let cy = dy + (my - sy);
         fill(canvas, cx - 1.0, cy - 1.0, 3.0, 3.0, C_SELF_DOT)?;
     }
 
     if bigmap_on {
         let (iw, ih) = (img.0 as f32, img.1 as f32);
         if iw > 0.0 && ih > 0.0 {
-            let scale = (win.0 as f32 * 0.9 / iw).min(win.1 as f32 * 0.9 / ih);
-            let (dw, dh) = (iw * scale, ih * scale);
-            let (dx, dy) = ((win.0 as f32 - dw) / 2.0, (win.1 as f32 - dh) / 2.0);
+            let (dx, dy, dw, dh) = bigmap_dst(mx, my, img, win, BIGMAP_ZOOM);
+            // 半透明：大地图铺满整屏，全不透明就看不见自己脚下的路了
             let _ = ui.draw_src(
                 canvas,
                 tc,
@@ -1213,8 +1256,10 @@ fn draw_minimaps<'a, T>(
                 lib_idx,
                 FRect::new(0.0, 0.0, iw, ih),
                 FRect::new(dx, dy, dw, dh),
+                140,
             );
-            let (cx, cy) = (dx + mx as f32 * scale, dy + my as f32 * scale);
+            // 人物在正中（`bigmap_dst` 保证这一点），标记就画在窗口中心
+            let (cx, cy) = (win.0 as f32 / 2.0, win.1 as f32 / 2.0);
             fill(canvas, cx - 2.0, cy - 2.0, 5.0, 5.0, C_SELF_DOT)?;
         }
     }
@@ -2399,9 +2444,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &tex_creator,
                 &mut ui,
                 &asset_dir,
-                net.as_ref()
-                    .filter(|n| n.world.in_world())
-                    .map(|n| (n.world.minimap_index, n.world.self_pos)),
+                net.as_ref().filter(|n| n.world.in_world()).map(|n| {
+                    (
+                        n.world.minimap_index,
+                        // ⚠️ 取**补间后**的位置（与画精灵同一份）：服务端位置只在
+                        // "到位"时变 ⇒ 拿它当图心就是"跑完一格图才跳一格"（用户报的）。
+                        self_render_pos(n.anims.get(&n.world.self_id), n.world.self_pos, started),
+                    )
+                }),
                 minimap_on,
                 bigmap_on,
                 (WIN_W, WIN_H),
@@ -3590,10 +3640,12 @@ mod tests {
     /// 这个不对称是原版就有的，写成 `*1.5/*1.5` 会让点位系统性偏左。
     #[test]
     fn 小地图换算x是一倍半y是一倍() {
-        assert_eq!(minimap_point(0, 0), (0, 0));
-        assert_eq!(minimap_point(2, 2), (3, 2)); // 2*48/32 = 3
-        assert_eq!(minimap_point(289, 618), (433, 618)); // 边界村：289*1.5 = 433.5 → 433
-        assert_eq!(minimap_point(650, 631), (975, 631)); // 银杏山谷
+        assert_eq!(minimap_point(0.0, 0.0), (0.0, 0.0));
+        assert_eq!(minimap_point(2.0, 2.0), (3.0, 2.0)); // 2*48/32 = 3
+        assert_eq!(minimap_point(289.0, 618.0), (433.5, 618.0)); // 边界村
+        assert_eq!(minimap_point(650.0, 631.0), (975.0, 631.0)); // 银杏山谷
+                                                                 // **小数格**也要能用：走路补间落在两格之间（图上才能滑，而不是一格一格跳）
+        assert_eq!(minimap_point(10.5, 20.25), (15.75, 20.25));
     }
 
     /// 小地图的裁剪框：以自己为中心 `120` 见方，**贴边时夹回图内**（原版也是这么夹的）。
@@ -3601,27 +3653,95 @@ mod tests {
     fn 小地图裁剪贴边要夹住() {
         let img = (1000u32, 800u32);
         assert_eq!(
-            minimap_crop(500, 400, img, 120),
-            (440, 340, 120, 120),
+            minimap_crop(500.0, 400.0, img, 120.0),
+            (440.0, 340.0, 120.0, 120.0),
             "居中时是 120 见方"
         );
         assert_eq!(
-            minimap_crop(10, 400, img, 120),
-            (0, 340, 120, 120),
+            minimap_crop(10.0, 400.0, img, 120.0),
+            (0.0, 340.0, 120.0, 120.0),
             "贴左边界"
         );
         assert_eq!(
-            minimap_crop(500, 5, img, 120),
-            (440, 0, 120, 120),
+            minimap_crop(500.0, 5.0, img, 120.0),
+            (440.0, 0.0, 120.0, 120.0),
             "贴上边界"
         );
         assert_eq!(
-            minimap_crop(999, 799, img, 120),
-            (880, 680, 120, 120),
+            minimap_crop(999.0, 799.0, img, 120.0),
+            (880.0, 680.0, 120.0, 120.0),
             "贴右下角"
         );
         // 图比窗口还小 ⇒ 给整张图（w/h 跟着缩），不会出现负数或越界
-        assert_eq!(minimap_crop(5, 5, (50, 40), 120), (0, 0, 50, 40));
+        assert_eq!(
+            minimap_crop(5.0, 5.0, (50, 40), 120.0),
+            (0.0, 0.0, 50.0, 40.0)
+        );
+        // 补间中的小数位置 ⇒ 裁剪框**连续**（"图滑得平滑"就是这儿来的）
+        assert_eq!(
+            minimap_crop(500.5, 400.0, img, 120.0),
+            (440.5, 340.0, 120.0, 120.0)
+        );
+    }
+
+    /// 大地图：**人物永远在窗口正中**，图比窗口大 ⇒ 跑动时图会滑（用户 2026-10-08 要的手感）。
+    #[test]
+    fn 大地图人物永远在正中() {
+        let img = (540u32, 360u32);
+        let win = (800u32, 600u32);
+        let (px, py) = minimap_point(100.0, 200.0);
+        let (dx, dy, dw, dh) = bigmap_dst(px, py, img, win, BIGMAP_ZOOM);
+        // 人物在贴图上的位置 == 窗口中心（`bigmap_dst` 的全部意义）
+        assert_eq!(
+            (dx + px * BIGMAP_ZOOM, dy + py * BIGMAP_ZOOM),
+            (400.0, 300.0)
+        );
+        // 放大 2 倍 ⇒ 图（1080×720）比窗口（800×600）大 ⇒ 有得滑
+        assert_eq!((dw, dh), (1080.0, 720.0));
+        assert!(
+            dw > win.0 as f32 && dh > win.1 as f32,
+            "图必须比窗口大，否则滑不起来"
+        );
+        // 走一格 ⇒ 图整体反向平移，而且是**连续**的（不是跳一格）
+        let (dx2, _, _, _) = bigmap_dst(px + 1.5, py, img, win, BIGMAP_ZOOM);
+        assert_eq!(
+            dx2,
+            dx - 3.0,
+            "X 走一格（1.5 缩略图像素）⇒ 图反向滑 3 像素（×2）"
+        );
+        // ⚠️ 故意**不夹**：图外就是空的，但人物必须还在正中（用户的原话）
+        let (dx3, _, _, _) = bigmap_dst(0.0, 0.0, img, win, BIGMAP_ZOOM);
+        assert_eq!(dx3, 400.0, "到了地图左上角，贴图也照样把人物摆在正中");
+    }
+
+    /// 走路时地图取**补间位置**：没动画状态 ⇒ 服务端那一格；走起来 ⇒ 落在两格之间。
+    ///
+    /// 这条钉的就是用户 2026-10-08 报的手感问题：图跟着**动作**走，不是"到位才跳一格"。
+    #[test]
+    fn 走动时地图取的是补间位置() {
+        let now = Instant::now();
+        // 还没有动画状态（刚进图）⇒ 原样的格子
+        assert_eq!(self_render_pos(None, (10, 20), now), (10.0, 20.0));
+
+        // 刚迈出一步：(10,20) → (11,20)
+        let anim = ActorAnim {
+            cell: (11, 20),
+            from: Some((10, 20)),
+            action: None,
+            changed_at: now,
+        };
+        // 起点那一刻
+        assert_eq!(self_render_pos(Some(&anim), (11, 20), now), (10.0, 20.0));
+        // 半路（补间中）—— 这一条就是"平滑"的证据
+        let mid = now + Duration::from_millis(MOVE_MS as u64 / 2);
+        let (mx, _) = self_render_pos(Some(&anim), (11, 20), mid);
+        assert!(
+            (10.4..=10.6).contains(&mx),
+            "半路该在第 10.5 格附近，实得 {mx}"
+        );
+        // 过了补间时长 ⇒ 到位
+        let done = now + Duration::from_millis(MOVE_MS as u64 + 10);
+        assert_eq!(self_render_pos(Some(&anim), (11, 20), done), (11.0, 20.0));
     }
 
     /// 屏幕坐标 ↔ 格子互为逆（"点哪走到哪"靠这一对；鼠标那条路用的是反算）。

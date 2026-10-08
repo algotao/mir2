@@ -113,8 +113,10 @@ impl<'a> UiCache<'a> {
         self.ensure(dir, lib, idx, tc)?;
         let t = self.texs.get_mut(&(lib, idx))?;
         let q = t.tex.query();
-        // ⚠️ 贴之前一定要重设颜色（见上面那条：不设就会沿用上一次的）
+        // ⚠️ 贴之前一定要重设颜色（见上面那条：不设就会沿用上一次的）；
+        // 透明度同理 —— `draw_src` 会给大地图设 140，没复位就会让后来贴的同一张图变半透明。
         t.tex.set_color_mod(tint.0, tint.1, tint.2);
+        t.tex.set_alpha_mod(255);
         canvas
             .copy(
                 &t.tex,
@@ -168,6 +170,9 @@ impl<'a> UiCache<'a> {
     /// 调色那条纪律（见 `draw_tint` 上面）还得走 `draw_tint`。
     ///
     /// 返回**原图**尺寸：调用方要先按它算裁剪框（见 app 的 `minimap_crop`）。
+    ///
+    /// `alpha` 是整张图的透明度（255 = 不透明）—— 大地图铺满整屏，要半透明才看得见
+    /// 脚下的世界。⚠️ 与颜色一样，**每次都得重设**（上一处调过就会沿用）。
     #[allow(clippy::too_many_arguments)]
     pub fn draw_src<T>(
         &mut self,
@@ -178,11 +183,13 @@ impl<'a> UiCache<'a> {
         idx: u32,
         src: FRect,
         dst: FRect,
+        alpha: u8,
     ) -> Option<(u32, u32)> {
         self.ensure(dir, lib, idx, tc)?;
         let t = self.texs.get_mut(&(lib, idx))?;
-        // 贴之前把颜色**复位**：上一处可能给它调过色（见 `draw_tint` 的说明）
+        // 贴之前把颜色/透明度**都复位**：上一处可能给它调过（见 `draw_tint` 的说明）
         t.tex.set_color_mod(255, 255, 255);
+        t.tex.set_alpha_mod(alpha);
         let q = t.tex.query();
         canvas.copy(&t.tex, Some(src), Some(dst)).ok()?;
         Some((q.width, q.height))
