@@ -109,6 +109,12 @@ pub struct World {
     pub self_id: u64,
     /// 地图**名字**（本项目地图按名字索引，D-22）。
     pub map_name: String,
+    /// 当前地图的**小地图图号**（0 = 该图没有小地图）。
+    ///
+    /// 服务端从 `MiniMap.txt` 查出来，随 `EnterWorld` / `ChangeMap` 一起下发
+    ///（`protocol/scene.proto` 的 `minimap_index`）；客户端拿它当 `mmap` 图库的下标
+    ///（**图号 − 1**，与 legacy 的 `ClMain.pas:6045-6051` 同一条规则）。
+    pub minimap_index: u32,
     pub self_pos: (i32, i32),
     pub self_dir: i32,
     /// 视野内的实体，键为实体 id（`BTreeMap` ⇒ 遍历顺序稳定，画面不会每帧乱序）。
@@ -159,6 +165,7 @@ impl World {
             Body::EnterWorld(ew) => {
                 self.self_id = ew.self_entity_id;
                 self.map_name = ew.map_name.clone();
+                self.minimap_index = ew.minimap_index;
                 let pos = ew.position.unwrap_or_default();
                 self.self_pos = (pos.x, pos.y);
                 self.self_dir = ew.direction;
@@ -182,6 +189,7 @@ impl World {
             }
             Body::ChangeMap(cm) => {
                 self.map_name = cm.map_name.clone();
+                self.minimap_index = cm.minimap_index; // 换图 = 换一张缩略图
                 self.self_feature = cm.self_feature;
                 // 回城/传送（含死亡回城）走的就是这条 ⇒ 自己恢复为活着的。
                 self.self_dead = false;
@@ -395,6 +403,8 @@ mod tests {
             ],
             server_tick: 42,
             self_feature: None,
+            // 小地图图号：0 号图在 `MiniMap.txt` 里是 101（图库下标 = 100）
+            minimap_index: 101,
         })
     }
 
@@ -405,6 +415,8 @@ mod tests {
         assert!(w.in_world());
         assert_eq!((w.self_id, w.map_name.as_str()), (1, "0"));
         assert_eq!(w.self_pos, (1, 1));
+        // 小地图图号要跟着进世界一起到（TAB 小地图靠它取图，见 `World::minimap_index`）
+        assert_eq!(w.minimap_index, 101, "进世界该带上小地图图号");
         assert_eq!(w.server_tick, 42);
         assert_eq!(w.entities.len(), 2);
         assert_eq!(w.entities[&1_000_001].name, "鸡");

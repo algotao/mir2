@@ -938,15 +938,16 @@ func (ps *protoSession) sendDeleteResult(ok bool, code uint32, msg string) error
 // ⚠️ 与 legacy 的 `HomeMap/HomeX/HomeY` 是同一语义（那边是配置里的 289,618）——
 // 两边的"新号出生在哪"必须是同一个地方。
 func (s *Server) newCharHome() chargen.Home {
-	home := chargen.Home{Map: s.data.defaultMapID}
-	// ⚠️ **不是"表里第一条"**：拿 `-home-x/-home-y`（默认 650/631 = 银杏谷那片安全区）
-	// 去该图的安全点里挑**最近**的一条 —— 原版 `!Setup.txt` 的 HomeX/HomeY 就是干这个的
-	//（`ObjBase.pas:9885-9919`）。早先取第一条 ⇒ 新号被扔在 (289,618)，
-	// 与用户要看的新手村（银杏谷）不符（D-38）。
-	if sp := s.homePointOf(s.data.defaultMapID, s.data.homeX, s.data.homeY); sp != nil {
-		home.X, home.Y = uint32(sp.X), uint32(sp.Y)
+	// **原版 1.76：两个新手村随机二选一**（银杏山谷 / 边界村，不分职业）——
+	// 口径见 `docs/use.md`，候选表是 `-home-points`（默认就是那两个村）。
+	//
+	// ⚠️ 走过的弯路记一笔（D-38 → D-40）：先是"取安全点表第一条"（⇒ 永远边界村），
+	// 再是"按配置挑最近的一条"（⇒ 永远银杏谷，确定性）；原版其实是**随机**。
+	// 空候选 ⇒ 只给地图号，坐标交给 `chargen` 那边的兜底。
+	if len(s.data.homePoints) > 0 {
+		return chargen.PickHome(s.data.homePoints)
 	}
-	return home
+	return chargen.Home{Map: s.data.defaultMapID}
 }
 
 // onListCharacters 列出该账号未删除的角色（选角列表）。
@@ -1070,6 +1071,8 @@ func (ps *protoSession) enterWorld(chr *storage.Character) bool {
 		Entities:    states,
 		ServerTick:  uint32(time.Now().UnixMilli()),
 		SelfFeature: featureOf(p.Obj.FeatureBits()),
+		// 小地图图号：客户端按 `mmap[图号-1]` 取整张缩略图（0 = 没有）
+		MinimapIndex: s.minimapIndexOf(p.Obj.MapRef().Name),
 	}}}
 	if err := ps.send(env); err != nil {
 		return false
@@ -1314,6 +1317,8 @@ func (s *Server) sendMapSnapshotTo(p *Player, mapID string) {
 			Entities:    states,
 			ServerTick:  uint32(time.Now().UnixMilli()),
 			SelfFeature: featureOf(p.Obj.FeatureBits()),
+			// 换图了就是另一张缩略图
+			MinimapIndex: s.minimapIndexOf(mapID),
 		}}})
 	if p.Char != nil && p.Char.Data != nil {
 		p.protoOut.ability(p.Char.Data.Abil, p.Char.Data.Gold)

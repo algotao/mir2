@@ -40,6 +40,13 @@ message EnterWorld {
   // 自己的外观 —— **不在 `entities` 里**：快照刻意不包含自己（自己由 `self_entity_id`
   // 与移动/心跳回显维护）。少了它客户端就画不出自己的精灵（连"自己长什么样"都不知道）。
   EntityFeature self_feature = 8;
+  // 小地图图号（0 = 该图没有小地图）。
+  //
+  // 来源：服务端 `data/envir/MiniMap.txt` 的"地图号 → 小地图编号"（`s.cfg.miniMaps`）。
+  // 客户端拿它当 **`mmap` 图库的下标（图号 - 1）** 去取整张地图的缩略图 ——
+  // 与 legacy 的 `CM_WANTMINIMAP`/`SM_READMINIMAP_OK` 是同一份数据（`ClMain.pas:6045-6051`），
+  // 只是新协议不再单开一问一答：进图/换图那条消息顺手带上。
+  uint32 minimap_index = 9;
 }
 
 // 服务端 → 客户端：切换地图（重发新图快照）。
@@ -51,6 +58,8 @@ message ChangeMap {
   uint32 server_tick = 5;
   // 自己的外观，与 `EnterWorld.self_feature` 同义（换图后重发一次）。
   EntityFeature self_feature = 6;
+  // 小地图图号 —— 换图了就是另一张缩略图，与 `EnterWorld.minimap_index` 同义。
+  uint32 minimap_index = 7;
 }
 
 // 大块地图数据 —— 独立分块传输（protocol.md §2：大二进制块单独分帧）。

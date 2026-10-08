@@ -283,8 +283,9 @@ fn run(argv: &[String]) -> Result<(), String> {
     }
 
     println!(
-        "世界状态通过：地图={} 进图={:?} 现在={:?} 视野={} 个实体 变更={} 次 实体事件={} 伤害={}",
+        "世界状态通过：地图={} 小地图={} 进图={:?} 现在={:?} 视野={} 个实体 变更={} 次 实体事件={} 伤害={}",
         world.map_name,
+        world.minimap_index,
         entered_pos,
         world.self_pos,
         world.entities.len(),

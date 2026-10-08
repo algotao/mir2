@@ -63,10 +63,12 @@ type Config struct {
 	MaxPasswordErrors int
 	PasswordLockMs    int64
 
-	// HomeMap / HomeX / HomeY 新建角色的出生点。
-	HomeMap string
-	HomeX   uint32
-	HomeY   uint32
+	// HomeMap 新建角色的出生地图号；HomePoints 是**候选出生点**（多于一个就随机挑）。
+	//
+	// 与 `gamesvr` 的 `-home-points` 同源同默认（`chargen.DefaultHomePoints`）：
+	// 原版 1.76 的两个新手村随机二选一，见 `docs/use.md` 与 D-40。
+	HomeMap    string
+	HomePoints []chargen.Home
 }
 
 // DefaultConfig 返回默认配置。
@@ -86,10 +88,8 @@ func DefaultConfig() Config {
 		MaxPasswordErrors: authn.DefaultLockPolicy().MaxErrors,
 		PasswordLockMs:    authn.DefaultLockPolicy().LockForMs,
 		HomeMap:           "0",
-		// 银杏谷那片安全区（`StartPoint.txt` 的 `0 650 631`）—— 与新协议那条路
-		//（`gamesvr` 的 `-home-x/-home-y`）保持一致，理由见 D-38。
-		HomeX: 650,
-		HomeY: 631,
+		// 两个新手村（银杏山谷 / 边界村）—— 与 `gamesvr` 那条路同源，理由见 D-40。
+		HomePoints: chargen.DefaultHomePoints("0"),
 	}
 }
 
@@ -476,14 +476,14 @@ func (s *Service) onNewChr(ctx context.Context, sess *Session, p wire.Packet) []
 	if s.tables != nil {
 		items = s.tables.Items
 	}
+	// 出生点：**两个新手村随机二选一**（与 gamesvr 的新协议建角同一条规则，D-40）
+	home := chargen.PickHome(s.cfg.HomePoints)
+	if home.Map == "" {
+		home.Map = s.cfg.HomeMap
+	}
 	c := chargen.Build(
 		account, chrName, uint32(job), uint32(sex), uint32(hair),
-		chargen.Home{
-			Map: s.cfg.HomeMap,
-			X:   s.cfg.HomeX,
-			Y:   s.cfg.HomeY,
-		},
-		items, &s.itemSeq,
+		home, items, &s.itemSeq,
 	)
 	if err := s.store.Characters().Create(ctx, c); err != nil {
 		return one(proto.SM_NEWCHR_FAIL, 4, "")

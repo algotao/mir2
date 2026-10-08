@@ -212,7 +212,14 @@ type EnterWorld struct {
 	ServerTick   uint32                 `protobuf:"varint,7,opt,name=server_tick,json=serverTick,proto3" json:"server_tick,omitempty"`
 	// 自己的外观 —— **不在 `entities` 里**：快照刻意不包含自己（自己由 `self_entity_id`
 	// 与移动/心跳回显维护）。少了它客户端就画不出自己的精灵（连"自己长什么样"都不知道）。
-	SelfFeature   *EntityFeature `protobuf:"bytes,8,opt,name=self_feature,json=selfFeature,proto3" json:"self_feature,omitempty"`
+	SelfFeature *EntityFeature `protobuf:"bytes,8,opt,name=self_feature,json=selfFeature,proto3" json:"self_feature,omitempty"`
+	// 小地图图号（0 = 该图没有小地图）。
+	//
+	// 来源：服务端 `data/envir/MiniMap.txt` 的"地图号 → 小地图编号"（`s.cfg.miniMaps`）。
+	// 客户端拿它当 **`mmap` 图库的下标（图号 - 1）** 去取整张地图的缩略图 ——
+	// 与 legacy 的 `CM_WANTMINIMAP`/`SM_READMINIMAP_OK` 是同一份数据（`ClMain.pas:6045-6051`），
+	// 只是新协议不再单开一问一答：进图/换图那条消息顺手带上。
+	MinimapIndex  uint32 `protobuf:"varint,9,opt,name=minimap_index,json=minimapIndex,proto3" json:"minimap_index,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -303,6 +310,13 @@ func (x *EnterWorld) GetSelfFeature() *EntityFeature {
 	return nil
 }
 
+func (x *EnterWorld) GetMinimapIndex() uint32 {
+	if x != nil {
+		return x.MinimapIndex
+	}
+	return 0
+}
+
 // 服务端 → 客户端：切换地图（重发新图快照）。
 type ChangeMap struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
@@ -312,7 +326,9 @@ type ChangeMap struct {
 	Entities   []*EntityState         `protobuf:"bytes,4,rep,name=entities,proto3" json:"entities,omitempty"`
 	ServerTick uint32                 `protobuf:"varint,5,opt,name=server_tick,json=serverTick,proto3" json:"server_tick,omitempty"`
 	// 自己的外观，与 `EnterWorld.self_feature` 同义（换图后重发一次）。
-	SelfFeature   *EntityFeature `protobuf:"bytes,6,opt,name=self_feature,json=selfFeature,proto3" json:"self_feature,omitempty"`
+	SelfFeature *EntityFeature `protobuf:"bytes,6,opt,name=self_feature,json=selfFeature,proto3" json:"self_feature,omitempty"`
+	// 小地图图号 —— 换图了就是另一张缩略图，与 `EnterWorld.minimap_index` 同义。
+	MinimapIndex  uint32 `protobuf:"varint,7,opt,name=minimap_index,json=minimapIndex,proto3" json:"minimap_index,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -387,6 +403,13 @@ func (x *ChangeMap) GetSelfFeature() *EntityFeature {
 		return x.SelfFeature
 	}
 	return nil
+}
+
+func (x *ChangeMap) GetMinimapIndex() uint32 {
+	if x != nil {
+		return x.MinimapIndex
+	}
+	return 0
 }
 
 // 大块地图数据 —— 独立分块传输（protocol.md §2：大二进制块单独分帧）。
@@ -1172,7 +1195,7 @@ const file_scene_proto_rawDesc = "" +
 	"\vstatus_bits\x18\t \x01(\x04R\n" +
 	"statusBits\x12\x16\n" +
 	"\x06action\x18\n" +
-	" \x01(\rR\x06action\"\xc3\x02\n" +
+	" \x01(\rR\x06action\"\xe8\x02\n" +
 	"\n" +
 	"EnterWorld\x12$\n" +
 	"\x0eself_entity_id\x18\x01 \x01(\x04R\fselfEntityId\x12\x15\n" +
@@ -1184,7 +1207,8 @@ const file_scene_proto_rawDesc = "" +
 	"\bentities\x18\x06 \x03(\v2\x11.mir2.EntityStateR\bentities\x12\x1f\n" +
 	"\vserver_tick\x18\a \x01(\rR\n" +
 	"serverTick\x126\n" +
-	"\fself_feature\x18\b \x01(\v2\x13.mir2.EntityFeatureR\vselfFeature\"\xed\x01\n" +
+	"\fself_feature\x18\b \x01(\v2\x13.mir2.EntityFeatureR\vselfFeature\x12#\n" +
+	"\rminimap_index\x18\t \x01(\rR\fminimapIndex\"\x92\x02\n" +
 	"\tChangeMap\x12\x15\n" +
 	"\x06map_id\x18\x01 \x01(\rR\x05mapId\x12\x19\n" +
 	"\bmap_name\x18\x02 \x01(\tR\amapName\x12&\n" +
@@ -1193,7 +1217,8 @@ const file_scene_proto_rawDesc = "" +
 	"\bentities\x18\x04 \x03(\v2\x11.mir2.EntityStateR\bentities\x12\x1f\n" +
 	"\vserver_tick\x18\x05 \x01(\rR\n" +
 	"serverTick\x126\n" +
-	"\fself_feature\x18\x06 \x01(\v2\x13.mir2.EntityFeatureR\vselfFeature\"w\n" +
+	"\fself_feature\x18\x06 \x01(\v2\x13.mir2.EntityFeatureR\vselfFeature\x12#\n" +
+	"\rminimap_index\x18\a \x01(\rR\fminimapIndex\"w\n" +
 	"\bMapChunk\x12\x15\n" +
 	"\x06map_id\x18\x01 \x01(\rR\x05mapId\x12\x1f\n" +
 	"\vchunk_index\x18\x02 \x01(\rR\n" +

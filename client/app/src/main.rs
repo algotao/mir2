@@ -1114,6 +1114,113 @@ fn move_if_online(net: &Option<Net>, dir: mir2_protocol::Direction, run: bool) -
 const WALK_MS: u64 = 650;
 const RUN_MS: u64 = 450;
 
+/// 按住了 Ctrl 吗（`keymod` 那套；开发键都收在 Ctrl+ 里）。
+fn ctrl(m: sdl3::keyboard::Mod) -> bool {
+    m.intersects(sdl3::keyboard::Mod::LCTRLMOD) || m.intersects(sdl3::keyboard::Mod::RCTRLMOD)
+}
+
+// ---------- 小地图 / 大地图（原版 `PlayScn.pas:791` 的 `DrawMiniMap`）----------
+
+/// 小地图在屏幕右上角的边长（原版就是 120×120，`PlayScn.pas:815-817`）。
+const MINIMAP_PX: f32 = 120.0;
+
+/// 自己在缩略图上的标记色（原版是把那个像素直接写 255）。
+const C_SELF_DOT: Color = Color::RGB(255, 255, 255);
+
+/// 格坐标 → 缩略图像素（原版 `PlayScn.pas:808-813`：**X 是 48/32 = 1.5 倍、Y 是 1 倍**）。
+///
+/// 这个不对称的宽高比是**原版就有的**（地图格在缩略图上不是方的），不是笔误。
+fn minimap_point(px: i32, py: i32) -> (i32, i32) {
+    (px * 48 / 32, py)
+}
+
+/// 以小地图上的 `(cx, cy)` 为中心取 `size` 见方的**源裁剪框**，夹在图内。
+///
+/// 返回 `(x, y, w, h)`：贴边时四个数都会被夹（不许露出图外 —— 原版用的是
+/// `_MAX(0, mx-60)` + `_MIN(图宽, left+120)`，同一件事）。
+fn minimap_crop(cx: i32, cy: i32, img: (u32, u32), size: i32) -> (i32, i32, i32, i32) {
+    let (iw, ih) = (img.0 as i32, img.1 as i32);
+    let w = size.clamp(1, iw.max(1));
+    let h = size.clamp(1, ih.max(1));
+    let x = (cx - w / 2).clamp(0, (iw - w).max(0));
+    let y = (cy - h / 2).clamp(0, (ih - h).max(0));
+    (x, y, w, h)
+}
+
+/// 画小地图（Tab）/ 大地图（M）。
+///
+/// 数据是图库 `mmap` 里"整张地图的预渲染缩略图"，下标 = **图号 − 1**
+///（原版 `ClMain.pas:6045-6051` 的 `g_nMiniMapIndex := mapindex - 1`）；
+/// 图号由服务端随 `EnterWorld`/`ChangeMap` 下发（新协议不再单开一问一答）。
+///
+/// - 小地图：以自己为中心裁 `MINIMAP_PX` 见方，贴**屏幕右上角**（原版 `(W-120, 0)`），
+///   自己画个小方点；
+/// - 大地图：同一张图**等比缩放**到窗口内居中，同一个换算再乘缩放（原版的大地图窗口）。
+#[allow(clippy::too_many_arguments)]
+fn draw_minimaps<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    ui: &mut ui::UiCache<'a>,
+    asset_dir: &Option<std::path::PathBuf>,
+    world: Option<(u32, (i32, i32))>,
+    minimap_on: bool,
+    bigmap_on: bool,
+    win: (u32, u32),
+) -> Result<(), sdl3::Error> {
+    if !minimap_on && !bigmap_on {
+        return Ok(());
+    }
+    let (Some(dir), Some((idx, pos))) = (asset_dir.as_ref(), world) else {
+        return Ok(()); // 没素材 / 还没进世界
+    };
+    if idx == 0 {
+        return Ok(()); // 该图没有小地图（服务端查表查不到）
+    }
+    let lib_idx = idx - 1; // 图号 − 1 = 图库下标
+    let (mx, my) = minimap_point(pos.0, pos.1);
+    let Some(img) = ui.size(dir, "mmap", lib_idx) else {
+        return Ok(()); // 图库里没有这一张
+    };
+
+    if minimap_on {
+        let (sx, sy, sw, sh) = minimap_crop(mx, my, img, MINIMAP_PX as i32);
+        let (dx, dy) = (win.0 as f32 - MINIMAP_PX, 0.0);
+        let _ = ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            "mmap",
+            lib_idx,
+            FRect::new(sx as f32, sy as f32, sw as f32, sh as f32),
+            FRect::new(dx, dy, sw as f32, sh as f32),
+        );
+        let cx = dx + (mx - sx) as f32;
+        let cy = dy + (my - sy) as f32;
+        fill(canvas, cx - 1.0, cy - 1.0, 3.0, 3.0, C_SELF_DOT)?;
+    }
+
+    if bigmap_on {
+        let (iw, ih) = (img.0 as f32, img.1 as f32);
+        if iw > 0.0 && ih > 0.0 {
+            let scale = (win.0 as f32 * 0.9 / iw).min(win.1 as f32 * 0.9 / ih);
+            let (dw, dh) = (iw * scale, ih * scale);
+            let (dx, dy) = ((win.0 as f32 - dw) / 2.0, (win.1 as f32 - dh) / 2.0);
+            let _ = ui.draw_src(
+                canvas,
+                tc,
+                dir,
+                "mmap",
+                lib_idx,
+                FRect::new(0.0, 0.0, iw, ih),
+                FRect::new(dx, dy, dw, dh),
+            );
+            let (cx, cy) = (dx + mx as f32 * scale, dy + my as f32 * scale);
+            fill(canvas, cx - 2.0, cy - 2.0, 5.0, 5.0, C_SELF_DOT)?;
+        }
+    }
+    Ok(())
+}
+
 /// **屏幕坐标 → 地图格**（鼠标点哪走到哪要用它；与 [`cell_to_screen`] 互为逆）。
 fn screen_to_cell(cam: (i32, i32), px: f32, py: f32) -> (i32, i32) {
     (
@@ -1645,6 +1752,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut mouse = (0.0f32, 0.0f32);
 
     let mut music_on = true;
+    // 小地图（Tab）/ 大地图（M）—— 原版 1.76 的键位，默认都关（原版也要按才出来）
+    let mut minimap_on = false;
+    let mut bigmap_on = false;
     // 音效开关：原版是**两个独立开关**（音效 / 音乐，`MShare.pas:213-214`），
     // 所以这里也是两个（`N` 切音效）。
     let mut sfx_on = true;
@@ -1692,10 +1802,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     keycode, keymod, ..
                 } => match keycode {
                     Some(Keycode::Escape) => break 'main,
-                    Some(Keycode::F1) => mode = 1,
-                    Some(Keycode::F2) => mode = 2,
-                    Some(Keycode::F3) => mode = 3,
-                    Some(Keycode::M) => {
+                    // ⚠️ **开发键让开原版键位**（口径见 `docs/use.md`）：F1~F8 是技能、
+                    // F9~F12 是包裹/属性/技能/内挂、M 是大地图、Tab 是小地图、数字是快捷物品
+                    // ⇒ 这些"开发查看器"入口统统收进 **Ctrl+**，原版键位留给真功能。
+                    Some(Keycode::F1) if ctrl(keymod) => mode = 1,
+                    Some(Keycode::F2) if ctrl(keymod) => mode = 2,
+                    Some(Keycode::F3) if ctrl(keymod) => mode = 3,
+                    Some(Keycode::M) if ctrl(keymod) => {
                         music_on = !music_on;
                         sound.set_music_on(music_on);
                         // 带上"正在响几路 / 有没有 BGM"：一眼看出混音器是不是活的
@@ -1707,7 +1820,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if bgm { "ON" } else { "OFF" }
                         );
                     }
-                    Some(Keycode::N) => {
+                    Some(Keycode::N) if ctrl(keymod) => {
                         sfx_on = !sfx_on;
                         sound.set_sfx_on(sfx_on);
                         let (voices, bgm, ..) = sound.stats();
@@ -1799,6 +1912,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 cam.1 += 2
                             }
                         }
+                        // Tab = **小地图**开关、M = **大地图**开关（原版 1.76 的键位，
+                        // 见 `docs/use.md`；音乐已经挪到 Ctrl+M，不再抢 M）。
+                        Some(Keycode::Tab) => minimap_on = !minimap_on,
+                        Some(Keycode::M) => bigmap_on = !bigmap_on,
                         // 空格：打一下身边的目标（A′：走 + 砍 = 能玩）。
                         Some(Keycode::Space) => {
                             if let Some(n) = net.as_ref().filter(|n| n.world.in_world()) {
@@ -2275,6 +2392,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mouse,
                 ani_count,
                 net.as_ref(),
+            )?;
+            // 小地图 / 大地图（原版 `PlayScn.pas:791` 的 `DrawMiniMap`）
+            draw_minimaps(
+                &mut canvas,
+                &tex_creator,
+                &mut ui,
+                &asset_dir,
+                net.as_ref()
+                    .filter(|n| n.world.in_world())
+                    .map(|n| (n.world.minimap_index, n.world.self_pos)),
+                minimap_on,
+                bigmap_on,
+                (WIN_W, WIN_H),
             )?;
         } else if mode == 4 {
             if let Some(scene) = select_scene.as_mut() {
@@ -2956,11 +3086,13 @@ fn do_select_action(
 fn hint_text(mode: u8) -> &'static str {
     match mode {
         2 => {
-            const PLAY: &str =
-                "LMB WALK  RMB RUN  ARROWS WALK  SPACE HIT  C CONNECT  [ ] MAP  P DUMP  F1 LOGIN  ESC";
-            const DEBUG_KEYS: &str =
-                "LMB WALK  RMB RUN  ARROWS WALK  SPACE HIT  C CONNECT  [ ] MAP  \
-                                      D DEBUG  1/2/3 LAYER  P DUMP  F1 LOGIN  ESC";
+            // ⚠️ 提示条按**原版键位**写（`docs/use.md`）：Tab 小地图、M 大地图；
+            // 开发查看器入口一律 `CTRL+`（F1~F8 是技能、F9~F12 是窗口，别抢）。
+            const PLAY: &str = "LMB WALK  RMB RUN  TAB MINIMAP  M BIGMAP  SPACE HIT  \
+                                C CONNECT  [ ] MAP  CTRL+M MUSIC  CTRL+F1 LOGIN  ESC";
+            const DEBUG_KEYS: &str = "LMB WALK  RMB RUN  TAB MINIMAP  M BIGMAP  SPACE HIT  \
+                                      C CONNECT  [ ] MAP  D DEBUG  CTRL+1/2/3 LAYER  \
+                                      CTRL+M MUSIC  CTRL+F1 LOGIN  ESC";
             if DEBUG_LAYERS || DEBUG_OVERLAY {
                 DEBUG_KEYS
             } else {
@@ -3452,6 +3584,44 @@ mod tests {
         );
         // 远距离也只看方位（不是只看相邻格）
         assert_eq!(dir_to(at, (99, 10)), Some(D::DirRight));
+    }
+
+    /// 小地图的换算：**X 是 1.5 倍、Y 是 1 倍**（原版 `PlayScn.pas:808-813`）——
+    /// 这个不对称是原版就有的，写成 `*1.5/*1.5` 会让点位系统性偏左。
+    #[test]
+    fn 小地图换算x是一倍半y是一倍() {
+        assert_eq!(minimap_point(0, 0), (0, 0));
+        assert_eq!(minimap_point(2, 2), (3, 2)); // 2*48/32 = 3
+        assert_eq!(minimap_point(289, 618), (433, 618)); // 边界村：289*1.5 = 433.5 → 433
+        assert_eq!(minimap_point(650, 631), (975, 631)); // 银杏山谷
+    }
+
+    /// 小地图的裁剪框：以自己为中心 `120` 见方，**贴边时夹回图内**（原版也是这么夹的）。
+    #[test]
+    fn 小地图裁剪贴边要夹住() {
+        let img = (1000u32, 800u32);
+        assert_eq!(
+            minimap_crop(500, 400, img, 120),
+            (440, 340, 120, 120),
+            "居中时是 120 见方"
+        );
+        assert_eq!(
+            minimap_crop(10, 400, img, 120),
+            (0, 340, 120, 120),
+            "贴左边界"
+        );
+        assert_eq!(
+            minimap_crop(500, 5, img, 120),
+            (440, 0, 120, 120),
+            "贴上边界"
+        );
+        assert_eq!(
+            minimap_crop(999, 799, img, 120),
+            (880, 680, 120, 120),
+            "贴右下角"
+        );
+        // 图比窗口还小 ⇒ 给整张图（w/h 跟着缩），不会出现负数或越界
+        assert_eq!(minimap_crop(5, 5, (50, 40), 120), (0, 0, 50, 40));
     }
 
     /// 屏幕坐标 ↔ 格子互为逆（"点哪走到哪"靠这一对；鼠标那条路用的是反算）。

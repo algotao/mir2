@@ -12,6 +12,9 @@
 package chargen
 
 import (
+	"fmt"
+	"math/rand/v2"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -69,11 +72,17 @@ func InitialHPMP(job uint32) (hp, mp uint32) {
 
 // InitialItems 生成新角色的初始物品。
 //
-// 原版建角不带任何物品（要靠 GM 或 NPC 发放）。这里给一套新手装备，
-// 既让新角色不至于赤手空拳，也让装备/背包那两条下行有真实内容可测。
+// **原版 1.76 出生自带三件：布衣、木剑、蜡烛**（口径见 `docs/use.md`：
+// 「两个村子都属于比奇省，是安全区，出生自带：布衣、木剑、蜡烛，1 级」）。
+// 本仓早先给的是"木剑 + 5 瓶金创药"—— 与这份口径不符，已改成原版那三件
+// （要药水就再往 `bag` 里加，见 D-40）。
+//
+// 槽位出处：`Grobal2.pas:29-30` 的 `U_DRESS=0` / `U_WEAPON=1`；
+// 蜡烛按 `M2Share.pas:3519`（`U_RIGHTHAND`：`StdMode` 28/29/30 拿在**右手**）
+// ⇒ 我们物品表里 `蜡烛` 的 `std_mode` 正好是 30 ⇒ 槽 2。
 //
 // `seq` 是**物品实例号**（`MakeIndex`）分配器：两个服务各有自己的一个。
-func InitialItems(items ItemSource, seq *atomic.Int64) (equip map[uint32]*pb.UserItem, bag []*pb.UserItem) {
+func InitialItems(items ItemSource, seq *atomic.Int64, sex uint32) (equip map[uint32]*pb.UserItem, bag []*pb.UserItem) {
 	if items == nil {
 		return nil, nil
 	}
@@ -90,18 +99,78 @@ func InitialItems(items ItemSource, seq *atomic.Int64) (equip map[uint32]*pb.Use
 		}
 	}
 
-	weapon := newItem("木剑")
-	if weapon != nil {
-		// 槽位 1 = 武器（`Grobal2.pas:30` `U_WEAPON=1`）
-		equip = map[uint32]*pb.UserItem{1: weapon}
+	// 衣服分男女：原版是**两件不同的物品**（`布衣(男)` StdMode 10 / `布衣(女)` 11）
+	cloth := "布衣(男)"
+	if sex != 0 {
+		cloth = "布衣(女)"
 	}
-	// 新手药水 x5
-	for i := 0; i < 5; i++ {
-		if p := newItem("金创药(小量)"); p != nil {
-			bag = append(bag, p)
-		}
+	equip = map[uint32]*pb.UserItem{}
+	if u := newItem(cloth); u != nil {
+		equip[0] = u // U_DRESS
+	}
+	if u := newItem("木剑"); u != nil {
+		equip[1] = u // U_WEAPON
+	}
+	if u := newItem("蜡烛"); u != nil {
+		equip[2] = u // U_RIGHTHAND（StdMode 30 = 蜡烛/火把，见上）
 	}
 	return equip, bag
+}
+
+// PickHome 从候选出生点里**随机**挑一个。
+//
+// **原版 1.76：新角色在两个新手村之间随机，不分职业**（`docs/use.md`）——
+// 银杏山谷（我们安全点表里的 `0 650 631`）与 边界村（`0 289 618`）；
+// 用户 2026-10-08 的口径也是"原版是在 649 627 的地方出生，银杏谷"（±几格 = 安全区内）。
+//
+// 空列表 ⇒ 零值（调用方退化成"只给地图号"）；**单个候选 ⇒ 等价于钉死**
+// （调试与单测要确定性时就用它）。
+func PickHome(points []Home) Home {
+	if len(points) == 0 {
+		return Home{}
+	}
+	return points[rand.IntN(len(points))]
+}
+
+// ParseHomePoints 解析命令行那种 `x,y;x,y` 出生点候选（地图号统一用 `mapID`）。
+//
+// 放在 chargen 里是为了**两条建角路共用同一份解析与默认值**（gamesvr 的 `-home-points`、
+// accountsvc 的 `-home-points`）—— 与 `Build` 同一条纪律：两边各写一遍必然漂移（R-7）。
+//
+// 容忍空白与多余的分号；**空结果算错误**（宁可启动就炸，也不要静默变成"没有候选"）。
+func ParseHomePoints(spec, mapID string) ([]Home, error) {
+	var out []Home
+	for _, part := range strings.Split(spec, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		xy := strings.Split(part, ",")
+		if len(xy) != 2 {
+			return nil, fmt.Errorf("出生点 %q 不是 `x,y` 形式", part)
+		}
+		x, errX := strconv.Atoi(strings.TrimSpace(xy[0]))
+		y, errY := strconv.Atoi(strings.TrimSpace(xy[1]))
+		if errX != nil || errY != nil || x < 0 || y < 0 {
+			return nil, fmt.Errorf("出生点 %q 不是合法坐标", part)
+		}
+		out = append(out, Home{Map: mapID, X: uint32(x), Y: uint32(y)})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("出生点候选是空的（%q）", spec)
+	}
+	return out, nil
+}
+
+// DefaultHomePoints 是**两个新手村**（原版 1.76 的出生候选，见 `docs/use.md`）。
+//
+// 银杏山谷 `0 650 631` 与 边界村 `0 289 618` —— 这两条也确实都在
+// `server/data/envir/StartPoint.txt` 里（安全区/复活点表）。
+func DefaultHomePoints(mapID string) []Home {
+	return []Home{
+		{Map: mapID, X: 650, Y: 631}, // 银杏山谷
+		{Map: mapID, X: 289, Y: 618}, // 边界村
+	}
 }
 
 // Home 新角色的出生点。
@@ -123,7 +192,7 @@ func Build(
 	seq *atomic.Int64,
 ) *storage.Character {
 	hp0, mp0 := InitialHPMP(job)
-	equipInit, bagInit := InitialItems(items, seq)
+	equipInit, bagInit := InitialItems(items, seq, sex)
 
 	humItems := make([]*pb.UserItem, EquipSlots)
 	for i := range humItems {

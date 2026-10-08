@@ -110,27 +110,7 @@ impl<'a> UiCache<'a> {
         y: f32,
         tint: (u8, u8, u8),
     ) -> Option<(u32, u32)> {
-        if !self.texs.contains_key(&(lib, idx)) {
-            if self.texs.len() >= UI_CACHE_CAP {
-                self.texs.clear();
-            }
-            let s = self.lib(dir, lib)?.decode(idx as usize)?;
-            if s.is_empty() {
-                return None;
-            }
-            let mut t = tc
-                .create_texture(
-                    PixelFormat::RGBA32,
-                    TextureAccess::Streaming,
-                    s.width as u32,
-                    s.height as u32,
-                )
-                .ok()?;
-            t.set_blend_mode(BlendMode::Blend);
-            t.set_scale_mode(ScaleMode::Nearest);
-            t.update(None::<Rect>, &s.rgba, s.width as usize * 4).ok()?;
-            self.texs.insert((lib, idx), UiTex { tex: t });
-        }
+        self.ensure(dir, lib, idx, tc)?;
         let t = self.texs.get_mut(&(lib, idx))?;
         let q = t.tex.query();
         // ⚠️ 贴之前一定要重设颜色（见上面那条：不设就会沿用上一次的）
@@ -142,6 +122,69 @@ impl<'a> UiCache<'a> {
                 FRect::new(x, y, q.width as f32, q.height as f32),
             )
             .ok()?;
+        Some((q.width, q.height))
+    }
+
+    /// 保证 `(lib, idx)` 那张图已经进了缓存（`draw_tint` / `draw_src` 共用）。
+    ///
+    /// 抽出来的理由：两处各写一遍必然漂移 —— 缓存上限、混合/缩放模式、颜色复位
+    /// 这几条必须完全一致，而它们**都不会报错**，只会让画面在某张图上悄悄不对。
+    fn ensure<T>(
+        &mut self,
+        dir: &Path,
+        lib: &'static str,
+        idx: u32,
+        tc: &'a TextureCreator<T>,
+    ) -> Option<()> {
+        if self.texs.contains_key(&(lib, idx)) {
+            return Some(());
+        }
+        if self.texs.len() >= UI_CACHE_CAP {
+            self.texs.clear();
+        }
+        let s = self.lib(dir, lib)?.decode(idx as usize)?;
+        if s.is_empty() {
+            return None;
+        }
+        let mut t = tc
+            .create_texture(
+                PixelFormat::RGBA32,
+                TextureAccess::Streaming,
+                s.width as u32,
+                s.height as u32,
+            )
+            .ok()?;
+        t.set_blend_mode(BlendMode::Blend);
+        t.set_scale_mode(ScaleMode::Nearest);
+        t.update(None::<Rect>, &s.rgba, s.width as usize * 4).ok()?;
+        self.texs.insert((lib, idx), UiTex { tex: t });
+        Some(())
+    }
+
+    /// 取一张图，按**源矩形裁剪 + 缩放**贴到目标矩形上（小地图 / 大地图要用）。
+    ///
+    /// 与 `draw_tint` 的分工：那个是"整图 1:1 + 调色"（界面素材那套素材），
+    /// 这个是"裁剪 / 缩放"（地图缩略图那套）。**别拿它替代界面绘制** ——
+    /// 调色那条纪律（见 `draw_tint` 上面）还得走 `draw_tint`。
+    ///
+    /// 返回**原图**尺寸：调用方要先按它算裁剪框（见 app 的 `minimap_crop`）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_src<T>(
+        &mut self,
+        canvas: &mut WindowCanvas,
+        tc: &'a TextureCreator<T>,
+        dir: &Path,
+        lib: &'static str,
+        idx: u32,
+        src: FRect,
+        dst: FRect,
+    ) -> Option<(u32, u32)> {
+        self.ensure(dir, lib, idx, tc)?;
+        let t = self.texs.get_mut(&(lib, idx))?;
+        // 贴之前把颜色**复位**：上一处可能给它调过色（见 `draw_tint` 的说明）
+        t.tex.set_color_mod(255, 255, 255);
+        let q = t.tex.query();
+        canvas.copy(&t.tex, Some(src), Some(dst)).ok()?;
         Some((q.width, q.height))
     }
 }

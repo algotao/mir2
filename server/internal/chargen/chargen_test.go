@@ -15,8 +15,13 @@ func (f fakeItems) GetByName(name string) *data.StdItem { return f[name] }
 
 func testItems() fakeItems {
 	return fakeItems{
-		"木剑":      {Index: 3, Name: "木剑", DuraMax: 20},
-		"金创药(小量)": {Index: 5, Name: "金创药(小量)", DuraMax: 10},
+		// 原版出生自带的三件（见 `InitialItems` 的说明）
+		"布衣(男)": {Index: 4, Name: "布衣(男)", DuraMax: 15},
+		"布衣(女)": {Index: 5, Name: "布衣(女)", DuraMax: 15},
+		"木剑":    {Index: 3, Name: "木剑", DuraMax: 20},
+		"蜡烛":    {Index: 6, Name: "蜡烛", DuraMax: 5},
+		// 不再发放，但留在表里：将来要加回初始药水时改一行就行
+		"金创药(小量)": {Index: 7, Name: "金创药(小量)", DuraMax: 10},
 	}
 }
 
@@ -63,28 +68,27 @@ func TestBuild(t *testing.T) {
 	if got := hum[1]; got.GetIndex() != 3 || got.GetDura() != 20 || got.GetDuraMax() != 20 {
 		t.Errorf("槽 1 该是木剑（Index=3，耐久 20/20），实得 %+v", got)
 	}
-	if got := hum[0].GetIndex(); got != 0 {
+	if got := hum[0]; got.GetIndex() != 5 || got.GetDura() != 15 {
+		t.Errorf("槽 0 该是布衣(女)（Index=5 —— sex=1），实得 %+v", got)
+	}
+	if got := hum[2]; got.GetIndex() != 6 {
+		t.Errorf("槽 2 该是蜡烛（Index=6，右手：M2Share.pas:3519），实得 %+v", got)
+	}
+	if got := hum[3].GetIndex(); got != 0 {
 		t.Errorf("空槽该留 Index=0 的占位，实得 %d（槽位信息丢了会让穿装备错位）", got)
 	}
 
-	// 背包：5 瓶药，且实例号（MakeIndex）各不相同
-	bag := c.Data.GetBagItems()
-	if len(bag) != 5 {
-		t.Fatalf("初始药水该 5 个，实得 %d", len(bag))
+	// 背包：原版出生**不带药**（`docs/use.md` 说的三件都在装备位上）
+	if bag := c.Data.GetBagItems(); len(bag) != 0 {
+		t.Errorf("初始背包该是空的，实得 %d 件", len(bag))
 	}
+	// 三件装备的实例号（MakeIndex）必须各不相同 —— 共用一个实例号会串
 	seen := map[int32]bool{}
-	for _, it := range bag {
-		if it.GetIndex() != 5 {
-			t.Errorf("药水 Index 该是 5，实得 %d", it.GetIndex())
+	for _, slot := range []int{0, 1, 2} {
+		if seen[hum[slot].GetMakeIndex()] {
+			t.Errorf("实例号重复：%d", hum[slot].GetMakeIndex())
 		}
-		if seen[it.GetMakeIndex()] {
-			t.Errorf("实例号重复：%d（两瓶药共用一个实例号会串）", it.GetMakeIndex())
-		}
-		seen[it.GetMakeIndex()] = true
-	}
-	// 武器的实例号也不能和药水撞
-	if seen[hum[1].GetMakeIndex()] {
-		t.Error("武器的实例号与药水撞了")
+		seen[hum[slot].GetMakeIndex()] = true
 	}
 
 	// 能力值：1 级，血蓝是**职业初值**（与 `entity.InitialHPMP` 同源）
@@ -118,5 +122,67 @@ func TestBuildWithoutItems(t *testing.T) {
 	}
 	if len(c.Data.GetHumItems()) != EquipSlots {
 		t.Error("装备位仍该是定长 13 槽（占位不能省）")
+	}
+}
+
+// 出生点：**两个新手村随机二选一**（`docs/use.md`：银杏山谷(≈648,624) / 边界村(≈288,615)，
+// 不分职业；本仓安全点表里是 `0 650 631` 与 `0 289 618`）。
+func TestPickHome(t *testing.T) {
+	villages := []Home{
+		{Map: "0", X: 650, Y: 631}, // 银杏山谷
+		{Map: "0", X: 289, Y: 618}, // 边界村
+	}
+	// 空候选 ⇒ 零值（调用方退化成"只给地图号"的兜底）
+	if h := PickHome(nil); h.Map != "" || h.X != 0 || h.Y != 0 {
+		t.Errorf("空候选该给零值，实得 %+v", h)
+	}
+	// **单个候选 = 确定**（调试与单测要钉死出生点时用它）
+	for i := 0; i < 5; i++ {
+		if h := PickHome(villages[:1]); h.X != 650 || h.Y != 631 {
+			t.Fatalf("只有一个候选时必须确定，实得 %+v", h)
+		}
+	}
+	// 两个候选 ⇒ 只能落在这两个村里，且足够多次里**两个都出现过**（证明真在随机）
+	seen := map[uint32]int{}
+	for i := 0; i < 200; i++ {
+		h := PickHome(villages)
+		in650 := h.X == 650 && h.Y == 631
+		in289 := h.X == 289 && h.Y == 618
+		if !in650 && !in289 {
+			t.Fatalf("落到候选之外：%+v", h)
+		}
+		seen[h.X]++
+	}
+	if seen[650] == 0 || seen[289] == 0 {
+		t.Errorf("200 次里两个村都该出现过（真随机），实得 %v", seen)
+	}
+}
+
+// `-home-points` 的解析（**两条建角路共用同一份**）：分号分隔、容忍空白/多余分号、
+// 坏输入**报错**而不是静默变成空表。
+func TestParseHomePoints(t *testing.T) {
+	got, err := ParseHomePoints("650,631; 289,618 ;", "0")
+	if err != nil {
+		t.Fatalf("该解析成功：%v", err)
+	}
+	if len(got) != 2 || got[0].X != 650 || got[0].Y != 631 || got[0].Map != "0" ||
+		got[1].X != 289 || got[1].Y != 618 || got[1].Map != "0" {
+		t.Fatalf("解析结果不对：%+v", got)
+	}
+	for _, bad := range []string{"", "   ", "650", "650;", "a,b", "650,-1"} {
+		if _, err := ParseHomePoints(bad, "0"); err == nil {
+			t.Errorf("坏输入 %q 该报错（不能静默变成空表）", bad)
+		}
+	}
+}
+
+// 默认的两个新手村：坐标要与 `docs/use.md` 的口径、以及 `StartPoint.txt` 里那两条对得上。
+func TestDefaultHomePointsAreTheTwoVillages(t *testing.T) {
+	pts := DefaultHomePoints("0")
+	if len(pts) != 2 {
+		t.Fatalf("该有 2 个新手村，实得 %d", len(pts))
+	}
+	if pts[0].X != 650 || pts[0].Y != 631 || pts[1].X != 289 || pts[1].Y != 618 {
+		t.Errorf("两个新手村坐标不对：%+v（银杏山谷 650,631 / 边界村 289,618）", pts)
 	}
 }

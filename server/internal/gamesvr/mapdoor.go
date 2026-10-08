@@ -145,6 +145,17 @@ type doorKey struct {
 //	nMinMap := m_PEnvir.nMinMap;   // 地图号 → 小地图编号（data/envir/MiniMap.txt）
 //	if nMinMap > 0 then SM_READMINIMAP_OK(0, nMinMap, 0, 0, '')
 //	else SM_READMINIMAP_FAIL(0, 0, 0, 0, '');
+//
+// minimapIndexOf 地图号 → **小地图图号**（0 = 该图没有小地图）。
+//
+// 表就是 `data/envir/MiniMap.txt`（`s.cfg.miniMaps`）：legacy 的 `CM_WANTMINIMAP`
+// 走它（下面的 `handleWantMinimap`），新协议**不再单开一问一答**，直接把图号挂在
+// `EnterWorld` / `ChangeMap` 的 `minimap_index` 上（见 `protocol/scene.proto`）。
+// 客户端拿它当 `mmap` 图库的下标（图号 − 1）。
+func (s *Server) minimapIndexOf(mapName string) uint32 {
+	return uint32(s.cfg.miniMaps[mapName])
+}
+
 func (s *Server) handleWantMinimap(c net.Conn, p *Player) {
 	if p == nil || p.Obj == nil || p.Obj.MapRef() == nil {
 		return

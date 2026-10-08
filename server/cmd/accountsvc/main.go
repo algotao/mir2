@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/algotao/mir2/server/internal/accountsvc"
+	"github.com/algotao/mir2/server/internal/chargen"
 	"github.com/algotao/mir2/server/internal/data"
 	"github.com/algotao/mir2/server/internal/proxyproto"
 	"github.com/algotao/mir2/server/internal/storage/sqlite"
@@ -66,7 +67,11 @@ func main() {
 		srvName   = flag.String("server-name", "mir2go", "服务器名")
 		timeScale = flag.Float64("time-scale", 1,
 			"游戏内时间流速倍率（1=正常；20=二十倍速。客户端与 gamesvr 需同值）")
-		dataDir       = flag.String("data", "./data", "静态数据目录（用于新角色的初始物品）")
+		dataDir = flag.String("data", "./data", "静态数据目录（用于新角色的初始物品）")
+		homePts = flag.String("home-points", "650,631;289,618",
+			"新角色出生点候选（`x,y;x,y`；**多于一个就随机挑一个**）。"+
+				"默认 = 原版 1.76 的两个新手村（银杏山谷 650,631 / 边界村 289,618），"+
+				"与 gamesvr 同源，见 docs/use.md 与 D-40")
 		proxyProtocol = flag.Bool("proxy-protocol", false,
 			"要求接入连接先带一行 PROXY protocol v1 头（网关 -proxy-protocol 会写），"+
 				"从中取真实客户端 IP（docs/decisions.md D-23）。直连调试时保持关闭；"+
@@ -93,6 +98,12 @@ func main() {
 	cfg.SelGatePort = *selPort
 	cfg.RunGateAddr = *runGate
 	cfg.RunGatePort = *runPort
+	// 出生点候选：与 gamesvr 的 `-home-points` **同一份解析**（`chargen.ParseHomePoints`）
+	if homes, err := chargen.ParseHomePoints(*homePts, cfg.HomeMap); err != nil {
+		log.Fatalf("-home-points 解析失败：%v", err)
+	} else {
+		cfg.HomePoints = homes
+	}
 
 	svc := accountsvc.New(store, cfg)
 	// 静态数据用于给新角色发初始装备；加载失败只告警，不影响建号

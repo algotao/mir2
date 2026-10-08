@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/algotao/mir2/server/internal/chargen"
+
 	"github.com/algotao/mir2/server/internal/data"
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/group"
@@ -60,10 +62,10 @@ func Main() {
 				"高等级玩家回血速度远快于怪物掉血，不关掉的话治疗会被 regenLoop 的回满抢先一步")
 		mapDir       = flag.String("map-dir", "./data/map", "地图目录（含 <地图号>.map）")
 		defaultMapID = flag.String("map", "0", "默认地图号（对应 <map-dir>/<地图号>.map）")
-		homeX        = flag.Int("home-x", 650,
-			"新角色的出生点提示 X（与原版 `!Setup.txt` 的 `HomeX` 同义：从该图的安全点表里"+
-				"挑离它最近的那条当出生点）。默认 650/631 = 银杏谷那片安全区（D-38）")
-		homeY         = flag.Int("home-y", 631, "同上（Y）")
+		homePoints   = flag.String("home-points", "650,631;289,618",
+			"新角色出生点候选（`x,y;x,y`；**多于一个就随机挑一个**）。"+
+				"默认 = 原版 1.76 的两个新手村：银杏山谷(650,631) 与 边界村(289,618)"+
+				"（口径见 docs/use.md 与 D-40）；想钉死某个点就只留一个")
 		maxSpawns     = flag.Int("max-spawns", 0, "最多加载多少个刷怪点（0=不限）")
 		mapCacheLimit = flag.Int("map-cache", 0,
 			"已弃用：完整初始化要求全部地图常驻；非 0 值会被忽略")
@@ -177,8 +179,7 @@ func Main() {
 		data: dataState{
 			tables:       tables,
 			defaultMapID: *defaultMapID, // 建角要用它当出生地图（见 newCharHome）
-			homeX:        *homeX,
-			homeY:        *homeY,
+			homePoints:   mustHomePoints(*homePoints, *defaultMapID),
 			drops:        defaultDrops(tables),
 		},
 		world: worldState{
@@ -587,6 +588,18 @@ func mustDefaultMap(mm *world.MapManager, id string) *world.Map {
 	fb := world.Generate(id, fallbackW, fallbackH, true)
 	mm.Put(fb)
 	return fb
+}
+
+// mustHomePoints 解析 `-home-points`（`x,y;x,y`）⇒ 新角色出生点候选。
+//
+// 解析本身在 `chargen.ParseHomePoints`（**legacy 那条路共用同一份**）；
+// 这里只负责"坏输入立刻启动失败"，而不是带着空表跑起来。
+func mustHomePoints(spec, mapID string) []chargen.Home {
+	homes, err := chargen.ParseHomePoints(spec, mapID)
+	if err != nil {
+		log.Fatalf("-home-points 解析失败：%v", err)
+	}
+	return homes
 }
 
 // preloadAllMaps 按配置中的规范地图号优先初始化，再加载目录中剩余的所有地图文件。
