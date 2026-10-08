@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/algotao/mir2/server/internal/chargen"
 	"github.com/algotao/mir2/server/internal/proto"
 	"github.com/algotao/mir2/server/internal/storage"
 	"github.com/algotao/mir2/server/internal/storage/sqlite"
@@ -515,8 +516,8 @@ func TestValidChrName(t *testing.T) {
 		"a'b": false,
 	}
 	for name, want := range cases {
-		if got := validChrName(name); got != want {
-			t.Errorf("validChrName(%q) = %v, want %v", name, got, want)
+		if got := chargen.ValidName(name); got != want {
+			t.Errorf("chargen.ValidName(%q) = %v, want %v", name, got, want)
 		}
 	}
 }

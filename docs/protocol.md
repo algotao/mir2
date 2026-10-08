@@ -386,11 +386,22 @@ TCP 保证送达与顺序，但不保证"语义上的只有一次"。所以按**
       ⚠️ 这不是可有可无的字段：原版选角界面按 **(Job, Sex)** 各有一套坐标与图号
       （`IntroScn.pas:1390-1429`、`stand_index = 40+Job*40+Sex*120`），缺了它
       六个职业/性别组合只能画成同一个。跨实现用例：`TestProtoRustPickCharacter`。
-- [ ] `CreateCharacter` / `DeleteCharacter`：**协议里有、服务端没实现**
-      （`gamesvr` 的 dispatch 里没有这两条 ⇒ 会落到 `noteUnknown`）。
-      `accountsvc` 那条 legacy 路径有 `onNewChr`/`onDelChr`，但它们的输入是 6bit 文本正文，
-      **不能直接复用** ⇒ 要在 `netproto.go` 里按 proto 字段重写一遍（或抽共享函数）。
-      在那之前，客户端界面上那两颗按钮是**诚实的占位**（弹说明，不装作成功）。
+- [x] **建角 / 删角**（2026-10-08）：`CreateCharacter` / `DeleteCharacter` 服务端已接，
+      客户端**握手状态机**也能发（`Entrance::create_character` / `delete_character`）。
+      ⚠️ 做法是**抽共用**而不是重写：原版那套规矩（名字规则、初始物品、13 槽装备位、
+      初始 HP/MP）收进 `internal/chargen`，`accountsvc` 的 `CM_NEWCHR` 与新协议的
+      `gamesvr` **共用这一份**（R-7）——两边各写一遍必然漂移，症状是"新旧客户端建的
+      角色不一样"。验收：`chargen` 单测 + `TestProtoCreateDeleteCharacter`。
+      `DeleteCharacter.password_hash` 是**二次确认**：复用**登录时那条口令证明**
+      （绑在本连接的 nonce 上 ⇒ 重放不了；服务端用 `authn.CheckProof` 再算一遍）。
+      原版删角色只弹一个确认框、不带口令 —— 这一道门是我们加的，因为"删了不可恢复"。
+      失败的 `ActionResult.code` 由我们定（0 成功 / 1 职业异常 / 2 名字不合规 / 3 重名 /
+      4 该账号角色已满 / 5 存储出错；删角 1 证明不对 / 2 找不到 / 3 存储出错），
+      取值写在 `gamesvr/netproto.go` 的那组常量上。
+- [ ] 建角/删角的**界面**还没做：选角界面上那两颗按钮目前仍是诚实的占位
+      （弹说明）。⚠️ 建角窗口的素材图号同样**不能照抄原版**（原版是 `Prguse[73..78]`、
+      `51/52`、`55..59`，而我方素材不是那一套 —— 与选角版式同一个坑，见 D-27），
+      要先按 D-27 那套"有界测量 + 真素材测试"的办法定出来。
 - [ ] 新协议入口的**剩余边界**（见 [`netproto.go`](../server/internal/gamesvr/netproto.go) 文件头）：
       物品/聊天/技能输入/组队/交易仍走 legacy；`protoDown` 会把那些 legacy 下行丢掉。
 - [ ] `MoveInput` **没有走/跑标志**（legacy 靠 CM_WALK / CM_RUN 两条消息区分）⇒

@@ -334,6 +334,12 @@ type dataState struct {
 	mapInfoByID map[string]*data.MapInfo
 	// tables 是 data 目录加载出来的全部静态表。
 	tables *data.Tables
+
+	// defaultMapID 是 `-map` 指定的默认地图号。
+	//
+	// 建角色要用它当出生地图（新角色的 `CurMap`/`HomeMap`），
+	// 而 `defaultMap` 是**已加载的地图对象**、拿不到"号"。
+	defaultMapID string
 	// drops 是内置兜底掉落表（数据目录缺失时使用）。
 	drops map[string]*entity.DropTable
 	// dropTables 是从 Envir\MonItems 加载的真实掉落表，优先于 drops。

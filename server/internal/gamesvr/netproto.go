@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/algotao/mir2/server/internal/authn"
+	"github.com/algotao/mir2/server/internal/chargen"
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/frame"
 	"github.com/algotao/mir2/server/internal/obs"
@@ -427,6 +428,10 @@ func (ps *protoSession) dispatch(env *protocol.Envelope) (keep bool) {
 		return ps.onSelectCharacter(body.SelectCharacter)
 	case *protocol.Envelope_MoveInput:
 		return ps.onMoveInput(body.MoveInput)
+	case *protocol.Envelope_CreateCharacter:
+		return ps.onCreateCharacter(body.CreateCharacter)
+	case *protocol.Envelope_DeleteCharacter:
+		return ps.onDeleteCharacter(body.DeleteCharacter)
 	case *protocol.Envelope_AttackInput:
 		return ps.onAttackInput(body.AttackInput)
 	default:
@@ -651,6 +656,155 @@ func (ps *protoSession) failReconnect(reason string) bool {
 func (ps *protoSession) sendReconnectResult(s protocol.ReconnectStatus) error {
 	return ps.send(&protocol.Envelope{Body: &protocol.Envelope_ReconnectResult{
 		ReconnectResult: &protocol.ReconnectResult{Status: s}}})
+}
+
+// 建角/删角失败的 `ActionResult.code`（0 = 成功）。
+//
+// ⚠️ 这几个码是**我们定的**（协议里 `ActionResult.code` 只写了"非 0 见各消息的注释"），
+// 所以这里就是它的注释，`protocol/account.proto` 里同步写着同一份。
+const (
+	createBadClass  = 1 // 职业不是 1/2/3
+	createBadName   = 2 // 名字不合规（太短/含禁用字符）
+	createNameTaken = 3 // 重名
+	createTooMany   = 4 // 该账号角色已满
+	createInternal  = 5 // 存储层出错
+	deleteBadProof  = 1 // 二次确认（口令证明）没通过
+	deleteNotFound  = 2 // 这个角色不属于本账号 / 已经删了
+	deleteInternal  = 3 // 存储层出错
+)
+
+// onCreateCharacter 建角色（新协议）。
+//
+// ⚠️ 规矩**一律走 `chargen`** —— 与 legacy 的 `CM_NEWCHR` 是**同一份实现**（R-7）：
+// 名字规则、初始物品、13 槽装备位、初始 HP/MP 都在那边。
+// 这里只管几道门（职业/重名/数量）与回执，免得两边各长出一套。
+func (ps *protoSession) onCreateCharacter(m *protocol.CreateCharacter) bool {
+	if ps.rec == nil {
+		return ps.rejectOutOfOrder("尚未认领会话")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), protoStoreTimeout)
+	defer cancel()
+	account := ps.rec.Account
+
+	// 职业：新协议 1/2/3 → 存档 0/1/2（与 `characterSummary` 反着来）
+	job := int(m.GetClass()) - 1
+	if job < 0 || job > 2 {
+		return ps.sendCreateResult(false, createBadClass, "职业不对", 0) == nil
+	}
+	sex := uint32(0)
+	if m.GetGender() == protocol.Gender_GENDER_FEMALE {
+		sex = 1
+	}
+	name := strings.TrimSpace(m.GetName())
+	if !chargen.ValidName(name) {
+		return ps.sendCreateResult(
+			false, createBadName, "角色名不合适（至少 3 个字节，且不能含空格与 /@?'）", 0,
+		) == nil
+	}
+	// 重名（**全局**唯一：原版也是全局查重）
+	if _, err := ps.srv.store.Characters().GetByName(ctx, name); err == nil {
+		return ps.sendCreateResult(false, createNameTaken, "这个名字已经有人用了", 0) == nil
+	} else if !errors.Is(err, storage.ErrNotFound) {
+		return ps.sendCreateResult(false, createInternal, "查重失败", 0) == nil
+	}
+	// 数量（软删的不算）
+	chars, err := ps.srv.store.Characters().ListByAccount(ctx, account)
+	if err != nil {
+		return ps.sendCreateResult(false, createInternal, "读取角色列表失败", 0) == nil
+	}
+	alive := 0
+	for _, c := range chars {
+		if !c.Deleted {
+			alive++
+		}
+	}
+	if alive >= chargen.MaxPerAccount {
+		return ps.sendCreateResult(
+			false, createTooMany,
+			fmt.Sprintf("每个账号最多 %d 个角色", chargen.MaxPerAccount), 0,
+		) == nil
+	}
+
+	var items chargen.ItemSource
+	if ps.srv.data.tables != nil {
+		items = ps.srv.data.tables.Items
+	}
+	c := chargen.Build(
+		account, name, uint32(job), sex, m.GetHair(), ps.srv.newCharHome(), items, &ps.srv.itemSeq,
+	)
+	if err := ps.srv.store.Characters().Create(ctx, c); err != nil {
+		log.Printf("%s: 建角色 %q 失败: %v", ps.clientIP, name, err)
+		return ps.sendCreateResult(false, createInternal, "存档写不进去", 0) == nil
+	}
+	log.Printf("%s: 建角色 %q（账号 %s 职业 %d 性别 %d）→ id=%d",
+		ps.clientIP, name, account, job, sex, c.ID)
+	return ps.sendCreateResult(true, 0, "", uint64(c.ID)) == nil
+}
+
+// onDeleteCharacter 删角色（**软删**：数据留着，只是不再出现在列表里、也不能进）。
+//
+// `password_hash` 是**二次确认**，复用登录时那条口令证明：
+// 它绑在**本条连接的 nonce** 上（D-24①），所以换个连接就失效、重放不了；
+// 服务端拿存储里的 `K` 再算一遍（`authn.CheckProof`，常量时间比较）。
+// 原版删角色只弹一个确认框、不带口令 —— 这一道门是我们加的（存储层虽是软删、
+// 能救回来，但"删了不可恢复"值得多问一次）。
+func (ps *protoSession) onDeleteCharacter(m *protocol.DeleteCharacter) bool {
+	if ps.rec == nil {
+		return ps.rejectOutOfOrder("尚未认领会话")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), protoStoreTimeout)
+	defer cancel()
+
+	acc, err := ps.srv.store.Accounts().GetByName(ctx, ps.rec.Account)
+	if err != nil {
+		log.Printf("%s: 删角取账号失败: %v", ps.clientIP, err)
+		return ps.sendDeleteResult(false, deleteInternal, "读不到账号") == nil
+	}
+	proof, err := hex.DecodeString(strings.TrimSpace(m.GetPasswordHash()))
+	if err != nil || len(proof) != sha256.Size {
+		return ps.sendDeleteResult(false, deleteBadProof, "二次确认的格式不对") == nil
+	}
+	if !authn.CheckProof(acc.PasswordHash, ps.nonce, ps.rec.Account, proof) {
+		return ps.sendDeleteResult(false, deleteBadProof, "口令确认没通过") == nil
+	}
+	chr, err := ps.findCharacter(ctx, m.GetCharacterId())
+	if err != nil {
+		return ps.sendDeleteResult(false, deleteNotFound, err.Error()) == nil
+	}
+	if err := ps.srv.store.Characters().MarkDeleted(ctx, chr.ID); err != nil {
+		log.Printf("%s: 删角色 %q 失败: %v", ps.clientIP, chr.Name, err)
+		return ps.sendDeleteResult(false, deleteInternal, "删不掉") == nil
+	}
+	log.Printf("%s: 删角色 %q（账号 %s id=%d）", ps.clientIP, chr.Name, ps.rec.Account, chr.ID)
+	return ps.sendDeleteResult(true, 0, "") == nil
+}
+
+// sendCreateResult / sendDeleteResult 两条回执（都带 `ActionResult`）。
+func (ps *protoSession) sendCreateResult(ok bool, code uint32, msg string, id uint64) error {
+	return ps.send(&protocol.Envelope{Body: &protocol.Envelope_CreateCharacterResult{
+		CreateCharacterResult: &protocol.CreateCharacterResult{
+			Result:      &protocol.ActionResult{Ok: ok, Code: code, Message: msg},
+			CharacterId: id,
+		}}})
+}
+
+func (ps *protoSession) sendDeleteResult(ok bool, code uint32, msg string) error {
+	return ps.send(&protocol.Envelope{Body: &protocol.Envelope_DeleteCharacterResult{
+		DeleteCharacterResult: &protocol.DeleteCharacterResult{
+			Result: &protocol.ActionResult{Ok: ok, Code: code, Message: msg},
+		}}})
+}
+
+// newCharHome 新角色的出生点：**默认地图的 StartPoint**（表里没有就 (0,0)）。
+//
+// ⚠️ 与 legacy 的 `HomeMap/HomeX/HomeY` 是同一语义（那边是配置里的 289,618）——
+// 两边的"新号出生在哪"必须是同一个地方。
+func (s *Server) newCharHome() chargen.Home {
+	home := chargen.Home{Map: s.data.defaultMapID}
+	if sp := s.startPointOf(s.data.defaultMapID); sp != nil {
+		home.X, home.Y = uint32(sp.X), uint32(sp.Y)
+	}
+	return home
 }
 
 // onListCharacters 列出该账号未删除的角色（选角列表）。

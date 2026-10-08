@@ -169,8 +169,9 @@ func Main() {
 			proxyProtocol:  *proxyProtocol,
 		},
 		data: dataState{
-			tables: tables,
-			drops:  defaultDrops(tables),
+			tables:       tables,
+			defaultMapID: *defaultMapID, // 建角要用它当出生地图（见 newCharHome）
+			drops:        defaultDrops(tables),
 		},
 		world: worldState{
 			maps:         maps,

@@ -63,6 +63,8 @@ func protoContractServer(t *testing.T) (*Server, storage.Store, string) {
 	s.store = store
 	s.world.maps = mm
 	s.world.defaultMap = m
+	// 建角要用"默认地图号"当出生点（`newCharHome`）—— 测试服务器的默认地图就是 "0"。
+	s.data.defaultMapID = "0"
 	s.world.index = world.NewSpatialIndex(32)
 	s.world.ground = map[uint32]*GroundItem{}
 	s.world.groundEvents = map[groundKey]*groundEvent{}
@@ -1226,4 +1228,190 @@ func TestProtoRustPickCharacter(t *testing.T) {
 		}
 	}
 	t.Logf("Rust 选角剧本输出：\n%s", text)
+}
+
+// protoLogin 在一条连接上走完口令登录，返回**登录用的那条证明**（hex）。
+//
+// 抽出来是因为建/删角色的用例还要拿它当删角的"二次确认"——
+// 那正是 `DeleteCharacter.password_hash` 的语义（见 `onDeleteCharacter`）。
+//
+// ⚠️ 不直接用 `cl.hello()`：它把 `ServerHello` 读掉了、没留 nonce，
+// 而证明要绑在 nonce 上（D-24①）。
+func protoLogin(t *testing.T, cl *protoClient, account, password string) string {
+	t.Helper()
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_ClientHello{ClientHello: &protocol.ClientHello{
+		ProtocolVersion: protocol.Version, ClientBuild: "contract-test", Locale: "zh-CN"}}})
+	nonce := cl.recv().GetServerHello().GetSessionKey()
+	if len(nonce) == 0 {
+		t.Fatal("握手里没给 nonce（证明要绑它）")
+	}
+
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_LoginSaltRequest{
+		LoginSaltRequest: &protocol.LoginSaltRequest{Account: account}}})
+	salt := cl.recv().GetLoginSalt()
+	k, err := pbkdf2.Key(sha256.New, password, salt.GetSalt(),
+		int(salt.GetIterations()), int(salt.GetKeyLen()))
+	if err != nil {
+		t.Fatalf("PBKDF2: %v", err)
+	}
+	proof := hex.EncodeToString(authn.ExpectedProof(k, nonce, account))
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_Login{Login: &protocol.Login{
+		Account: account, PasswordHash: proof}}})
+	res := cl.recv().GetLoginResult()
+	if res.GetCode() != protocol.LoginCode_LOGIN_OK {
+		t.Fatalf("登录该成功，实得 %v %s", res.GetCode(), res.GetMessage())
+	}
+	return proof
+}
+
+// 等某条回执（建/删角用的都是这个形状）。
+func waitCreate(t *testing.T, cl *protoClient) *protocol.CreateCharacterResult {
+	t.Helper()
+	env := cl.waitFor(&protoEvents{}, "CreateCharacterResult", func(e *protocol.Envelope) bool {
+		return e.GetCreateCharacterResult() != nil
+	})
+	return env.GetCreateCharacterResult()
+}
+
+func waitDelete(t *testing.T, cl *protoClient) *protocol.DeleteCharacterResult {
+	t.Helper()
+	env := cl.waitFor(&protoEvents{}, "DeleteCharacterResult", func(e *protocol.Envelope) bool {
+		return e.GetDeleteCharacterResult() != nil
+	})
+	return env.GetDeleteCharacterResult()
+}
+
+// listChars 请求一次角色列表（服务端**不会**主动推，得自己问）。
+func listChars(t *testing.T, cl *protoClient) []*protocol.CharacterSummary {
+	t.Helper()
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_ListCharacters{
+		ListCharacters: &protocol.ListCharacters{}}})
+	env := cl.waitFor(&protoEvents{}, "CharacterList", func(e *protocol.Envelope) bool {
+		return e.GetCharacterList() != nil
+	})
+	return env.GetCharacterList().GetCharacters()
+}
+
+// sendCreate 建角并回执（`name` 用参数，其余固定）。
+func sendCreate(t *testing.T, cl *protoClient, name string, class protocol.CharClass, gender protocol.Gender) *protocol.CreateCharacterResult {
+	t.Helper()
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_CreateCharacter{
+		CreateCharacter: &protocol.CreateCharacter{
+			Name: name, Class: class, Gender: gender, Hair: 2,
+		}}})
+	return waitCreate(t, cl)
+}
+
+// TestProtoCreateDeleteCharacter 是**建角 / 删角**的契约验收。
+//
+// 为什么值得单列：这两条是"新账号能不能自己玩起来"的入口 ——
+// 在它之前，新号只能靠 `mir2cli` 建（客户端点了只会弹"还没接"）。
+//
+// 除了协议回执，这里还断言**存储层的落地细节**（初始物品、13 槽装备位、
+// 出生点）：那些规矩在 `chargen` 里、legacy 与这里共用一份（R-7），
+// 一旦有人把它们改歪，legacy 建的角色和新协议建的角色就不一样了。
+func TestProtoCreateDeleteCharacter(t *testing.T) {
+	_, store, addr := protoContractServer(t)
+	seedAccount(t, store) // 账号 tester / 口令 pw，已有一个角色"勇士"
+
+	cl := dialProto(t, addr)
+	proof := protoLogin(t, cl, "tester", "pw")
+
+	// ---- 建角：女法师 ----
+	res := sendCreate(t, cl, "小法", protocol.CharClass_CHAR_CLASS_WIZARD, protocol.Gender_GENDER_FEMALE)
+	if !res.GetResult().GetOk() {
+		t.Fatalf("建角该成功，实得 %+v", res.GetResult())
+	}
+	newID := res.GetCharacterId()
+	if newID == 0 {
+		t.Fatal("建角成功却没给 character_id（界面上没法选它）")
+	}
+
+	// 存储层：真的落库了，而且规矩照旧
+	ctx := context.Background()
+	chr, err := store.Characters().GetByName(ctx, "小法")
+	if err != nil {
+		t.Fatalf("库里查不到新角色: %v", err)
+	}
+	if chr.Job != 1 || chr.Data.GetSex() != 1 {
+		t.Errorf("职业/性别写错了：job=%d sex=%d", chr.Job, chr.Data.GetSex())
+	}
+	if len(chr.Data.GetHumItems()) != 13 {
+		t.Errorf("装备位该是定长 13 槽，实得 %d", len(chr.Data.GetHumItems()))
+	}
+	if chr.Data.GetCurMap() == "" || chr.Data.GetHomeMap() == "" {
+		t.Error("出生点没写（进游戏会没地方站）")
+	}
+	// ⚠️ **初始物品**（木剑、药水）这里不查：契约测试的服务器没加载物品表，
+	// 那条规矩属于 `chargen`，在 `chargen_test.go` 里用假物品表单独验（分工更清楚）。
+
+	// ---- 列表里多了一个，且摘要能挑图（选角界面靠 class/gender） ----
+	chars := listChars(t, cl)
+	if len(chars) != 2 {
+		t.Fatalf("列表该有 2 个角色，实得 %d", len(chars))
+	}
+	var found *protocol.CharacterSummary
+	for _, c := range chars {
+		if c.GetName() == "小法" {
+			found = c
+		}
+	}
+	if found == nil {
+		t.Fatal("列表里没有新角色")
+	}
+	if found.GetClass() != protocol.CharClass_CHAR_CLASS_WIZARD ||
+		found.GetGender() != protocol.Gender_GENDER_FEMALE {
+		t.Errorf("摘要的职业/性别不对：%v %v", found.GetClass(), found.GetGender())
+	}
+
+	// ---- 重名 ----
+	if got := sendCreate(t, cl, "小法", protocol.CharClass_CHAR_CLASS_WARRIOR, protocol.Gender_GENDER_MALE); got.GetResult().GetOk() {
+		t.Error("重名该被拒")
+	} else if got.GetResult().GetCode() != 3 {
+		t.Errorf("重名该回 code=3，实得 %d", got.GetResult().GetCode())
+	}
+
+	// ---- 数量上限（每账号 2 个） ----
+	if got := sendCreate(t, cl, "第三个", protocol.CharClass_CHAR_CLASS_TAOIST, protocol.Gender_GENDER_MALE); got.GetResult().GetOk() {
+		t.Error("超过上限该被拒")
+	} else if got.GetResult().GetCode() != 4 {
+		t.Errorf("超限该回 code=4，实得 %d", got.GetResult().GetCode())
+	}
+
+	// ---- 名字不合规 ----
+	if got := sendCreate(t, cl, "a b", protocol.CharClass_CHAR_CLASS_WARRIOR, protocol.Gender_GENDER_MALE); got.GetResult().GetOk() {
+		t.Error("名字里有空格该被拒")
+	} else if got.GetResult().GetCode() != 2 {
+		t.Errorf("名字不合规该回 code=2，实得 %d", got.GetResult().GetCode())
+	}
+
+	// ---- 删角：二次确认（错的口令证明） ----
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_DeleteCharacter{
+		DeleteCharacter: &protocol.DeleteCharacter{
+			CharacterId: newID, PasswordHash: strings.Repeat("00", 32)}}})
+	if got := waitDelete(t, cl); got.GetResult().GetOk() {
+		t.Error("证明不对该被拒（删除不可恢复，这道门不能形同虚设）")
+	} else if got.GetResult().GetCode() != 1 {
+		t.Errorf("证明不对该回 code=1，实得 %d", got.GetResult().GetCode())
+	}
+
+	// ---- 删角：带**登录时那条证明**（绑在连接 nonce 上，重放不了） ----
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_DeleteCharacter{
+		DeleteCharacter: &protocol.DeleteCharacter{
+			CharacterId: newID, PasswordHash: proof}}})
+	if got := waitDelete(t, cl); !got.GetResult().GetOk() {
+		t.Fatalf("证明正确该删成功，实得 %+v", got.GetResult())
+	}
+
+	// ---- 列表回到 1 个；存储层是**软删**（数据还在，只是 Deleted） ----
+	if chars := listChars(t, cl); len(chars) != 1 {
+		t.Errorf("删完该只剩 1 个，实得 %d", len(chars))
+	}
+	gone, err := store.Characters().GetByName(ctx, "小法")
+	if err != nil {
+		t.Fatalf("软删不该把行删掉（要能救回来）: %v", err)
+	}
+	if !gone.Deleted {
+		t.Error("该是软删（Deleted=true），而不是真删")
+	}
 }

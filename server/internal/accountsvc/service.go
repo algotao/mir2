@@ -11,11 +11,10 @@ import (
 	"time"
 
 	"github.com/algotao/mir2/server/internal/authn"
+	"github.com/algotao/mir2/server/internal/chargen"
 	"github.com/algotao/mir2/server/internal/data"
-	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/proto"
 	"github.com/algotao/mir2/server/internal/storage"
-	pb "github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/internal/wire"
 )
 
@@ -110,41 +109,6 @@ type Service struct {
 
 // SetTables 注入静态数据表。
 func (s *Service) SetTables(t *data.Tables) { s.tables = t }
-
-// initialItems 生成新建角色的初始物品。
-//
-// 原版建角色不带任何物品（要靠 GM 或 NPC 发放）。这里给一套新手装备，
-// 既让新角色不至于赤手空拳，也让 SM_SENDUSEITEMS / SM_BAGITEMS 有真实内容可测。
-func (s *Service) initialItems(job uint32) (equip map[uint32]*pb.UserItem, bag []*pb.UserItem) {
-	if s.tables == nil {
-		return nil, nil
-	}
-	newItem := func(name string) *pb.UserItem {
-		it := s.tables.Items.GetByName(name)
-		if it == nil {
-			return nil
-		}
-		return &pb.UserItem{
-			MakeIndex: int32(s.itemSeq.Add(1)),
-			Index:     uint32(it.Index), // data.StdItem.Index 是 int32，pb 用 uint32
-			Dura:      it.DuraMax,
-			DuraMax:   it.DuraMax,
-		}
-	}
-
-	weapon := newItem("木剑")
-	if weapon != nil {
-		// 槽位 1 = 武器（Grobal2.pas:30 U_WEAPON=1）
-		equip = map[uint32]*pb.UserItem{1: weapon}
-	}
-	// 新手药水 x5
-	for i := 0; i < 5; i++ {
-		if p := newItem("金创药(小量)"); p != nil {
-			bag = append(bag, p)
-		}
-	}
-	return equip, bag
-}
 
 // New 创建账号服务。
 func New(store storage.Store, cfg Config) *Service {
@@ -343,18 +307,6 @@ func (s *Service) onLogin(ctx context.Context, sess *Session, p wire.Packet) []w
 	return one(proto.SM_PASSOK_SELECTSERVER, 0, list)
 }
 
-// initialHPMP 返回 1 级角色的初始 HP / MP。
-//
-// 原版建角色时只写名字/职业/性别/发型，血量靠后续升级与装备累加；
-// 但那样新建角色会以 0 血进游戏。这里按职业给一组基础值，
-// 真正的成长曲线待 P4 战斗系统实现。
-// initialHPMP 委派给 entity：初值同时是"等级上限公式的起点"，
-// 而等级上限在 gamesvr 那边重算（见 entity.InitialHPMP 的注释）。
-// 两处必须同源，否则重算出来的上限会和建角时写进档的值对不上。
-func initialHPMP(job uint32) (hp, mp uint32) {
-	return entity.InitialHPMP(job)
-}
-
 // 服务器状态值（MasSock.pas:436）。
 const (
 	serverStatusFree = 1
@@ -496,7 +448,7 @@ func (s *Service) onNewChr(ctx context.Context, sess *Session, p wire.Packet) []
 	if err1 != nil || err2 != nil || err3 != nil || account != sess.Account {
 		return one(proto.SM_NEWCHR_FAIL, 0, "")
 	}
-	if !validChrName(chrName) {
+	if !chargen.ValidName(chrName) {
 		return one(proto.SM_NEWCHR_FAIL, 0, "")
 	}
 
@@ -507,9 +459,6 @@ func (s *Service) onNewChr(ctx context.Context, sess *Session, p wire.Packet) []
 		return one(proto.SM_NEWCHR_FAIL, 4, "")
 	}
 
-	hp0, mp0 := initialHPMP(uint32(job))
-	equipInit, bagInit := s.initialItems(uint32(job))
-
 	// 角色数上限
 	chars, err := s.store.Characters().ListByAccount(ctx, account)
 	if err != nil {
@@ -519,39 +468,21 @@ func (s *Service) onNewChr(ctx context.Context, sess *Session, p wire.Packet) []
 		return one(proto.SM_NEWCHR_FAIL, 3, "")
 	}
 
-	// 装备位按**定长 13 槽**存放（原版 THumItems = array[0..12]），
-	// 空槽用 Index=0 占位——repeated 字段必须保留槽位信息，否则穿哪件装备会错乱。
-	const equipSlots = 13
-	humItems := make([]*pb.UserItem, equipSlots)
-	for i := range humItems {
-		humItems[i] = &pb.UserItem{}
+	// ⚠️ 组装一律走 `chargen`：**与 gamesvr 的新协议建角是同一份实现**（R-7）。
+	// 初始物品、13 槽装备位、初始 HP/MP 都在那边，这里不再自己拼一遍。
+	var items chargen.ItemSource
+	if s.tables != nil {
+		items = s.tables.Items
 	}
-	for slot, u := range equipInit {
-		if slot < equipSlots && u != nil {
-			humItems[slot] = u
-		}
-	}
-
-	c := &storage.Character{
-		Account: account,
-		Data: &pb.CharacterData{
-			ChrName:  chrName,
-			Account:  account,
-			Hair:     uint32(hair),
-			Job:      uint32(job),
-			Sex:      uint32(sex),
-			CurMap:   s.cfg.HomeMap,
-			CurX:     s.cfg.HomeX,
-			CurY:     s.cfg.HomeY,
-			HomeMap:  s.cfg.HomeMap,
-			HomeX:    s.cfg.HomeX,
-			HomeY:    s.cfg.HomeY,
-			Abil:     &pb.Ability{Level: 1, Hp: hp0, Mp: mp0, MaxHp: hp0, MaxMp: mp0},
-			HumItems: humItems,
-			BagItems: bagInit,
+	c := chargen.Build(
+		account, chrName, uint32(job), uint32(sex), uint32(hair),
+		chargen.Home{
+			Map: s.cfg.HomeMap,
+			X:   s.cfg.HomeX,
+			Y:   s.cfg.HomeY,
 		},
-	}
-	c.SyncFromData()
+		items, &s.itemSeq,
+	)
 	if err := s.store.Characters().Create(ctx, c); err != nil {
 		return one(proto.SM_NEWCHR_FAIL, 4, "")
 	}
@@ -643,16 +574,6 @@ func (s *Service) onSelChr(ctx context.Context, sess *Session, p wire.Packet) []
 }
 
 // ---------- 辅助 ----------
-
-// validChrName 校验角色名。
-//
-// 原版规则（UsrSoc.pas:747-760）：长度 >= 3，且不含 #$A1 / 空格 / '/' / '@' / '?' / ”'。
-func validChrName(name string) bool {
-	if len(name) < 3 {
-		return false
-	}
-	return !strings.ContainsAny(name, " \t/@?'")
-}
 
 func staleSessionResponse(ident uint16) []wire.Packet {
 	switch ident {
