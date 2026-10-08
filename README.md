@@ -132,9 +132,25 @@ cd client && cargo run -p mir2-e2e -- world -addr 127.0.0.1:7500 \
 `MShare.pas:213-214`）。终端里会打一行 `[audio] BGM = log-in-long2.wav`，
 听不见的时候靠它判断到底有没有在放。
 
-素材：`$WS/mir2c/wav`（778 个 `.wav` + **`sound.lst`** 索引表）。
-路径解析 `$MIR2_AUDIO_DIR` / `$MIR2C_WAV` → 美术目录旁 → 仓库旁，规则在
-`client/core/src/paths.rs`（与美术目录同一套约定）。
+素材：原始是 `$WS/mir2c/wav`（777 个 `.wav` + **`sound.lst`** 索引表，**209 MB**）。
+路径解析：`$MIR2_AUDIO_DIR` / `$MIR2C_WAV` → **`assets/audio`（产物，优先）** →
+`mir2c/wav`（原件），规则在 `client/core/src/paths.rs`（与美术目录同一套约定）。
+
+**瘦身**（`tools/wavpack/build.sh`，**209 MB → 73.5 MB，2.8×**，1.5 秒）：
+
+```bash
+tools/wavpack/build.sh              # 源自动探测 = 客户端集
+tools/wavpack survey -src DIR       # 只量不改：格式分布 / 最大的文件 / 重复 / 估算
+```
+
+* 音效 → **22.05 kHz 单声道**（原版没有 pan/距离衰减 ⇒ 单声道不丢游戏信息），
+  BGM 三首**保持原样**（音乐降采样听得出来）；
+* 原版**从不播**的长文件不产出（省 40 MB）：`Field2.wav`、`main_theme.wav`
+  —— 但**清单引用了的绝不跳**（`Game-over2.wav` 就属于这种）；
+* ⚠️ **无损压缩白费**（实测 zlib 87~96%、xz 82~93%）—— 音效是宽带噪声，压不动，
+  所以这条路根本没做；
+* 自检两条：每个文件读回核对（头/帧数/峰值）+ **清单里源能播的编号产物一个不少**
+  （实测 741 → 741）；顺手把 7 个文件的大小写按清单拼写对齐（Linux 上才找得到）。
 
 * **规格**在 `client/core/src/sound.rs`：编号表、地形→脚步、被击中/技能/怪物编号、
   `sound.lst` 的"编号 → 文件"。全部照抄原版（`SoundUtil.pas:36-142`、`Actor.pas:2144-2396`），
@@ -147,7 +163,7 @@ cd client && cargo run -p mir2-e2e -- world -addr 127.0.0.1:7500 \
 
 | 还没接的 | 为什么 |
 |---|---|
-| 进图音乐 `Music/<地图音乐号>.mp3` | 手上**一个 mp3 都没有**，协议里 `MapDescription` 也**没有音乐号字段**（原版是服务端 `SM_MAPDESCRIPTION.Recog` 下发，`ClMain.pas:5222`）。管道位置已定：`sound::map_music` |
+| 进图音乐 `Music/<地图音乐号>.mp3` | **素材不存在**：客户端集里**没有任何 mp3**（`.mp3/.ogg/.wma/.mid` 全 `find` 过，只有 `wav/`）；协议里 `MapDescription` 也**没有音乐号字段**（原版是服务端 `SM_MAPDESCRIPTION.Recog` 下发，`ClMain.pas:5222`）。管道位置已留好：`sound::map_music` |
 | 物品/技能/金币音（106/107/108/111..118、`10000+技能号*10`） | 那几套系统还没接，没有触发点（编号与算法都已写在 `sound.rs` 里） |
 
 ## 三条最容易踩的

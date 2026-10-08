@@ -337,8 +337,8 @@ fridx := fridx + (aniCount mod (ani + ani*anitick)) div (1 + anitick)
 | 格式 | 规格 |
 |---|---|
 | `lig*.dat` | 6 档光照掩膜（`PlayScn.pas:28-35`），索引色小图；掩膜矩阵在 `PlayScn.pas:37-120`（`LightMask0..5`） |
-| `.wav` | 音效，标准格式，自解析 |
-| `Music/%d.mp3` | 按地图编号取音乐（`SoundUtil.pas:219`） |
+| `.wav` + `sound.lst` | 音效：**编号 → 文件**的清单（`SoundUtil.pas:151-192`）。实测 777 个 / 209.0 MB，**全部是未压缩 PCM**（775×16bit + 2×8bit；44.1k×771；257 立体声 / 520 单声道）。转换见 §6b |
+| `Music/%d.mp3` | 原版按地图编号取音乐（`SoundUtil.pas:219`）—— ⚠️ **客户端集里没有任何 mp3**（`find` 过：`.mp3/.ogg/.wma/.mid` 全无，`mir2c` 只有 `wav/`），所以**这条路没有素材**，见 §6b |
 
 ### 3.5 actor 图号（人物 / 怪物）—— **2026-10-07 提取并落地**
 
@@ -484,13 +484,34 @@ m2pk info   -in FILE [-list]
 assets/                    # 由 tools/ 生成，**不入库**（.gitignore 已含 /assets/）
 ├── image/                 # ★ 不放 m2pk —— 直接放原始 .wzl/.wzx（D-11 美术直读）
 ├── map/maps.m2pk          # ★ 单文件容器，8.83 MB（tools/m2pk/build.sh 产出）
-├── audio/                 # 原始 .wav（先直读）
+├── audio/*.wav            # ★ 转换过的音效 + sound.lst，73.5 MB（tools/wavpack/build.sh 产出）
 └── font/                  # 点阵字库（bitmap）
 ```
 
 - **产物不入库**：原始 `.map`（253.7 MB）本身不能入库；容器是它的**确定性**派生物
   （同输入 ⇒ 同字节，有单测守着）⇒ 一条 `build.sh` 重建即可。
 - 命名规则遵循 [D-03](./decisions.md)：**全小写、无中文、`/` 分隔**。
+
+### 6b 音频产物：**转换**，不是打包压缩
+
+原始音频 209.0 MB，产物 **73.5 MB（2.8×）**，由 `tools/wavpack/build.sh` 产出，
+取舍写在 `tools/wavpack/main.go` 的文件头（决策见 [D-29](./decisions.md)）。三条要点：
+
+1. **无损压缩这条路直接排除**（实测）：对原始 PCM，zlib 只有 87~96%、xz 82~93%
+   —— 音效是宽带噪声，本来就压不动。所以别花时间"打包 + 压缩"。
+2. **降的是采样率与声道**：音效 → 22.05 kHz 单声道（原版**没有 pan、没有距离衰减**，
+   `SoundUtil.pas:180-192` ⇒ 单声道不丢游戏信息）；**BGM 三首保持原样**（音乐降采样听得出来）。
+3. **原版从不播的长文件不产出**（省 40.1 MB）：`Field2.wav`（`bmg_field` 定义了但全代码未用）、
+   `main_theme.wav`（播它的定时器被注释掉，`PlayScn.pas:485-486`）。
+   ⚠️ 但**清单里引用了的绝不跳**（`Game-over2.wav` 就是这种：原版代码不播它，
+   可 `sound.lst` 有编号指向它）—— 工具会照常转换并说明。
+
+另外两件顺手做的事（都有自检守着）：
+
+- **大小写对齐**：清单写 `wav\game-over2.wav`、真文件叫 `Game-over2.wav`，macOS 上碰巧能播、
+  **Linux 上找不到**。产物按清单的拼写输出（7 个文件受影响）。
+- **自检**：每个文件读回核对（头 / 帧数 / 峰值同量级），外加一条"**清单里源能播的编号，
+  产物一个都不能少**"（实测 741 → 741 ✓）。
 
 ---
 

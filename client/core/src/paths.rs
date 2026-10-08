@@ -26,14 +26,20 @@ pub fn asset_dir() -> Option<PathBuf> {
     guess.canonicalize().ok().filter(|p| p.is_dir())
 }
 
-/// 音频目录（`sound.lst` + 那 778 个 `.wav` 所在）。
+/// 音频目录（`sound.lst` + 那些 `.wav` 所在）。
 ///
-/// `$MIR2_AUDIO_DIR` → `$MIR2C_WAV` → **美术目录旁边**的 `wav`
-/// （`mir2c/data` 的兄弟目录 `mir2c/wav`，两种布局都试）→ 与仓库并列的 `mir2c/wav`。
+/// 顺序：`$MIR2_AUDIO_DIR` / `$MIR2C_WAV` → **仓库的 `assets/audio`**（脚本产物，
+/// `tools/wavpack/build.sh`）→ 美术目录旁边的 `mir2c/wav`（原始素材，两种布局都试）
+/// → 与仓库并列的 `mir2c/wav`。
 ///
-/// ⚠️ **不能**用 `asset_dir()` 直接拼：美术目录是 `mir2c/data`，而音频在
-/// `mir2c/wav`（同级，不是子目录）—— 原版清单里的路径 `wav\103.wav` 正是
-/// **相对游戏根目录**写的（`SoundUtil.pas:151-178`）。
+/// ⚠️ 两个坑：
+///
+/// 1. **不能**用 `asset_dir()` 直接拼：美术目录是 `mir2c/data`，而音频在
+///    `mir2c/wav`（同级，不是子目录）—— 原版清单里的路径 `wav\103.wav` 正是
+///    **相对游戏根目录**写的（`SoundUtil.pas:151-178`）。
+/// 2. **产物优先于原始素材**（与 `maps.m2pk` 同一规矩）：`assets/audio` 是转换过的
+///    （音效 22.05k 单声道，209 MB → 72 MB，见 `tools/wavpack`），`mir2c/wav` 是
+///    未压缩原件。两者都是同一批编号（同一份 `sound.lst`）⇒ 谁在都能跑。
 pub fn audio_dir() -> Option<PathBuf> {
     for key in ["MIR2_AUDIO_DIR", "MIR2C_WAV"] {
         if let Ok(v) = std::env::var(key) {
@@ -42,6 +48,11 @@ pub fn audio_dir() -> Option<PathBuf> {
                 return Some(p);
             }
         }
+    }
+    // 脚本产物：<ws>/mir2/assets/audio（由 client/core 反推两级）
+    let built = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/audio");
+    if let Some(p) = built.canonicalize().ok().filter(|p| p.is_dir()) {
+        return Some(p);
     }
     if let Some(a) = asset_dir() {
         for cand in [
