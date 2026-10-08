@@ -655,7 +655,16 @@ func (ps *protoSession) onCreateAccount(m *protocol.CreateAccount) bool {
 }
 
 // sendCreateAccountResult 回一条建号结果。
+//
+// ⚠️ **拒绝也要留一行日志**：成功那条本来就有 `建号成功`，而"已存在/未开放/过快"
+// 这些被拒的分支原先一行都不打 —— 用户那次"点了建号什么都没发生"就无处可查
+// （服务端日志里只有 `握手完成`，排查时只能靠客户端那行 `提交建号` 去猜）。
+// 拒绝是**正常结果**，但必须看得见。
 func (ps *protoSession) sendCreateAccountResult(code uint32, msg string) bool {
+	if code != createAccountOK {
+		// 账号名用会话上留的那个（取盐时记的）—— 走到这里一定有过一次取盐。
+		log.Printf("%s: 建号被拒 %s：%s", ps.clientIP, ps.saltFor, msg)
+	}
 	out := &protocol.CreateAccountResult{Result: &protocol.ActionResult{
 		Ok:      code == createAccountOK,
 		Code:    code,
@@ -930,7 +939,11 @@ func (ps *protoSession) sendDeleteResult(ok bool, code uint32, msg string) error
 // 两边的"新号出生在哪"必须是同一个地方。
 func (s *Server) newCharHome() chargen.Home {
 	home := chargen.Home{Map: s.data.defaultMapID}
-	if sp := s.startPointOf(s.data.defaultMapID); sp != nil {
+	// ⚠️ **不是"表里第一条"**：拿 `-home-x/-home-y`（默认 650/631 = 银杏谷那片安全区）
+	// 去该图的安全点里挑**最近**的一条 —— 原版 `!Setup.txt` 的 HomeX/HomeY 就是干这个的
+	//（`ObjBase.pas:9885-9919`）。早先取第一条 ⇒ 新号被扔在 (289,618)，
+	// 与用户要看的新手村（银杏谷）不符（D-38）。
+	if sp := s.homePointOf(s.data.defaultMapID, s.data.homeX, s.data.homeY); sp != nil {
 		home.X, home.Y = uint32(sp.X), uint32(sp.Y)
 	}
 	return home
@@ -1091,8 +1104,8 @@ func (ps *protoSession) enterWorld(chr *storage.Character) bool {
 //  2. **限速**（`p.Limiter`，防加速外挂）；
 //  3. 被挡要回权威位置（新协议是 `MoveRejected`，legacy 是 `SM_MOVEFAIL`）。
 //
-// ⚠️ 新协议的 `MoveInput` **没有走/跑标志**（legacy 靠 CM_WALK / CM_RUN 两条消息区分），
-// 所以新协议客户端目前只能**走**。补 run 要改 schema + bump 版本，记在 protocol.md §11。
+// ⚠️ 走/跑：新协议用 `MoveInput.run` 区分（原版是 CM_WALK / CM_RUN 两条消息）。
+// **跑一步 = 2 格**、节流更短（`MinRun` vs `MinWalk`）—— 照原版 `GetNextRunXY`。
 func (ps *protoSession) onMoveInput(m *protocol.MoveInput) bool {
 	p := ps.player
 	if p == nil || p.Obj == nil {
@@ -1108,19 +1121,26 @@ func (ps *protoSession) onMoveInput(m *protocol.MoveInput) bool {
 	if p.Obj.Stoned(time.Now()) {
 		return true
 	}
-	if !p.Limiter.Allow(false, time.Now()) {
-		obs.Event("move_rate_limited", "player", p.Char.Name, "dir", dir, "running", false)
+	// 跑：一步 2 格、节流更短（`MinRun = 400ms` vs `MinWalk = 600ms`，见 entity.Limiter）
+	running := m.GetRun()
+	steps := 1
+	if running {
+		steps = 2
+	}
+	if !p.Limiter.Allow(running, time.Now()) {
+		obs.Event("move_rate_limited", "player", p.Char.Name, "dir", dir, "running", running)
 		// ⚠️ 与 legacy **不同**：这里必须回一条，不能静默忽略。
 		// 新协议的客户端是**预测**移动的（protocol.md §8）：它按了键就已经在本地走了，
 		// 服务端不吭声 ⇒ 它的位置与权威位置就此分叉且永远掰不回来。
 		// legacy 那条路不预测（等 SM_WALK 才动），所以它静默忽略没问题。
 		return ps.rejectMove(1, p.Obj.PosX(), p.Obj.PosY())
 	}
-	obs.Event("move_try", "player", p.Char.Name, "dir", dir, "running", false,
+	obs.Event("move_try", "player", p.Char.Name, "dir", dir, "running", running,
 		"x", p.Obj.PosX(), "y", p.Obj.PosY())
 
 	_, fromX, fromY, _ := p.Obj.Place()
-	newX, newY, newDir, moved := ps.srv.movePlayer(p, dir)
+	// 跑 = 一步 2 格（`steps` 在上面按 `run` 算好）
+	newX, newY, newDir, moved := ps.srv.movePlayerSteps(p, dir, steps)
 	if !moved {
 		// 被挡：同样回权威位置（原版 SM_MOVEFAIL 的对应物）。
 		return ps.rejectMove(3, newX, newY)

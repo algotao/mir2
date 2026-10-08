@@ -86,8 +86,10 @@ func DefaultConfig() Config {
 		MaxPasswordErrors: authn.DefaultLockPolicy().MaxErrors,
 		PasswordLockMs:    authn.DefaultLockPolicy().LockForMs,
 		HomeMap:           "0",
-		HomeX:             289,
-		HomeY:             618,
+		// 银杏谷那片安全区（`StartPoint.txt` 的 `0 650 631`）—— 与新协议那条路
+		//（`gamesvr` 的 `-home-x/-home-y`）保持一致，理由见 D-38。
+		HomeX: 650,
+		HomeY: 631,
 	}
 }
 

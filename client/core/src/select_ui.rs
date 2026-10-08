@@ -72,9 +72,9 @@ impl Art {
 pub enum Menu {
     /// 开始游戏。
     Start,
-    /// 创建人物（新协议的服务端还没实现，见 protocol.md §11）。
+    /// 创建人物（已接上：开 [`DialogBox`] 对话框，见 D-35）。
     CreateChar,
-    /// 删除人物（同上）。
+    /// 删除人物（已接上：弹"删了不可恢复"的确认，见 D-35）。
     DeleteChar,
     /// 制作群（原版这个位置是 credits；这套素材写的是「制作群」）。
     Credits,
@@ -146,6 +146,12 @@ pub struct Layout {
     pub sel: [Rect; 2],
     /// 中间 5 个菜单项（顺序同 [`MENU`]）。
     pub menu: [Rect; 5],
+    /// 窗口尺寸（`f32` 版）。
+    ///
+    /// 存在的理由：**建角对话框与消息框是"居中"的**，命中测试要按窗口尺寸算它们的位置，
+    /// 而命中测试那条路上只有 `Layout`（`Select::on_up` 的签名）—— 少了它就得把
+    /// `ui`/`dir` 一路传进去，或者让几何依赖素材（见 [`DialogBox`] 的说明）。
+    pub win: (f32, f32),
 }
 
 impl Layout {
@@ -188,7 +194,12 @@ impl Layout {
             let (mw, mh) = measure(Art::MENU_DOWN[i].0, Art::MENU_DOWN[i].1)?;
             menu[i] = at(MENU_X_CENTER - mw as f32 / 2.0, MENU_ROW_Y[i], mw, mh);
         }
-        Some(Layout { bg, sel, menu })
+        Some(Layout {
+            bg,
+            sel,
+            menu,
+            win: (win.0 as f32, win.1 as f32),
+        })
     }
 }
 
@@ -401,6 +412,121 @@ impl SlotAnim {
                 }
             }
         }
+    }
+}
+
+/// 建角对话框里被点中的东西（[`DialogBox::hit`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogHit {
+    /// 姓名输入框（点它 = 把焦点交给名字）。
+    Name,
+    /// 三个职业按钮（0/1/2 = 战/法/道）。
+    Job(usize),
+    /// 两个性别按钮（0 男 / 1 女）。
+    Sex(usize),
+    /// `[确定]`（原版 `DccOk`，图 51）。
+    Ok,
+    /// `[关闭]`（原版 `DccClose`，图 52）。
+    Close,
+}
+
+/// 「新建角色」对话框的版式（原版 `DCreateChr`，`IntroScn.pas:1268-1288`）。
+///
+/// ⚠️ **不依赖素材**：原版那个窗口的尺寸与控件坐标在 `FState.pas:932-965`，是 800×600
+/// 的老界面；我们这套界面是 1024×768，而 `Prguse[73]`（那扇窗口的背景图）也还没接进
+/// `Art` ⇒ 这里用**固定尺寸居中**画一个功能同构的小框（姓名行 + 职业三颗 + 性别两颗 +
+/// 确定/关闭）。**没有逐像素对拍过** —— 记在这儿，免得以后有人当它是"照原版搬的"。
+///
+/// 为什么几何要放在 core：它得在**画**和**命中测试**两处用同一份坐标，而命中测试那条路
+/// （`Select::on_up`）只有 `Layout` ⇒ 见 [`Layout::win`]。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DialogBox {
+    pub frame: Rect,
+    /// 姓名那一行（输入框）。
+    pub name: Rect,
+    pub job: [Rect; 3],
+    pub sex: [Rect; 2],
+    pub ok: Rect,
+    pub close: Rect,
+}
+
+impl DialogBox {
+    /// 居中排一个（窗口再小也不会把框挤出屏幕外）。
+    pub fn build(win: (u32, u32)) -> Self {
+        const W: f32 = 360.0;
+        const H: f32 = 236.0;
+        let bx = ((win.0 as f32 - W) / 2.0).max(8.0);
+        let by = ((win.1 as f32 - H) / 2.0).max(8.0);
+        let pad = 24.0;
+        let name = Rect {
+            x: bx + pad,
+            y: by + 52.0,
+            w: W - pad * 2.0,
+            h: 26.0,
+        };
+        let bw = 68.0;
+        let job = std::array::from_fn(|i| Rect {
+            x: bx + pad + i as f32 * (bw + 10.0),
+            y: name.y + name.h + 26.0,
+            w: bw,
+            h: 24.0,
+        });
+        let sex = std::array::from_fn(|i| Rect {
+            x: bx + pad + i as f32 * (bw + 10.0),
+            y: job[0].y + job[0].h + 20.0,
+            w: bw,
+            h: 24.0,
+        });
+        let btn_w = 76.0;
+        let ok = Rect {
+            x: bx + W / 2.0 - btn_w - 8.0,
+            y: by + H - 38.0,
+            w: btn_w,
+            h: 26.0,
+        };
+        let close = Rect {
+            x: bx + W / 2.0 + 8.0,
+            y: ok.y,
+            w: btn_w,
+            h: 26.0,
+        };
+        Self {
+            frame: Rect {
+                x: bx,
+                y: by,
+                w: W,
+                h: H,
+            },
+            name,
+            job,
+            sex,
+            ok,
+            close,
+        }
+    }
+
+    /// 点中了什么（先判下面那排按钮，再判输入框与选项；没点中 ⇒ `None`）。
+    pub fn hit(&self, p: (f32, f32)) -> Option<DialogHit> {
+        if self.ok.hit(p) {
+            return Some(DialogHit::Ok);
+        }
+        if self.close.hit(p) {
+            return Some(DialogHit::Close);
+        }
+        if self.name.hit(p) {
+            return Some(DialogHit::Name);
+        }
+        for (i, r) in self.job.iter().enumerate() {
+            if r.hit(p) {
+                return Some(DialogHit::Job(i));
+            }
+        }
+        for (i, r) in self.sex.iter().enumerate() {
+            if r.hit(p) {
+                return Some(DialogHit::Sex(i));
+            }
+        }
+        None
     }
 }
 
@@ -767,5 +893,34 @@ mod tests {
             let i = effect_index(k);
             assert!(dec(&mut libs, &dir, Art::CHR, i).is_some_and(|s| !s.is_empty()));
         }
+    }
+
+    /// 建角对话框的几何：控件都在框内、`[确定]`/`[关闭]` 不重叠、命中测试指哪打哪。
+    #[test]
+    fn 建角对话框的按钮都在框内且能点中() {
+        let d = DialogBox::build((1024, 768));
+        let inner = [&d.name, &d.ok, &d.close];
+        for r in d
+            .job
+            .iter()
+            .chain(d.sex.iter())
+            .chain(inner.iter().copied())
+        {
+            assert!(r.x >= d.frame.x && r.y >= d.frame.y, "控件跑出框外: {r:?}");
+            assert!(
+                r.x + r.w <= d.frame.x + d.frame.w && r.y + r.h <= d.frame.y + d.frame.h,
+                "控件伸出框外: {r:?}"
+            );
+        }
+        assert!(d.ok.x + d.ok.w <= d.close.x, "[确定] 与 [关闭] 不该重叠");
+        assert_eq!(d.hit(d.ok.center()), Some(DialogHit::Ok));
+        assert_eq!(d.hit(d.close.center()), Some(DialogHit::Close));
+        assert_eq!(d.hit(d.name.center()), Some(DialogHit::Name));
+        assert_eq!(d.hit(d.job[2].center()), Some(DialogHit::Job(2)));
+        assert_eq!(d.hit(d.sex[1].center()), Some(DialogHit::Sex(1)));
+        assert_eq!(d.hit((2.0, 2.0)), None, "框外不该命中");
+        // 窗口比框还小时也不能算出负坐标
+        let small = DialogBox::build((320, 200));
+        assert!(small.frame.x >= 0.0 && small.frame.y >= 0.0);
     }
 }

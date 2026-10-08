@@ -111,8 +111,20 @@ func (s *Server) tickMonsters(now time.Time) {
 		//（不主动追击 ⇒ 用例可复现），而守卫/弓箭手是城堡的防守单位——它们本来
 		// 就该一直盯着"该打的人"，关掉这个开关等于把守卫功能从回归里摘出去了
 		//（门/墙已在上面按 IsCastleUnit 排除，不会因为走这个分支而乱跑）。
+		// ⚠️ **种族决定"打不打人"**（原版 `Grobal2.pas:1100-1106` 的 RC_*）。
+		// 这两条以前都没有 ⇒ 新手村的鸡/鹿会追着新号打，野生弓箭守卫还会追白名玩家
+		//（2026-10-08 用户报的"怎么那么多怪物来攻击我，连守卫都来 K 我"）。
+		//
+		//   · 动物（`RC_ANIMAL(50)..RC_MONSTER(80)`：鸡/鹿…）：**不主动攻击**，
+		//     原版 `TChickenDeer.Run` 只会挑最近的威胁逃跑（`ObjMon.pas:542-560`）。
+		//   · 守卫（`RC_GUARD(11)`/`RC_ARCHERGUARD(112)`）：只打**红名**
+		//     （原版 `ObjGuard.pas:87-126`：`PKLevel >= 2` 或目标是怪）。
+		//     城堡单位不走这条（它们有 `guardProperTarget` 那套行会/攻城关系）。
+		animal := m.Info != nil && entity.IsAnimalRace(m.Info.Race)
+		wildGuard := guardCastle == nil && m.Info != nil && entity.IsGuardRace(m.Info.Race)
+
 		var target *Player
-		if s.cfg.aggro || guardCastle != nil {
+		if !animal && (s.cfg.aggro || guardCastle != nil) {
 			if m.TargetID != 0 {
 				if p := s.world.players[m.TargetID]; p != nil && p.Obj.MapRef() == m.MapRef() &&
 					m.InView(p.Obj.PosX(), p.Obj.PosY()) {
@@ -124,6 +136,10 @@ func (s *Server) tickMonsters(now time.Time) {
 				// 行会关系/攻城状态变了要立刻放下武器）。
 				if target != nil && guardCastle != nil &&
 					!s.guardProperTarget(guardCastle, m, target, now) {
+					m.TargetID, target = 0, nil
+				}
+				// 野生守卫：目标"洗白"了（PK 值降下来）也立刻放下武器
+				if target != nil && wildGuard && !target.isRedName() {
 					m.TargetID, target = 0, nil
 				}
 			}
@@ -143,6 +159,11 @@ func (s *Server) tickMonsters(now time.Time) {
 					}
 					// 守卫/弓箭手：只打"该打的人"（守方行会与盟友不打、非攻城期不打路人）
 					if guardCastle != nil && !s.guardProperTarget(guardCastle, m, p, now) {
+						continue
+					}
+					// 野生守卫/弓箭手：只打**红名**（原版 `ObjGuard.pas:100`）。
+					// 白名玩家站在新手村/城门口，守卫不该追着他打。
+					if wildGuard && !p.isRedName() {
 						continue
 					}
 					if best < 0 || d < best {

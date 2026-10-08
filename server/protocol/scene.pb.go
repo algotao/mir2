@@ -967,11 +967,19 @@ func (x *AbilityUpdate) GetAbility() *Ability {
 
 // 客户端 → 服务端：移动输入（★ 有且仅有一次生效：带 request_id 走信封）。
 type MoveInput struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	From          *Vec2                  `protobuf:"bytes,1,opt,name=from,proto3" json:"from,omitempty"`
-	To            *Vec2                  `protobuf:"bytes,2,opt,name=to,proto3" json:"to,omitempty"`
-	Direction     Direction              `protobuf:"varint,3,opt,name=direction,proto3,enum=mir2.Direction" json:"direction,omitempty"`
-	ClientTick    uint32                 `protobuf:"varint,4,opt,name=client_tick,json=clientTick,proto3" json:"client_tick,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	From       *Vec2                  `protobuf:"bytes,1,opt,name=from,proto3" json:"from,omitempty"`
+	To         *Vec2                  `protobuf:"bytes,2,opt,name=to,proto3" json:"to,omitempty"`
+	Direction  Direction              `protobuf:"varint,3,opt,name=direction,proto3,enum=mir2.Direction" json:"direction,omitempty"`
+	ClientTick uint32                 `protobuf:"varint,4,opt,name=client_tick,json=clientTick,proto3" json:"client_tick,omitempty"`
+	// 跑（原版 `CM_RUN`）：**一步 2 格**、节流比走短（`MinRun` vs `MinWalk`）。
+	//
+	// 原版客户端：按住右键（远距）或 Ctrl+左键 = 跑（`ClMain.pas:2200-2244 / 2344-2352`），
+	// 其余左键 = 走；跑一步的位移见 `GetNextRunXY`（+2 格，`ClFunc.pas:370-382`）。
+	//
+	// ⚠️ 老客户端不填这个字段 ⇒ 默认 false = 走，行为与以前完全一致
+	//（所以**不需要** bump `version.txt`：加带默认值的可选字段是兼容变更）。
+	Run           bool `protobuf:"varint,5,opt,name=run,proto3" json:"run,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1032,6 +1040,13 @@ func (x *MoveInput) GetClientTick() uint32 {
 		return x.ClientTick
 	}
 	return 0
+}
+
+func (x *MoveInput) GetRun() bool {
+	if x != nil {
+		return x.Run
+	}
+	return false
 }
 
 // 服务端 → 客户端：移动被拒（越界/超速），回权威位置校正。
@@ -1222,7 +1237,7 @@ const file_scene_proto_rawDesc = "" +
 	"\vstatus_bits\x18\x02 \x01(\x04R\n" +
 	"statusBits\"8\n" +
 	"\rAbilityUpdate\x12'\n" +
-	"\aability\x18\x01 \x01(\v2\r.mir2.AbilityR\aability\"\x97\x01\n" +
+	"\aability\x18\x01 \x01(\v2\r.mir2.AbilityR\aability\"\xa9\x01\n" +
 	"\tMoveInput\x12\x1e\n" +
 	"\x04from\x18\x01 \x01(\v2\n" +
 	".mir2.Vec2R\x04from\x12\x1a\n" +
@@ -1230,7 +1245,8 @@ const file_scene_proto_rawDesc = "" +
 	".mir2.Vec2R\x02to\x12-\n" +
 	"\tdirection\x18\x03 \x01(\x0e2\x0f.mir2.DirectionR\tdirection\x12\x1f\n" +
 	"\vclient_tick\x18\x04 \x01(\rR\n" +
-	"clientTick\"i\n" +
+	"clientTick\x12\x10\n" +
+	"\x03run\x18\x05 \x01(\bR\x03run\"i\n" +
 	"\fMoveRejected\x12A\n" +
 	"\x16authoritative_position\x18\x01 \x01(\v2\n" +
 	".mir2.Vec2R\x15authoritativePosition\x12\x16\n" +

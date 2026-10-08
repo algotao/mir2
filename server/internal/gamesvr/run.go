@@ -58,8 +58,12 @@ func Main() {
 		noRegen       = flag.Bool("noregen", false,
 			"【仅测试】关闭自然恢复。用来让\"受伤后立刻验证治疗类技能\"变得确定 —— "+
 				"高等级玩家回血速度远快于怪物掉血，不关掉的话治疗会被 regenLoop 的回满抢先一步")
-		mapDir        = flag.String("map-dir", "./data/map", "地图目录（含 <地图号>.map）")
-		defaultMapID  = flag.String("map", "0", "默认地图号（对应 <map-dir>/<地图号>.map）")
+		mapDir       = flag.String("map-dir", "./data/map", "地图目录（含 <地图号>.map）")
+		defaultMapID = flag.String("map", "0", "默认地图号（对应 <map-dir>/<地图号>.map）")
+		homeX        = flag.Int("home-x", 650,
+			"新角色的出生点提示 X（与原版 `!Setup.txt` 的 `HomeX` 同义：从该图的安全点表里"+
+				"挑离它最近的那条当出生点）。默认 650/631 = 银杏谷那片安全区（D-38）")
+		homeY         = flag.Int("home-y", 631, "同上（Y）")
 		maxSpawns     = flag.Int("max-spawns", 0, "最多加载多少个刷怪点（0=不限）")
 		mapCacheLimit = flag.Int("map-cache", 0,
 			"已弃用：完整初始化要求全部地图常驻；非 0 值会被忽略")
@@ -173,6 +177,8 @@ func Main() {
 		data: dataState{
 			tables:       tables,
 			defaultMapID: *defaultMapID, // 建角要用它当出生地图（见 newCharHome）
+			homeX:        *homeX,
+			homeY:        *homeY,
 			drops:        defaultDrops(tables),
 		},
 		world: worldState{

@@ -267,7 +267,7 @@ func (m *Monster) CanBeAttackedBy(underWar, isOwnGuild, isAllyGuild, stoneMode b
 	if m.StoneMode || stoneMode {
 		return false
 	}
-	if m.Info != nil && m.Info.Race >= 10 && m.Info.Race < 50 {
+	if m.Info != nil && m.Info.Race >= RcNpc && m.Info.Race < RcAnimal {
 		return false // RC_NPC(10) <= race < RC_ANIMAL(50)：非战斗单位
 	}
 	if underWar {
@@ -276,6 +276,27 @@ func (m *Monster) CanBeAttackedBy(underWar, isOwnGuild, isAllyGuild, stoneMode b
 	// 非攻城期：只有守方才可打自己的城墙（修门/修墙也走这里）。
 	return isOwnGuild || isAllyGuild
 }
+
+// 怪物的**种族**（`Race`）常量 —— 数值照抄原版 `Grobal2.pas:1100-1106`，**必须一致**：
+// 它们既决定 AI 行为（见 [`IsAnimalRace`] / [`IsGuardRace`]），也决定取肉/变骷髅之类。
+const (
+	RcPlayer      = 0   // RC_PLAYOBJECT
+	RcNpc         = 10  // RC_NPC
+	RcGuard       = 11  // RC_GUARD
+	RcPeaceNpc    = 15  // RC_PEACENPC
+	RcAnimal      = 50  // RC_ANIMAL
+	RcMonster     = 80  // RC_MONSTER
+	RcArcherGuard = 112 // RC_ARCHERGUARD
+)
+
+// IsAnimalRace 是**动物**（鸡/鹿…）。
+// 原版里它们**不主动攻击玩家**：`TChickenDeer.Run` 只会挑最近的威胁**逃跑**
+// （`ObjMon.pas:542-560`）。取值范围照原版 `RC_ANIMAL(50) <= race < RC_MONSTER(80)`。
+func IsAnimalRace(race uint16) bool { return race >= RcAnimal && race < RcMonster }
+
+// IsGuardRace 是**守卫 / 弓箭守卫**。
+// 原版只在目标是**红名**（`PKLevel >= 2`）或怪物时才动手（`ObjGuard.pas:87-126`）。
+func IsGuardRace(race uint16) bool { return race == RcGuard || race == RcArcherGuard }
 
 // NewMonster 创建怪物。
 func NewMonster(id uint32, info *data.MonsterInfo, m *world.Map, x, y int) *Monster {

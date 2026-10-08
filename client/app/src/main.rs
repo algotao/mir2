@@ -940,23 +940,13 @@ impl Net {
 
     /// 把握手状态机吐出来的信封翻译成会话命令发出去。
     fn send(&self, body: &mir2_protocol::envelope::Body) {
-        use mir2_protocol::envelope::Body;
-        let cmd = match body {
-            Body::Reconnect(_) => Some(mir2_net::Cmd::Reconnect(self.session)),
-            // ⚠️ 口令登录那两步也必须在这里翻译 —— 少了它状态机吐出来的
-            // `LoginSaltRequest`/`Login` 会被 `_ => None` **静默吞掉**，
-            // 表现是"点了登录一直转圈"（e2e 的 `TestProtoRustLogin` 抓的就是这个）。
-            Body::LoginSaltRequest(r) => Some(mir2_net::Cmd::LoginSaltRequest(r.account.clone())),
-            Body::Login(l) => Some(mir2_net::Cmd::Login {
-                account: l.account.clone(),
-                proof_hex: l.password_hash.clone(),
-            }),
-            Body::ListCharacters(_) => Some(mir2_net::Cmd::ListCharacters),
-            Body::SelectCharacter(s) => Some(mir2_net::Cmd::SelectCharacter(s.character_id)),
-            _ => None,
-        };
-        if let Some(c) = cmd {
-            let _ = self.sess.cmds.send(c);
+        match to_cmd(body, self.session) {
+            Some(c) => {
+                let _ = self.sess.cmds.send(c);
+            }
+            // ⚠️ **绝不静默吞**：这条路上漏一项就是"点了按钮没反应、服务端连请求都没收到"
+            //（`LoginSaltRequest` 与 `CreateAccount` 都这么丢过，见 `to_cmd` 的说明）。
+            None => eprintln!("[net] ⚠️ 这条命令没有翻译，已丢弃：{body:?}"),
         }
     }
 
@@ -1000,6 +990,11 @@ impl Net {
     /// 发一次移动输入（走）。方向用**线上编号**（`core::world` 里也不做 ±1 转换）。
     fn walk(&self, dir: mir2_protocol::Direction) {
         let _ = self.sess.cmds.send(mir2_net::Cmd::Move(dir as i32));
+    }
+
+    /// **跑**一步（原版 `CM_RUN`；服务端一步 2 格）。
+    fn run(&self, dir: mir2_protocol::Direction) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::Run(dir as i32));
     }
 
     /// 把"这一帧看到的"折进各实体的动画状态：移动了就给补间的起止，动作变了就重置计时。
@@ -1096,13 +1091,55 @@ impl Net {
 ///
 /// 离线时返回 `false` ⇒ 保持原来的"方向键平移镜头"（开发查看器最常用的动作）。
 fn walk_if_online(net: &Option<Net>, dir: mir2_protocol::Direction) -> bool {
+    move_if_online(net, dir, false)
+}
+
+/// 同上，但可以**跑**（原版：左键走、右键跑/按住 Ctrl 走改为跑）。
+fn move_if_online(net: &Option<Net>, dir: mir2_protocol::Direction, run: bool) -> bool {
     match net {
         Some(n) if n.world.in_world() => {
-            n.walk(dir);
+            if run {
+                n.run(dir);
+            } else {
+                n.walk(dir);
+            }
             true
         }
         _ => false,
     }
+}
+
+/// 鼠标连续走路的**步频**（毫秒）：比服务端的节流稍慢一点，免得每步都被拒。
+/// 服务端 `entity.Limiter` 是 `MinWalk = 600ms` / `MinRun = 400ms`。
+const WALK_MS: u64 = 650;
+const RUN_MS: u64 = 450;
+
+/// **屏幕坐标 → 地图格**（鼠标点哪走到哪要用它；与 [`cell_to_screen`] 互为逆）。
+fn screen_to_cell(cam: (i32, i32), px: f32, py: f32) -> (i32, i32) {
+    (
+        cam.0 + (px / UNIT_X as f32).floor() as i32,
+        cam.1 + ((py - BAR_TOP) / UNIT_Y as f32).floor() as i32,
+    )
+}
+
+/// 从 `from` 格朝 `to` 格的方向（协议值 = 原版 + 1，顺时针：1 上、2 右上 … 8 左上）。
+///
+/// 照原版 `GetNextDirection`（`ClFunc.pas:398-422`）：先把 Δ 取**三态符号**，再映到 8 方向；
+/// **同一格**给 `None`（没有方向可言 —— 调用方据此判"到了"）。
+fn dir_to(from: (i32, i32), to: (i32, i32)) -> Option<mir2_protocol::Direction> {
+    use mir2_protocol::Direction as D;
+    let (dx, dy) = ((to.0 - from.0).signum(), (to.1 - from.1).signum());
+    Some(match (dx, dy) {
+        (0, -1) => D::DirUp,
+        (1, -1) => D::DirUpRight,
+        (1, 0) => D::DirRight,
+        (1, 1) => D::DirDownRight,
+        (0, 1) => D::DirDown,
+        (-1, 1) => D::DirDownLeft,
+        (-1, 0) => D::DirLeft,
+        (-1, -1) => D::DirUpLeft,
+        _ => return None,
+    })
 }
 
 /// 协议朝向（1..8）→ 屏幕增量。**1 = 上**（新枚举 = 原版 + 1，见 common.proto）。
@@ -1590,6 +1627,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 地图模式的状态
     let mut mode: u8 = 1; // 1 = 登录界面（从头开始就是它），2 = 地图，3 = 素材浏览器
+                          // 鼠标走路：目标格 + 是否跑（左键走、右键跑；松开清空）。`move_at` 是步频节流。
+    let mut move_target: Option<(i32, i32, bool)> = None;
+    let mut move_at = Instant::now();
     let mut map_i: usize = 0;
     let mut map: Option<Map> = None;
     let mut map_err = String::new();
@@ -1857,12 +1897,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => {}
                 },
                 Event::MouseMotion { x, y, .. } => mouse = (x, y),
+                // 鼠标移动：**在世界里 ⇒ 左键走 / 右键跑**（照原版 `ClMain.pas:2246-2352`：
+                // 左键 = 走，右键 = 跑；方向由鼠标相对角色的方位定，见 `dir_to`）。
+                // 离线看地图（没进世界）时左键仍是那个诊断探针 —— 它是开发用的，
+                // 别和"走路"抢同一个键。
                 Event::MouseButtonDown {
-                    mouse_btn: MouseButton::Left,
-                    x,
-                    y,
-                    ..
-                } if mode == 2 => probe_at(x, y, cam, &draws, &tiles, layers),
+                    mouse_btn, x, y, ..
+                } if mode == 2 => {
+                    let in_world = net.as_ref().is_some_and(|n| n.world.in_world());
+                    match mouse_btn {
+                        MouseButton::Left | MouseButton::Right if in_world => {
+                            let (tx, ty) = screen_to_cell(cam, x, y);
+                            let run = mouse_btn == MouseButton::Right;
+                            move_target = Some((tx, ty, run));
+                            move_at = Instant::now(); // 立刻踏出第一步
+                            println!(
+                                "[move] 目标格 ({tx},{ty})：{}",
+                                if run { "跑" } else { "走" }
+                            );
+                        }
+                        MouseButton::Left => probe_at(x, y, cam, &draws, &tiles, layers),
+                        _ => {}
+                    }
+                }
+                // 松开就停（原版也是松手清目标：`ClMain.pas:2384-2389`）
+                Event::MouseButtonUp { mouse_btn, .. }
+                    if mode == 2 && matches!(mouse_btn, MouseButton::Left | MouseButton::Right) =>
+                {
+                    move_target = None;
+                }
                 Event::MouseButtonDown {
                     mouse_btn: MouseButton::Left,
                     x,
@@ -1954,6 +2017,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Event::TextInput { text: t, .. } if mode == 1 => login.on_text(&t),
+                // 选角界面的**建角对话框**也吃文字（`Select::on_text` 自己判断对话框开没开、
+                // 焦点在不在姓名上）—— 少了这条，姓名框打字没反应（原版是 `TEdit` 收键）。
+                Event::TextInput { text: t, .. } if mode == 4 => {
+                    if let Some(s) = select_scene.as_mut() {
+                        s.on_text(&t);
+                    }
+                }
                 _ => {}
             }
         }
@@ -2005,16 +2075,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             //
             // ⚠️ "停在等你选"是**状态机说的**，不是我们猜的时机：角色列表就在它手上
             //（`entrance.characters()`），界面只负责显示与选择。
-            // ⚠️ 判据**不能**带上 `mode == 1`：带会话号启动时 mode 会被设成 2（地图，
-            // 见上面的 `if net.is_some()`），而重连回落到选角一样要切过来（实测踩过：
-            // 服务端已经回了"列角色 → 1 个"，界面却还停在地图视图上）。
-            if mode != 4 && n.entrance.stage() == &mir2_core::entrance::Stage::AwaitPick {
-                let chars: Vec<select::CharEntry> = n
-                    .entrance
-                    .characters()
-                    .iter()
-                    .map(select::CharEntry::from_summary)
-                    .collect();
+            // 每帧"网络 → 画面"的决策：**纯函数**（见 `plan` 的说明 —— 决策必须放在
+            // 能单测的地方，主循环只负责执行）。判据全是状态机说的事实，没有一处是"猜时机"。
+            let chars: Vec<select::CharEntry> = n
+                .entrance
+                .characters()
+                .iter()
+                .map(select::CharEntry::from_summary)
+                .collect();
+            let p = plan(
+                mode,
+                n.entrance.stage() == &mir2_core::entrance::Stage::AwaitPick,
+                n.entrance.in_world(),
+                list_changed(select_scene.as_ref(), &chars),
+                // "门挡着" = 开过门（`opened_at` 有值）但还没放完
+                login.opened_at.is_some() && !login.door_done(),
+            );
+            // ⚠️ **只在列表真的变了**的时候才重建场景。这段在"门还在放"的那三秒里每帧都会
+            // 走到 —— 早先每帧重建 + 每帧 println，表现是**日志刷屏**（用户报过），
+            // 而且把用户已经移好的选中位置**每帧抹回第 0 个**。
+            // 列表真的会变的场合只有两种：建/删角回执后的重拉、重连回落。
+            if p.rebuild_select {
                 println!("[net] 角色列表：{} 个", chars.len());
                 let mut scene = select::Select::new(chars);
                 // `MIR2_CHAR=<id>` 指定初选（手动模式下状态机不看它了，落到界面上）
@@ -2025,12 +2106,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 select_scene = Some(scene);
-                // ⚠️ 门还在放就先不切过去：原版顺序是"门放完 → ChangeScene(stSelectChr)"
-                //（`IntroScn.pas:838-847`）；一上来就切会把门当场掐掉（用户看到的就是"没有开门动画"）。
-                // 门放完那一刻由下面 `mode == 1` 那条分支接手（它会切到 4）。
-                if login.opened_at.is_none() || login.door_done() {
-                    mode = 4;
-                }
+            }
+            // 门还在放就先不切：原版顺序是"门放完 → `ChangeScene(stSelectChr)`"
+            //（`IntroScn.pas:838-847`），一上来就切会把门当场掐掉（用户看到的就是"没有开门动画"）。
+            // 门放完那一刻由主循环里 `mode == 1` 那条分支接手。
+            if p.enter_select {
+                mode = 4;
+            }
+            // 选角通过 ⇒ 换到游戏主场景（原版在这里是 `ChangeScene(stPlay)`）
+            if p.enter_play {
+                mode = 2;
+                // 选角场景用不上了（它的槽动画也不必再跑）
+                select_scene = None;
             }
             // 选角被拒（例如租约被占）⇒ 弹给用户换一个（状态机会退回 `AwaitPick`）。
             if let Some(why) = n.entrance.take_pick_error() {
@@ -2047,6 +2134,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 n.session = tok;
             }
         }
+        // 鼠标走路：按住时**一步步**朝目标格走。
+        //
+        // 原版是"按住每 ≥300ms 重新触发一次 `_DXDrawMouseDown`、松开清目标"
+        //（`ClMain.pas:2115-2116 / 2384-2389`），步频本身受服务端节流限制 ⇒
+        // 我们按 `WALK_MS`/`RUN_MS` 发，到了目标格就停。
+        if mode == 2 {
+            if let Some((tx, ty, run)) = move_target {
+                let here = net
+                    .as_ref()
+                    .filter(|n| n.world.in_world())
+                    .map(|n| (n.world.self_pos.0, n.world.self_pos.1));
+                match here {
+                    // 没进世界（掉线/还没到）⇒ 目标作废，别攒着一堆移动
+                    None => move_target = None,
+                    // 到了 ⇒ 收工（原版到点也停）
+                    Some(pos) if pos == (tx, ty) => move_target = None,
+                    Some(pos) => {
+                        let gap = if run { RUN_MS } else { WALK_MS };
+                        if move_at.elapsed() >= Duration::from_millis(gap) {
+                            if let Some(dir) = dir_to(pos, (tx, ty)) {
+                                move_if_online(&net, dir, run);
+                            }
+                            move_at = Instant::now();
+                        }
+                    }
+                }
+            }
+        }
+
         // 建号回执（D-32）：**不自动登录**（与原版一致 —— 它也只是弹个提示，
         // `ClMain.pas:3684-3691`）。提示用登录界面那套模态框说，面板切回登录；
         // 那条"只为建号用过的连接"顺手收尾：登录会另开一条（nonce 要重新握手）。
@@ -2188,6 +2304,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             login.draw(
                 &mut canvas,
                 &mut ui,
+                &mut texts,
                 &tex_creator,
                 &asset_dir,
                 (WIN_W, WIN_H),
@@ -2646,6 +2763,109 @@ fn flush_entrance(
     }
 }
 
+/// 状态机吐出来的信封 → 会话命令（**这张表就是"接线"本身**）。
+///
+/// ⚠️ 漏一项的后果不是报错，而是**静默吞掉**：界面照常转圈，而服务端一条请求都收不到。
+/// 这个坑已经栽过两次：
+///   - `LoginSaltRequest`/`Login` ⇒「点了登录一直转圈」（e2e 的 `TestProtoRustLogin` 抓到的）；
+///   - `CreateAccount` ⇒「点了建号没反应」（2026-10-08 用户报的：服务端日志里只有
+///     `握手完成`，`LoginSaltRequest`/`CreateAccount` 一条都没到）。
+///
+/// ⇒ 两道防线：① `Net::send` 对 `None` **大声打日志**（不再 `_ => None` 悄悄丢）；
+/// ② 单测 `建号那条路的每条命令都有翻译` 把这条链钉住。
+///
+/// 抽成自由函数就是为了能单测：`Reconnect` 要用会话号，所以 `session` 从外面传进来。
+fn to_cmd(body: &mir2_protocol::envelope::Body, session: i32) -> Option<mir2_net::Cmd> {
+    use mir2_protocol::envelope::Body;
+    Some(match body {
+        Body::Reconnect(_) => mir2_net::Cmd::Reconnect(session),
+        Body::LoginSaltRequest(r) => mir2_net::Cmd::LoginSaltRequest(r.account.clone()),
+        Body::Login(l) => mir2_net::Cmd::Login {
+            account: l.account.clone(),
+            proof_hex: l.password_hash.clone(),
+        },
+        // 建号（D-32）：发的是口令的**校验值** `hex(K)`，不是证明 —— 建号时服务端
+        // 手里什么都没有，得拿这个值落库才能验以后的登录（见 `account.proto` 的说明）。
+        Body::CreateAccount(c) => mir2_net::Cmd::CreateAccount {
+            account: c.account.clone(),
+            verifier_hex: c.verifier.clone(),
+        },
+        Body::ListCharacters(_) => mir2_net::Cmd::ListCharacters,
+        Body::SelectCharacter(s) => mir2_net::Cmd::SelectCharacter(s.character_id),
+        // 建/删角（选角界面）：状态机吐的是**协议 body**，会话层再翻成 `Cmd`。
+        Body::CreateCharacter(c) => mir2_net::Cmd::CreateCharacter {
+            name: c.name.clone(),
+            class: c.class,
+            gender: c.gender,
+            hair: c.hair,
+        },
+        Body::DeleteCharacter(d) => mir2_net::Cmd::DeleteCharacter {
+            character_id: d.character_id,
+            proof_hex: d.password_hash.clone(),
+        },
+        // 世界输入不走这里（`Cmd::Move`/`Attack` 由输入那条路直发）；服务端单向消息
+        // （实体事件、心跳…）本来就不是命令 ⇒ 到这里是 `None`，由调用方打日志。
+        _ => return None,
+    })
+}
+
+/// **每帧"网络 → 画面"的决策**（纯函数；主循环只负责执行它）。
+///
+/// # 为什么一定要有这一层
+///
+/// 2026-10-08 用户问："这么显著的问题，你的测试用例是怎么通过的？" —— 答案就在这个函数
+/// **以前不存在**：那两条判定原本写死在**主循环里**（`pump()` 里那两段），而主循环要 SDL
+/// 窗口与素材才能跑 ⇒ **测试碰不到它**，于是"测试全绿 + 功能是坏的"能并存。两条判定
+/// **各漏过一次**，症状都是"画面没跟着状态机走"：
+///
+///   ① 建/删角之后不重建：守卫写成 `mode != 4 && awaiting_pick` —— 而建角**恰恰发生在
+///      已经在选角屏**的时候（`mode == 4`）⇒ 整条分支被跳过（“建完角色要重登才看得见”）。
+///   ② 选角通过后不换屏：没人把 `mode` 切到 2 ⇒ 世界在跑（能听见受击/死亡声）、
+///      画面却还停在选角界面。当时留下的 `Select::start_clicked` 是个**只写不读**的标记。
+///
+/// 搬到这个纯函数之后，**同样这两个错误会让 `换屏判定` 变红**（那条测试里写了怎么复现，
+/// 而且实际改回去验过一遍：红 → 改回来 → 绿）。**判据全部来自状态机**，没有一处是"猜的时机"。
+///
+/// 参数就是主循环手里那几件事实：
+/// - `awaiting_pick`：状态机停在"等你选角"（`Stage::AwaitPick`）；
+/// - `in_world`：状态机说已经进世界了（`Entrance::in_world`）；
+/// - `changed`：状态机手里的角色列表与界面上的场景**不一样**（`list_changed`）；
+/// - `door_blocking`：开门动画还在放（原版顺序：门放完 → `ChangeScene(stSelectChr)`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Plan {
+    /// 按新的角色列表**重建**选角场景。
+    rebuild_select: bool,
+    /// 把画面切到选角。门还在放时**不切** —— 一上来就切会把门当场掐掉。
+    enter_select: bool,
+    /// 把画面切到**游戏主场景**（选角通过）。
+    enter_play: bool,
+}
+
+fn plan(mode: u8, awaiting_pick: bool, in_world: bool, changed: bool, door_blocking: bool) -> Plan {
+    Plan {
+        // ⚠️ 这里**绝不能**再加"当前不在选角屏"这类条件（bug ① 就是加了个 `mode != 4`）：
+        //    建/删角发生在选角屏**里面**，加上它 = 列表更新了却不重建。
+        rebuild_select: awaiting_pick && changed,
+        // 门放完之前不切（`opened_at.is_none()` = 压根没有门要走 ⇒ 立刻可切）。
+        enter_select: awaiting_pick && !door_blocking,
+        // ⚠️ 只从**选角屏**进游戏（门那屏由主循环里 `mode == 1` 那条分支自己接手）；
+        //    缺了这条 = 只闻其声、不见其画面（bug ②）。
+        enter_play: mode == 4 && in_world,
+    }
+}
+
+/// 角色列表变了没（决定要不要重建选角场景，见调用处）。
+///
+/// 抽出来是为了能单测：这条判断错了，一边是**日志刷屏 + 选中位置被每帧抹掉**
+///（门还在放的那三秒里 `mode` 还是 1，分支每帧命中），另一边是列表更新了却不重建
+///（建完角色回到选角看不到新角色）。
+fn list_changed(scene: Option<&select::Select>, chars: &[select::CharEntry]) -> bool {
+    match scene {
+        Some(s) => s.chars.as_slice() != chars,
+        None => true,
+    }
+}
+
 /// 选角场景做出的动作 → 真的去做。
 ///
 /// ⚠️ 抽出来是因为**键盘与鼠标两条路**都会产生它：两处各写一遍迟早漂移
@@ -2665,6 +2885,52 @@ fn do_select_action(
     match act {
         select::Action::None => Ok(false),
         select::Action::Exit => Ok(true),
+        // 建角：状态机只在选角阶段（`AwaitPick`）才发得出去。发不出去就**明说一句**，
+        // 不静默（这条纪律踩过：静默吞命令的表现就是"点了没反应"）。
+        select::Action::Create {
+            name,
+            class,
+            gender,
+            hair,
+        } => {
+            let mut sent = false;
+            if let Some(n) = net.as_mut() {
+                if let Some(b) = n.entrance.create_character(&name, class, gender, hair) {
+                    n.send(&b);
+                    sent = true;
+                    println!("[net] 建角：{name}（职业={class} 性别={gender} 发型={hair}）");
+                }
+            }
+            if !sent {
+                if let Some(s) = select_scene.as_mut() {
+                    s.say("现在不能建角（连接/阶段不对）—— 重新登录后再试。");
+                }
+            }
+            // 回执是**异步**的：成败都回来一次（失败弹窗、成功重拉列表，见
+            // `Entrance::on` 的 `CreateCharacterResult` 那条）⇒ 这里不动界面。
+            Ok(false)
+        }
+        // 删角：要**登录时那条口令证明**（`Entrance::delete_character` 自己带）。
+        // 认领会话进来的没有证明 ⇒ 发不出去，明说一句怎么办。
+        select::Action::Delete(id) => {
+            let mut sent = false;
+            if let Some(n) = net.as_mut() {
+                if let Some(b) = n.entrance.delete_character(id) {
+                    n.send(&b);
+                    sent = true;
+                    println!("[net] 删角：id={id}");
+                }
+            }
+            if !sent {
+                if let Some(s) = select_scene.as_mut() {
+                    s.say(
+                        "没发出去：删角要用登录时那条口令证明（认领会话进来的没有）—— \
+                         用账号口令重新登一次再删。",
+                    );
+                }
+            }
+            Ok(false)
+        }
         select::Action::Enter(id) => {
             if let Some(n) = net.as_mut() {
                 match n.entrance.pick(id) {
@@ -2676,9 +2942,8 @@ fn do_select_action(
                     None => println!("[net] 选角：状态机不在等选角，忽略这次选择"),
                 }
             }
-            if let Some(scene) = select_scene.as_mut() {
-                scene.start_clicked = true;
-            }
+            // ⚠️ 这里**不**记"点过了"：换屏的判据是状态机的 `in_world()`（见 `show()`），
+            // 不是"哪颗按钮被按过" —— 早先那个只写不读的 `start_clicked` 就是这么留下的。
             Ok(false)
         }
     }
@@ -2691,9 +2956,11 @@ fn do_select_action(
 fn hint_text(mode: u8) -> &'static str {
     match mode {
         2 => {
-            const PLAY: &str = "ARROWS WALK  SPACE HIT  C CONNECT  [ ] MAP  P DUMP  F1 LOGIN  ESC";
+            const PLAY: &str =
+                "LMB WALK  RMB RUN  ARROWS WALK  SPACE HIT  C CONNECT  [ ] MAP  P DUMP  F1 LOGIN  ESC";
             const DEBUG_KEYS: &str =
-                "ARROWS WALK  SPACE HIT  C CONNECT  [ ] MAP  D DEBUG  1/2/3 LAYER  P DUMP  F1 LOGIN  ESC";
+                "LMB WALK  RMB RUN  ARROWS WALK  SPACE HIT  C CONNECT  [ ] MAP  \
+                                      D DEBUG  1/2/3 LAYER  P DUMP  F1 LOGIN  ESC";
             if DEBUG_LAYERS || DEBUG_OVERLAY {
                 DEBUG_KEYS
             } else {
@@ -3011,5 +3278,194 @@ mod tests {
     #[test]
     fn 动作播完且在走就播走路() {
         assert_eq!(human_sample(Some(1), 600, true).0, A::HAct::Walk);
+    }
+
+    /// **建号那条路的每一步都必须有翻译** —— 用户报的"点了建号没反应"根因就是
+    /// 状态机吐了 `CreateAccount`，而 `send()` 用 `_ => None` 把它静默吞了
+    ///（服务端日志里只有 `握手完成`，`CreateAccount` 一条都没到）。
+    #[test]
+    fn 建号那条路的每条命令都有翻译() {
+        use mir2_core::entrance::{Entrance, Stage};
+        use mir2_protocol::envelope::Body;
+        let mut e = Entrance::new_for_signup("algo".into(), "pw123".into());
+
+        // ① 取盐
+        let cmd = e.next_cmd().expect("第一步是取盐");
+        assert!(matches!(cmd, Body::LoginSaltRequest(_)));
+        assert_eq!(*e.stage(), Stage::AwaitSignupSalt);
+        assert!(to_cmd(&cmd, 0).is_some(), "取盐没有翻译 ⇒ 会被静默吞掉");
+
+        // ② 回盐 ⇒ 该吐 `CreateAccount`（**就是漏掉的那一条**）
+        let cmd = e
+            .on(&mir2_protocol::Envelope {
+                body: Some(Body::LoginSalt(mir2_protocol::LoginSalt {
+                    salt: vec![9; 16],
+                    iterations: 1000,
+                    key_len: 32,
+                })),
+                ..Default::default()
+            })
+            .expect("回盐之后该吐 CreateAccount");
+        assert!(matches!(cmd, Body::CreateAccount(_)));
+        assert_eq!(*e.stage(), Stage::AwaitSignup);
+        assert!(to_cmd(&cmd, 0).is_some(), "建号没有翻译 ⇒ 点了没反应");
+
+        // ③ 回执 ⇒ 留一条提示给界面（弹窗 + 切回登录面板）
+        let _ = e.on(&mir2_protocol::Envelope {
+            body: Some(Body::CreateAccountResult(
+                mir2_protocol::CreateAccountResult {
+                    result: Some(mir2_protocol::ActionResult {
+                        ok: true,
+                        code: 0,
+                        message: "账号已建立，请登录".into(),
+                    }),
+                },
+            )),
+            ..Default::default()
+        });
+        assert_eq!(
+            e.take_signup_msg(),
+            Some((true, "账号已建立，请登录".into()))
+        );
+    }
+
+    /// 翻译表**没有缺项**：状态机能吐出来的每一条命令都得在里面
+    ///（上面那条钉"建号这条路"，这条钉"表本身"）。
+    #[test]
+    fn 状态机命令的翻译表没有缺项() {
+        use mir2_protocol::envelope::Body;
+        let cases: Vec<Body> = vec![
+            Body::Reconnect(mir2_protocol::Reconnect {
+                session_token: 7i32.to_le_bytes().to_vec(),
+                last_ack_seq: 0,
+            }),
+            Body::LoginSaltRequest(mir2_protocol::LoginSaltRequest {
+                account: "algo".into(),
+            }),
+            Body::Login(mir2_protocol::Login {
+                account: "algo".into(),
+                password_hash: "ab".repeat(32),
+                client_build: String::new(),
+            }),
+            Body::CreateAccount(mir2_protocol::CreateAccount {
+                account: "algo".into(),
+                verifier: "cd".repeat(32),
+            }),
+            Body::ListCharacters(mir2_protocol::ListCharacters {}),
+            Body::SelectCharacter(mir2_protocol::SelectCharacter { character_id: 42 }),
+            Body::CreateCharacter(mir2_protocol::CreateCharacter {
+                name: "新角色".into(),
+                class: 1,
+                gender: 1,
+                hair: 3,
+            }),
+            Body::DeleteCharacter(mir2_protocol::DeleteCharacter {
+                character_id: 42,
+                password_hash: "ef".repeat(32),
+            }),
+        ];
+        for b in &cases {
+            assert!(to_cmd(b, 7).is_some(), "没有翻译：{b:?}");
+        }
+        // 反向：不是命令的单向消息**不该**被翻译（否则会把服务端的话原样发回去）
+        assert!(to_cmd(
+            &Body::ServerError(mir2_protocol::ServerError {
+                code: 1,
+                message: "x".into(),
+            }),
+            7
+        )
+        .is_none());
+    }
+
+    /// 角色列表**没变**就不重建场景 —— 用户报的日志刷屏（门还在放的那三秒里每帧重建 +
+    /// 每帧 `println`）与"选中位置被每帧抹回第 0 个"根因都是这条判断。
+    #[test]
+    fn 列表没变就不重建选角场景() {
+        let a = vec![select::CharEntry {
+            id: 1,
+            name: "甲".into(),
+            level: 1,
+            class: 1,
+            sex: 0,
+        }];
+        let scene = select::Select::new(a.clone());
+        assert!(!list_changed(Some(&scene), &a), "同一个列表不该重建");
+        assert!(list_changed(None, &a), "还没有场景时必须建");
+        let mut b = a.clone();
+        b.push(select::CharEntry {
+            id: 2,
+            name: "乙".into(),
+            level: 2,
+            class: 2,
+            sex: 1,
+        });
+        assert!(list_changed(Some(&scene), &b), "列表变了要重建");
+    }
+
+    /// 换屏判定 —— **这两条各漏过一次**（见 `plan` 的说明），所以逐条钉住。
+    ///
+    /// 这条测试是**真会红**的那种（已实际验过：把 bug 改回去 ⇒ 红；改回来 ⇒ 绿）：
+    ///   · `rebuild_select` 改回 `awaiting_pick && changed && mode != 4` ⇒ 第①行红（bug ①）；
+    ///   · `enter_play` 写死 `false`（或删掉）⇒ 第②行红（bug ②）。
+    #[test]
+    fn 换屏判定() {
+        // ① **已经在选角屏**（mode 4）+ 列表变了 ⇒ 必须重建（建/删角到手的新列表）
+        let p = plan(4, true, false, true, false);
+        assert!(p.rebuild_select, "在选角屏里也必须按新列表重建");
+        assert!(p.enter_select, "画面还得停在选角上");
+        // ② 选角通过（在选角屏 + 状态机说进世界）⇒ 切游戏主场景
+        let p = plan(4, false, true, false, false);
+        assert!(p.enter_play, "选角通过必须换到游戏主场景");
+        assert!(!p.rebuild_select && !p.enter_select);
+        // ③ 门还在放 ⇒ 不切走（切了会把开门动画掐掉），但列表可以先备好
+        let p = plan(1, true, false, true, true);
+        assert!(!p.enter_select, "门没放完不该切走");
+        assert!(p.rebuild_select, "但列表可以先建好");
+        // ④ 已经在游戏里 ⇒ 什么都不动（别把玩家踢回选角）
+        let p = plan(2, false, true, false, false);
+        assert!(!p.rebuild_select && !p.enter_select && !p.enter_play);
+        // ⑤ 列表没变 ⇒ 不重建（否则每帧重建：选中位置被抹掉、日志还会刷屏）
+        assert!(!plan(4, true, false, false, false).rebuild_select);
+        // ⑥ 门那屏（mode 1）收到 EnterWorld 也不该切游戏：门放完由 `mode == 1` 那条分支接手
+        assert!(!plan(1, false, true, false, false).enter_play);
+    }
+
+    /// 鼠标走路的方向：8 个方位 + "同一格没有方向"（照原版 `GetNextDirection`，
+    /// `ClFunc.pas:398-422`）。协议值 = 原版 + 1（1 上、2 右上 … 8 左上，顺时针）。
+    #[test]
+    fn 鼠标方位给方向() {
+        use mir2_protocol::Direction as D;
+        let at = (10, 10);
+        assert_eq!(dir_to(at, (10, 5)), Some(D::DirUp), "正上方");
+        assert_eq!(dir_to(at, (15, 5)), Some(D::DirUpRight));
+        assert_eq!(dir_to(at, (15, 10)), Some(D::DirRight));
+        assert_eq!(dir_to(at, (15, 15)), Some(D::DirDownRight));
+        assert_eq!(dir_to(at, (10, 15)), Some(D::DirDown));
+        assert_eq!(dir_to(at, (5, 15)), Some(D::DirDownLeft));
+        assert_eq!(dir_to(at, (5, 10)), Some(D::DirLeft));
+        assert_eq!(dir_to(at, (5, 5)), Some(D::DirUpLeft));
+        assert_eq!(
+            dir_to(at, at),
+            None,
+            "同一格没有方向 ⇒ 调用方据此判\"到了\""
+        );
+        // 远距离也只看方位（不是只看相邻格）
+        assert_eq!(dir_to(at, (99, 10)), Some(D::DirRight));
+    }
+
+    /// 屏幕坐标 ↔ 格子互为逆（"点哪走到哪"靠这一对；鼠标那条路用的是反算）。
+    #[test]
+    fn 屏幕与格子互为逆() {
+        let cam = (100, 200);
+        for (cx, cy) in [(100, 200), (103, 205), (99, 199), (140, 260)] {
+            let (px, py) = cell_to_screen(cam, cx, cy);
+            // 取格内一点（+1px）再反算，避开格边界
+            assert_eq!(
+                screen_to_cell(cam, px + 1.0, py + 1.0),
+                (cx, cy),
+                "({cx},{cy}) 往返失败"
+            );
+        }
     }
 }

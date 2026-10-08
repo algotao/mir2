@@ -133,6 +133,14 @@ message MoveInput {
   Vec2 to = 2;
   Direction direction = 3;
   uint32 client_tick = 4;
+  // 跑（原版 `CM_RUN`）：**一步 2 格**、节流比走短（`MinRun` vs `MinWalk`）。
+  //
+  // 原版客户端：按住右键（远距）或 Ctrl+左键 = 跑（`ClMain.pas:2200-2244 / 2344-2352`），
+  // 其余左键 = 走；跑一步的位移见 `GetNextRunXY`（+2 格，`ClFunc.pas:370-382`）。
+  //
+  // ⚠️ 老客户端不填这个字段 ⇒ 默认 false = 走，行为与以前完全一致
+  //（所以**不需要** bump `version.txt`：加带默认值的可选字段是兼容变更）。
+  bool run = 5;
 }
 
 // 服务端 → 客户端：移动被拒（越界/超速），回权威位置校正。

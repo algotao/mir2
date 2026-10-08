@@ -55,9 +55,31 @@ pub enum Cmd {
     ListCharacters,
     /// 选角（服务端在**这一步**申请角色租约）。
     SelectCharacter(u64),
+    /// **建角**（原版 `CM_NEWCHR`）。服务端要求**先登录过**这条连接。
+    ///
+    /// `class` 用协议值 1/2/3（战/法/道），`gender` 1/2（男/女）；
+    /// `hair` 服务端**不校验**（原版客户端取 `1 + Random(5)`，见 `IntroScn.pas:1332`）。
+    CreateCharacter {
+        name: String,
+        class: i32,
+        gender: i32,
+        hair: u32,
+    },
+    /// **删角**（原版 `CM_DELCHR`）。
+    ///
+    /// `proof_hex` 是**登录时那条口令证明**（`Entrance::proof()`）—— 原版不带这道门，
+    /// 是我们按 D-24 的纪律加的二次确认（服务端用同一个 nonce 验）。
+    DeleteCharacter {
+        character_id: u64,
+        proof_hex: String,
+    },
     /// 走一步。方向用**线上编号**（`proto::Direction` 的值），不在这里做 ±1 转换 ——
     /// 转换只允许在"游戏逻辑 ↔ 协议"的那一处发生，免得来回漂。
     Move(i32),
+    /// **跑**一步（原版 `CM_RUN`）：服务端一步走 **2 格**、节流更短（`MinRun`）。
+    ///
+    /// 与 [`Cmd::Move`] 分两个变体而不是加个 bool：老的调用点（e2e 等）一个字都不用改。
+    Run(i32),
     /// 打一下（`AttackInput`）。
     ///
     /// ⚠️ `target_id` 是**目标实体的 ActorId**（新协议显式给目标，legacy 靠朝向格）；
@@ -208,9 +230,33 @@ fn writer_loop(stream: &mut TcpStream, cmds: Receiver<Cmd>) {
             Cmd::SelectCharacter(id) => {
                 Body::SelectCharacter(proto::SelectCharacter { character_id: id })
             }
+            Cmd::CreateCharacter {
+                name,
+                class,
+                gender,
+                hair,
+            } => Body::CreateCharacter(proto::CreateCharacter {
+                name,
+                class,
+                gender,
+                hair,
+            }),
+            Cmd::DeleteCharacter {
+                character_id,
+                proof_hex,
+            } => Body::DeleteCharacter(proto::DeleteCharacter {
+                character_id,
+                password_hash: proof_hex,
+            }),
             Cmd::Move(dir) => Body::MoveInput(proto::MoveInput {
                 direction: dir,
                 client_tick: 0,
+                ..Default::default()
+            }),
+            Cmd::Run(dir) => Body::MoveInput(proto::MoveInput {
+                direction: dir,
+                client_tick: 0,
+                run: true, // 跑：服务端一步 2 格（见 `protocol/scene.proto` 的说明）
                 ..Default::default()
             }),
             Cmd::Attack { target_id, action } => Body::AttackInput(proto::AttackInput {
@@ -244,6 +290,10 @@ fn describe(e: &NetError) -> String {
         NetError::Io(io) if io.kind() == std::io::ErrorKind::UnexpectedEof => {
             "服务端关闭了连接".to_string()
         }
+        // 帧边界上的关闭：服务端"发完 `Disconnect` 就关连接"走的就是这条 —— **正常收尾**。
+        // ⚠️ 早先它被 `read_exact` 报成"分帧: 长度域不完整: failed to fill whole buffer"，
+        // 看着像分帧被撕坏了（2026-10-08 用户正是拿着这条日志来问的）。
+        NetError::Frame(proto::FrameError::Closed) => "服务端关闭了连接".to_string(),
         other => other.to_string(),
     }
 }

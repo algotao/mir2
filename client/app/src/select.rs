@@ -14,9 +14,10 @@
 //!
 //! 1. **补了键盘**：原版选角只认鼠标。这里 ←→ 选槽、↑↓ 选菜单项、回车确认
 //!    （布局是"左右两槽 + 中间竖排菜单"，键盘正好这么走）。
-//! 2. **[创建人物] / [删除人物] / [制作群] 是诚实的占位**：新协议下服务端还没实现
-//!    `CreateCharacter` / `DeleteCharacter`（`gamesvr` 的 dispatch 里没有）⇒ 点了
-//!    会说明现状与替代做法，而不是静默没反应。
+//! 2. **[创建人物] / [删除人物] 已接上**（2026-10-08，D-35）：建角开一个对话框
+//!    （姓名/职业/性别，键鼠都能用），删角弹"删了不可恢复"的确认。**[制作群] 仍是占位**。
+//!    ⚠️ 对话框是**自绘的固定几何**（`su::DialogBox`），没照抄原版的窗口素材图号
+//!    （原版 `Prguse[73..78]`，我方素材不是那一套，见 protocol.md §11 与 D-27）。
 //! 3. **空槽点了没反应**（原版会选中它、然后[开始]发一个空名字被服务端拒掉）。
 //! 4. 压暗过渡略去（理由见 `core::select_ui::SlotAnim`）。
 
@@ -24,7 +25,10 @@ use std::path::Path;
 use std::time::Instant;
 
 use sdl3::keyboard::Keycode;
+use sdl3::pixels::Color;
 use sdl3::render::{TextureCreator, WindowCanvas};
+
+use crate::fill;
 
 use mir2_core::select_ui as su;
 use mir2_protocol as proto;
@@ -34,6 +38,8 @@ use crate::ui::UiCache;
 
 /// 名字/等级/职业 的字色（原版 `clWhite` + `clBlack` 描边，`IntroScn.pas:1519`）。
 const C_TEXT: Rgb = (255, 255, 255);
+/// 次要文字（对话框里的字段标签与操作提示）。
+const C_DIM: Rgb = (176, 172, 164);
 const C_SHADOW: Rgb = (0, 0, 0);
 /// 键盘选中的菜单项用**它的按下态图**当高亮（这套素材没有单独的"选中"图）。
 const C_SEL_HL: Rgb = (255, 255, 255);
@@ -72,11 +78,27 @@ impl CharEntry {
 }
 
 /// 场景里做出来的动作（交给主循环去发消息/退出）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// ⚠️ **不派生 `Copy`**：[`Action::Create`] 带一个 `String`（角色名）。`PartialEq` 留着 ——
+/// 渲染那条路要靠它跟 [`Action::None`] 比。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     None,
     /// 进游戏（带上选中的角色 id）。
     Enter(u64),
+    /// **新建角色**（对话框点了[确定]，且本地校验已过）。
+    ///
+    /// `class`/`gender` 已经是**协议值**（1/2/3 与 1/2）—— 界面里那套 0/1/2 的索引在
+    /// `NewChar::confirm` 里就换掉了，免得两套编号在下游来回漂。
+    Create {
+        name: String,
+        class: i32,
+        gender: i32,
+        hair: u32,
+    },
+    /// **删除角色**（**已经过一次确认**；二次确认的口令证明由状态机自己带，
+    /// 见 `Entrance::delete_character`）。
+    Delete(u64),
     /// 关掉窗口。
     Exit,
 }
@@ -100,13 +122,16 @@ pub struct Select {
     menu_cursor: usize,
     /// 弹窗文本（原版 `DMessageDlg`）。`Some` 时挡住其它点击。
     pub msg: Option<String>,
+    /// 建角对话框（原版 `DCreateChr`）。`Some` 时它是**模态**：吃掉所有输入。
+    newchar: Option<NewChar>,
+    /// "要确认的动作"（原版 `DMessageDlg` 的 Yes/No）：回车/[确定]才执行，其余输入 = 取消。
+    /// 目前只有删角用它 —— 删除不可恢复，宁可要求一个明确的"是"。
+    pending: Option<Action>,
     down: Option<Hit>,
     /// 每个槽上一次看到的相位 —— 用来在**解冻那一刻**响一声 `101`
     ///（原版是"点了某个槽"就响一次：`IntroScn.pas:1170/1187` 的 `PlaySound(s_meltstone)`）。
     last_phase: [su::SlotPhase; su::Art::SLOTS],
     last: Instant,
-    /// 点过开始了（进世界后由主循环切场景）。
-    pub start_clicked: bool,
 }
 
 impl Select {
@@ -132,10 +157,11 @@ impl Select {
             anims,
             menu_cursor: 0,
             msg: None,
+            newchar: None,
+            pending: None,
             down: None,
             last_phase,
             last: Instant::now(),
-            start_clicked: false,
         }
     }
 
@@ -169,6 +195,151 @@ impl Select {
         self.msg = Some(what.into());
     }
 
+    /// 建角对话框开着吗（测试与冒烟要看它；主循环那条路是 `mode == 4` + `on_text` 自判）。
+    #[allow(dead_code)]
+    pub fn newchar_open(&self) -> bool {
+        self.newchar.is_some()
+    }
+
+    /// 文字输入：只有姓名那个框吃（其余焦点忽略）。
+    pub fn on_text(&mut self, t: &str) {
+        let Some(d) = self.newchar.as_mut() else {
+            return;
+        };
+        if d.focus != 0 {
+            return;
+        }
+        for ch in t.chars() {
+            if d.name.chars().count() >= NAME_MAX {
+                break; // 原版 `EdChrName.MaxLength := 14`（`IntroScn.pas:1118`）
+            }
+            if !ch.is_control() {
+                d.name.push(ch);
+            }
+        }
+    }
+
+    /// 「新建角色」：原版先看有没有空槽，没有就弹"只能创建两个角色"（`IntroScn.pas:1208-1215`）。
+    fn open_newchar(&mut self) -> Action {
+        if self.chars.len() >= su::Art::SLOTS {
+            self.say(format!(
+                "每个账号最多 {} 个角色（原版同）。要建新的，先删掉一个。",
+                su::Art::SLOTS
+            ));
+            return Action::None;
+        }
+        self.newchar = Some(NewChar::default());
+        Action::None
+    }
+
+    /// 「删除角色」：得先选中一个角色，再弹确认（措辞照抄原版 `IntroScn.pas:1217-1231`）。
+    fn ask_delete(&mut self) -> Action {
+        let Some(c) = self.chars.get(self.picked) else {
+            self.say("先选中一个角色，再删。");
+            return Action::None;
+        };
+        let (name, id) = (c.name.clone(), c.id);
+        self.say(format!(
+            "\"{name}\" 删除角色是不可以恢复的。\n\
+             一段时间内，你将会不可以使用相同的角色名字。\n\
+             你真的想删除角色吗?\n\
+             （回车 = 删除；其它任意键/点击 = 取消）"
+        ));
+        self.pending = Some(Action::Delete(id));
+        Action::None
+    }
+
+    /// 建角对话框的按键（模态，全吃）。
+    fn newchar_key(&mut self, k: Keycode) -> Action {
+        if self.newchar.is_none() {
+            return Action::None;
+        }
+        match k {
+            Keycode::Escape => {
+                self.newchar = None;
+                Action::None
+            }
+            Keycode::Return | Keycode::KpEnter => self.confirm_newchar(),
+            Keycode::Tab => {
+                let d = self.newchar.as_mut().expect("上面判过");
+                d.focus = (d.focus + 1) % 3;
+                Action::None
+            }
+            Keycode::Backspace => {
+                let d = self.newchar.as_mut().expect("上面判过");
+                if d.focus == 0 {
+                    d.name.pop();
+                }
+                Action::None
+            }
+            Keycode::Left | Keycode::Right => {
+                let dir = if k == Keycode::Right { 1 } else { -1 };
+                let d = self.newchar.as_mut().expect("上面判过");
+                match d.focus {
+                    1 => d.job = (d.job as i32 + dir).rem_euclid(3) as usize,
+                    2 => d.sex = (d.sex as i32 + dir).rem_euclid(2) as usize,
+                    _ => {}
+                }
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// 对话框点/键[确定]：本地校验过了才产生 [`Action::Create`]；不过就**留着框**让用户改。
+    fn confirm_newchar(&mut self) -> Action {
+        let Some(d) = self.newchar.take() else {
+            return Action::None;
+        };
+        match valid_char_name(&d.name) {
+            Ok(name) => Action::Create {
+                name,
+                // 界面索引 → 协议值（战/法/道 = 1/2/3，男/女 = 1/2）
+                class: d.job as i32 + 1,
+                gender: d.sex as i32 + 1,
+                // 发型：原版那两颗按钮是空实现，确定时 `1 + Random(5)`（`IntroScn.pas:1332`）
+                hair: hair_roll(),
+            },
+            Err(why) => {
+                self.say(why);
+                self.newchar = Some(d);
+                Action::None
+            }
+        }
+    }
+
+    /// 对话框里的鼠标：只认它那几颗（框内空白无动作；框外也吃掉 —— 模态）。
+    fn newchar_click(&mut self, p: (f32, f32), l: &su::Layout) -> Action {
+        match su::DialogBox::build((l.win.0 as u32, l.win.1 as u32)).hit(p) {
+            Some(su::DialogHit::Ok) => self.confirm_newchar(),
+            Some(su::DialogHit::Close) => {
+                self.newchar = None;
+                Action::None
+            }
+            Some(su::DialogHit::Name) => {
+                if let Some(d) = self.newchar.as_mut() {
+                    d.focus = 0;
+                }
+                Action::None
+            }
+            Some(su::DialogHit::Job(i)) => {
+                if let Some(d) = self.newchar.as_mut() {
+                    d.job = i;
+                    d.focus = 1;
+                }
+                Action::None
+            }
+            Some(su::DialogHit::Sex(i)) => {
+                if let Some(d) = self.newchar.as_mut() {
+                    d.sex = i;
+                    d.focus = 2;
+                }
+                Action::None
+            }
+            None => Action::None,
+        }
+    }
+
     /// 按角色 id 预选（`MIR2_CHAR` 指的那个）。找不到就什么都不做。
     pub fn pick_id(&mut self, id: u64) {
         if let Some(i) = self.chars.iter().position(|c| c.id == id) {
@@ -196,10 +367,21 @@ impl Select {
 
     /// 抬起：只有"按下与抬起在同一颗"才算点中。
     pub fn on_up(&mut self, p: (f32, f32), l: &su::Layout) -> Action {
+        // 建角对话框是模态的：只认它那几颗按钮，其余点击一律吃掉。
+        if self.newchar.is_some() {
+            self.down = None;
+            return self.newchar_click(p, l);
+        }
         let hit = self.hit_at(p, l);
         let same = hit.is_some() && hit == self.down;
         self.down = None;
         if !same {
+            return Action::None;
+        }
+        // "要确认的动作"（删角）：鼠标一律算**取消** —— 删除不可恢复，只认一个明确的
+        // 回车（原版是三按钮对话框；这里退一步，要求键盘确认，见 `ask_delete`）。
+        if self.pending.take().is_some() {
+            self.msg = None;
             return Action::None;
         }
         // 弹窗开着时：点哪儿都是"关掉它"（原版 `DMessageDlg` 是模态的）
@@ -216,6 +398,19 @@ impl Select {
 
     /// 键盘（**我们的扩展**）。
     pub fn on_key(&mut self, k: Keycode) -> Action {
+        // ① 建角对话框（模态）：所有按键都归它
+        if self.newchar.is_some() {
+            return self.newchar_key(k);
+        }
+        // ② "要确认的动作"（删角）：回车 = 执行，其它键 = 取消
+        if let Some(act) = self.pending.take() {
+            self.msg = None;
+            return if matches!(k, Keycode::Return | Keycode::KpEnter) {
+                act
+            } else {
+                Action::None
+            };
+        }
         if self.msg.is_some() {
             self.msg = None; // 弹窗开着：任意键关掉
             return Action::None;
@@ -255,20 +450,8 @@ impl Select {
             }
             Hit::Menu(i) => match su::MENU[i] {
                 su::Menu::Start => self.start(),
-                su::Menu::CreateChar => {
-                    self.say(
-                        "新协议的建角还没接（服务端 `CreateCharacter` 未实现）。\
-                         现在用 `mir2cli -new-char 名字 -job 0|1|2` 建，见 README「本地跑起来」。",
-                    );
-                    Action::None
-                }
-                su::Menu::DeleteChar => {
-                    self.say(
-                        "新协议的删角还没接（服务端 `DeleteCharacter` 未实现）。\
-                         原版这里会先弹一个「删了不可恢复」的确认框。",
-                    );
-                    Action::None
-                }
+                su::Menu::CreateChar => self.open_newchar(),
+                su::Menu::DeleteChar => self.ask_delete(),
                 su::Menu::Credits => {
                     self.say("这套素材这里写的是「制作群」（原版那个位置是 credits）。未接。");
                     Action::None
@@ -312,16 +495,12 @@ impl Select {
         // ⚠️ 先取出 id 再改 `self`（否则不可变借会拖进分支里）
         let picked = self.picked_char().map(|c| c.id);
         match picked {
-            Some(id) => {
-                self.start_clicked = true;
-                Action::Enter(id)
-            }
+            Some(id) => Action::Enter(id),
             None => {
-                // 原版那句提示（`IntroScn.pas:1198-1205`）+ 我们的现状
+                // 原版那句提示（`IntroScn.pas:1198-1205`）+ 指路（现在真能建了）
                 self.say(
-                    "一开始你应该创建一个新角色。如果你选择了<创建人物>还进入不了游戏，\
-                     那说明你还没有创建角色。\n（现状：新协议的建角还没接，\
-                     先用 `mir2cli -new-char 名字` 建一个。）",
+                    "一开始你应该创建一个新角色：在中间的菜单里选<新建角色>，\
+                     填个名字、挑个职业就行。",
                 );
                 Action::None
             }
@@ -494,12 +673,212 @@ impl Select {
             }
         }
 
+        // 建角对话框（模态；原版 `DCreateChr`）—— 画在弹窗下面一层
+        if let Some(d) = self.newchar.as_ref() {
+            draw_newchar(canvas, tc, text, win, d)?;
+        }
+
         // 弹窗
         if let Some(m) = self.msg.clone() {
             draw_msgbox(canvas, tc, ui, text, dir, win, &m)?;
         }
         Ok(())
     }
+}
+
+/// 建角对话框的内容（原版 `DCreateChr`，`IntroScn.pas:1268-1288`）。
+///
+/// 原版四个字段：姓名（`EdChrName`，`MaxLength = 14`）、职业（战/法/道）、性别（男/女）、
+/// 发型（那两颗按钮在原版里是**空实现**：确定时 `shair := 1 + Random(5)`，
+/// `IntroScn.pas:1332`）⇒ 我们照抄这套取舍：发型不进界面，提交时随机。
+#[derive(Debug, Clone, Default, PartialEq)]
+struct NewChar {
+    name: String,
+    /// 焦点：0 = 姓名（唯一的输入框），1 = 职业，2 = 性别。
+    focus: usize,
+    /// 职业索引 0/1/2（原版 `job`）。
+    job: usize,
+    /// 性别索引 0 男 / 1 女（原版 `sex`）。
+    sex: usize,
+}
+
+/// 角色名长度上限（原版 `EdChrName.MaxLength := 14`，`IntroScn.pas:1118`）。
+const NAME_MAX: usize = 14;
+
+/// 角色名的**本地校验** —— 照服务端那份规则与措辞
+///（`chargen.ValidName` + `server/internal/gamesvr/netproto.go` 的那句话）：
+/// Trim 之后**至少 3 个字节**（一个汉字算 3 个），且不含 `空格 \t / @ ? '`。
+///
+/// 为什么要本地先判：省一次往返、错误立刻可见。**服务端那道门照样在**（它才是权威），
+/// 这里只是把同一套规则提前说一遍 —— 两边措辞保持一致，用户不会看到两种说法。
+fn valid_char_name(raw: &str) -> Result<String, &'static str> {
+    const BAD: &str = "角色名不合适（至少 3 个字节，且不能含空格与 /@?'）";
+    let name = raw.trim();
+    let has_bad = name
+        .chars()
+        .any(|c| c == ' ' || c == '\t' || "/@?'".contains(c));
+    if name.len() < 3 || has_bad {
+        return Err(BAD);
+    }
+    Ok(name.to_string())
+}
+
+/// 发型：原版客户端在确定时取 `1 + Random(5)`（`IntroScn.pas:1332`），服务端不校验。
+///
+/// 为这一处不引 `rand`（不值一个依赖），用**系统时间的纳秒位**取 1..=5 ——
+/// 发型纯外观，不需要密码学随机。
+fn hair_roll() -> u32 {
+    let n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    1 + n % 5
+}
+
+/// 画建角对话框（原版 `DCreateChr`；几何见 [`su::DialogBox`]）。
+///
+/// ⚠️ 素材里**没有**这扇窗口的背景图（原版是 `Prguse[73]`，还没接进 `Art`）⇒ 这里是
+/// 实心框 + 边框，**不是照原版搬的窗口**；文字走真字体（中文姓名/职业名要能画）。
+fn draw_newchar<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    text: &mut TextCache<'a>,
+    win: (u32, u32),
+    d: &NewChar,
+) -> Result<(), sdl3::Error> {
+    let b = su::DialogBox::build(win);
+    let f = b.frame;
+    fill(
+        canvas,
+        f.x - 2.0,
+        f.y - 2.0,
+        f.w + 4.0,
+        f.h + 4.0,
+        Color::RGB(0, 0, 0),
+    )?;
+    fill(canvas, f.x, f.y, f.w, f.h, Color::RGB(32, 28, 24))?;
+    text.draw(
+        canvas,
+        tc,
+        "新建角色",
+        f.x + 24.0,
+        f.y + 16.0,
+        C_TEXT,
+        Some(C_SHADOW),
+    )?;
+    // 姓名（唯一输入框：光标用一个方块代替闪动 —— 够用就好）
+    text.draw(canvas, tc, "姓名", f.x + 24.0, b.name.y + 4.0, C_DIM, None)?;
+    fill(
+        canvas,
+        b.name.x,
+        b.name.y,
+        b.name.w,
+        b.name.h,
+        Color::RGB(14, 14, 18),
+    )?;
+    text.draw(
+        canvas,
+        tc,
+        &format!("{}▌", d.name),
+        b.name.x + 6.0,
+        b.name.y + 4.0,
+        C_TEXT,
+        None,
+    )?;
+    // 职业（选中那颗用亮底）
+    text.draw(
+        canvas,
+        tc,
+        "职业",
+        f.x + 24.0,
+        b.job[0].y + 4.0,
+        C_DIM,
+        None,
+    )?;
+    for (i, r) in b.job.iter().enumerate() {
+        if d.job == i {
+            fill(canvas, r.x, r.y, r.w, r.h, Color::RGB(92, 72, 40))?;
+        }
+        text.draw(
+            canvas,
+            tc,
+            su::class_name(i as i32 + 1),
+            r.x + 6.0,
+            r.y + 4.0,
+            C_TEXT,
+            None,
+        )?;
+    }
+    // 性别
+    text.draw(
+        canvas,
+        tc,
+        "性别",
+        f.x + 24.0,
+        b.sex[0].y + 4.0,
+        C_DIM,
+        None,
+    )?;
+    for (i, r) in b.sex.iter().enumerate() {
+        if d.sex == i {
+            fill(canvas, r.x, r.y, r.w, r.h, Color::RGB(92, 72, 40))?;
+        }
+        text.draw(
+            canvas,
+            tc,
+            if i == 0 { "男" } else { "女" },
+            r.x + 6.0,
+            r.y + 4.0,
+            C_TEXT,
+            None,
+        )?;
+    }
+    // 两颗按钮
+    fill(
+        canvas,
+        b.ok.x,
+        b.ok.y,
+        b.ok.w,
+        b.ok.h,
+        Color::RGB(74, 62, 40),
+    )?;
+    text.draw(
+        canvas,
+        tc,
+        "确定",
+        b.ok.x + 20.0,
+        b.ok.y + 4.0,
+        C_TEXT,
+        None,
+    )?;
+    fill(
+        canvas,
+        b.close.x,
+        b.close.y,
+        b.close.w,
+        b.close.h,
+        Color::RGB(52, 46, 40),
+    )?;
+    text.draw(
+        canvas,
+        tc,
+        "关闭",
+        b.close.x + 20.0,
+        b.close.y + 4.0,
+        C_TEXT,
+        None,
+    )?;
+    // 操作提示（键盘为主；鼠标也能点那几颗）
+    text.draw(
+        canvas,
+        tc,
+        "TAB 切换   ←→ 改   回车确定   ESC 取消",
+        f.x + 24.0,
+        f.y + f.h - 60.0,
+        C_DIM,
+        None,
+    )?;
+    Ok(())
 }
 
 /// 消息框（`Prguse[360]` + `[363]` 的 [Ok]，居中）—— 与登录界面同一套素材。
@@ -649,26 +1028,27 @@ mod tests {
         // 第 0 项 = 开始
         assert_eq!(s.on_key(Keycode::Return), Action::Enter(11));
 
-        // 创建人物：弹窗里要提到 mir2cli（不然用户只能干等）
+        // 第 1 项 = 新建角色：开建角对话框（原版 `DCreateChr`），不再有那套占位提示
         s.on_key(Keycode::Down);
         assert_eq!(s.on_key(Keycode::Return), Action::None);
-        let m = s.msg.clone().expect("该弹提示");
-        assert!(m.contains("mir2cli"), "{m}");
-        s.on_key(Keycode::Return); // 关掉弹窗
+        assert!(s.newchar_open(), "该开建角对话框");
+        s.on_key(Keycode::Escape); // 关掉它
+        assert!(!s.newchar_open() && s.msg.is_none());
 
-        // 删除人物
+        // 第 2 项 = 删除角色：弹确认（措辞照原版），ESC 取消
         s.on_key(Keycode::Down);
         s.on_key(Keycode::Return);
-        assert!(s.msg.clone().unwrap().contains("DeleteCharacter"));
+        assert!(s.msg.clone().unwrap().contains("删除角色是不可以恢复的"));
+        s.on_key(Keycode::Escape);
+        assert!(s.msg.is_none() && s.pending.is_none(), "取消要把确认清干净");
 
-        // 制作群
-        s.on_key(Keycode::Return);
+        // 第 3 项 = 制作群
         s.on_key(Keycode::Down);
         s.on_key(Keycode::Return);
         assert!(s.msg.clone().unwrap().contains("制作群"));
 
-        // 退出
-        s.on_key(Keycode::Return);
+        // 第 4 项 = 退出
+        s.on_key(Keycode::Escape); // 关掉"制作群"那句
         s.on_key(Keycode::Down);
         assert_eq!(s.on_key(Keycode::Return), Action::Exit);
     }
@@ -680,7 +1060,8 @@ mod tests {
         assert_eq!(s.on_key(Keycode::Return), Action::None);
         let m = s.msg.clone().expect("该弹提示");
         assert!(m.contains("创建"), "{m}");
-        assert!(m.contains("mir2cli"), "现状要说清楚：{m}");
+        // 现在**真能建**了 ⇒ 提示要指路（中间菜单那颗），不再指向 `mir2cli`
+        assert!(m.contains("新建角色"), "该指路：{m}");
     }
 
     /// 弹窗是**模态**的：开着时点击先关它，不会连带把那一颗按下。
@@ -709,6 +1090,7 @@ mod tests {
             bg: (0.0, 0.0),
             sel: [empty, empty],
             menu: [r, empty, empty, empty, empty],
+            win: (1024.0, 768.0),
         };
         let c = r.center();
         s.on_down(c, &l);
@@ -724,5 +1106,115 @@ mod tests {
         assert_eq!(wrap("abc", 8), vec!["abc"]);
         assert_eq!(wrap("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
         assert_eq!(wrap("a\nb", 8), vec!["a", "b"]);
+    }
+
+    fn c(id: u64, name: &str) -> CharEntry {
+        CharEntry {
+            id,
+            name: name.into(),
+            level: 1,
+            class: 1,
+            sex: 0,
+        }
+    }
+
+    /// 角色名的本地校验必须**跟服务端同规则**（`chargen.ValidName`：≥3 字节、不含 `" \t/@?'"`）。
+    #[test]
+    fn 角色名校验照服务端() {
+        assert!(valid_char_name("abc").is_ok());
+        assert!(valid_char_name("勇士").is_ok(), "一个汉字 3 字节 ⇒ 够 3");
+        assert_eq!(valid_char_name("  abc  ").unwrap(), "abc", "两端空白 Trim");
+        assert!(valid_char_name("ab").is_err());
+        for bad in ["a b", "a\tb", "a/b", "a@b", "a?b", "a'b"] {
+            assert!(valid_char_name(bad).is_err(), "「{bad}」不该放行");
+        }
+    }
+
+    /// 建角那条链：开框 → 打字 → 确定 ⇒ `Action::Create`，且编号已换成**协议值**。
+    #[test]
+    fn 建角对话框走完出动作() {
+        let mut s = Select::new(Vec::new());
+        assert!(!s.newchar_open());
+        s.on_key(Keycode::Down); // 光标挪到 MENU[1] = 新建角色
+        assert_eq!(s.on_key(Keycode::Return), Action::None);
+        assert!(s.newchar_open(), "点「新建角色」该开对话框");
+        // 打字：超长按原版 `MaxLength = 14`（字符数）截断
+        s.on_text("ABCDEFGHIJKLMNOPQRST"); // 20 个 ⇒ 只留 14
+        assert_eq!(
+            s.newchar.as_ref().unwrap().name.chars().count(),
+            NAME_MAX,
+            "超长要截到上限"
+        );
+        s.newchar.as_mut().unwrap().name.clear();
+        s.on_text("勇者一号");
+        // Tab 到职业、右移一格 ⇒ 法师；Tab 到性别、右移一格 ⇒ 女
+        s.on_key(Keycode::Tab);
+        s.on_key(Keycode::Right);
+        s.on_key(Keycode::Tab);
+        s.on_key(Keycode::Right);
+        match s.on_key(Keycode::Return) {
+            Action::Create {
+                name,
+                class,
+                gender,
+                hair,
+            } => {
+                assert!(name.ends_with("勇者一号"), "名字该带上刚打的字：{name}");
+                assert!(name.chars().count() <= NAME_MAX, "长度上限：{name}");
+                assert_eq!(class, 2, "职业索引 1 ⇒ 协议值 2");
+                assert_eq!(gender, 2, "性别索引 1 ⇒ 协议值 2");
+                assert!((1..=5).contains(&hair), "发型 1..=5：{hair}");
+            }
+            other => panic!("该产生 Action::Create，实得 {other:?}"),
+        }
+        assert!(!s.newchar_open(), "确定之后对话框该关掉");
+    }
+
+    /// 名字不合规：**不关框**、只弹一句（服务端那道门我们本地先拦一遍）。
+    #[test]
+    fn 建角名字不合规就不出动作() {
+        let mut s = Select::new(Vec::new());
+        s.on_key(Keycode::Down);
+        s.on_key(Keycode::Return);
+        s.on_text("ab"); // 少于 3 字节
+        assert_eq!(s.on_key(Keycode::Return), Action::None);
+        assert!(s.newchar_open(), "校验不过不该关掉对话框");
+        assert!(s.msg.is_some(), "校验不过要弹一句为什么");
+        // 补成合法的，再确定
+        s.msg = None;
+        s.on_text("c");
+        assert!(matches!(s.on_key(Keycode::Return), Action::Create { .. }));
+    }
+
+    /// 删角：**得先选中一个角色**，再弹确认；回车才真删，其它键 = 取消。
+    #[test]
+    fn 删角要确认且要选中角色() {
+        // 没有角色 ⇒ 直接提示，不开确认
+        let mut empty = Select::new(Vec::new());
+        empty.on_key(Keycode::Down);
+        empty.on_key(Keycode::Down); // MENU[2] = 删除角色
+        assert_eq!(empty.on_key(Keycode::Return), Action::None);
+        assert!(empty.msg.is_some(), "没角色可删该提示一句");
+
+        let mut s = Select::new(vec![c(1, "甲"), c(2, "乙")]);
+        s.on_key(Keycode::Down);
+        s.on_key(Keycode::Down);
+        assert_eq!(s.on_key(Keycode::Return), Action::None, "只是弹确认框");
+        assert!(s.msg.is_some(), "该弹确认框");
+        assert_eq!(s.on_key(Keycode::Escape), Action::None, "ESC = 取消");
+        assert!(s.msg.is_none() && s.pending.is_none(), "取消要把确认清干净");
+        // 再来一次，回车 = 真删（默认选中的是槽 0 ⇒ id=1）
+        s.on_key(Keycode::Return);
+        assert_eq!(s.on_key(Keycode::Return), Action::Delete(1));
+    }
+
+    /// 槽满了不让建（原版：每个账号只能创建两个角色）。
+    #[test]
+    fn 满槽不让建() {
+        let mut s = Select::new(vec![c(1, "甲"), c(2, "乙")]);
+        s.on_key(Keycode::Down);
+        assert_eq!(s.on_key(Keycode::Return), Action::None);
+        assert!(!s.newchar_open(), "满了不该开对话框");
+        assert!(s.msg.is_some(), "该说一句为什么");
     }
 }

@@ -155,6 +155,29 @@ func (s *Server) startPointOf(mapID string) *data.StartPoint {
 	return nil
 }
 
+// homePointOf 在 `mapID` 的安全点里挑**离 (x,y) 最近**的那一条。
+//
+// 这是原版 `GetHomePoint` 的等价物（`ObjBase.pas:9885-9919`）：原版拿 `!Setup.txt` 的
+// `HomeX/HomeY` 去安全点表里找 `|Δ| < 50` 的那条 ⇒ 这里取"最近"，表里只有几条时等价。
+//
+// 为什么要"挑最近的"而不是"用表里第一条"：安全点表是**每个安全区一条**（比奇省城里、
+// 银杏谷、……），用第一条等于把出生点钉死在表序上 —— 改表序就会悄悄改出生点（D-38）。
+func (s *Server) homePointOf(mapID string, x, y int) *data.StartPoint {
+	var best *data.StartPoint
+	bestD := 0
+	for _, sp := range s.data.startPoints {
+		if sp.MapID != mapID {
+			continue
+		}
+		dx, dy := sp.X-x, sp.Y-y
+		d := max(dx, -dx) + max(dy, -dy)
+		if best == nil || d < bestD {
+			best, bestD = sp, d
+		}
+	}
+	return best
+}
+
 // handleSay 处理 CM_SAY（聊天 / GM 命令）。
 func (s *Server) handleSay(c net.Conn, p *Player, pkt wire.Packet) {
 	// 地图标记 `NOCHAT`：官方在聊天日志那条链上判它（`ObjBase.pas:8639`

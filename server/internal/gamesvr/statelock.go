@@ -449,13 +449,26 @@ func (p *Player) exp() uint64 {
 // （按坐标比对）会找不到这名玩家 ⇒ 两件事要放在同一段临界区里。
 // ⚠️ 调用方**不得**已持 `s.mu`（Go 的 Mutex 不可重入）。
 func (s *Server) movePlayer(p *Player, dir uint8) (x, y int, d uint8, moved bool) {
+	return s.movePlayerSteps(p, dir, 1)
+}
+
+// movePlayerSteps 朝 dir 连续走最多 `steps` 格（**跑 = 2 格**，照原版 `GetNextRunXY`）。
+//
+// ⚠️ 一格一格走、**撞墙就停**，而不是"算一个 +2 的落点"：中间有障碍时两者结果不同
+// （原版 `ClientRunXY` 也是逐步走、逐步判，`ObjBase.pas:9506-9535`）。
+func (s *Server) movePlayerSteps(p *Player, dir uint8, steps int) (x, y int, d uint8, moved bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !p.Obj.MoveTo(dir) {
-		return p.Obj.PosX(), p.Obj.PosY(), p.Obj.Facing(), false
+	for i := 0; i < steps; i++ {
+		if !p.Obj.MoveTo(dir) {
+			break // 被挡：停在原处（已走的那几格算数）
+		}
+		moved = true
 	}
-	s.world.index.Update(p)
-	return p.Obj.PosX(), p.Obj.PosY(), p.Obj.Facing(), true
+	if moved {
+		s.world.index.Update(p)
+	}
+	return p.Obj.PosX(), p.Obj.PosY(), p.Obj.Facing(), moved
 }
 
 // turnPlayer 在 `s.mu` 下改玩家朝向，返回移动后的 (x, y, dir) 快照与是否成功。

@@ -574,7 +574,13 @@ func (s *Server) handleMove(c net.Conn, p *Player, pkt wire.Packet, running bool
 	// 改坐标与同步空间索引放在**同一段 s.mu 临界区**里（见 statelock.go 第二节：
 	// 审计 P1-5 记的正是"先 MoveTo 改坐标、再只锁索引"这个跨锁域写法）。
 	_, fromX, fromY, _ := p.Obj.Place() // 移动前的坐标（新协议 EntityMove.from 要用）
-	newX, newY, newDir, moved := s.movePlayer(p, dir)
+	// 跑 = 一步 2 格（原版 `CM_RUN` 走 `GetNextRunXY`，`ClFunc.pas:370-382`）——
+	// 以前这里两条消息都只走 1 格，跑只是"节流短一点"（D-39 记了一起改）。
+	steps := 1
+	if running {
+		steps = 2
+	}
+	newX, newY, newDir, moved := s.movePlayerSteps(p, dir, steps)
 	if !moved {
 		s.send(c, proto.SM_MOVEFAIL, int32(p.Obj.ID), uint16(newX), uint16(newY), uint16(newDir), "")
 		return

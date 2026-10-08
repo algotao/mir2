@@ -23,6 +23,14 @@ pub const MAX_FRAME: usize = 64 << 10;
 /// 分帧错误。
 #[derive(Debug)]
 pub enum FrameError {
+    /// **对端在帧边界上正常关闭了连接**（长度域一个字节都没读到）。
+    ///
+    /// 为什么单列一种：服务端"发完 `Disconnect` 就关连接"是**正常收尾** —— 原先这情形被
+    /// `read_exact` 报成"长度域不完整: failed to fill whole buffer"，看着像分帧被撕坏了
+    ///（2026-10-08 用户就是拿着这条日志来问的）。**真被截断**（读到 1~3 字节）仍走 [`Short`]。
+    ///
+    /// [`Short`]: FrameError::Short
+    Closed,
     /// 对端在长度域没读完就断了。
     Short(io::Error),
     /// 长度为 0：空帧无意义，视为协议错误而不是"无事发生"。
@@ -39,6 +47,7 @@ pub enum FrameError {
 impl std::fmt::Display for FrameError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            FrameError::Closed => write!(f, "对端关闭了连接"),
             FrameError::Short(e) => write!(f, "长度域不完整: {e}"),
             FrameError::Empty => write!(f, "空帧"),
             FrameError::TooLarge(n) => write!(f, "帧超过 {} 字节上限（声明 {n}）", MAX_FRAME),
@@ -70,7 +79,18 @@ pub fn write_frame<W: Write>(w: &mut W, env: &Envelope) -> Result<(), FrameError
 /// 读一条信封。
 pub fn read_frame<R: Read>(r: &mut R) -> Result<Envelope, FrameError> {
     let mut hdr = [0u8; 4];
-    r.read_exact(&mut hdr).map_err(FrameError::Short)?;
+    // 「读到一半」与「一字节没读到」必须分开：后者是**对端正常收尾**，不是分帧错误
+    //（见 `FrameError::Closed`）。
+    match read_full(r, &mut hdr).map_err(FrameError::Io)? {
+        4 => {}
+        0 => return Err(FrameError::Closed),
+        got => {
+            return Err(FrameError::Short(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("长度域只读到 {got}/4 字节（对端提前关闭）"),
+            )))
+        }
+    }
     let n = u32::from_le_bytes(hdr);
     match n {
         0 => return Err(FrameError::Empty),
@@ -78,9 +98,35 @@ pub fn read_frame<R: Read>(r: &mut R) -> Result<Envelope, FrameError> {
         _ => {}
     }
     let mut body = vec![0u8; n as usize];
-    r.read_exact(&mut body)
-        .map_err(|e| FrameError::Body(n, e))?;
+    let got = read_full(r, &mut body).map_err(FrameError::Io)?;
+    if got != body.len() {
+        // 长度域已经承诺了 n 字节 ⇒ 这里即使读到 0 字节也是**截断**（不是正常收尾）。
+        return Err(FrameError::Body(
+            n,
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("只读到 {got}/{n} 字节（对端提前关闭）"),
+            ),
+        ));
+    }
     Envelope::decode(&body[..]).map_err(FrameError::Decode)
+}
+
+/// 尽力读满 `buf`，返回**实际读到的字节数**（对端关闭时可能少于 `buf.len()`）。
+///
+/// `read_exact` 做不到这件事：它只告诉你"失败了"，不告诉你"一个字节都没读到"
+///（正常收尾）还是"读到一半"（协议被截断）—— 这两种要报给用户的话完全不同。
+fn read_full<R: Read>(r: &mut R, buf: &mut [u8]) -> io::Result<usize> {
+    let mut got = 0;
+    while got < buf.len() {
+        match r.read(&mut buf[got..]) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(got)
 }
 
 /// 取一条消息的可读名字（对应 Go 侧 `frame.MsgName`，给日志与断言用）。
@@ -181,5 +227,37 @@ mod tests {
         assert_eq!(msg_name(&back), "ClientHello");
         assert_eq!(back, env);
         assert_eq!(msg_name(&Envelope::default()), "none");
+    }
+
+    /// 断开的**两副面孔**必须分清（用户就是拿着这条日志来问的）：
+    /// 一字节没读到 = 对端正常收尾（`Closed`）—— 服务端发完 `Disconnect` 就 `Close`；
+    /// 读到一半 = 真被截断（`Short` / `Body`）。原先两者都报"长度域不完整"。
+    #[test]
+    fn 帧边界上的关闭与截断要分清() {
+        // 空读端 ⇒ 帧边界上的正常关闭（不是分帧错误）
+        let mut empty: &[u8] = &[];
+        match read_frame(&mut empty) {
+            Err(FrameError::Closed) => {}
+            other => panic!("应报 Closed，实得 {other:?}"),
+        }
+        // 长度域只有 2 字节 ⇒ 截断，且报文要说清读到几个字节
+        let mut short: &[u8] = &[0x10, 0x00];
+        match read_frame(&mut short) {
+            Err(FrameError::Short(e)) => {
+                assert!(e.to_string().contains("2/4"), "报文要说清字节数: {e}");
+            }
+            other => panic!("应报 Short，实得 {other:?}"),
+        }
+        // 长度域完整、帧体缺一半 ⇒ 也是截断（长度域已经承诺了 8 字节）
+        let mut half = 8u32.to_le_bytes().to_vec();
+        half.extend_from_slice(&[0u8; 3]);
+        let mut half: &[u8] = &half;
+        match read_frame(&mut half) {
+            Err(FrameError::Body(n, e)) => {
+                assert_eq!(n, 8);
+                assert!(e.to_string().contains("3/8"), "报文要说清字节数: {e}");
+            }
+            other => panic!("应报 Body，实得 {other:?}"),
+        }
     }
 }

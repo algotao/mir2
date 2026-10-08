@@ -355,6 +355,12 @@ type dataState struct {
 	mapInfos []*data.MapInfo
 	// startPoints 是 StartPoint.txt 的出生/复活点。
 	startPoints []*data.StartPoint
+	// homeX/homeY 是 `-home-x`/`-home-y`：新角色出生点的**提示坐标**。
+	//
+	// 它与原版 `!Setup.txt` 的 `HomeX/HomeY` 同义：**不是**直接用这个坐标，而是拿它去
+	// 安全点表里挑离它最近的那条（原版 `GetHomePoint` 的等价物，`ObjBase.pas:9885-9919`）。
+	// 默认 650/631 = 银杏谷那片安全区（见 D-38）。
+	homeX, homeY int
 }
 
 // worldState 是**世界本体**：在线玩家、怪物、地面物品、火墙与刷怪点。

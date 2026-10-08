@@ -30,11 +30,16 @@ use sdl3::render::{TextureCreator, WindowCanvas};
 
 use mir2_core::login_ui::{Art, Layout, Rect};
 
+use crate::font::{Rgb, TextCache};
 use crate::ui::UiCache;
 use crate::{center_x, fill, text, C_ACTIVE, C_BG, C_DIM, C_ERR, C_FIELD, C_OK, C_TEXT};
 
 /// 光标闪烁周期（原版是系统 `TEdit` 的光标；这里 500ms 闪一下）。
 const CARET_MS: u128 = 500;
+
+/// 弹窗文字那套配色（**真字体**那条路用 `Rgb`；本文件其余地方用的 `C_*` 是 SDL 的 `Color`）。
+const RGB_TEXT: Rgb = (255, 255, 255);
+const RGB_SHADOW: Rgb = (0, 0, 0);
 
 /// 界面上的动作（按键或点按产生；由 `main` 决定"接下来干什么"）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,10 +333,15 @@ impl Login {
     }
 
     /// 画一帧。素材缺失时画一行提示（**不静默黑屏**）。
+    /// ⚠️ 参数名是 `texts` 而不是 `text`：本文件其余地方还要调那个**自由函数** `text()`
+    ///（8×8 调试字体，画 ASCII 用），参数一旦也叫 `text` 就会把函数遮住（编译期报
+    /// "expected function, found &mut TextCache" —— 踩过）。
+    #[allow(clippy::too_many_arguments)] // 与 `font::TextCache::draw` / `ui::UiCache::draw` 同一情况：坐标+配色+画布就是这么多
     pub fn draw<'a, T>(
         &self,
         canvas: &mut WindowCanvas,
         ui: &mut UiCache<'a>,
+        texts: &mut TextCache<'a>,
         tc: &'a TextureCreator<T>,
         asset_dir: &Option<std::path::PathBuf>,
         win: (u32, u32),
@@ -443,6 +453,10 @@ impl Login {
         put(canvas, Art::BTN_CLOSE.1, l.close, down(Btn::Close));
 
         // ⑥ 报错弹窗（模态）
+        //
+        // ⚠️ 文字走**真字体**（`TextCache`），不是那个 8×8 调试字体：建号回执是**服务端
+        // 给的中文**（「账号已建立，请登录」），而调试字体只认 ASCII ⇒ 画出来就是乱码
+        //（2026-10-08 用户报的"信息看不清或是乱码"）。选角面板早就是按真字体画的。
         if let Some(err) = &self.error {
             ui.draw(
                 canvas,
@@ -453,14 +467,21 @@ impl Login {
                 l.msgbox.x,
                 l.msgbox.y,
             );
-            // 提示可能带"下一步查什么"（`connect_hint`），行数放宽到 6
-            for (i, line) in wrap(err, 48).iter().take(6).enumerate() {
-                text(
+            // 折行按**实测宽度**（不能按字符数：14px 的汉字 ≈14 宽、ASCII ≈7 宽，
+            // 按"48 个字符"折出来的行会宽到框外去）；行数按框高截断，别压到 [确定] 上。
+            // 提示可能带"下一步查什么"（`connect_hint`），所以行数留得比较宽。
+            let lh = texts.line_height().max(1.0);
+            let max_lines = (((l.msgbox.h - 96.0) / lh).floor() as usize).max(1);
+            let lines = wrap_px(|s| texts.width(s), err, l.msgbox.w - 56.0);
+            for (i, line) in lines.iter().take(max_lines).enumerate() {
+                texts.draw(
                     canvas,
+                    tc,
                     line,
                     l.msgbox.x + 28.0,
-                    l.msgbox.y + 56.0 + i as f32 * 16.0,
-                    C_TEXT,
+                    l.msgbox.y + 56.0 + i as f32 * lh,
+                    RGB_TEXT,
+                    Some(RGB_SHADOW),
                 )?;
             }
             let (dx, dy) = if down(Btn::MsgOk) {
@@ -525,16 +546,25 @@ impl Login {
 }
 
 /// 按**字符数**折行（8x8 字体下"字符数"就是像素宽 / 8）。
-fn wrap(s: &str, cols: usize) -> Vec<String> {
+/// 按**实测宽度**折行：贪心塞字，塞不下就换行；`\n` 是硬换行。
+///
+/// 为什么取一个 `width_of` 闭包而不是 `&TextCache`：这样它能**脱离 SDL 单测**
+///（真字体要建纹理，测折行逻辑不该拉上那套）。调用处传 `|s| text.width(s)`。
+fn wrap_px(width_of: impl Fn(&str) -> f32, s: &str, max_w: f32) -> Vec<String> {
     let mut out = Vec::new();
-    let mut cur = String::new();
-    for ch in s.chars() {
-        if cur.chars().count() >= cols {
-            out.push(std::mem::take(&mut cur));
+    for hard in s.split('\n') {
+        let mut cur = String::new();
+        for ch in hard.chars() {
+            let mut cand = cur.clone();
+            cand.push(ch);
+            // 空行也要留（`cur` 为空时不换行，否则每个字符都独占一行）
+            if !cur.is_empty() && width_of(&cand) > max_w {
+                out.push(std::mem::take(&mut cur));
+                cur.push(ch);
+            } else {
+                cur = cand;
+            }
         }
-        cur.push(ch);
-    }
-    if !cur.is_empty() {
         out.push(cur);
     }
     out
@@ -730,5 +760,18 @@ mod tests {
             s.on_up((l.password.x + 2.0, l.password.y + 2.0), &l),
             Action::None
         );
+    }
+
+    /// 弹窗折行按**宽度**（真字体一个汉字 ≈14px，一个 ASCII ≈7px），`\n` 是硬换行。
+    /// 按字符数折的老做法会把中文行折到框外去。
+    #[test]
+    fn 弹窗按宽度折行() {
+        // 假装每个字符 10px 宽
+        let w = |s: &str| s.chars().count() as f32 * 10.0;
+        assert_eq!(wrap_px(w, "abcde", 50.0), vec!["abcde"]);
+        assert_eq!(wrap_px(w, "abcdef", 50.0), vec!["abcde", "f"]);
+        // 中文同规则：30px 宽 ⇒ 一行 3 个字
+        assert_eq!(wrap_px(w, "账号已建立", 30.0), vec!["账号已", "建立"]);
+        assert_eq!(wrap_px(w, "a\nb", 100.0), vec!["a", "b"]);
     }
 }

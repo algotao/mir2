@@ -879,3 +879,10 @@ func (s *Server) setPKPoint(p *Player, want int32) {
 	s.sendNameColor(p, now)
 	s.sendAreaState(p)
 }
+
+// isRedName 是**红名**吗 —— 原版 `ObjGuard.pas:100` 判的就是这个（`PKLevel >= 2`）。
+//
+// 谁在用：**野生守卫/弓箭手**的选目标（见 `monsterai.go`）—— 白名玩家在城里不该被守卫追着打。
+func (p *Player) isRedName() bool {
+	return pvp.PKLevel(int32(p.Char.Data.PkPoint)) >= pvp.RedNameLevel
+}
