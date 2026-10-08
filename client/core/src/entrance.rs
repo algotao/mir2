@@ -45,6 +45,10 @@ pub enum Stage {
     AwaitPick,
     /// 已发 `SelectCharacter`，等 `SelectCharacterResult`（之后服务端会推 `EnterWorld`）。
     AwaitSelect,
+    /// 已发 `CreateCharacter`，等 `CreateCharacterResult`（之后要重新拉一次列表）。
+    AwaitCreate,
+    /// 已发 `DeleteCharacter`，等 `DeleteCharacterResult`（之后要重新拉一次列表）。
+    AwaitDelete,
     /// 进世界了（收到 `EnterWorld`）。
     InWorld,
     /// 走不下去（服务端明确拒绝 / 协议错）。
@@ -77,6 +81,12 @@ pub struct Entrance {
     nonce: Vec<u8>,
     /// 登录成功后服务端签发的会话号（之后重连用它，不必再输口令）。
     session_token: Option<i32>,
+    /// 登录时算出的**口令证明**（hex）。
+    ///
+    /// ⚠️ 留它只为删角色的**二次确认**：`DeleteCharacter.password_hash` 要的就是它。
+    /// 证明绑在**本条连接的 nonce** 上（D-24①）⇒ 换个连接就失效、重放不了；
+    /// 而且它是**证明**不是口令（口令本身在算完那一刻就丢了，见 `on_salt`）。
+    proof: Option<String>,
 }
 
 struct LoginState {
@@ -98,6 +108,7 @@ impl Entrance {
             login: None,
             nonce: Vec::new(),
             session_token: None,
+            proof: None,
         }
     }
 
@@ -116,7 +127,54 @@ impl Entrance {
             login: Some(LoginState { account, password }),
             nonce: Vec::new(),
             session_token: None,
+            proof: None,
         }
+    }
+
+    /// 登录时那条口令证明（hex，没登录过就是 `None`）。
+    ///
+    /// 删角色要用它做二次确认（见 [`Entrance::delete_character`]）。
+    pub fn proof(&self) -> Option<&str> {
+        self.proof.as_deref()
+    }
+
+    /// **建角色**（选角界面用）。只在停在选角时有效。
+    ///
+    /// `class` 用新协议的值（1 战士 / 2 法师 / 3 道士），`gender` 用 1 男 / 2 女 ——
+    /// 与 `CharacterSummary` 同一套编码，界面不必再翻译一层。
+    pub fn create_character(
+        &mut self,
+        name: &str,
+        class: i32,
+        gender: i32,
+        hair: u32,
+    ) -> Option<Body> {
+        if self.stage != Stage::AwaitPick {
+            return None;
+        }
+        self.stage = Stage::AwaitCreate;
+        Some(Body::CreateCharacter(proto::CreateCharacter {
+            name: name.to_string(),
+            class,
+            gender,
+            hair,
+        }))
+    }
+
+    /// **删角色**（选角界面用）。二次确认用登录时那条证明（[`Entrance::proof`]）。
+    ///
+    /// 没有证明就发不出去（`None`）—— 与其发一条注定被拒的消息，不如让调用方
+    /// 明说"这次没带确认"。
+    pub fn delete_character(&mut self, character_id: u64) -> Option<Body> {
+        if self.stage != Stage::AwaitPick {
+            return None;
+        }
+        let proof = self.proof.clone()?;
+        self.stage = Stage::AwaitDelete;
+        Some(Body::DeleteCharacter(proto::DeleteCharacter {
+            character_id,
+            password_hash: proof,
+        }))
     }
 
     /// 改成"**由调用方选**角色"（app 的选角界面）。
@@ -204,6 +262,8 @@ impl Entrance {
             // 停在选角：**没有待发命令** —— 要发什么由调用方 `pick()` 决定
             //（这就是"手动选角"的全部机制：把选择权交出去）。
             Stage::AwaitPick => None,
+            // 建/删角等回执，也没待发命令（回执到了会自己接上"重拉列表"）
+            Stage::AwaitCreate | Stage::AwaitDelete => None,
             Stage::InWorld | Stage::Failed(_) => None,
         }
     }
@@ -266,6 +326,30 @@ impl Entrance {
                     character_id: id,
                 }))
             }
+            // 建/删角色：不管成败都**退回去重新拉列表**（原版也是"建完要重查"，
+            // `boChrQueryed := False`）。失败时把原因留在 `pick_err` 里给界面弹窗。
+            Some(Body::CreateCharacterResult(r)) => {
+                if self.stage != Stage::AwaitCreate {
+                    return None;
+                }
+                if !r.result.as_ref().is_some_and(|a| a.ok) {
+                    let a = r.result.clone().unwrap_or_default();
+                    self.pick_err = Some(describe_action_error("建角", &a));
+                }
+                self.stage = Stage::AwaitList;
+                Some(Body::ListCharacters(proto::ListCharacters {}))
+            }
+            Some(Body::DeleteCharacterResult(r)) => {
+                if self.stage != Stage::AwaitDelete {
+                    return None;
+                }
+                if !r.result.as_ref().is_some_and(|a| a.ok) {
+                    let a = r.result.clone().unwrap_or_default();
+                    self.pick_err = Some(describe_action_error("删角", &a));
+                }
+                self.stage = Stage::AwaitList;
+                Some(Body::ListCharacters(proto::ListCharacters {}))
+            }
             Some(Body::SelectCharacterResult(r)) => {
                 if self.stage != Stage::AwaitSelect {
                     return None;
@@ -320,6 +404,9 @@ impl Entrance {
             salt.key_len as usize,
         );
         let proof = crate::auth::proof(&k, &self.nonce, &l.account);
+        // ⚠️ 证明留一份（hex）：删角色的二次确认要的就是它。
+        // 口令本身仍然在下面这一句之后丢掉（`LoginState` 不再被读）—— 留的是**证明**。
+        self.proof = Some(crate::auth::to_hex(&proof));
         let account = l.account.clone();
         // 证明算完就把口令丢掉：状态机不该长期握着它（内存转储/日志泄漏面都小一点）
         l.password.clear();
@@ -355,6 +442,18 @@ impl Entrance {
         self.stage = Stage::AwaitList;
         Some(Body::ListCharacters(proto::ListCharacters {}))
     }
+}
+
+/// 把 `ActionResult` 翻成给人看的一句话（建/删角失败时弹给用户）。
+///
+/// ⚠️ 服务端的 `code` 是**我们定的**（协议里只写了"非 0 见各消息的注释"），
+/// 两边的取值约定写在 `gamesvr/netproto.go` 那组常量上 —— 这里只做兜底描述，
+/// 真正的解释用服务端给的 `message`（它更具体，比如"这个名字已经有人用了"）。
+fn describe_action_error(what: &str, a: &proto::ActionResult) -> String {
+    if !a.message.is_empty() {
+        return format!("{what}失败：{}（code={}）", a.message, a.code);
+    }
+    format!("{what}失败：code={}", a.code)
 }
 
 #[cfg(test)]
@@ -490,6 +589,116 @@ mod tests {
         }));
         e.on(&rejected);
         assert!(e.failed().is_some());
+    }
+
+    /// 建角 / 删角：发出去 → 等回执 → **自动重拉列表**（原版建完也要重查，
+    /// `boChrQueryed := False`）。失败时要把原因留下来给界面弹窗。
+    #[test]
+    fn 建角删角走同一条尾巴() {
+        let mut e = to_list(true);
+        e.on(&char_list(&[11]));
+        assert_eq!(*e.stage(), Stage::AwaitPick);
+
+        // 手上还没有证明时，删角发不出去（别发一条注定被拒的消息）
+        assert!(e.delete_character(11).is_none(), "没证明就该拒绝发");
+
+        // 建角
+        let cmd = e
+            .create_character("小法", 2, 2, 2)
+            .expect("该吐出 CreateCharacter");
+        match cmd {
+            Body::CreateCharacter(c) => {
+                assert_eq!(
+                    (c.name.as_str(), c.class, c.gender, c.hair),
+                    ("小法", 2, 2, 2)
+                );
+            }
+            other => panic!("期望 CreateCharacter，实得 {other:?}"),
+        }
+        assert_eq!(*e.stage(), Stage::AwaitCreate);
+
+        // 回执 ok ⇒ 退回等列表，并且**自己把 ListCharacters 发出去**
+        let refresh = e
+            .on(&env(Body::CreateCharacterResult(
+                proto::CreateCharacterResult {
+                    result: Some(proto::ActionResult {
+                        ok: true,
+                        code: 0,
+                        message: String::new(),
+                    }),
+                    character_id: 22,
+                },
+            )))
+            .expect("该自动重拉列表");
+        assert!(matches!(refresh, Body::ListCharacters(_)));
+        assert_eq!(*e.stage(), Stage::AwaitList);
+
+        // 列表回来 ⇒ 又停在选角，名单是新的（多了一个）
+        e.on(&char_list(&[11, 22]));
+        assert_eq!(*e.stage(), Stage::AwaitPick);
+        assert_eq!(e.characters().len(), 2);
+
+        // 建角失败：原因要留下来（界面上弹出来），但**照样**重拉列表
+        e.create_character("重名", 1, 1, 1).expect("该吐出消息");
+        let refresh = e.on(&env(Body::CreateCharacterResult(
+            proto::CreateCharacterResult {
+                result: Some(proto::ActionResult {
+                    ok: false,
+                    code: 3,
+                    message: "这个名字已经有人用了".into(),
+                }),
+                character_id: 0,
+            },
+        )));
+        assert!(
+            matches!(refresh, Some(Body::ListCharacters(_))),
+            "失败也要重拉列表"
+        );
+        let why = e.take_pick_error().expect("失败原因要能取到");
+        assert!(why.contains("这个名字已经有人用了"), "{why}");
+    }
+
+    /// 删角：证明是**登录时那条**（绑在连接 nonce 上），发出去时原样带上。
+    ///
+    /// ⚠️ 直接改 `e.proof` 是因为测试就在这个模块里（同一文件能碰私有字段）；
+    /// 生产路径只有 `on_salt` 会写它 —— 也就是"登录过一次"。
+    #[test]
+    fn 删角带上登录证明() {
+        let mut e = to_list(true);
+        e.on(&char_list(&[11, 22]));
+        e.proof = Some("ab".repeat(32));
+
+        let cmd = e.delete_character(22).expect("有证明就该发得出去");
+        match cmd {
+            Body::DeleteCharacter(d) => {
+                assert_eq!(d.character_id, 22);
+                assert_eq!(d.password_hash, "ab".repeat(32), "证明要原样带上");
+            }
+            other => panic!("期望 DeleteCharacter，实得 {other:?}"),
+        }
+        assert_eq!(*e.stage(), Stage::AwaitDelete);
+        // 回执（失败）⇒ 退回选角 + 留下原因
+        let refresh = e.on(&env(Body::DeleteCharacterResult(
+            proto::DeleteCharacterResult {
+                result: Some(proto::ActionResult {
+                    ok: false,
+                    code: 1,
+                    message: "口令确认没通过".into(),
+                }),
+            },
+        )));
+        assert!(matches!(refresh, Some(Body::ListCharacters(_))));
+        assert_eq!(*e.stage(), Stage::AwaitList);
+        assert!(e.take_pick_error().unwrap().contains("口令确认没通过"));
+    }
+
+    /// 建角/删角只在"停在选角"时有效（别处调用 = 调用方的 bug）。
+    #[test]
+    fn 建角删角只在选角阶段有效() {
+        let mut e = to_list(true); // 还没拿到列表 ⇒ 阶段是 AwaitList
+        assert!(e.create_character("小法", 2, 2, 2).is_none());
+        e.proof = Some("cd".repeat(32));
+        assert!(e.delete_character(1).is_none());
     }
 
     /// 没停在选角阶段时 `pick` 无效（调用方的 bug 不该静默发一条怪消息）。
