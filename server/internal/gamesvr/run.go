@@ -166,6 +166,21 @@ func Main() {
 	if !*mapPreload {
 		log.Printf("WARN: -map-preload=false 已忽略：启动始终执行全量初始化")
 	}
+	// 地图目录：给的目录**不存在**时，按客户端资产那套老规矩再找一遍兄弟目录。
+	//
+	// 起因（用户 2026-10-09 报"地图上的 NPC 现在还没有吗"）：README 里那条
+	// `-map-dir $WS/mir2c/map` 是**文档写法**，`$WS` 不是环境变量 —— 照抄会变成
+	// `/mir2c/map`，于是所有地图加载失败、回退成 200×200 空图，NPC 与出生点坐标全部
+	// 越界、一个都不生成（日志里只有几行"越界，未生成"，很难一眼看出根因）。
+	// 客户端早就这么干了（`$MIR2_ASSET_DIR` → `$MIR2C_DATA` → 仓库旁 `mir2c/data`），
+	// 服务端这里对齐。
+	resolvedMapDir := resolveMapDir(*mapDir)
+	if resolvedMapDir != *mapDir {
+		log.Printf("地图目录: %q 不存在 ⇒ 自动改用 %q（可用 -map-dir 或 $MIR2_MAP_DIR 指定）",
+			*mapDir, resolvedMapDir)
+	}
+	*mapDir = resolvedMapDir
+
 	maps := world.NewMapManager(*mapDir, cacheLimit)
 	dm := mustDefaultMap(maps, *defaultMapID)
 	srv := &Server{

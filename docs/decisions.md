@@ -2932,3 +2932,17 @@ OpenMir2 / Crystal 为准，冲突处我定夺。四份并行调查（各带 `�
 - 起服（开发期，只刷鹿 + 真地图）：
   `gamesvr -db … -data ./data -addr :7200 -proto-addr 127.0.0.1:7500 -map-dir $WS/mir2c/map -map 0 -mongen envir/mongen.newbie.txt`
 - 客户端：`MIR2_SERVER=127.0.0.1:7500 MIR2_ASSET_DIR=$WS/mir2c/data cargo run -p mir2-app`
+
+### ⑦ 环境坑（用户 2026-10-09 现场踩到，已加固）
+
+1. **`/tmp/mir2dev/bin/*` 是"编好的旧二进制"** —— 新旗标（`-mongen`）它当然不认，
+   报 `flag provided but not defined`。README 的排障表补了一行：加了旗标就得重编
+   （`go build -o /tmp/mir2dev/bin/gamesvr ./cmd/gamesvr`）。
+2. **README 里的 `$WS` 是文档写法、不是环境变量**：照抄 `-map-dir $WS/mir2c/map`
+   会传成 `/mir2c/map` ⇒ 地图全部加载失败、回退成空图 ⇒ NPC 与出生点坐标越界、
+   一个都不生成（日志只有几行"越界，未生成"，根因很不好找）。
+   现在 `gamesvr` 在**给定目录不存在**时会依次尝试
+   `$MIR2_MAP_DIR` → `$MIR2C_DATA` 旁的 `map/` → `../mir2c/map`、`../../mir2c/map`
+   → `../mir2go/data/map`、`../../mir2go/data/map`，命中就**打一行日志说明换成了哪个**；
+   全落空则原样返回、照旧告警（**不做静默兜底** —— 悄悄换目录会让人以为在看 A 图）。
+   单测：`internal/gamesvr/mapdir_test.go`。

@@ -126,7 +126,9 @@ cd client && cargo run -p mir2-e2e -- world -addr 127.0.0.1:7500 \
 |---|---|
 | 登录界面弹 `Connection refused (os error 61)` | **不是鉴权失败**（那会弹"账号或口令不正确"），是 TCP 层没人监听：`gamesvr` 没起，或者起的时候**没带 `-proto-addr`** |
 | `accountsvc` 报 `bind: address already in use`（:7000） | macOS 的 **AirPlay 接收器（ControlCenter）占着 7000**。把 `-login-addr` 换成 `:17000` 之类，mir2cli 跟着改 `-login` |
-| 服务端要 `<地图号>.map` 目录，可仓库里只有 `assets/map/maps.m2pk` | 用**客户端集** `$WS/mir2c/map`（[D-22](./docs/decisions.md)：两套地图以客户端集为准；它里面 `0.map` 就是边界村） |
+| 服务端要 `<地图号>.map` 目录，可仓库里只有 `assets/map/maps.m2pk` | 用**客户端集** `$WS/mir2c/map`（[D-22](./docs/decisions.md)：两套地图以客户端集为准；它里面 `0.map` 就是边界村）。⚠️ `$WS` 是**本文档的写法**、不是环境变量：直接抄命令会传成 `/mir2c/map`。`gamesvr` 现在会自动找兄弟目录兜底（并打一行日志说明换成了哪个），但别依赖它 |
+| 起服报 **`flag provided but not defined: -xxx`** | **二进制是旧的**（`/tmp/mir2dev/bin/*` 不会自己重编）。新加了旗标（比如 `-mongen`）后必须重编：`go build -o /tmp/mir2dev/bin/gamesvr ./cmd/gamesvr` |
+| **地图上没有 NPC**（日志刷 `坐标 (…, …) 越界，未生成`） | 地图没加载起来 ⇒ 回退成 200×200 空图。多半是 `-map-dir` 指错（见上一条）。给对了之后 比奇省 会生成 34 个 NPC（[D-58](./docs/decisions.md)） |
 | 登录报**协议版本不匹配**（日志里是 `version_fail`） | **服务端二进制是旧的**：`protocol/version.txt` 一改，`gamesvr` 就得重编（`go build -o /tmp/mir2dev/bin/gamesvr ./cmd/gamesvr`）。当前版本号是**开发期冻结的 1**（[D-34](./docs/decisions.md)） |
 | 起 gamesvr 刷一堆 `缺少怪物模板 "红野猪3"` | 刷怪表引用了我们数据里没有的怪，**无害**（那些刷怪点空着） |
 

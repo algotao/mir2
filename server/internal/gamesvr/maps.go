@@ -5,6 +5,8 @@ import (
 	"github.com/algotao/mir2/server/internal/obs"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -607,4 +609,46 @@ func (s *Server) gmGive(c net.Conn, p *Player, args []string) {
 // sysMsg 发一条系统消息（SM_SYSMESSAGE=100）。
 func (s *Server) sysMsg(c net.Conn, msg string) {
 	s.send(c, proto.SM_SYSMESSAGE, 0, 0, 0, 0, msg)
+}
+
+// resolveMapDir 在给定地图目录**不存在**时，按"客户端资产那套"的老规矩再找一遍。
+//
+// 候选顺序（先环境变量、再兄弟 checkout；相对路径按**进程工作目录**算，
+// 所以 `../` 与 `../../` 两种深度都列上 —— 有人从仓库根跑、有人从 server/ 跑）：
+//
+//	$MIR2_MAP_DIR                         显式指定，优先
+//	$(dirname $MIR2C_DATA)/map             客户端资产旁边那套地图（D-22 的权威集）
+//	../mir2c/map, ../../mir2c/map          客户端自带
+//	../mir2go/data/map, ../../mir2go/...   参照服务端自带
+//
+// 都不存在就**原样返回**（照旧由调用方打告警），不做静默兜底 —— 悄悄换目录会让人
+// 以为在看 A 图，实际是 B 图。
+func resolveMapDir(dir string) string {
+	if isDir(dir) {
+		return dir
+	}
+	var cands []string
+	if v := os.Getenv("MIR2_MAP_DIR"); v != "" {
+		cands = append(cands, v)
+	}
+	if v := os.Getenv("MIR2C_DATA"); v != "" {
+		cands = append(cands, filepath.Join(filepath.Dir(v), "map"))
+	}
+	for _, up := range []string{"..", filepath.Join("..", "..")} {
+		cands = append(cands,
+			filepath.Join(up, "mir2c", "map"),
+			filepath.Join(up, "mir2go", "data", "map"))
+	}
+	for _, c := range cands {
+		if isDir(c) {
+			return c
+		}
+	}
+	return dir
+}
+
+// isDir 判断路径是不是存在的目录。
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
 }
