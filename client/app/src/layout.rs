@@ -40,11 +40,10 @@ pub(crate) const HUD_BOARD: u32 = 1;
 /// 血/魔法球（`Prguse[4]`，92×90；左半红=HP、右半蓝=MP）。
 pub(crate) const HUD_ORB: u32 = 4;
 
-/// 经验条（`Prguse[7]`，76×13）。
+/// 经验条 / 负重条（`Prguse[7]`，76×13）：两条**共用**这张图。
 ///
-/// ⚠️ **暂时画不出来**：协议 `Ability` 没有 `exp/max_exp`（原版 `SM_ABILITY` 有），
-/// 服务端也没下发 ⇒ 先备着，等协议补上再画（D-49）。
-#[allow(dead_code)]
+/// 协议 `Ability` 的 `exp/max_exp`、`weight/max_weight` 补齐后就能画了
+///（服务端 `protocolAbility` 会一起下发，见 `hud.rs` 的 `draw_prop_bar`）。
 pub(crate) const HUD_EXP: u32 = 7;
 
 /// 等级数字的第一张（`Prguse[30..39]` = '0'..'9'，8px 一位）。
@@ -73,10 +72,14 @@ pub(crate) fn level_at() -> (f32, f32) {
     (hud_right_x() + 60.0, WIN_H as f32 - 104.0)
 }
 
-/// 经验条在屏幕坐标里的落点（原版 800 版 `(666, …)`；666 = 右块 + 66）。
-#[allow(dead_code)] // 与 `HUD_EXP` 同一条：协议还没有 exp，先备着
+/// 经验条在屏幕坐标里的落点（原版 800 版 `(666, SCREENHEIGHT-73)`；666 = 右块 + 66）。
 pub(crate) fn exp_at() -> (f32, f32) {
     (hud_right_x() + 66.0, WIN_H as f32 - 73.0)
+}
+
+/// 负重条在屏幕坐标里的落点（原版 800 版 `(666, SCREENHEIGHT-40)`）。
+pub(crate) fn weight_at() -> (f32, f32) {
+    (hud_right_x() + 66.0, WIN_H as f32 - 40.0)
 }
 
 /// 聊天文字在屏幕坐标里的落点（原版 `(209, SCREENHEIGHT-128)`）与行距。

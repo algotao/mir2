@@ -102,6 +102,35 @@ pub struct Ability {
     pub mp: u32,
     pub max_mp: u32,
     pub gold: u64,
+    /// 负重 / 最大负重（`Prguse[7]` 那条**负重条**，原版 `FState.pas:3663-3671`）。
+    pub weight: u32,
+    pub max_weight: u32,
+    /// 经验：`exp` 是**级内**经验，`max_exp` 是本级升下一级所需
+    ///（HUD 的经验条 = `Prguse[7]` 按 `exp/max_exp` 裁右边界，原版 `FState.pas:3646-3659`）。
+    ///
+    /// ⚠️ 用户 2026-10-09：「经验比例、当前等级、包裹负重现在也没有显示」——
+    /// 等级一直有（`level`），经验/负重是**协议一直没下发这两个数**，服务端补齐后才画得出。
+    pub exp: u32,
+    pub max_exp: u32,
+}
+
+impl Ability {
+    /// 从协议的 `Ability` 取我们画界面要用的那几个字段（`AbilityUpdate` 与 `LevelUp`
+    /// 共用一份映射 —— 两个地方各写一遍，正是"加字段时漏一个"的老路）。
+    fn from_proto(ab: &proto::Ability) -> Self {
+        Self {
+            level: ab.level,
+            hp: ab.hp,
+            max_hp: ab.max_hp,
+            mp: ab.mp,
+            max_mp: ab.max_mp,
+            gold: ab.gold,
+            weight: ab.weight,
+            max_weight: ab.max_weight,
+            exp: ab.exp,
+            max_exp: ab.max_exp,
+        }
+    }
 }
 
 /// 一条信封带来的变化（调用方据此决定要不要重绘）。
@@ -122,6 +151,11 @@ pub struct World {
     ///
     /// ⚠️ 它**不在** `entities` 里（快照刻意不含自己），协议也不在别处再给 ⇒
     /// 只有 `EnterWorld` 那一条给了它。换图（`ChangeMap`）**不要清**它：名字不会变。
+    ///
+    /// 用户 2026-10-09：「显示玩家自己时，不要使用"自己"这个词，应显示玩家角色名称」
+    /// ⇒ 头顶永远是**角色名**，一个字都不许拿占位词凑。名字在**选角那一刻**客户端
+    /// 就已经知道（`CharacterSummary.name`），所以先用 `remember_self_name` 记下，
+    /// `EnterWorld.self_name` 是空的时候也画得出真名（老服务端/异常路径）。
     pub self_name: String,
     /// 地图**名字**（本项目地图按名字索引，D-22）。
     pub map_name: String,
@@ -180,6 +214,16 @@ impl World {
         self.self_id != 0
     }
 
+    /// 记下"这次要进的那个角色的名字"（选角那一刻就知道，见 `CharacterSummary.name`）。
+    ///
+    /// 用户 2026-10-09：头顶（以及任何显示"玩家自己"的地方）一律用**角色名**，
+    /// 不许出现"自己"这种占位词。调用点：选角成功、发出 `SelectCharacter` 之后。
+    pub fn remember_self_name(&mut self, name: &str) {
+        if !name.is_empty() {
+            self.self_name = name.to_string();
+        }
+    }
+
     /// 应用一条信封。返回值只表示"画面要不要重画"。
     pub fn apply(&mut self, env: &Envelope) -> Change {
         let Some(body) = env.body.as_ref() else {
@@ -190,7 +234,11 @@ impl World {
         match body {
             Body::EnterWorld(ew) => {
                 self.self_id = ew.self_entity_id;
-                self.self_name = ew.self_name.clone();
+                // ⚠️ 只在服务端**给了名字**时覆盖：老服务端/异常路径给空串时，
+                // 不许把已经记住的真名冲掉（否则头顶会空着或退回占位词）。
+                if !ew.self_name.is_empty() {
+                    self.self_name = ew.self_name.clone();
+                }
                 self.map_name = ew.map_name.clone();
                 self.minimap_index = ew.minimap_index;
                 let pos = ew.position.unwrap_or_default();
@@ -281,14 +329,7 @@ impl World {
             }
             Body::AbilityUpdate(a) => {
                 if let Some(ab) = a.ability.as_ref() {
-                    self.ability = Some(Ability {
-                        level: ab.level,
-                        hp: ab.hp,
-                        max_hp: ab.max_hp,
-                        mp: ab.mp,
-                        max_mp: ab.max_mp,
-                        gold: ab.gold,
-                    });
+                    self.ability = Some(Ability::from_proto(ab));
                     self.self_hp = Some((ab.hp, ab.max_hp));
                     return Change::World;
                 }
@@ -297,14 +338,7 @@ impl World {
             Body::LevelUp(l) => {
                 // 升级带**完整能力值**（一条消息顶 legacy 的 SM_LEVELUP + SM_ABILITY 两条）。
                 if let Some(ab) = l.ability.as_ref() {
-                    self.ability = Some(Ability {
-                        level: ab.level,
-                        hp: ab.hp,
-                        max_hp: ab.max_hp,
-                        mp: ab.mp,
-                        max_mp: ab.max_mp,
-                        gold: ab.gold,
-                    });
+                    self.ability = Some(Ability::from_proto(ab));
                     self.self_hp = Some((ab.hp, ab.max_hp));
                     return Change::World;
                 }
@@ -503,6 +537,31 @@ mod tests {
             // 小地图图号：0 号图在 `MiniMap.txt` 里是 101（图库下标 = 100）
             minimap_index: 101,
         })
+    }
+
+    /// 用户 2026-10-09：「显示玩家自己时，不要使用"自己"这个词，应显示玩家角色名称」。
+    ///
+    /// 名字在**选角那一刻**客户端就知道（`CharacterSummary.name`）⇒ 即使
+    /// `EnterWorld.self_name` 是空串（老服务端/异常路径），头顶也要画真名；
+    /// 而服务端**给了**名字时以它为准（那是权威）。
+    #[test]
+    fn self_name_keeps_character_name() {
+        // ① 选角时先记下名字（`app/src/flow.rs` 在发出 SelectCharacter 前这么调）
+        let mut w = World::default();
+        w.remember_self_name("勇士");
+        // ② 老服务端没填 self_name ⇒ **不许**被空串冲掉
+        let mut body = enter_world();
+        if let Body::EnterWorld(ew) = &mut body {
+            ew.self_name.clear();
+        }
+        w.apply(&env(body));
+        assert_eq!(w.self_name, "勇士", "空 self_name 不该把已知的角色名抹掉");
+
+        // ③ 服务端给了名字 ⇒ 以服务端为准（换角色/重连都走这条）
+        let mut w2 = World::default();
+        w2.remember_self_name("旧角色");
+        w2.apply(&env(enter_world()));
+        assert_eq!(w2.self_name, "勇士", "服务端那份才是权威");
     }
 
     #[test]

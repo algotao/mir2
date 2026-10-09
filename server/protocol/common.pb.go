@@ -441,6 +441,14 @@ type Ability struct {
 	MaxWearWeight uint32                 `protobuf:"varint,16,opt,name=max_wear_weight,json=maxWearWeight,proto3" json:"max_wear_weight,omitempty"`
 	Level         uint32                 `protobuf:"varint,17,opt,name=level,proto3" json:"level,omitempty"`
 	Gold          uint64                 `protobuf:"varint,18,opt,name=gold,proto3" json:"gold,omitempty"`
+	// 经验：`exp` 是**级内经验**（升级时会减去 MaxExp，与原版 `m_Abil.Exp` 同义），
+	// `max_exp` 是当前等级升下一级所需的量（`+1` 级的 `LevelNeed(level)`）。
+	//
+	// ⚠️ 加这两个字段的原因：HUD 的经验条是 `100 * exp / max_exp`（`FState.pas:2885`），
+	// 而新协议的 `Ability` 一直没带它们 ⇒ 经验条**画不出来**（`app/src/hud.rs` 如实留空）。
+	// 老客户端不读这两个字段 ⇒ 兼容变更，不用 bump `version.txt`。
+	Exp           uint32 `protobuf:"varint,19,opt,name=exp,proto3" json:"exp,omitempty"`
+	MaxExp        uint32 `protobuf:"varint,20,opt,name=max_exp,json=maxExp,proto3" json:"max_exp,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -601,6 +609,20 @@ func (x *Ability) GetGold() uint64 {
 	return 0
 }
 
+func (x *Ability) GetExp() uint32 {
+	if x != nil {
+		return x.Exp
+	}
+	return 0
+}
+
+func (x *Ability) GetMaxExp() uint32 {
+	if x != nil {
+		return x.MaxExp
+	}
+	return 0
+}
+
 var File_common_proto protoreflect.FileDescriptor
 
 const file_common_proto_rawDesc = "" +
@@ -619,7 +641,7 @@ const file_common_proto_rawDesc = "" +
 	"\x04hair\x18\x03 \x01(\rR\x04hair\x12\x14\n" +
 	"\x05dress\x18\x04 \x01(\rR\x05dress\x12\x16\n" +
 	"\x06effect\x18\x05 \x01(\rR\x06effect\x12\x12\n" +
-	"\x04appr\x18\x06 \x01(\rR\x04appr\"\xad\x03\n" +
+	"\x04appr\x18\x06 \x01(\rR\x04appr\"\xd8\x03\n" +
 	"\aAbility\x12\x15\n" +
 	"\x06dc_min\x18\x01 \x01(\rR\x05dcMin\x12\x15\n" +
 	"\x06dc_max\x18\x02 \x01(\rR\x05dcMax\x12\x15\n" +
@@ -641,7 +663,9 @@ const file_common_proto_rawDesc = "" +
 	"wearWeight\x12&\n" +
 	"\x0fmax_wear_weight\x18\x10 \x01(\rR\rmaxWearWeight\x12\x14\n" +
 	"\x05level\x18\x11 \x01(\rR\x05level\x12\x12\n" +
-	"\x04gold\x18\x12 \x01(\x04R\x04gold*\xa7\x01\n" +
+	"\x04gold\x18\x12 \x01(\x04R\x04gold\x12\x10\n" +
+	"\x03exp\x18\x13 \x01(\rR\x03exp\x12\x17\n" +
+	"\amax_exp\x18\x14 \x01(\rR\x06maxExp*\xa7\x01\n" +
 	"\tDirection\x12\x19\n" +
 	"\x15DIRECTION_UNSPECIFIED\x10\x00\x12\n" +
 	"\n" +

@@ -140,6 +140,18 @@ pub(crate) fn do_select_action(
             if let Some(n) = net.as_mut() {
                 match n.entrance.pick(id) {
                     Some(b) => {
+                        // 角色名在**选角列表**里就有 ⇒ 先记进世界：`EnterWorld.self_name`
+                        // 万一为空（老服务端/异常路径），头顶也画得出真名而不是占位词
+                        //（用户 2026-10-09 的要求）。
+                        let name = n
+                            .entrance
+                            .characters()
+                            .iter()
+                            .find(|c| c.character_id == id)
+                            .map(|c| c.name.clone());
+                        if let Some(name) = name {
+                            n.world.remember_self_name(&name);
+                        }
                         n.send(&b);
                         println!("[net] 选角：进入角色 ActorId={id}");
                     }

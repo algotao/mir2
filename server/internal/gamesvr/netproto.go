@@ -1554,6 +1554,10 @@ func protocolAbility(a *pb.Ability, gold int64) *protocol.Ability {
 		MaxWearWeight: minU32(a.MaxWearWeight, 255),
 		Level:         uint32(a.Level),
 		Gold:          uint64(gold),
+		// 经验/升级所需（HUD 的经验条要用；与 send.go 的 legacy 出口同一套算法）：
+		// 存的是**级内经验**，`MaxExp` 由等级现算（原版 `GetExp` 升级时会减掉它）。
+		Exp:    uint32(a.Exp),
+		MaxExp: uint32(entity.LevelNeed(a.Level)),
 	}
 }
 

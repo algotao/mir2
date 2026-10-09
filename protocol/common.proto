@@ -103,4 +103,12 @@ message Ability {
   uint32 max_wear_weight = 16;
   uint32 level = 17;
   uint64 gold = 18;
+  // 经验：`exp` 是**级内经验**（升级时会减去 MaxExp，与原版 `m_Abil.Exp` 同义），
+  // `max_exp` 是当前等级升下一级所需的量（`+1` 级的 `LevelNeed(level)`）。
+  //
+  // ⚠️ 加这两个字段的原因：HUD 的经验条是 `100 * exp / max_exp`（`FState.pas:2885`），
+  // 而新协议的 `Ability` 一直没带它们 ⇒ 经验条**画不出来**（`app/src/hud.rs` 如实留空）。
+  // 老客户端不读这两个字段 ⇒ 兼容变更，不用 bump `version.txt`。
+  uint32 exp = 19;
+  uint32 max_exp = 20;
 }

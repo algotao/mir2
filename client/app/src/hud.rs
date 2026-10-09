@@ -10,8 +10,8 @@ use sdl3::render::{FRect, TextureCreator, WindowCanvas};
 use crate::colors::C_HUD_COORD;
 use crate::gfx::trunc;
 use crate::layout::{
-    gauge_band, hud_right_x, level_at, CHAT_AT, CHAT_LINE_H, HUD_BOARD, HUD_DIGIT0, HUD_ORB,
-    HUD_SIDE_W, ORB_AT,
+    exp_at, gauge_band, hud_right_x, level_at, weight_at, CHAT_AT, CHAT_LINE_H, HUD_BOARD,
+    HUD_DIGIT0, HUD_EXP, HUD_ORB, HUD_SIDE_W, ORB_AT,
 };
 use crate::net::Net;
 use crate::window::{WIN_H, WIN_W};
@@ -157,8 +157,19 @@ pub(crate) fn draw_hud<'a, T>(
         );
     }
 
-    // 经验条：⚠️ **画不出来** —— 协议 `Ability` 里没有 exp/max_exp（原版 `SM_ABILITY` 有），
-    // 服务端也没下发 ⇒ 这里如实留空（`HUD_EXP` / `EXP_AT` 先备着，见 D-49）。
+    // 经验条 / 负重条：**同一张** `Prguse[7]`（76×13），按 `当前/最大` 裁源矩形右边界、
+    // 从左往右填 —— 逐字照原版（`FState.pas:3646-3671`，800 版落点 `(666, H-73)` 与
+    // `(666, H-40)`）：
+    //
+    //   if MaxExp > 0 then r := MaxExp / Exp;  rc.Right := Round(rc.Right / r)
+    //
+    // ⚠️ 原版把两条一起挂在 `if (MaxExp > 0) and (MaxWeight > 0)` 下（同一段 copy-paste
+    // 味儿的写法）；这里**每条自己判**（`Max<=0` 或 `Cur<=0` 就不画那一条）。实战一致：
+    // 1 级的 MaxExp 是 100、MaxWeight 也 > 0。
+    if let Some(a) = net.and_then(|n| n.world.ability.as_ref()) {
+        draw_prop_bar(canvas, ui, tc, dir, a.exp, a.max_exp, exp_at());
+        draw_prop_bar(canvas, ui, tc, dir, a.weight, a.max_weight, weight_at());
+    }
 
     // 聊天行：原版是"每行自带背景色、OPAQUE 画"（`FState.pas:3868-3886`）——
     // 所以面板上那块浅色框只是**垫底**，真正的深底是文字自己铺出来的。
@@ -215,4 +226,39 @@ pub(crate) fn draw_hud<'a, T>(
         }
     }
     Ok(())
+}
+
+/// 画一条 `Prguse[7]` 的比例条（**经验条**与**负重条**同款图，原版也共用）。
+///
+/// 原版 `FState.pas:3646-3671` 的算法：
+/// `rc.Right := Round(rc.Right / (Max / Cur))` ⇒ 可见宽度 = `W * Cur / Max`，
+/// 源矩形从左边起、右边界裁掉 ⇒ **从左往右填**。`Cur`/`Max` 有 0 就不画。
+fn draw_prop_bar<'a, T>(
+    canvas: &mut WindowCanvas,
+    ui: &mut ui::UiCache<'a>,
+    tc: &'a TextureCreator<T>,
+    dir: &Path,
+    cur: u32,
+    max: u32,
+    at: (f32, f32),
+) {
+    if cur == 0 || max == 0 {
+        return;
+    }
+    let (w, h) = ui.size(dir, "Prguse", HUD_EXP).unwrap_or((76, 13));
+    // 整数算法：W * Cur / Max（原版是浮点除法 + Round，差最多一像素）。
+    let fill = ((w as u64 * cur as u64) / max as u64).min(w as u64) as u32;
+    if fill == 0 {
+        return;
+    }
+    ui.draw_src(
+        canvas,
+        tc,
+        dir,
+        "Prguse",
+        HUD_EXP,
+        FRect::new(0.0, 0.0, fill as f32, h as f32),
+        FRect::new(at.0, at.1, fill as f32, h as f32),
+        255,
+    );
 }

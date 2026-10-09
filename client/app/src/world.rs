@@ -219,12 +219,10 @@ pub(crate) fn draw_map_view<'a, T>(
             let me = mir2_core::world::Entity {
                 id: n.world.self_id,
                 kind: 0,
-                // 真名（协议 `EnterWorld.self_name`）；没给（老服务端）才退回占位符
-                name: if n.world.self_name.is_empty() {
-                    "[自己]".to_string()
-                } else {
-                    n.world.self_name.clone()
-                },
+                // **角色名**（`EnterWorld.self_name`，或选角时 `remember_self_name` 记下的）。
+                // ⚠️ 用户 2026-10-09：这里**不许**再退回 "[自己]" 这种占位词 —— 名字真拿不到时
+                // 宁可空着（`draw_name_bar` 对空串什么都不画），也不能显示一个假名字。
+                name: n.world.self_name.clone(),
                 x: n.world.self_pos.0,
                 y: n.world.self_pos.1,
                 dir: n.world.self_dir,
