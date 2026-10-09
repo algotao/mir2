@@ -219,7 +219,11 @@ type EnterWorld struct {
 	// 客户端拿它当 **`mmap` 图库的下标（图号 - 1）** 去取整张地图的缩略图 ——
 	// 与 legacy 的 `CM_WANTMINIMAP`/`SM_READMINIMAP_OK` 是同一份数据（`ClMain.pas:6045-6051`），
 	// 只是新协议不再单开一问一答：进图/换图那条消息顺手带上。
-	MinimapIndex  uint32 `protobuf:"varint,9,opt,name=minimap_index,json=minimapIndex,proto3" json:"minimap_index,omitempty"`
+	MinimapIndex uint32 `protobuf:"varint,9,opt,name=minimap_index,json=minimapIndex,proto3" json:"minimap_index,omitempty"`
+	// 自己的**角色名**（要画在自己头顶：原版 `FState.pas` 的头顶血条 + 名字）。
+	// 快照里不含自己（见 `self_feature` 的说明），所以名字必须单独给 —— 否则客户端
+	// 只能显示占位符（我们之前写的是 "[自己]"）。
+	SelfName      string `protobuf:"bytes,10,opt,name=self_name,json=selfName,proto3" json:"self_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -315,6 +319,13 @@ func (x *EnterWorld) GetMinimapIndex() uint32 {
 		return x.MinimapIndex
 	}
 	return 0
+}
+
+func (x *EnterWorld) GetSelfName() string {
+	if x != nil {
+		return x.SelfName
+	}
+	return ""
 }
 
 // 服务端 → 客户端：切换地图（重发新图快照）。
@@ -1208,7 +1219,7 @@ const file_scene_proto_rawDesc = "" +
 	"\vstatus_bits\x18\t \x01(\x04R\n" +
 	"statusBits\x12\x16\n" +
 	"\x06action\x18\n" +
-	" \x01(\rR\x06action\"\xe8\x02\n" +
+	" \x01(\rR\x06action\"\x85\x03\n" +
 	"\n" +
 	"EnterWorld\x12$\n" +
 	"\x0eself_entity_id\x18\x01 \x01(\x04R\fselfEntityId\x12\x15\n" +
@@ -1221,7 +1232,9 @@ const file_scene_proto_rawDesc = "" +
 	"\vserver_tick\x18\a \x01(\rR\n" +
 	"serverTick\x126\n" +
 	"\fself_feature\x18\b \x01(\v2\x13.mir2.EntityFeatureR\vselfFeature\x12#\n" +
-	"\rminimap_index\x18\t \x01(\rR\fminimapIndex\"\x92\x02\n" +
+	"\rminimap_index\x18\t \x01(\rR\fminimapIndex\x12\x1b\n" +
+	"\tself_name\x18\n" +
+	" \x01(\tR\bselfName\"\x92\x02\n" +
 	"\tChangeMap\x12\x15\n" +
 	"\x06map_id\x18\x01 \x01(\rR\x05mapId\x12\x19\n" +
 	"\bmap_name\x18\x02 \x01(\tR\amapName\x12&\n" +

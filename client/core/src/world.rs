@@ -118,6 +118,11 @@ pub enum Change {
 pub struct World {
     /// 自己的实体 id（0 = 还没进世界）。
     pub self_id: u64,
+    /// 自己的**角色名**（`EnterWorld.self_name`）—— 画在自己头顶。
+    ///
+    /// ⚠️ 它**不在** `entities` 里（快照刻意不含自己），协议也不在别处再给 ⇒
+    /// 只有 `EnterWorld` 那一条给了它。换图（`ChangeMap`）**不要清**它：名字不会变。
+    pub self_name: String,
     /// 地图**名字**（本项目地图按名字索引，D-22）。
     pub map_name: String,
     /// 当前地图的**小地图图号**（0 = 该图没有小地图）。
@@ -160,6 +165,14 @@ pub struct World {
     pub self_feature: Option<proto::EntityFeature>,
     /// 待消费的伤害事件（调用方 `take_damage()` 取走）。
     damage: Vec<DamageEvent>,
+    /// 累计收到多少条**移动被拒**（`MoveRejected`）。
+    ///
+    /// ⚠️ 调用方要拿它**变没变**来判断"刚刚被拒了一次"（新协议这条是原版 `SM_MOVEFAIL`
+    /// 的对应物；原版收到就 `ActionFailed`：清掉走法目标 + 锁 1 秒，见 `ClMain.pas:4005-4012`）。
+    /// 少了这个反应，客户端会朝一个撞墙的方向**每 `WALK_MS` 发一次**，表现就是"卡在那儿不动"。
+    pub move_fail: u64,
+    /// 最近一次移动被拒的**原因**（`scene.proto`：1=超速 2=越界 3=阻挡）。
+    pub move_fail_reason: u32,
 }
 
 impl World {
@@ -177,6 +190,7 @@ impl World {
         match body {
             Body::EnterWorld(ew) => {
                 self.self_id = ew.self_entity_id;
+                self.self_name = ew.self_name.clone();
                 self.map_name = ew.map_name.clone();
                 self.minimap_index = ew.minimap_index;
                 let pos = ew.position.unwrap_or_default();
@@ -355,6 +369,16 @@ impl World {
                 }
                 Change::World
             }
+            Body::MoveRejected(r) => {
+                // 这一步没成：服务端给了**权威位置**（我们不做预测 ⇒ 通常与 `self_pos` 相同，
+                // 但"越界/阻挡"那条也可能把我们从错的位置拽回来）。照原版 `SM_MOVEFAIL`
+                // (`ClMain.pas:4639-4648`)：位置按服务端给的走，其余交给调用方（清目标 + 锁 1 秒）。
+                let p = r.authoritative_position.unwrap_or_default();
+                self.self_pos = (p.x, p.y);
+                self.move_fail += 1;
+                self.move_fail_reason = r.reason;
+                Change::World
+            }
             _ => Change::None,
         }
     }
@@ -365,6 +389,64 @@ impl World {
     pub fn take_damage(&mut self) -> Vec<DamageEvent> {
         std::mem::take(&mut self.damage)
     }
+
+    /// `cell` 上有没有**可攻击的活目标**（返回它的 ActorId）—— 左键点怪就锁它。
+    ///
+    /// 照原版 `ClMain.pas:2863-2878`：只认**怪物**（玩家/守卫/商人要按住 Shift 才打，
+    /// 那是 PK 那条线，见 `docs/use.md`）；死了的（尸骨）不算。
+    ///
+    /// ⚠️ 同一格上叠着好几个时取 `id` 最小的那个（`entities` 是 `BTreeMap`，顺序稳定
+    /// ⇒ 每次点都锁同一个，不会"点一下换一个"）。
+    pub fn attack_target_at(&self, cell: (i32, i32)) -> Option<u64> {
+        self.entities
+            .values()
+            .find(|e| e.kind == KIND_MONSTER && !e.dead && (e.x, e.y) == cell)
+            .map(|e| e.id)
+    }
+
+    /// 打 `target` 这一步该干什么（`None` = 目标没了/死了 ⇒ 调用方清掉目标）。
+    ///
+    /// 照原版 `TfrmMain.AttackTarget`（`ClMain.pas:2691-2743`）：
+    ///
+    /// ```text
+    /// if |Δx| <= 1 and |Δy| <= 1 then  出手（受 CanNextHit 节流）
+    /// else begin
+    ///    if |Δx| <= 2 and |Δy| <= 2 then 走（caWalk） else 跑（caRun）   // 跑步砍
+    ///    GetBackPosition(目标, 朝向) ⇒ 目标**旁边**那一格
+    /// end
+    /// ```
+    ///
+    /// 也就是说"够不着就先凑上去，而且凑的是**挨着它的那一格**"（不是它脚下那格：
+    /// 那格被它站着，走过去也会被服务端挡）。
+    pub fn combat_step(&self, target: u64) -> Option<CombatStep> {
+        let e = self.entities.get(&target)?;
+        if e.dead {
+            return None;
+        }
+        let (dx, dy) = (e.x - self.self_pos.0, e.y - self.self_pos.1);
+        if dx.abs() <= 1 && dy.abs() <= 1 {
+            return Some(CombatStep::Attack);
+        }
+        Some(CombatStep::Approach {
+            // 目标旁边、靠我这一侧的那一格（`GetBackPosition` 的等价写法）
+            x: e.x - dx.signum(),
+            y: e.y - dy.signum(),
+            // 原版：距离 ≤ 2 走着过去，再远就"跑步砍"
+            run: dx.abs().max(dy.abs()) > 2,
+        })
+    }
+}
+
+/// 怪物的 `kind`（`EntityState.kind`：0=玩家 1=怪物 2=NPC）。
+pub const KIND_MONSTER: u32 = 1;
+
+/// 打一个目标时"这一步"干什么（[`World::combat_step`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CombatStep {
+    /// 已经在攻击范围（相邻八格）⇒ 出手。
+    Attack,
+    /// 还不够近 ⇒ **朝这一格走/跑过去**（到了下一帧就变成 [`CombatStep::Attack`]）。
+    Approach { x: i32, y: i32, run: bool },
 }
 
 /// 动作 id 的值域（与 `protocol.md` §9.5 一致：1..8 与 `AttackAction` 同值）。
@@ -407,6 +489,7 @@ mod tests {
     fn enter_world() -> Body {
         Body::EnterWorld(proto::EnterWorld {
             self_entity_id: 1,
+            self_name: "勇士".into(),
             map_id: 0,
             map_name: "0".into(),
             position: Some(proto::Vec2 { x: 1, y: 1 }),
@@ -775,5 +858,106 @@ mod tests {
         assert!(!action::is_attack(action::HURT));
         assert!(!action::is_attack(action::DEATH));
         assert_ne!(action::HURT, action::DEATH);
+    }
+
+    /// 左键点怪：**只认活着的怪物**（玩家/NPC/尸骨都不算）—— 照原版 `ClMain.pas:2863-2878`。
+    #[test]
+    fn 点怪只锁活怪物() {
+        let mut w = World::default();
+        w.apply(&env(enter_world())); // 自己在 (1,1)
+        for (id, kind, name, x, y) in [
+            (100u64, 1u32, "鹿", 3, 3),
+            (200, 0, "别人", 4, 4), // 玩家：要 Shift 才打（PK 那条线，没做）
+            (300, 2, "商人", 5, 5), // NPC
+        ] {
+            w.apply(&env(Body::EntityAppear(proto::EntityAppear {
+                entity: Some(state(id, kind, name, x, y, 1)),
+            })));
+        }
+        assert_eq!(w.attack_target_at((3, 3)), Some(100), "怪物 ⇒ 锁它");
+        assert_eq!(w.attack_target_at((4, 4)), None, "玩家 ≠ 可攻击目标");
+        assert_eq!(w.attack_target_at((5, 5)), None, "NPC ≠ 可攻击目标");
+        assert_eq!(w.attack_target_at((9, 9)), None, "空地没有目标");
+
+        // 死了的（尸骨还在 entities 里）也不算
+        w.apply(&env(Body::Death(proto::Death {
+            entity_id: 100,
+            killer_id: 1,
+        })));
+        assert!(w.entities.contains_key(&100), "尸骨仍然在（要留着画）");
+        assert_eq!(w.attack_target_at((3, 3)), None, "死了的不该再被锁");
+        assert_eq!(w.combat_step(100), None, "死了 ⇒ 目标作废");
+    }
+
+    /// 打目标这一步该"出手"还是"凑近"：相邻八格出手；否则朝**目标旁边**那格走/跑。
+    #[test]
+    fn 打目标先凑近再出手() {
+        let mut w = World::default();
+        w.apply(&env(enter_world()));
+        w.apply(&env(Body::EntityAppear(proto::EntityAppear {
+            entity: Some(state(100, 1, "鹿", 5, 5, 1)),
+        })));
+        // 自己在 (1,1)：距离 4 ⇒ 跑过去，落在**鹿旁边靠我这一侧**那一格 (4,4)
+        assert_eq!(
+            w.combat_step(100),
+            Some(CombatStep::Approach {
+                x: 4,
+                y: 4,
+                run: true
+            })
+        );
+
+        // 距离 2（原版：≤2 就走着过去）
+        w.self_pos = (3, 3);
+        assert_eq!(
+            w.combat_step(100),
+            Some(CombatStep::Approach {
+                x: 4,
+                y: 4,
+                run: false
+            })
+        );
+
+        // 斜向相邻（八格之内）⇒ 出手
+        w.self_pos = (4, 4);
+        assert_eq!(w.combat_step(100), Some(CombatStep::Attack));
+        w.self_pos = (6, 6);
+        assert_eq!(
+            w.combat_step(100),
+            Some(CombatStep::Attack),
+            "斜着贴上去也算够近"
+        );
+
+        // 目标不在视野里 ⇒ 作废（调用方据此清掉锁）
+        assert_eq!(w.combat_step(999), None);
+    }
+
+    /// **移动被拒**（`MoveRejected`）：采用服务端给的权威位置 + 记数 + 留下原因。
+    ///
+    /// ⚠️ 新协议这条是原版 `SM_MOVEFAIL` 的对应物，原版收到就 `ActionFailed`
+    ///（清走法目标 + 锁 1 秒，`ClMain.pas:4005-4012 / 4639-4648`）—— 调用方拿这里的
+    /// 计数**变没变**来判断"刚刚被拒了一次"。少了它，撞墙时会一直朝墙每 650ms 发一次。
+    #[test]
+    fn 移动被拒采用权威位置并记数() {
+        let mut w = World::default();
+        w.apply(&env(enter_world())); // 自己在 (1,1)
+        assert_eq!(w.move_fail, 0);
+        assert_eq!(w.self_pos, (1, 1));
+
+        w.apply(&env(Body::MoveRejected(proto::MoveRejected {
+            authoritative_position: Some(proto::Vec2 { x: 7, y: 9 }),
+            reason: 3, // 阻挡
+        })));
+        assert_eq!(w.move_fail, 1, "被拒要记数");
+        assert_eq!(w.move_fail_reason, 3, "原因要留着（3 = 阻挡）");
+        assert_eq!(w.self_pos, (7, 9), "位置以服务端给的权威位置为准");
+
+        // 再拒一次：计数继续涨（调用方每帧比对"变没变"）
+        w.apply(&env(Body::MoveRejected(proto::MoveRejected {
+            authoritative_position: Some(proto::Vec2 { x: 7, y: 9 }),
+            reason: 1, // 超速
+        })));
+        assert_eq!(w.move_fail, 2);
+        assert_eq!(w.move_fail_reason, 1);
     }
 }

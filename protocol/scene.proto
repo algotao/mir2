@@ -47,6 +47,10 @@ message EnterWorld {
   // 与 legacy 的 `CM_WANTMINIMAP`/`SM_READMINIMAP_OK` 是同一份数据（`ClMain.pas:6045-6051`），
   // 只是新协议不再单开一问一答：进图/换图那条消息顺手带上。
   uint32 minimap_index = 9;
+  // 自己的**角色名**（要画在自己头顶：原版 `FState.pas` 的头顶血条 + 名字）。
+  // 快照里不含自己（见 `self_feature` 的说明），所以名字必须单独给 —— 否则客户端
+  // 只能显示占位符（我们之前写的是 "[自己]"）。
+  string self_name = 10;
 }
 
 // 服务端 → 客户端：切换地图（重发新图快照）。

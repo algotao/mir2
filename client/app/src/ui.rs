@@ -127,6 +127,60 @@ impl<'a> UiCache<'a> {
         Some((q.width, q.height))
     }
 
+    /// 用该图**自己左上角**的一小块石纹平铺铺满整窗 —— 登录/选角的**补边**。
+    ///
+    /// # 为什么这么补（用户 2026-10-09 报的"周围显示为黑底"）
+    ///
+    /// 登录/选角那套素材是 **800×600**（`ChrSel[22]` / `Prguse[65]`，都量过；本套素材里
+    /// **没有** 1024×768 的同款底图 —— ChrSel/Prguse/Prguse2/Prguse3 全扫过），
+    /// 而窗口是 1024×768（D-50 定的）⇒ 四周空出一圈。两条路：
+    ///
+    /// ① 把 800×600 放大 1.28 倍铺满 —— 像素被抽糊（正是用户明确不喜欢的那种）；
+    /// ② 保持 1:1、拿素材**自己的石纹**把四周补上（**这条**）。
+    ///
+    /// 补边块取 **64×64**：再小则 1024×768 要贴三千多次，再大则重复太扎眼。
+    ///
+    /// ⚠️ **块的位置是量出来的**（`patch`：取哪一块当纹理）：挑"**最平**、且亮度接近
+    /// 该图**边框环**均值"的那一块 —— 这样四周补出来的"墙"与底图边缘同调，接缝看不出来。
+    /// 实测：登录 `ChrSel[22]` ⇒ `(552,496)`（均值 17，边框环也是 17）；
+    /// 选角 `Prguse[65]` ⇒ `(728,296)`（均值 48，边框环 50）。
+    /// **换底图要重新量**（这俩常数是跟着那两张图走的）。
+    #[allow(clippy::too_many_arguments)] // 与 `draw`/`draw_tint` 同一情况：画布+图号+窗口+块位置
+    pub fn tile_backdrop<T>(
+        &mut self,
+        canvas: &mut WindowCanvas,
+        tc: &'a TextureCreator<T>,
+        dir: &Path,
+        lib: &'static str,
+        idx: u32,
+        win: (u32, u32),
+        patch: (f32, f32),
+    ) -> Option<()> {
+        const PATCH: f32 = 64.0;
+        self.ensure(dir, lib, idx, tc)?;
+        let t = self.texs.get_mut(&(lib, idx))?;
+        let q = t.tex.query();
+        if q.width < PATCH as u32 || q.height < PATCH as u32 {
+            return None;
+        }
+        // 复位（贴图是共用的，见 `draw_tint` 的说明）
+        t.tex.set_color_mod(255, 255, 255);
+        t.tex.set_alpha_mod(255);
+        let src = Some(FRect::new(patch.0, patch.1, PATCH, PATCH));
+        let mut y = 0.0;
+        while y < win.1 as f32 {
+            let mut x = 0.0;
+            while x < win.0 as f32 {
+                canvas
+                    .copy(&t.tex, src, Some(FRect::new(x, y, PATCH, PATCH)))
+                    .ok()?;
+                x += PATCH;
+            }
+            y += PATCH;
+        }
+        Some(())
+    }
+
     /// 保证 `(lib, idx)` 那张图已经进了缓存（`draw_tint` / `draw_src` 共用）。
     ///
     /// 抽出来的理由：两处各写一遍必然漂移 —— 缓存上限、混合/缩放模式、颜色复位

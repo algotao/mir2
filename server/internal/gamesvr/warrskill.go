@@ -508,7 +508,7 @@ func (s *Server) hitMonster(p *Player, m *entity.Monster, dmg uint32) {
 	// 红毒：目标受伤放大（原版 StruckDamage）。战士技能的公共落点都在这里。
 	dmg = s.struckMonster(m, dmg, time.Now())
 	// 打了城堡单位 ⇒ 进 2 分钟仇恨窗口（原版 TGuardUnit.Struck，见 guard.go）
-	s.markCastleAggro(p.Obj, m, time.Now())
+	s.markHiter(p.Obj, m, time.Now())
 	// 宠物跟打主人的目标（IsAttackTarget）
 	p.combatTargetID = m.ID
 	died := m.Damage(dmg)

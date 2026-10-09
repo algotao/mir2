@@ -94,6 +94,14 @@ impl Act {
         ((elapsed_ms / self.ftime as u32) as u16).min(self.frame - 1)
     }
 
+    /// **最后一帧**号 —— 一次播完的动作停在它上面；对 `Die` 来说它**就是尸骨那一帧**。
+    ///
+    /// ⚠️ 死了以后必须一直停在它上面（见 `monster_sample` 的说明）：退回循环动作 =
+    /// 画面上"死而复生"（用户 2026-10-09 报的）。
+    pub fn last_frame(&self) -> u16 {
+        self.frame.saturating_sub(1)
+    }
+
     /// 一次播完需要多少毫秒（渲染层用来决定"这个动作什么时候结束"）。
     pub fn duration_ms(&self) -> u32 {
         self.ftime as u32 * self.frame as u32

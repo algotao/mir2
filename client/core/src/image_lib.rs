@@ -362,10 +362,13 @@ mod tests {
         assert_eq!((r1.width, r1.height), (0, 0));
 
         // 2 号：3×1 十六位（红/绿/黑）
+        //
+        // ⚠️ 黑（`0x0000`）现在是**透明**的：16 位图没有调色板索引，`0x0000` 就是它的
+        // "背景"，不抠的话精灵会带着一块黑底贴上屏（`Mon11`/`Mon34` 那几只，见 `wzl.rs` 文件头）。
         let s2 = lib.decode(2).unwrap();
         assert_eq!(&s2.rgba[0..4], &[0xF8, 0x00, 0x00, 255]);
         assert_eq!(&s2.rgba[4..8], &[0x00, 0xFC, 0x00, 255]);
-        assert_eq!(&s2.rgba[8..12], &[0x00, 0x00, 0x00, 255]);
+        assert_eq!(&s2.rgba[8..12], &[0x00, 0x00, 0x00, 0]);
 
         // 3 号：5×3 全是索引 0 ⇒ 全透明但**仍然解码成功**
         let s3 = lib.decode(3).unwrap();

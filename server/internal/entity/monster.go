@@ -298,6 +298,15 @@ func IsAnimalRace(race uint16) bool { return race >= RcAnimal && race < RcMonste
 // 原版只在目标是**红名**（`PKLevel >= 2`）或怪物时才动手（`ObjGuard.pas:87-126`）。
 func IsGuardRace(race uint16) bool { return race == RcGuard || race == RcArcherGuard }
 
+// IsNonCombatant 是**非战斗单位**：`RC_NPC(10) <= race < RC_ANIMAL(50)`
+// （NPC、大刀卫士、弓箭警察…）。
+//
+// 两个用处（别混）：
+//   - **守卫的目标排除项**：原版 `IsProperTarget` 把这一段排除在外（`ObjMon2.pas:866-868`）
+//     ⇒ 守卫不打 NPC / 不打同类；
+//   - **玩家的"打不动"**：`docs/g.md` 的「大刀卫士：无敌，玩家无法击杀」。
+func IsNonCombatant(race uint16) bool { return race >= RcNpc && race < RcAnimal }
+
 // NewMonster 创建怪物。
 func NewMonster(id uint32, info *data.MonsterInfo, m *world.Map, x, y int) *Monster {
 	hp := uint32(info.HP)
@@ -472,12 +481,34 @@ func (m *Monster) Hurt(n uint32) (actual, newHP uint32, died bool) {
 	if !m.Alive || m.HP == 0 {
 		return 0, m.HP, false
 	}
+	// **无敌**：非战斗单位（NPC / 大刀卫士 / 弓箭警察…）不吃伤害 ——
+	// `docs/g.md`「大刀卫士：无敌，玩家无法击杀」（原版把它们当非战斗单位，
+	// `ObjMon2.pas:866-868`）。放在这里而不是各个攻击点：
+	// ① 一处生效，近战/技能/火墙/毒/别的怪一视同仁；
+	// ② 它本来就是这只怪的属性，不是某个调用方的规矩。
+	// ⚠️ 城堡单位（城门/城墙/守卫）不受这条限制 —— 攻城与修门都要能打。
+	if !m.CanBeHurt() {
+		return 0, m.HP, false
+	}
 	if n >= m.HP {
 		m.HP, m.Alive = 0, false
 		return m.HP + n, 0, true // 实际扣掉的就是原来那些血
 	}
 	m.HP -= n
 	return n, m.HP, false
+}
+
+// CanBeHurt 报告这只怪**现在还吃不吃伤害**（`docs/g.md` 的"大刀无敌"）。
+//
+// 非战斗单位免疫；城堡单位例外（城门/城墙/守为攻城目标，见 `CanBeAttackedBy`）。
+func (m *Monster) CanBeHurt() bool {
+	if m.Info == nil {
+		return false
+	}
+	if m.IsCastleUnit() {
+		return true
+	}
+	return !IsNonCombatant(m.Info.Race)
 }
 
 // CanAct 报告此刻是否可执行移动（受移动间隔限制 + 定身）。

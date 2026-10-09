@@ -53,15 +53,25 @@ func isCastleGuardKind(k storage.CastleUnitKind) bool {
 	return k == storage.CastleGuard || k == storage.CastleArcher
 }
 
-// markCastleAggro 记录"attacker 打了城堡单位 victim"（对应 TGuardUnit.Struck，:817-826）。
+// markHiter 记录"attacker 打了 victim"（对应 `TBaseObject.SetLastHiter` /
+// `TGuardUnit.Struck`，`ObjMon2.pas:817-826`）。
 //
-// 只对城堡单位生效：打普通怪不进仇恨窗口。
-func (s *Server) markCastleAggro(attacker *entity.Object, victim *entity.Monster, now time.Time) {
-	if attacker == nil || victim == nil || !victim.IsCastleUnit() {
+// 两件事，**别混**：
+//   - `LastHiterID` = **最后打我的对象**，对**所有**怪都记 —— 它是守卫"打回攻击者"
+//     与"打过我的怪"判据的来源（`docs/g.md`：「玩家主动攻击大刀 → 立刻反击」）；
+//   - 城堡单位的 2 分钟仇恨窗口（`CastleAggroUntil`）**只对城堡单位**算。
+//
+// ⚠️ 原来这个函数叫 `markCastleAggro`，第一件事被 `!victim.IsCastleUnit()` 挡在外面：
+// 普通怪（含大刀卫士）的 `LastHiterID` **永远是 0** ⇒ 守卫的反击无从谈起。
+// 名字一起改掉也是提醒：这不是城堡专用的东西。
+func (s *Server) markHiter(attacker *entity.Object, victim *entity.Monster, now time.Time) {
+	if attacker == nil || victim == nil {
 		return
 	}
 	victim.LastHiterID = attacker.ID
-	attacker.SetCastleAggroUntil(now.Add(guardAggroWindow))
+	if victim.IsCastleUnit() {
+		attacker.SetCastleAggroUntil(now.Add(guardAggroWindow))
+	}
 }
 
 // guardCastleOf 取城堡单位所属的城堡。

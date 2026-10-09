@@ -1072,6 +1072,8 @@ func (ps *protoSession) enterWorld(chr *storage.Character) bool {
 		Entities:    states,
 		ServerTick:  uint32(time.Now().UnixMilli()),
 		SelfFeature: featureOf(p.Obj.FeatureBits()),
+		// 自己的名字：客户端要画在自己头顶（快照不含自己 ⇒ 名字得单独给）
+		SelfName: p.Char.Name,
 		// 小地图图号：客户端按 `mmap[图号-1]` 取整张缩略图（0 = 没有）
 		MinimapIndex: s.minimapIndexOf(p.Obj.MapRef().Name),
 	}}}

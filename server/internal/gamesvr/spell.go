@@ -384,7 +384,7 @@ func (s *Server) castDamageSpell(c net.Conn, p *Player, info *data.MagicInfo,
 	// 红毒：法术伤害同样放大（原版 StruckDamage 不分物理/魔法）
 	dmg = s.struckMonster(target, dmg, time.Now())
 	// 打了城堡单位 ⇒ 进 2 分钟仇恨窗口（原版 TGuardUnit.Struck，见 guard.go）
-	s.markCastleAggro(p.Obj, target, time.Now())
+	s.markHiter(p.Obj, target, time.Now())
 	// ⚠️ 判定 + 扣减同锁（原来在这里自己比 `target.HP`，与别的攻击者并发会丢伤害）
 	_, hp, died := target.Hurt(dmg)
 	maxHP, exp := target.MaxHP, uint32(target.Info.Exp)

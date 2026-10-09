@@ -200,9 +200,12 @@ func TestGuardProperTargetAtWar(t *testing.T) {
 	}
 }
 
-// TestMarkCastleAggro 守住 TGuardUnit.Struck（ObjMon2.pas:817-826）：
-// 打城堡单位 ⇒ 攻击者进 2 分钟窗口 + 守卫记住最后打他的人；打普通怪不记。
-func TestMarkCastleAggro(t *testing.T) {
+// TestMarkHiter 守住 `TBaseObject.SetLastHiter` / `TGuardUnit.Struck`（`ObjMon2.pas:817-826`）：
+//
+//   - **所有**怪都记 `LastHiterID`（"谁打的我"）—— 守卫的"反击攻击者 / 清掉打过我的怪"
+//     两条判据都读它（`docs/g.md`）；⚠️ 早先只有城堡单位记，普通怪恒为 0；
+//   - 城堡单位**另外**进 2 分钟仇恨窗口；打普通怪不进（这一半是原来就对的）。
+func TestMarkHiter(t *testing.T) {
 	s, _ := guardTestServer()
 	now := time.Now()
 
@@ -210,7 +213,7 @@ func TestMarkCastleAggro(t *testing.T) {
 	guard.CastleKind = storage.CastleGuard
 	attacker := newTestPlayer(7201, "打门的人", 0)
 
-	s.markCastleAggro(attacker.Obj, guard, now)
+	s.markHiter(attacker.Obj, guard, now)
 	if guard.LastHiterID != attacker.Obj.ID {
 		t.Errorf("守卫应记住最后打他的人，得到 %d", guard.LastHiterID)
 	}
@@ -218,11 +221,15 @@ func TestMarkCastleAggro(t *testing.T) {
 		t.Errorf("仇恨窗口到期时刻 = %v，期望 %v（2 分钟）", got, now.Add(guardAggroWindow))
 	}
 
-	// 打普通怪：不记
+	// 打普通怪：**记 ID**（守卫要能反击），但**不进**城堡仇恨窗口
 	plain := newTestMonster(9202, "鸡", 5)
 	other := newTestPlayer(7202, "打鸡的人", 0)
-	s.markCastleAggro(other.Obj, plain, now)
-	if plain.LastHiterID != 0 || !other.Obj.CastleAggroUntil().IsZero() {
+	s.markHiter(other.Obj, plain, now)
+	if plain.LastHiterID != other.Obj.ID {
+		t.Errorf("普通怪也该记下\"谁打的我\"（否则大刀/弓箭守卫没法反击）：得到 %d，期望 %d",
+			plain.LastHiterID, other.Obj.ID)
+	}
+	if !other.Obj.CastleAggroUntil().IsZero() {
 		t.Error("打普通怪不该进城堡仇恨窗口")
 	}
 }

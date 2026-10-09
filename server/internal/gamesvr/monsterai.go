@@ -79,7 +79,8 @@ func (s *Server) tickMonsters(now time.Time) {
 	}
 	var moved []monsterMove
 	var hits []monsterHit
-	var petHits []petHit // 宠物打怪（petattack.go）
+	var petHits []petHit   // 宠物打怪（petattack.go）
+	var guardHits []petHit // 守卫打怪（wildguard.go）：同一种结算形状，但没有主人
 
 	// 0. 宠物走**另一套** AI（跟随主人 / 只打主人的目标 / 判变）。
 	//    必须在野生怪分支之前跑，并且 continue 掉——否则宠物会被下面的
@@ -126,7 +127,15 @@ func (s *Server) tickMonsters(now time.Time) {
 		wildGuard := guardCastle == nil && m.Info != nil && entity.IsGuardRace(m.Info.Race)
 
 		var target *Player
-		if !animal && (s.cfg.aggro || guardCastle != nil) {
+		var targetMon *entity.Monster
+		switch {
+		case wildGuard:
+			// 野生守卫（大刀/弓箭守卫）：人 + 怪一起看（原版 `m_VisibleActors` 就是两者都看），
+			// 按"红名 > 怪物 > 攻击过我的"分档挑 —— 口径见 wildguard.go 的文件头与 docs/g.md。
+			if t := s.guardPick(m); t != nil {
+				target, targetMon = t.player, t.monster
+			}
+		case !animal && (s.cfg.aggro || guardCastle != nil):
 			if m.TargetID != 0 {
 				if p := s.world.players[m.TargetID]; p != nil && p.Obj.MapRef() == m.MapRef() &&
 					m.InView(p.Obj.PosX(), p.Obj.PosY()) {
@@ -183,7 +192,25 @@ func (s *Server) tickMonsters(now time.Time) {
 			}
 		}
 
-		// 2. 有目标：相邻则攻击，否则靠近
+		// 2. 有目标：攻击 / 靠近
+		if wildGuard {
+			// ⚠️ 守卫**原地站桩**、**视野内就能打**（远程）：目标跑出视野就丢，绝不追。
+			// 口径 `docs/g.md`（两者都"固定站位、不移动"）；原版大刀 `TSuperGuard.AttackTarget`
+			// 连自己的坐标都是临时挪到目标身上再挪回来 —— 打人不挪步。
+			if m.CanAttack(now) {
+				switch {
+				case target != nil && m.Distance(target.Obj.PosX(), target.Obj.PosY()) <= m.ViewRange:
+					m.MarkAttacked(now)
+					hits = append(hits, s.monsterStrike(m, target))
+				case targetMon != nil && m.Distance(targetMon.PosX(), targetMon.PosY()) <= m.ViewRange:
+					m.MarkAttacked(now)
+					if h := s.guardAttackMonster(m, targetMon, now); h.dmg > 0 {
+						guardHits = append(guardHits, h)
+					}
+				}
+			}
+			continue // 不挪步、也不游荡（守卫没有"闲逛"这回事）
+		}
 		if target != nil {
 			if m.Distance(target.Obj.PosX(), target.Obj.PosY()) <= 1 {
 				if m.CanAttack(now) {
@@ -229,6 +256,7 @@ func (s *Server) tickMonsters(now time.Time) {
 		s.applyMonsterHit(h)
 	}
 	s.applyPetHits(petHits, now)
+	s.applyGuardHits(guardHits)
 }
 
 // monsterStrike 怪物攻击玩家：算伤害并扣血。**调用方持锁**。
@@ -243,7 +271,13 @@ func (s *Server) monsterStrike(m *entity.Monster, p *Player) monsterHit {
 	if maxAtk < minAtk {
 		maxAtk = minAtk
 	}
-	dmg := rollDamage(minAtk, maxAtk, s.playerAC(p))
+	// 大刀卫士（race 11）：**固定伤害、无视防御**（`docs/g.md`：一刀 200）。
+	// 数据里 `卫士` 的 DC..DCMax 就是 200/200，所以"固定"天然成立；这里只跳过**减防御**
+	// 那一步（`rollDamage` 会按玩家 AC 上下浮动）。魔法盾照常在后面的受击处理里吸收。
+	dmg := maxAtk
+	if m.Info.Race != entity.RcGuard {
+		dmg = rollDamage(minAtk, maxAtk, s.playerAC(p))
+	}
 
 	// 红毒：被打的人受伤放大（原版 StruckDamage 在受击方算；放在魔法盾之前，
 	// 因为原版的两者是各自独立的乘算，顺序只影响取整的零点几）

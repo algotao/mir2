@@ -112,6 +112,10 @@ func (s *Server) petAttackMonster(m, target *entity.Monster, now time.Time) petH
 		return ret
 	}
 	ret.dmg = dmg
+	// "谁打的我"也要记在这一边（原版 `SetLastHiter` 在受击方无条件调）——
+	// 守卫的"反击攻击者"与"打过我的怪"两条判据都读它（`docs/g.md` 的第 3/4 条）。
+	// ⚠️ 记的是**宠物自己**：大刀要打的是宝宝，不是宝宝的主人。
+	target.LastHiterID = m.ID
 	_, ret.hp, ret.died = target.Hurt(dmg)
 	// 宠物经验（原版 GainSlaveExp 的触发点就在这里：击杀者是宠物）
 	if target.Info != nil {

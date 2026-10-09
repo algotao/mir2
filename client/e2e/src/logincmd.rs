@@ -142,7 +142,9 @@ pub fn main(argv: &[String]) -> Result<(), String> {
     }
     // ② 开门动画（`-door <ms>`）：原版 `OpenLoginDoor` = **先藏小窗**再开门
     //（`IntroScn.pas:795-801`：`HideLoginBox` → `PlaySound(s_rock_door_open)`），
-    // 门的位置照 `IntroScn.pas:845-846` 的偏移（局部覆盖，不是居中）。
+    // 门的落点是**从本套素材量出来的** `Layout::DOOR_AT`（局部覆盖，不是居中）——
+    // 原版 `IntroScn.pas:845-846` 那两个字面量是给它自己那套素材的（照抄会右偏约 100px，
+    // 见 `login_ui::Layout::DOOR_AT` 的说明）。
     if let Some(ms) = door_ms {
         let f = (ms / Art::DOOR_MS as u64) as u32;
         let idx = Art::DOOR.1 + f.min(Art::DOOR_FRAMES - 1);

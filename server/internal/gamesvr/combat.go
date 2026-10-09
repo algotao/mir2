@@ -122,7 +122,7 @@ func (s *Server) handleAttack(c net.Conn, p *Player, pkt wire.Packet) {
 	dmg = s.struckMonster(target, dmg, time.Now())
 	// 打了城堡单位（城门/城墙/守卫）⇒ 进 2 分钟仇恨窗口（TGuardUnit.Struck，见 guard.go）。
 	// ⚠️ 放在"打空判定"之后：原版的 Struck 是**挨到这一下**才触发。
-	s.markCastleAggro(p.Obj, target, time.Now())
+	s.markHiter(p.Obj, target, time.Now())
 	// 记住"我正在打谁"：宠物据此跟打同一只（IsAttackTarget）
 	p.combatTargetID = target.ID
 	if !bonus.isZero() {

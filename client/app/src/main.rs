@@ -48,7 +48,7 @@ use mir2_core::wzl::Wzl;
 
 use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod};
-use sdl3::mouse::MouseButton;
+use sdl3::mouse::{Cursor, MouseButton, SystemCursor};
 
 mod audio;
 mod font;
@@ -77,15 +77,152 @@ pub(crate) fn open_lib(dir: &Path, name: &str) -> Option<Wzl> {
     Wzl::open_preferring(art.as_ref(), dir, name).ok()
 }
 
+/// 界面**设计尺寸**（原版素材与版式都是按 800×600 做的：登录背景、选角面板、地图视口…）。
+///
+/// # ⚠️ 现在它**就是**窗口大小（1024×768），画面 1:1，不再缩放（2026-10-09 改）
+///
+/// 之前是 800×600 的设计空间 + SDL 逻辑呈现放大到 1024×768（×1.28）—— 用户一眼看出
+/// 来了：「感觉被拉伸了？画质比原版更粗糙，且图形更大」。**放大 1.28 倍**正是那个观感：
+/// 像素被抽成 1.28 倍、又不是整数倍 ⇒ 又糊又"大」（原版 1024×768 是真按 1024 画的：
+/// 视口 ±12 格、界面素材居中不缩放 —— `PlayScn.pas` 的 `SWH1024` 分支、以及登录界面
+/// `(SCREENWIDTH-800) div 2` 那句）。
+///
+/// 于是：**世界按 1024×768 原生渲染**（视口更大更清楚），登录/选角那套 800×600 素材
+/// 由各自的 `Layout::build(win, ...)` **居中**摆（它们本来就是这么写的，见 D-27/D-42）。
+///
+/// 窗口仍可拉大拉小（`.resizable()`）；那时才轮到 SDL 的逻辑呈现去等比缩放 + 留边。
+/// 鼠标事件用 `Event::get_converted_coords` 换算回这个空间。
 const WIN_W: u32 = 1024;
 const WIN_H: u32 = 768;
 
+/// 启动时的窗口大小（用户随后可以随意拉大拉小；改这里**不影响版式**，见 [`WIN_W`]）。
+///
+/// ⚠️ 别设得比设计尺寸还小：逻辑呈现只保证"完整可见 + 不变形"，不保证 1:1 以上
+/// —— 比 800×600 小就会把界面**缩小**（糊）。这条**编译期**就钉住。
+///
+/// ⚠️ 窗口与设计尺寸**不需要**同比例：`LETTERBOX` 会等比缩放并在多出来的那一边留黑边
+///（比例不等只意味着有黑边，不会变形）。
+const WINDOW_W: u32 = 1024;
+const WINDOW_H: u32 = 768;
+
+const _: () = assert!(
+    WINDOW_W >= WIN_W && WINDOW_H >= WIN_H,
+    "默认窗口比设计尺寸小 ⇒ 界面会被缩小"
+);
+
+/// 启动窗口大小：`MIR2_WINDOW=<宽>x<高>`（例 `1280x960`；`docs/use.md` 的三档是
+/// 800×600 / 1024×768 / 1280×960）。填错或比设计尺寸小就忽略并退回默认值。
+///
+/// ⚠️ 这三档**不是三个不同的版式** —— 版式永远活在 800×600 里，改的只是"铺到多大"。
+/// 窗口本身也可拉（`.resizable()`）。
+fn window_size() -> (u32, u32) {
+    let Ok(s) = std::env::var("MIR2_WINDOW") else {
+        return (WINDOW_W, WINDOW_H);
+    };
+    match parse_window(&s) {
+        Some((w, h)) => {
+            println!("[mir2-app] 窗口 = {w}×{h}（MIR2_WINDOW）");
+            (w, h)
+        }
+        None => {
+            println!(
+                "[mir2-app] MIR2_WINDOW=\"{s}\" 不认（要 <宽>x<高> 且不小于 800×600），用默认"
+            );
+            (WINDOW_W, WINDOW_H)
+        }
+    }
+}
+
+/// `MIR2_WINDOW` 的解析（纯函数，便于单测）：`"1280x960" → Some((1280,960))`；
+/// 格式不对、或比设计尺寸小 ⇒ `None`（宁可退回默认，也不把界面缩小）。
+fn parse_window(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.split_once(['x', 'X'])?;
+    let (w, h): (u32, u32) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+    (w >= WIN_W && h >= WIN_H).then_some((w, h))
+}
+
 /// 地图视图的顶部信息条高度。
-const BAR_TOP: f32 = 24.0;
-/// 底部提示条高度。
-const BAR_BOTTOM: f32 = 22.0;
+///
+/// ⚠️ **0**：调试信息从"一条不透明的信息条"改成**左上角叠加**（用户 2026-10-09 要求
+/// 「移动至左上角排列，叠加在游戏内容上」）—— 世界因此铺满整屏（原版也是铺满的，
+/// 底下那块是 HUD 面板**盖**上来的，不是把视口切掉）。
+const BAR_TOP: f32 = 0.0;
+/// 底部条高度：同样归零（那儿现在是 HUD 操作面板）。
+const BAR_BOTTOM: f32 = 0.0;
 /// 地图可视区高度。
 const VIEW_H: f32 = WIN_H as f32 - BAR_TOP - BAR_BOTTOM;
+
+// ---------- 底部操作面板（HUD）----------
+//
+// 版式与图号**全部照抄原版**（`FState.pas` 的 `TFrmDlg.DBottomDirectPaint`）：
+//
+// ```text
+// BOTTOMBOARD800 = 1;                          // Prguse[1]，800×251，画在 SCREENHEIGHT - h
+// 上半部 120px 透明（色键）/ 下半部不透明
+// Images[4] 画在 (40, btop+91)                 // 球：左半红=HP、右半蓝=MP，按比例裁
+//   HP 那一半：rc.Right := Right div 2 - 1; rc.Top := Round(rc.Bottom / MaxHP * (MaxHP - HP))
+// PomiTextOut(660, SCREENHEIGHT-104)           // 等级（Prguse[30..39] = '0'..'9'、[40] = '-'）
+// Images[7] 画在 (666, SCREENHEIGHT-73)        // 经验条
+// 聊天文字 (209, SCREENHEIGHT-128)，行距 13
+// ```
+//
+// ⚠️ 我们**没有** `Images[7]` 要用的经验值（协议 `Ability` 里没有 exp/max_exp）⇒
+// 经验条先留空并记在 D-49；`[8]/[9]` 那类装饰件同理。
+/// 底部操作面板（`Prguse[1]`，800×251）。
+const HUD_BOARD: u32 = 1;
+/// 血/魔法球（`Prguse[4]`，92×90；左半红=HP、右半蓝=MP）。
+const HUD_ORB: u32 = 4;
+/// 经验条（`Prguse[7]`，76×13）。
+///
+/// ⚠️ **暂时画不出来**：协议 `Ability` 没有 `exp/max_exp`（原版 `SM_ABILITY` 有），
+/// 服务端也没下发 ⇒ 先备着，等协议补上再画（D-49）。
+#[allow(dead_code)]
+const HUD_EXP: u32 = 7;
+/// 等级数字的第一张（`Prguse[30..39]` = '0'..'9'，8px 一位）。
+const HUD_DIGIT0: u32 = 30;
+/// 球在**面板坐标**里的落点（原版 `(40, btop+91)`）。
+const ORB_AT: (f32, f32) = (40.0, 91.0);
+/// 面板**左右两块**的原始宽度。
+///
+/// ⚠️ 这两块必须 **1:1**（左边是球、右边是按钮/状态行，一拉就变形）；中间那块
+/// （聊天框，本来就是矩形框）按窗口宽度**拉伸**。
+/// 为什么需要这个：我们这套素材只有 **800 宽**的面板 —— 原版 1024 走
+/// `BOTTOMBOARD1024 = Prguse[2]`，而本套的 `Prguse[2]` 是**空图号**（实测）⇒
+/// 只能"左右保持原样、把中间那段拉宽"，而不是把整个面板放大 1.28 倍（那就又糊又变形了，
+/// 正是用户 2026-10-09 说的那个观感）。
+const HUD_SIDE_W: f32 = 200.0;
+
+/// 右侧那块面板的左边缘（原版 800 版是 600 —— 我们这块宽 200，贴着右边）。
+fn hud_right_x() -> f32 {
+    WIN_W as f32 - HUD_SIDE_W
+}
+
+/// 等级在**屏幕坐标**里的落点（原版 800 版 `(660, SCREENHEIGHT-104)`；660 = 右块 + 60）。
+fn level_at() -> (f32, f32) {
+    (hud_right_x() + 60.0, WIN_H as f32 - 104.0)
+}
+
+/// 经验条在屏幕坐标里的落点（原版 800 版 `(666, …)`；666 = 右块 + 66）。
+#[allow(dead_code)] // 与 `HUD_EXP` 同一条：协议还没有 exp，先备着
+fn exp_at() -> (f32, f32) {
+    (hud_right_x() + 66.0, WIN_H as f32 - 73.0)
+}
+/// 聊天文字在屏幕坐标里的落点（原版 `(209, SCREENHEIGHT-128)`）与行距。
+const CHAT_AT: (f32, f32) = (209.0, WIN_H as f32 - 128.0);
+const CHAT_LINE_H: f32 = 13.0;
+
+/// **液面裁切**：按百分比取球的"下半部分"。
+///
+/// 原版就是这么一个式子（`FState.pas:3784-3795`）：
+/// `rc.Top := Round(rc.Bottom / Max * (Max - Cur))`，落点也跟着下移同样的量
+/// ⇒ 看得见的永远是**下面 `pct` 那一截**（像球里的液面）。
+///
+/// 返回 `(液面在球内的 y, 可见高度)`。
+fn gauge_band(pct: f32, h: i32) -> (i32, i32) {
+    let pct = pct.clamp(0.0, 1.0);
+    let top = (h as f32 * (1.0 - pct)).round() as i32;
+    (top, (h - top).max(0))
+}
 
 /// 内置字体等宽 8px ⇒ 一行能放多少列（两侧各留 1 列边距）。
 ///
@@ -134,6 +271,21 @@ const C_ENT_NPC: Color = Color::RGB(255, 220, 120);
 const C_ENT_SELF: Color = Color::RGB(120, 255, 140);
 /// 尸体（`Death` 之后、`EntityDisappear` 之前 —— 原版里尸骨会留一会儿）。
 const C_ENT_DEAD: Color = Color::RGB(120, 120, 120);
+/// **锁定的攻击目标**（左键点怪锁住的那个）—— 名字换成这个颜色，一眼看得出在打谁。
+///
+/// 原版是用光标/血条高亮标的（`ClMain.pas` 的 `g_TargetCret` + 光标）；我们先用名字色，
+/// 省一套贴图（本套素材里也没有"目标框"那种图）。
+const C_ENT_TARGET: Color = Color::RGB(255, 236, 140);
+/// 鼠标**悬停**那个实体的名字色（比锁定目标再亮一档 —— 两个状态同时出现时要分得出）。
+///
+/// 照原版：悬停是 `g_FocusCret` + 身体**再画一遍**（`PlayScn.pas:1369-1376`）；
+/// Crystal 是 `MouseObject.DrawName()` + `DrawBlend()`（`GameScene.cs:10605 / 10973`）。
+const C_HOVER_NAME: Color = Color::RGB(255, 255, 210);
+/// HUD 聊天区的配色：系统消息 / 坏消息（原版 `ChatStrs` 每行自带一色，我们只用三档）。
+const C_CHAT_SYS: Color = Color::RGB(230, 230, 210);
+const C_CHAT_BAD: Color = Color::RGB(255, 120, 120);
+/// HUD 里"地图名 + 坐标"那行（左下角）。
+const C_HUD_COORD: Color = Color::RGB(255, 236, 180);
 /// 精灵纹理缓存上限。与图块缓存同理：越界就整个清掉，不做 LRU ——
 /// 地图比视口大得多，走到哪解到哪，记账成本换不来什么。
 const SPRITE_CACHE_CAP: usize = 512;
@@ -144,6 +296,9 @@ const SPRITE_CACHE_CAP: usize = 512;
 /// `MinRun = 400ms`（**一步 2 格**）。改服务端那儿就得改这里：
 /// 补间比它短 = "每格提前到位再干等"（用户 2026-10-08 报的卡顿，原先写死 320 ms 就是这毛病）；
 /// 比它长 = 精灵被下一格"拽着走"。
+///
+/// ⚠️ 这两个常数只给**别人**（怪/其他玩家）—— 它们的节奏由服务端驱动；
+/// **自己**用 [`self_move_ms`]（我们自己的发送步频 `WALK_MS`/`RUN_MS`）。
 const WALK_STEP_MS: u32 = 600;
 
 /// 跑**一步**（`RUN_STEPS` 格）的补间时长。
@@ -164,6 +319,28 @@ fn move_ms(dx: i32, dy: i32, run: bool) -> u32 {
         RUN_STEP_MS / RUN_STEPS as u32 // 跑：400/2 = 200 ms 一格
     } else {
         WALK_STEP_MS
+    };
+    per_cell * cells
+}
+
+/// **自己**这一步该补间多久 —— 用**本客户端自己的步频**（[`WALK_MS`]/[`RUN_MS`]）。
+///
+/// # 为什么要跟别人分开（2026-10-08，用户报"走路手感"时发现）
+///
+/// 我们**不是预测式移动**：每一步都是"发 `MoveInput` → 等服务端回显 → 才开始补间"，
+/// 而下一步的 `MoveInput` 是在 `WALK_MS`（650）之后才发的 ⇒ 自己这一步的**实际**节奏是
+/// **650ms/格**。若按服务端的 `MinWalk`（600）补间，就会在**每格末尾空出 50ms**：
+/// 那 50ms 里 `ActorAnim::moving()` 变 false ⇒ ①走路动画闪回站立帧、②相机停一下 ——
+/// 每步都来一次，正是"没做好"的来源。
+///
+/// ⚠️ 别的实体（怪/别人）**不能**用这个：它们的节奏由服务端驱动（`MinWalk = 600`），
+/// 按 650 补间会"被下一格拽着走"（补间还没完，下一条 `EntityMove` 就到了）。
+fn self_move_ms(dx: i32, dy: i32, run: bool) -> u32 {
+    let cells = dx.abs().max(dy.abs()).max(1) as u32;
+    let per_cell = if run {
+        RUN_MS as u32 / RUN_STEPS as u32 // 跑：450/2 = 225 ms 一格
+    } else {
+        WALK_MS as u32
     };
     per_cell * cells
 }
@@ -384,6 +561,7 @@ fn ensure_tile<'a, T>(
 ///
 /// `'a` 把纹理创建器与缓存绑在一起——`Texture<'a>` 借的是创建器，
 /// 少了这层关联编译器就没法确认缓存不会比创建器活得久。
+#[allow(clippy::too_many_arguments)]
 fn draw_tile<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
@@ -392,6 +570,7 @@ fn draw_tile<'a, T>(
     dir: &Path,
     d: &TileDraw,
     origin_y: f32,
+    sub: (f32, f32),
 ) -> Result<(), sdl3::Error> {
     let _ = ensure_tile(tc, libs, cache, dir, d.lib, d.area, d.index, d.blend);
     if let Some(t) = cache.get_mut(&(d.lib, d.area, d.index, d.blend)) {
@@ -404,8 +583,9 @@ fn draw_tile<'a, T>(
             &t.tex,
             None::<FRect>,
             FRect::new(
-                left as f32,
-                origin_y + top as f32,
+                // 亚格那半格在这里减掉 ⇒ 地图**逐帧平滑卷动**（见 `cam_parts`）
+                left as f32 - sub.0,
+                origin_y + top as f32 - sub.1,
                 q.width as f32,
                 q.height as f32,
             ),
@@ -422,18 +602,21 @@ fn draw_debug_overlay(
     canvas: &mut WindowCanvas,
     draws: &[TileDraw],
     tiles: &HashMap<TileKey, TileTex<'_>>,
-    cam: (i32, i32),
+    cam: (f32, f32),
     mouse: (f32, f32),
     layers: u8,
 ) -> Result<(), sdl3::Error> {
+    // 叠加层要和图块**同步**：图块被减掉了亚格偏移（见 `cam_parts`），这里也得减，
+    // 否则调试框会比图块偏半格（最多 47px），"点哪读哪"就不可信了。
+    let sub = cam_parts(cam).sub;
     // 1) 格网（48×32）
     canvas.set_draw_color(C_GRID);
-    let mut gx = 0.0;
+    let mut gx = -sub.0;
     while gx < WIN_W as f32 {
         canvas.draw_line(FPoint::new(gx, BAR_TOP), FPoint::new(gx, BAR_TOP + VIEW_H))?;
         gx += UNIT_X as f32;
     }
-    let mut gy = BAR_TOP;
+    let mut gy = BAR_TOP - sub.1;
     while gy < BAR_TOP + VIEW_H {
         canvas.draw_line(FPoint::new(0.0, gy), FPoint::new(WIN_W as f32, gy))?;
         gy += UNIT_Y as f32;
@@ -444,7 +627,9 @@ fn draw_debug_overlay(
         if layers & d.layer.bit() == 0 {
             continue;
         }
-        let Some(r) = rect_of(d, tiles) else { continue };
+        let Some(r) = rect_of(d, tiles, sub) else {
+            continue;
+        };
         canvas.set_draw_color(match d.layer {
             Layer::Ground => C_GRID_GROUND,
             Layer::Mid => C_GRID_MID,
@@ -452,11 +637,11 @@ fn draw_debug_overlay(
         });
         canvas.draw_rect(r)?;
         if d.layer == Layer::Front {
-            let by = BAR_TOP + d.y as f32 + UNIT_Y as f32;
+            let by = BAR_TOP + d.y as f32 + UNIT_Y as f32 - sub.1;
             canvas.set_draw_color(C_CELLBASE);
             canvas.draw_line(
-                FPoint::new(d.x as f32, by),
-                FPoint::new(d.x as f32 + UNIT_X as f32, by),
+                FPoint::new(d.x as f32 - sub.0, by),
+                FPoint::new(d.x as f32 - sub.0 + UNIT_X as f32, by),
             )?;
         }
     }
@@ -464,10 +649,8 @@ fn draw_debug_overlay(
     // 3) 鼠标十字线 + 所在格 + 读数
     let (mx, my) = mouse;
     if (BAR_TOP..BAR_TOP + VIEW_H).contains(&my) {
-        let cx = cam.0 + (mx / UNIT_X as f32).floor() as i32;
-        let cy = cam.1 + ((my - BAR_TOP) / UNIT_Y as f32).floor() as i32;
-        let hx = (cx - cam.0) as f32 * UNIT_X as f32;
-        let hy = BAR_TOP + (cy - cam.1) as f32 * UNIT_Y as f32;
+        let (cx, cy) = screen_to_cell(cam, mx, my);
+        let (hx, hy) = cell_to_screen(cam, cx, cy);
         canvas.set_draw_color(C_CROSS);
         canvas.draw_rect(FRect::new(hx, hy, UNIT_X as f32, UNIT_Y as f32))?;
         canvas.draw_line(FPoint::new(mx, BAR_TOP), FPoint::new(mx, BAR_TOP + VIEW_H))?;
@@ -476,7 +659,7 @@ fn draw_debug_overlay(
         // 该像素最上层的那一条（绘制顺序里最后命中的；隐藏层不参与）
         let topmost = draws.iter().rev().find(|d| {
             layers & d.layer.bit() != 0
-                && rect_of(d, tiles)
+                && rect_of(d, tiles, sub)
                     .is_some_and(|r| mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h)
         });
         let line = match topmost {
@@ -498,16 +681,15 @@ fn draw_debug_overlay(
                 // ★ 这张图**自己那一格**——大写标注，避免与"鼠标所在格"混淆：
                 //   高精灵（实测最高 582px ≈ 18 格）会向上盖住很多格，
                 //   不标出它的归属格，就会误以为"图被画错了位置"。
-                let cell_x = cam.0 + d.x / UNIT_X;
-                let cell_y = cam.1 + d.y / UNIT_Y;
-                let bx = (cell_x - cam.0) as f32 * UNIT_X as f32;
-                let by = BAR_TOP + (cell_y - cam.1) as f32 * UNIT_Y as f32;
+                let cell_x = cam_parts(cam).cell.0 + d.x / UNIT_X;
+                let cell_y = cam_parts(cam).cell.1 + d.y / UNIT_Y;
+                let (bx, by) = cell_to_screen(cam, cell_x, cell_y);
                 // 高亮：它自己的格（亮白）+ 整张图外框（亮白）+ 它的格底线（亮黄）
                 canvas.set_draw_color(C_TOPMOST);
                 canvas.draw_rect(FRect::new(bx, by, UNIT_X as f32, UNIT_Y as f32))?;
                 canvas.draw_rect(FRect::new(
-                    left as f32,
-                    BAR_TOP + top as f32,
+                    left as f32 - sub.0,
+                    BAR_TOP + top as f32 - sub.1,
                     w as f32,
                     h as f32,
                 ))?;
@@ -571,6 +753,7 @@ fn draw_rect_cold(
     libs: &mut HashMap<String, Option<Wzl>>,
     dir: &Path,
     d: &TileDraw,
+    sub: (f32, f32),
 ) -> Option<FRect> {
     let name = d.lib.file_name(d.area);
     let lib = libs
@@ -582,9 +765,10 @@ fn draw_rect_cold(
         return None;
     }
     let top = d.top_y(rec.width as i32, rec.height as i32, rec.anchor_y as i32);
+    // 与 `rect_of` 同口径：减掉亚格偏移（真实落点）
     Some(FRect::new(
-        d.left_x(rec.anchor_x as i32) as f32,
-        BAR_TOP + top as f32,
+        d.left_x(rec.anchor_x as i32) as f32 - sub.0,
+        BAR_TOP + top as f32 - sub.1,
         rec.width as f32,
         rec.height as f32,
     ))
@@ -592,18 +776,41 @@ fn draw_rect_cold(
 
 // ---------- 调试工具（D 叠加层 / P 打印清单 / 左键点哪读哪）----------
 
-/// 一条绘制指令的屏幕矩形（**已计入 `top_y`**，即图块真正落下的位置）。
-fn rect_of(d: &TileDraw, tiles: &HashMap<TileKey, TileTex<'_>>) -> Option<FRect> {
+/// 一条绘制指令**真正画上去**的那个屏幕矩形（**已计入 `top_y` 与亚格偏移 `sub`**）。
+///
+/// ⚠️ `sub` 必须减掉（`draw_tile` 就是这么画的）：凡是"拿框去和屏幕坐标比"的地方
+/// —— 视口剔除、调试框、"点哪读哪" —— 都得用**真实落点**，否则会差最多一格
+/// （走动时画面右/下边缘那条**黑带**就是这么来的：图块明明还盖着屏幕，却被判成
+/// "在视口外"剔掉了，用户 2026-10-08 报的）。
+fn rect_of(d: &TileDraw, tiles: &HashMap<TileKey, TileTex<'_>>, sub: (f32, f32)) -> Option<FRect> {
     let t = tiles.get(&(d.lib, d.area, d.index, d.blend))?;
     let q = t.tex.query();
     let top = d.top_y(q.width as i32, q.height as i32, t.anchor_y as i32);
     let left = d.left_x(t.anchor_x as i32);
     Some(FRect::new(
-        left as f32,
-        BAR_TOP + top as f32,
+        left as f32 - sub.0,
+        BAR_TOP + top as f32 - sub.1,
         q.width as f32,
         q.height as f32,
     ))
+}
+
+/// 这条绘制指令要不要画：**视口剔除**。
+///
+/// ⚠️ 参数特意收**整个 [`CamParts`]**、而不是"相机 + 亚格偏移两个参数"：
+/// 少传/漏减一次亚格偏移，判据就会和分析出来的落点差最多一格 ——
+/// 表现是走动时画面边缘**漏画一条黑底**（用户 2026-10-08 报的）。
+/// 收成一个值，就没法"只传一半"了。
+fn tile_in_view(
+    libs: &mut HashMap<String, Option<Wzl>>,
+    dir: &Path,
+    d: &TileDraw,
+    cp: &CamParts,
+    layers: u8,
+    view: &FRect,
+) -> bool {
+    layers & d.layer.bit() != 0
+        && draw_rect_cold(libs, dir, d, cp.sub).is_some_and(|r| intersects(&r, view))
 }
 
 /// 把视口内的绘制清单打到终端（顺序即绘制顺序）——可复制的 debug log。
@@ -663,13 +870,12 @@ fn dump_draws(
 fn probe_at(
     px: f32,
     py: f32,
-    cam: (i32, i32),
+    cam: (f32, f32),
     draws: &[TileDraw],
     tiles: &HashMap<TileKey, TileTex<'_>>,
     layers: u8,
 ) {
-    let cx = cam.0 + (px / UNIT_X as f32).floor() as i32;
-    let cy = cam.1 + ((py - BAR_TOP) / UNIT_Y as f32).floor() as i32;
+    let (cx, cy) = screen_to_cell(cam, px, py);
     println!(
         "\n[probe] 视口像素=({px:.0},{py:.0}) → 格=({cx},{cy})   可见层 {}",
         layers_desc(layers)
@@ -679,14 +885,16 @@ fn probe_at(
         if layers & d.layer.bit() == 0 {
             continue;
         }
-        let Some(r) = rect_of(d, tiles) else { continue };
+        let Some(r) = rect_of(d, tiles, cam_parts(cam).sub) else {
+            continue;
+        };
         if (r.x..r.x + r.w).contains(&px) && (r.y..r.y + r.h).contains(&py) {
             hits += 1;
             println!(
                 "  [{i:3}] {:<6?} 格({:4},{:4}) 图号={:5} 尺寸={:.0}x{:.0} 落点=({:.0},{:.0})..({:.0},{:.0}) 库={}",
                 d.layer,
-                cam.0 + d.x / UNIT_X,
-                cam.1 + d.y / UNIT_Y,
+                cam_parts(cam).cell.0 + d.x / UNIT_X,
+                cam_parts(cam).cell.1 + d.y / UNIT_Y,
                 d.index,
                 r.w,
                 r.h,
@@ -753,6 +961,8 @@ struct Net {
     /// 的作用域）—— 与 `take_damage`（伤害飘字）同一套路：世界只记账，
     /// 谁有时钟/设备谁去表现。
     pending_sfx: Vec<u16>,
+    /// HUD 聊天区的行（原版 `ChatStrs`）—— 见 [`Chat`]。
+    chat: Chat,
     /// 已经为自己死放过一次声（`self_dead` 会一直为真，不能每帧放）。
     died_once: bool,
     /// 刚死 ⇒ 主循环切 game over 音乐（原版 `Actor.pas:2373-2374`）。
@@ -804,6 +1014,7 @@ impl Net {
             fail: None,
             entered_once: false,
             started: Instant::now(),
+            chat: Chat::default(),
             anims: HashMap::new(),
             pending_sfx: Vec::new(),
             died_once: false,
@@ -839,6 +1050,7 @@ impl Net {
             fail: None,
             entered_once: false,
             started: Instant::now(),
+            chat: Chat::default(),
             anims: HashMap::new(),
             pending_sfx: Vec::new(),
             died_once: false,
@@ -878,6 +1090,7 @@ impl Net {
             fail: None,
             entered_once: false,
             started: Instant::now(),
+            chat: Chat::default(),
             anims: HashMap::new(),
             pending_sfx: Vec::new(),
             died_once: false,
@@ -897,6 +1110,8 @@ impl Net {
                     capabilities,
                     nonce,
                 } => {
+                    self.chat
+                        .push(format!("已连接（协议 {version}）"), C_CHAT_SYS);
                     // ⚠️ nonce 是**这条连接一次**的握手随机值，登录时要把口令证明绑在它上面
                     //（D-24①）⇒ 必须立刻交给握手状态机，晚了就发不出证明。
                     self.entrance.on_nonce(&nonce);
@@ -905,6 +1120,7 @@ impl Net {
                     println!("[net] {}", self.status);
                 }
                 mir2_net::Ev::Closed(why) => {
+                    self.chat.push(format!("断开：{why}"), C_CHAT_BAD);
                     self.status = format!("断开：{why}");
                     self.fail = Some(why);
                     println!("[net] {}", self.status);
@@ -921,6 +1137,13 @@ impl Net {
                     }
                     if self.entrance.in_world() && !self.entered_once {
                         self.entered_once = true;
+                        self.chat.push(
+                            format!(
+                                "进入 {} ({},{})",
+                                self.world.map_name, self.world.self_pos.0, self.world.self_pos.1
+                            ),
+                            C_CHAT_SYS,
+                        );
                         println!("[net] 进世界：连接到现在 {:.2?}", self.started.elapsed());
                         // 进图后把状态行换成"世界摘要"（比"已连接"有用得多）。
                         self.status = format!(
@@ -1005,6 +1228,18 @@ impl Net {
         std::mem::take(&mut self.gameover)
     }
 
+    /// 取走"这次失败的原因"，**只给一次**（连接层断开 / 握手失败）。
+    ///
+    /// ⚠️ 这两样都是**粘性**的：`entrance.stage == Failed(..)` 会一直挂着、`fail` 也一直不空
+    /// ⇒ 界面必须**取走**，不能每帧读 —— 否则弹窗刚点掉，下一帧又弹回来
+    ///（用户 2026-10-08 报的"登录失败弹窗关不掉"）。
+    fn take_fail(&mut self) -> Option<String> {
+        if let Some(why) = self.fail.take() {
+            return Some(connect_hint(&why));
+        }
+        self.entrance.take_failed()
+    }
+
     /// 自己的性别（`0` 男 `1` 女）——协议里 `dress = 形状*2 + 性别`
     /// （`core/src/actor.rs:31`）；拿不到特征时按男（原版 `m_btSex = 0` 是男）。
     fn self_sex(&self) -> u8 {
@@ -1075,6 +1310,7 @@ impl Net {
                 from: None,
                 action,
                 changed_at: now,
+                action_at: now,
                 // 刚出现/刚进视野：先按"走一格"算，下一步会据实重算
                 move_ms: WALK_STEP_MS,
                 walk_since: now,
@@ -1089,14 +1325,21 @@ impl Net {
                 if from != cell {
                     a.from = Some(from);
                     a.changed_at = now;
-                    a.move_ms = move_ms(cell.0 - from.0, cell.1 - from.1, run);
+                    // 自己按**本客户端的步频**补间（否则每格末尾空 50ms：动画闪回站立 +
+                    // 镜头停一下），别人按服务端的节流 —— 见 `self_move_ms`。
+                    a.move_ms = if id == self.world.self_id {
+                        self_move_ms(cell.0 - from.0, cell.1 - from.1, run)
+                    } else {
+                        move_ms(cell.0 - from.0, cell.1 - from.1, run)
+                    };
                     a.walk_since = next_walk_since(was_moving, a.walk_since, now);
                 }
                 a.cell = cell;
             }
             if a.action != action {
                 a.action = action;
-                a.changed_at = now;
+                // ⚠️ 只动**动作钟**（见 `action_at` 的说明）：动 `changed_at` 会让补间从头开始
+                a.action_at = now;
                 // 换动作（砍/受击…）就从"走路的相位"里出来了 ⇒ 相位重开
                 a.walk_since = now;
             }
@@ -1130,26 +1373,39 @@ impl Net {
         });
         match target {
             Some(e) => {
-                let _ = self.sess.cmds.send(mir2_net::Cmd::Attack {
-                    target_id: e.id,
-                    action: mir2_protocol::AttackAction::AttackHit as i32,
-                });
                 println!("[net] 攻击 {} (ActorId={})", e.name, e.id);
-                true
+                self.attack_target(e.id)
             }
             None => false,
         }
     }
 
-    /// 相机该对着哪一格（居中自身）。没进世界时返回 `None`（保持手动镜头）。
-    fn follow_cam(&self) -> Option<(i32, i32)> {
+    /// 打**指定的**目标（左键点怪锁住之后每帧来一次）。
+    ///
+    /// 消息号固定 `ATTACK_HIT`（普通挥砍）：原版会按武器/技能挑 `CM_HEAVYHIT/CM_POWERHIT/…`
+    ///（`ClMain.pas:2695-2722`），那些（重击/攻杀/刺杀）都还没接 —— 这里只发基础那一种。
+    fn attack_target(&self, id: u64) -> bool {
+        self.sess
+            .cmds
+            .send(mir2_net::Cmd::Attack {
+                target_id: id,
+                action: mir2_protocol::AttackAction::AttackHit as i32,
+            })
+            .is_ok()
+    }
+
+    /// 自己的**渲染位置**（补间后的浮点格）；没进世界时给服务端那一格。
+    ///
+    /// 相机、小地图、大地图都用它 —— 它们**必须**和画精灵用同一份（`ActorAnim::draw_pos`），
+    /// 否则"人在这、图心在那"。
+    fn self_render(&self, now: Instant) -> Option<(f32, f32)> {
         if !self.world.in_world() {
             return None;
         }
-        let (sx, sy) = self.world.self_pos;
-        Some((
-            sx - (WIN_W as i32 / UNIT_X) / 2,
-            sy - (VIEW_H as i32 / UNIT_Y) / 2,
+        Some(self_render_pos(
+            self.anims.get(&self.world.self_id),
+            self.world.self_pos,
+            now,
         ))
     }
 }
@@ -1180,6 +1436,112 @@ fn move_if_online(net: &Option<Net>, dir: mir2_protocol::Direction, run: bool) -
 /// 服务端 `entity.Limiter` 是 `MinWalk = 600ms` / `MinRun = 400ms`。
 const WALK_MS: u64 = 650;
 const RUN_MS: u64 = 450;
+
+/// **按住鼠标时**重取目标的间隔（毫秒）—— 原版 `ClMain.pas:2678-2679`：
+/// `if (ssLeft in Shift) or (ssRight in Shift)) and (GetTickCount - mousedowntime > 300)`.
+const MOUSE_REPEAT_MS: u64 = 300;
+
+/// 移动**被服务端拒了**之后，多久不许再发（毫秒）—— 原版 `ActionFailed` 的
+/// `ActionFailLock`：`GetTickCount - ActionFailLockTime > 1000` 才解锁（`ClMain.pas:4005-4020`）。
+///
+/// 不锁的表现：朝一个撞墙的方向**每 `WALK_MS` 发一次**、每次都被拒 ⇒ 人物"卡在那儿不动"
+/// 而且服务端日志刷满（用户 2026-10-08 报的"跑不到怪身边"多半就有它）。
+const MOVE_FAIL_LOCK_MS: u64 = 1000;
+
+/// 一次"鼠标点下去"算什么：`(要锁的目标, 要走的格子)`。
+///
+/// 照原版 `_DXDrawMouseDown`（`ClMain.pas:2805-2878`）：**先清掉旧目标**，再看光标那格有什么 ——
+/// 有**活怪** ⇒ 锁它（之后每帧自动靠近/出手，见 `World::combat_step`）；
+/// 空地（或玩家/NPC：那要 Shift 才是 PK 那条线，还没做）⇒ 走/跑到那一格。
+///
+/// 抽成纯函数是为了能单测：这条规则在原版里散在几百行事件代码里，改一次踩一次。
+fn mouse_intent(
+    world: &mir2_core::world::World,
+    cell: (i32, i32),
+    run: bool,
+) -> (Option<u64>, Option<(i32, i32, bool)>) {
+    match world.attack_target_at(cell) {
+        Some(id) => (Some(id), None),
+        None => (None, Some((cell.0, cell.1, run))),
+    }
+}
+
+/// **按住不放**时每 [`MOUSE_REPEAT_MS`] 重取一次目标 —— 与新鲜按下（[`mouse_intent`]）
+/// 只差一条：光标底下什么都没有时，**不取消**已经锁住的那个怪物。
+///
+/// # 为什么要差这一条（用户 2026-10-08 报的"点怪之后站不住、掉头去走路"）
+///
+/// 原版重跑按下逻辑会先把 `g_TargetCret := nil`（`ClMain.pas:2813`），光标不在怪身上就不再锁
+/// —— 而**镜头跟着人走**（[`follow_cam`]）⇒ 跑向怪的路上光标自己就从怪身上滑开了，
+/// 于是"按住左键点怪"会半路把目标弄丢、改成走去光标那格。
+/// 单击（按下就抬）不走这条路，所以原版"单击点怪 ⇒ 一路打到它死"是好的 ——
+/// 我们这里把**按住**也保住：已经锁着、而且那个怪还活着（`combat_step` 还有得出）就继续打。
+/// 想取消？松手再点一下地（新鲜按下还是照原版**清目标**）。
+fn mouse_repeat(
+    world: &mir2_core::world::World,
+    cell: (i32, i32),
+    run: bool,
+    locked: Option<u64>,
+) -> (Option<u64>, Option<(i32, i32, bool)>) {
+    match world.attack_target_at(cell) {
+        Some(id) => (Some(id), None),
+        // 锁着的那个还在（活着且还在视野里）⇒ 继续打它
+        None if locked.is_some_and(|id| world.combat_step(id).is_some()) => (locked, None),
+        None => (None, Some((cell.0, cell.1, run))),
+    }
+}
+
+/// 连续攻击的**最小节拍**：服务端的 `hitIntervalTime = 520ms` **再加一点余量**。
+///
+/// # ⚠️ 为什么不能取"攻击动画的时长"（510ms）—— 这是"砍几下就停"的病根
+///
+/// 服务端按 `AttackIntervalFor` 限流（`netgate.go:63/112`：`520ms − 攻速×25ms`），
+/// **比它快的攻击被直接丢掉**。丢掉的那次服务端**不发 `EntityAction`** ⇒ 我们自己的
+/// 挥砍动画（完全来自服务端回包，见 `world::self_action`）就断一拍 ——
+/// 表现正是用户 2026-10-09 报的"砍几下停下、但怪在掉血"（掉血是过掉的那几刀给的）。
+///
+/// 取 510ms 时是**每一刀丢一刀**（510 < 520）。这里取基数 + 余量：
+/// ⚠️ 服务端真实间隔随**攻速**下降（`− hitSpeed×25ms`），但我们手里没有攻速
+///（`Ability` 没下发这个字段）⇒ 宁可慢一点：至少不乱丢、动画不断。
+const HIT_BASE_MS: u64 = 520;
+fn attack_gap() -> Duration {
+    Duration::from_millis(HIT_BASE_MS + 40)
+}
+
+/// 一次播完的动作（挥砍/受击）**多留最后一帧**多久（毫秒）。
+///
+/// # 为什么需要（用户 2026-10-09 报的"砍几下停下"的第二半）
+///
+/// 原版**看不出缝**：它的动画时长就是服务端下发的 `ClientConfig.HitTime`（`ClMain.pas:2700`），
+/// 与攻击间隔同源（`ActHit` 6×85 = 510ms vs 间隔 520ms ⇒ 缝 10ms，眼睛看不见）。
+/// 我们的动作表是写死的 510ms，而节拍取的是**服务端的基数 + 余量**（`attack_gap()` = 560ms，
+/// 不能更小 —— 更小会被服务端丢掉整刀）⇒ 缝 50ms ≈ 三帧"站立"，看着就是一顿。
+///
+/// 所以把最后一帧多留这么久：下一刀在 560ms 到，正好接上（也不再需要把节拍压到危险区）。
+const ACTION_TAIL_MS: u32 = 80;
+
+/// 这一刻能不能**出手**：①手上这一步走完了 ②距上次出手够久了。
+///
+/// # ① 为什么必须有（用户 2026-10-08 报的"还没靠近怪就开始攻击"）
+///
+/// 原版的门是 `CanNextAction` = `g_MySelf.IsIdle`（`ClMain.pas:3975-3984` +
+/// `Actor.pas:1722-1736`）：`m_nCurrentAction <> 0`（**动作没完**）就 `IsIdle = FALSE`
+/// ⇒ 走路的动作还没播完，**攻击发不出去**。
+///
+/// 我们不做移动预测（位置是服务端权威的），所以特别需要这道门：服务端确认"到位"时，
+/// 画面上的补间才刚起步 —— `combat_step` 已经说"相邻、该出手"，挥砍就播在半路上了。
+fn can_attack(stepping: bool, since_last_attack: Duration) -> bool {
+    !stepping && since_last_attack >= attack_gap()
+}
+
+/// 挥刀声：按**武器形状**分类（`Actor.pas:2254-2261`）。
+///
+/// ⚠️ 原版在攻击动画的**帧 2** 播（`:2396-2401`），我们在发起这一帧就播 —— 差几十毫秒，
+/// 接线简单得多（这条差异记在这儿，别当"照原版"）。
+fn swing_sfx(n: &Net, sound: &audio::Audio, sounds: &Option<mir2_core::sound::SoundAssets>) {
+    let shape = n.world.self_feature.as_ref().map_or(0, |f| f.weapon / 2) as u16;
+    sfx(sound, sounds, mir2_core::sound::swing(shape));
+}
 
 /// 按住了 Ctrl 吗（`keymod` 那套；开发键都收在 Ctrl+ 里）。
 fn ctrl(m: sdl3::keyboard::Mod) -> bool {
@@ -1253,6 +1615,33 @@ fn bigmap_dst(
 /// 抽成自由函数就是为了能单测（`Net` 不好在单测里造）。
 fn self_render_pos(anim: Option<&ActorAnim>, to: (i32, i32), now: Instant) -> (f32, f32) {
     anim.map_or((to.0 as f32, to.1 as f32), |a| a.draw_pos(to, now))
+}
+
+/// 相机该在哪个**浮点格**：把自己的**渲染位置**摆到视口正中。
+///
+/// # 为什么必须是"渲染位置"而不是"服务端那一格"（用户 2026-10-08 报的走路/跑动手感）
+///
+/// 原版就是这么干的（`PlayScn.pas:1084-1097`）：
+///
+/// ```text
+/// with Map.m_ClientRect do begin
+///    Left := g_MySelf.m_nRx - 9;   // m_nRx = **渲染**坐标（补间后，不是 m_nCurrX）
+///    Top  := g_MySelf.m_nRy - 9;
+///    Right := g_MySelf.m_nRx + 9;  Bottom := g_MySelf.m_nRy + 8;
+/// end;
+/// Map.UpdateMapPos (g_MySelf.m_nRx, g_MySelf.m_nRy);
+/// ```
+///
+/// ⇒ 表现是"**人物钉在屏幕中间不动，地图往前卷**"。相机若取整格，就变成
+/// "人在视口里一格格往前蹭、蹭满一格镜头再猛跳一下" —— 完全不是那个手感。
+///
+/// ⚠️ x 用**浮点**除（`WIN_W/UNIT_X/2` = 8.33 格 ⇒ 人正落在 400px 中央）；用整数除
+/// （8 格 = 384px）会让人偏左 16px。
+fn follow_cam(render: (f32, f32)) -> (f32, f32) {
+    (
+        render.0 - (WIN_W as f32 / UNIT_X as f32) / 2.0,
+        render.1 - (VIEW_H / UNIT_Y as f32) / 2.0,
+    )
 }
 
 /// 画小地图（Tab）/ 大地图（M）。
@@ -1334,10 +1723,13 @@ fn draw_minimaps<'a, T>(
 }
 
 /// **屏幕坐标 → 地图格**（鼠标点哪走到哪要用它；与 [`cell_to_screen`] 互为逆）。
-fn screen_to_cell(cam: (i32, i32), px: f32, py: f32) -> (i32, i32) {
+/// ⚠️ 必须是 `(cam + px/UNIT).floor()`，**不是** `cam.floor() + (px/UNIT).floor()`：
+/// 相机是浮点格（走路时一直在动），拆开取整会在小数处差**一格** ——
+/// "点哪走哪"就会偏（`屏幕与格子互为逆` 这条单测就是抓它的）。
+fn screen_to_cell(cam: (f32, f32), px: f32, py: f32) -> (i32, i32) {
     (
-        cam.0 + (px / UNIT_X as f32).floor() as i32,
-        cam.1 + ((py - BAR_TOP) / UNIT_Y as f32).floor() as i32,
+        (cam.0 + px / UNIT_X as f32).floor() as i32,
+        (cam.1 + (py - BAR_TOP) / UNIT_Y as f32).floor() as i32,
     )
 }
 
@@ -1361,21 +1753,72 @@ fn dir_to(from: (i32, i32), to: (i32, i32)) -> Option<mir2_protocol::Direction> 
     })
 }
 
+/// 鼠标连续走路：**这一步该走还是该跑**（`None` = 已经站在目标格上、收工）。
+///
+/// 照原版 `ClMain.pas:1863-1978`（`ProcessActionMessages`）：
+///
+/// ```text
+/// if (g_nTargetX <> 自己.x) or (g_nTargetY <> 自己.y) then   // 还没到
+///    caRun: if (GetDistance(自己, 目标) >= 2) and ... then 发 CM_RUN
+///           else 只转身 + 清目标, goto LB_WALK（**走一步**）
+/// ```
+///
+/// 也就是说**跑只在"距离 ≥ 2"时才发**（`GetDistance` = 切比雪夫距离，
+/// `ClFunc.pas:352-355`：`_MAX(abs(dx), abs(dy))`）。
+/// ⚠️ 少了这条，目标格是**奇数距离**时跑步（一次跨 2 格）会**跨过去再跨回来**，
+/// 表现就是"奔跑位置左右乱换"（用户 2026-10-08 报的）；距离 < 2 时改成走 1 格正好落到。
+fn next_move_step(
+    from: (i32, i32),
+    to: (i32, i32),
+    want_run: bool,
+) -> Option<(mir2_protocol::Direction, bool)> {
+    let dir = dir_to(from, to)?; // 同一格 ⇒ None ⇒ 调用方收工
+    let far = (to.0 - from.0).abs().max((to.1 - from.1).abs()) >= 2; // GetDistance（切比雪夫）
+    Some((dir, want_run && far))
+}
+
 /// 协议朝向（1..8）→ 屏幕增量。**1 = 上**（新枚举 = 原版 + 1，见 common.proto）。
 ///
 /// ⚠️ 这张表与服务端 `entity.DirDelta` 是同一份顺序（原版 0..7 各 +1）——
 /// 两处一旦不一致，人物会朝反方向走，而且不会报错。
 /// 格子坐标 → 视口坐标（地图绘制用的同一套换算：`UNIT_X/UNIT_Y` + 顶部信息条）。
-fn cell_to_screen(cam: (i32, i32), cx: i32, cy: i32) -> (f32, f32) {
+fn cell_to_screen(cam: (f32, f32), cx: i32, cy: i32) -> (f32, f32) {
     cell_to_screen_f(cam, cx as f32, cy as f32)
 }
 
-/// 同上，但允许**小数格** —— 走路的补间落在两格之间（见 `ActorAnim::draw_pos`）。
-fn cell_to_screen_f(cam: (i32, i32), cx: f32, cy: f32) -> (f32, f32) {
+/// 同上，但两边都允许**小数**：相机是浮点格（见 [`follow_cam`]），格子也可能是
+/// 补间到一半的（见 [`ActorAnim::draw_pos`]）。
+fn cell_to_screen_f(cam: (f32, f32), cx: f32, cy: f32) -> (f32, f32) {
     (
-        (cx - cam.0 as f32) * UNIT_X as f32,
-        BAR_TOP + (cy - cam.1 as f32) * UNIT_Y as f32,
+        (cx - cam.0) * UNIT_X as f32,
+        BAR_TOP + (cy - cam.1) * UNIT_Y as f32,
     )
+}
+
+/// 相机拆成"**整格 + 亚格像素**"。
+///
+/// 地图那条路（`Map::visible_tiles`）只认**整格**相机，它算出来的图块落点是"格 × UNIT"
+/// 的整数像素 ⇒ 亚格那半格由绘制时减去 [`CamParts::sub`] 补上（见 `draw_tile`）。
+/// 这样地图就能**逐帧平滑卷动**，而不是"攒够一格再猛跳一下"。
+///
+/// 别改成"把小数扔掉"：那就退回"人在视口里一格格蹭"的老样子了（用户 2026-10-08 报的）。
+fn cam_parts(cam: (f32, f32)) -> CamParts {
+    let cell = (cam.0.floor() as i32, cam.1.floor() as i32);
+    CamParts {
+        cell,
+        sub: (
+            (cam.0 - cell.0 as f32) * UNIT_X as f32,
+            (cam.1 - cell.1 as f32) * UNIT_Y as f32,
+        ),
+    }
+}
+
+/// [`cam_parts`] 的结果：整格相机 + 要减掉的亚格像素。
+struct CamParts {
+    /// 整格相机（`visible_tiles` 用）。
+    cell: (i32, i32),
+    /// 亚格像素偏移：所有"以整格相机算出来"的落点都要减掉它。
+    sub: (f32, f32),
 }
 
 fn dir_delta(dir: i32) -> (f32, f32) {
@@ -1473,11 +1916,31 @@ impl<'a> SpriteCache<'a> {
         );
         Some(())
     }
+}
 
-    fn get(&self, lib: &'static str, idx: u32) -> Option<&SpriteTex<'a>> {
-        self.texs.get(&(lib, idx))
+/// HUD 聊天区里的那几行（原版 `ChatStrs`：每行自带前景/背景色，`FState.pas:3868-3886`）。
+///
+/// ⚠️ 与终端里的 `println!` **不重复也不替代**：终端是给开发看的流水账，
+/// 这里是给玩家看的"最近发生了什么"（有上限、旧的滚掉）。
+#[derive(Default)]
+struct Chat {
+    lines: std::collections::VecDeque<(String, Color)>,
+}
+
+impl Chat {
+    /// 推一行。超过 [`CHAT_CAP`] 就丢最旧的。
+    fn push(&mut self, s: impl Into<String>, col: Color) {
+        self.lines.push_back((s.into(), col));
+        while self.lines.len() > CHAT_CAP {
+            self.lines.pop_front();
+        }
     }
 }
+
+/// 聊天区最多留几行（画出来的只有最后 [`CHAT_VIEW_LINES`] 行，多留些好回看）。
+const CHAT_CAP: usize = 64;
+/// 聊天区一屏几行（原版那块框高 105px ÷ 行距 13 ≈ 8）。
+const CHAT_VIEW_LINES: usize = 8;
 
 /// 一帧"看到的"实体状态：`(id, 格子, 动作, 这一步是不是跑)` —— 喂给 `ActorAnim` 的那四个数。
 ///
@@ -1493,8 +1956,17 @@ struct ActorAnim {
     from: Option<(i32, i32)>,
     /// 最近一次动作（协议动作 id，见 `protocol.md` §9.5）。
     action: Option<u32>,
-    /// 上面两者的发生时刻（一个时钟够用：动作与移动不会同时开始）。
+    /// **移动**的起始时刻（补间与 `moving()` 用它）。
     changed_at: Instant,
+    /// **动作**的起始时刻（挥砍/受击的播放进度用它）。
+    ///
+    /// # ⚠️ 为什么必须与 `changed_at` 分开（用户 2026-10-09 报的"杀死怪之后再跑还有砍的动作"）
+    ///
+    /// 原来只有一个钟：动作与移动共用 `changed_at` ⇒ **每走一格都把动作进度清零**
+    /// ⇒ 那个"早就该过期的挥砍"（`world.self_action` 收到过就一直留着）在每次移动时
+    /// **重播**一遍：表现就是"杀了怪，一跑起来又在砍"（别的实体同理：怪走路时也会闪攻击动作）。
+    /// 分开之后移动只动移动钟；动作到点就过期，**不会被下一次移动救活**。
+    action_at: Instant,
     /// 这次移动的补间时长（ms）—— 由 `from → cell` 的格数与走/跑算出（见 `move_ms`）。
     ///
     /// **一步一算**（走一格 600 ms、跑一步 400 ms），所以不能再有全局常量。
@@ -1510,6 +1982,11 @@ struct ActorAnim {
 impl ActorAnim {
     fn elapsed_ms(&self, now: Instant) -> u32 {
         now.duration_since(self.changed_at).as_millis() as u32
+    }
+
+    /// 手上的动作已经播了多久（`body_sprite`/`weapon_sprite` 取帧用它）。
+    fn action_ms(&self, now: Instant) -> u32 {
+        now.duration_since(self.action_at).as_millis() as u32
     }
 
     /// 是不是正走在半路上（决定播走路的动画）。
@@ -1547,11 +2024,17 @@ fn human_sample(
     moving: bool,
     run: bool,
     move_ms: u32,
+    dead: bool,
 ) -> (mir2_core::actor::HAct, u16) {
     use mir2_core::actor as A;
+    // 死了 ⇒ 停在 `Die` 的最后一帧（尸骨）；理由见 `monster_sample`。
+    if dead {
+        return (A::HAct::Die, A::HAct::Die.act().last_frame());
+    }
     let mut pose = A::human_pose(held, moving, run);
     let mut act = pose.act.act();
-    let mut elapsed = if !pose.looping && held_ms >= act.duration_ms() {
+    let mut elapsed = if !pose.looping && held_ms >= act.duration_ms() + ACTION_TAIL_MS {
+        // 播完**且过了尾巴** ⇒ 回到站立/走路（`ACTION_TAIL_MS` 的说明见常量处）
         pose = A::human_pose(None, moving, run);
         act = pose.act.act();
         0
@@ -1577,11 +2060,25 @@ fn monster_sample(
     held: Option<u32>,
     held_ms: u32,
     moving: bool,
+    dead: bool,
 ) -> (mir2_core::actor::MAct, u16) {
     use mir2_core::actor as A;
+    // 死了 ⇒ **尸骨**：永远停在 `Die` 的最后一帧。
+    //
+    // ⚠️ 少了这一条：`Die` 播完（`held_ms >= act.duration_ms()`，`Die` 是"一次播完"的）
+    // 就退回**站立** —— 画面上就是"死而复生"（用户 2026-10-09 报的"死后没有显示尸体状态"）。
+    // 原版靠 `m_boDeath` + `m_nCurrentAction` 收尾后一直画尸骨那帧，同一件事。
+    if dead {
+        let die = A::mon_actions(race_img)[A::MAct::Die as usize];
+        if die.frame > 0 {
+            return (A::MAct::Die, die.last_frame());
+        }
+        // 该品种没有死亡段（`Die.frame == 0`）⇒ 别硬画（那是别的品种的图），退回常规
+    }
     let mut pose = A::monster_pose(race_img, held, moving);
     let mut act = A::mon_actions(race_img)[pose.act as usize];
-    let elapsed = if !pose.looping && held_ms >= act.duration_ms() {
+    let elapsed = if !pose.looping && held_ms >= act.duration_ms() + ACTION_TAIL_MS {
+        // 播完**且过了尾巴** ⇒ 回到站立（见 `ACTION_TAIL_MS`）
         pose = A::monster_pose(race_img, None, moving);
         act = A::mon_actions(race_img)[pose.act as usize];
         0
@@ -1607,21 +2104,21 @@ fn body_sprite(
     use mir2_core::actor as A;
     let f = e.feature.as_ref()?;
     let dir = A::dir_of(e.dir);
-    let (held, held_ms) = anim.map_or((None, 0), |a| (a.action, a.elapsed_ms(now)));
+    let (held, held_ms) = anim.map_or((None, 0), |a| (a.action, a.action_ms(now)));
     let moving = anim.is_some_and(|a| a.moving(now));
     // 走/跑动画用**连续相位**（不随每格重置）；`e.run` 决定播 Walk 还是 Run
     let walk_ms = anim.map_or(0, |a| a.walk_ms(now));
     match e.kind {
         // 玩家：本体在 Hum.wzl，部位号 = Dress（服务端已经算成 `Shape*2+性别`）
         0 => {
-            let (act, frame) = human_sample(held, held_ms, moving, e.run, walk_ms);
+            let (act, frame) = human_sample(held, held_ms, moving, e.run, walk_ms, e.dead);
             Some((A::HUM_LIB, A::human_index(f.dress as u8, act, dir, frame)))
         }
         // 怪物：容器与块起点都由 Appr 定（`Mon<Appr/10+1>`）
         1 => {
             let appr = f.appr as u16;
             let lib = A::mon_container(appr)?;
-            let (act, frame) = monster_sample(f.race_img as u8, held, held_ms, moving);
+            let (act, frame) = monster_sample(f.race_img as u8, held, held_ms, moving, e.dead);
             Some((
                 lib,
                 A::monster_index(appr, f.race_img as u8, act, dir, frame),
@@ -1629,6 +2126,60 @@ fn body_sprite(
         }
         _ => None,
     }
+}
+
+/// 一个实体**画出来**的那个框（身体 + 武器的并集）—— **悬停命中**用它。
+///
+/// # 为什么不能按"它在哪一格"判（用户 2026-10-09 报的"没有高亮"）
+///
+/// 图的锚点、透明边、朝向都会让"画出来的身体"和"它所在的格"错开：高身材的怪
+/// （鹿/牛）身体能高出它那格一格多，低矮的（蛇/虫）又贴着格底 ⇒ 按格子判就是
+/// "明明指着身体却没反应"。原版/Crystal 都是按**画面上的矩形/像素**判的
+///（`GetAttackFocusCharacter`、`MapObject.MouseOver`）。
+///
+/// 死了的不参与（原版 `g_FocusCret` 画之前要 `IsValidActor`，Crystal 显式排除 `Dead`）。
+/// 取不到精灵时退回"占格框"（`draw_entity_marker` 画的就是它）。
+fn actor_rect<'a, T>(
+    tc: &'a TextureCreator<T>,
+    sprites: &mut SpriteCache<'a>,
+    dir_assets: &Path,
+    cam: (f32, f32),
+    e: &mir2_core::world::Entity,
+    anim: Option<&ActorAnim>,
+    now: Instant,
+) -> Option<FRect> {
+    if e.dead {
+        return None;
+    }
+    let (fx, fy) = anim.map_or((e.x as f32, e.y as f32), |a| a.draw_pos((e.x, e.y), now));
+    let (px, py) = cell_to_screen_f(cam, fx, fy);
+    let mut hit: Option<FRect> = None;
+    for layer in [body_sprite(e, anim, now), weapon_sprite(e, anim, now)] {
+        let Some((lib, idx)) = layer else { continue };
+        if sprites.ensure(tc, dir_assets, lib, idx).is_none() {
+            continue;
+        }
+        let Some(t) = sprites.texs.get(&(lib, idx)) else {
+            continue;
+        };
+        let q = t.tex.query();
+        let r = FRect::new(
+            px + t.anchor_x as f32,
+            py + t.anchor_y as f32,
+            q.width as f32,
+            q.height as f32,
+        );
+        hit = Some(match hit {
+            Some(h) => FRect::new(
+                h.x.min(r.x),
+                h.y.min(r.y),
+                (h.x + h.w).max(r.x + r.w) - h.x.min(r.x),
+                (h.y + h.h).max(r.y + r.h) - h.y.min(r.y),
+            ),
+            None => r,
+        });
+    }
+    hit.or(Some(FRect::new(px, py, UNIT_X as f32, UNIT_Y as f32)))
 }
 
 /// 取"武器层"（只有玩家有；怪物的 `m_btMonsterWeapon` 在我们数据里恒 0）。
@@ -1645,11 +2196,15 @@ fn weapon_sprite(
     if f.weapon == 0 {
         return None; // 空手
     }
-    let (held, held_ms) = anim.map_or((None, 0), |a| (a.action, a.elapsed_ms(now)));
+    let (held, held_ms) = anim.map_or((None, 0), |a| (a.action, a.action_ms(now)));
     let moving = anim.is_some_and(|a| a.moving(now));
     // ⚠️ 与 `body_sprite` **同一份采样**（同样的 run/相位）：各算各的会让武器与身体错帧
     let walk_ms = anim.map_or(0, |a| a.walk_ms(now));
-    let (act, frame) = human_sample(held, held_ms, moving, e.run, walk_ms);
+    // 死了不画武器（尸骨手上没有刀）
+    if e.dead {
+        return None;
+    }
+    let (act, frame) = human_sample(held, held_ms, moving, e.run, walk_ms, false);
     Some((
         A::WEAPON_LIB,
         A::human_index(f.weapon as u8, act, A::dir_of(e.dir), frame),
@@ -1661,9 +2216,10 @@ fn weapon_sprite(
 fn draw_actor<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
+    names: &mut font::TextCache<'a>,
     sprites: &mut SpriteCache<'a>,
     dir_assets: &Path,
-    cam: (i32, i32),
+    cam: (f32, f32),
     e: &mir2_core::world::Entity,
     anim: Option<&ActorAnim>,
     now: Instant,
@@ -1671,6 +2227,10 @@ fn draw_actor<'a, T>(
     hp: u32,
     max_hp: u32,
     color: Color,
+    // 鼠标悬停在它身上（身体**再画一遍**做高亮；见 `HOVER_TINT`）
+    highlight: bool,
+    // 画 `当前/总量`（只有自己那份传 true）
+    show_numbers: bool,
 ) -> Result<(), sdl3::Error> {
     // 补间后的位置（不做插值的话，精灵是一格一格跳的）
     let (fx, fy) = anim.map_or((e.x as f32, e.y as f32), |a| a.draw_pos((e.x, e.y), now));
@@ -1679,36 +2239,108 @@ fn draw_actor<'a, T>(
     let body = body_sprite(e, anim, now);
     if body.is_none() {
         // 没有精灵（NPC / 素材缺失 / 图号取不到）：退回标记，**不静默什么都不画**
-        return draw_entity_marker(canvas, cam, e.x, e.y, color, name, hp, max_hp, e.dir);
+        return draw_entity_marker(
+            canvas,
+            tc,
+            names,
+            cam,
+            e.x,
+            e.y,
+            color,
+            name,
+            hp,
+            max_hp,
+            e.dir,
+            highlight,
+            show_numbers,
+        );
     }
     // 本体 → 武器（原版层序：武器压在身体上面）
-    for layer in [body, weapon_sprite(e, anim, now)] {
-        let Some((lib, idx)) = layer else { continue };
-        if sprites.ensure(tc, dir_assets, lib, idx).is_none() {
-            continue;
-        }
-        if let Some(t) = sprites.get(lib, idx) {
-            let q = t.tex.query();
-            canvas.copy(
-                &t.tex,
-                None::<FRect>,
-                FRect::new(
-                    px + t.anchor_x as f32,
-                    py + t.anchor_y as f32,
-                    q.width as f32,
-                    q.height as f32,
-                ),
-            )?;
+    let layers = [body, weapon_sprite(e, anim, now)];
+    for &(lib, idx) in layers.iter().flatten() {
+        sprites.ensure(tc, dir_assets, lib, idx);
+    }
+    for &(lib, idx) in layers.iter().flatten() {
+        draw_actor_layer(canvas, sprites, lib, idx, px, py, None)?;
+    }
+    // 悬停高亮：**再画一遍** —— 原版就是 `g_FocusCret.DrawChr(..., blend=TRUE)`
+    //（`PlayScn.pas:1369-1376` ⇒ `DrawEffSurface` → `DrawBlend`）；
+    // Crystal 的 `MouseObject.DrawBlend()`（`GameScene.cs:10973-10976`，0.3 半透明）也是同一手。
+    if highlight {
+        for &(lib, idx) in layers.iter().flatten() {
+            draw_actor_layer(canvas, sprites, lib, idx, px, py, Some(HOVER_TINT))?;
         }
     }
+    // 名字/血条挂在**精灵的头顶**：图自带锚点（常是负的），`py` 是格子左上角 ——
+    // 直接挂 `py` 会压在身体上（实测那一版就是）。
+    let head = layers
+        .iter()
+        .flatten()
+        .filter_map(|&(lib, idx)| {
+            sprites
+                .texs
+                .get(&(lib, idx))
+                .map(|t| py + t.anchor_y as f32)
+        })
+        .fold(py, f32::min);
     draw_name_bar(
         canvas,
+        tc,
+        names,
         px + UNIT_X as f32 / 2.0,
-        py,
+        head,
         name,
         hp,
         max_hp,
         color,
+        highlight,
+        show_numbers,
+    )
+}
+
+/// 悬停高亮那一遍的**颜色 + 透明度**。
+///
+/// # 为什么不照抄原版"原样再画一遍半透明"
+///
+/// 原版（`PlayScn.pas:1369-1376`）与 Crystal（`GameScene.cs:10973`）都是**把同一张图
+/// 再画一遍**（原版 `DrawBlend` 走 `Color256Mix` 表、Crystal `SetBlend(true, 0.3F)`）。
+/// 但那个做法对我们**不产生任何视觉变化**：`dst = src*a + dst*(1-a)`，而 dst 本来就是
+/// 第一遍画上去的 src ⇒ `dst` 不变（只有贴图的半透明边缘会变实一点）。
+///
+/// 所以这里用**暖色 + 半透明**：机制仍是"再画一遍"（能与别处对齐），但反馈看得见。
+/// ⚠️ 颜色是**粘在贴图上**的（贴图是缓存共用的）⇒ 每次 `copy` 前都要显式设一遍。
+const HOVER_TINT: (u8, u8, u8, u8) = (255, 232, 150, 140);
+
+/// 画一层 actor 精灵（本体 / 武器）。`tint = None` ⇒ 原色不透明。
+///
+/// ⚠️ 两种情况都**显式设一遍**颜色与透明度：`set_color_mod`/`set_alpha_mod` 是粘在
+/// **贴图**上的，而贴图是缓存共用的 —— 高亮完不复位，下一帧所有精灵都会带暖色。
+/// （`core::select_ui` 那边踩过同样的坑，见 `UiCache::draw_tint` 的说明。）
+fn draw_actor_layer(
+    canvas: &mut WindowCanvas,
+    sprites: &mut SpriteCache<'_>,
+    lib: &'static str,
+    idx: u32,
+    px: f32,
+    py: f32,
+    tint: Option<(u8, u8, u8, u8)>,
+) -> Result<(), sdl3::Error> {
+    let Some(t) = sprites.texs.get_mut(&(lib, idx)) else {
+        return Ok(());
+    };
+    let q = t.tex.query();
+    let (r, g, b, a) = tint.unwrap_or((255, 255, 255, 255));
+    t.tex.set_color_mod(r, g, b);
+    t.tex.set_alpha_mod(a);
+    canvas.copy(
+        &t.tex,
+        None::<FRect>,
+        FRect::new(
+            px + t.anchor_x as f32,
+            py + t.anchor_y as f32,
+            q.width as f32,
+            q.height as f32,
+        ),
     )
 }
 
@@ -1719,9 +2351,11 @@ fn draw_actor<'a, T>(
 /// 那属于 M2 的"角色/怪物动画状态机"；且本套素材里 `Hair.wzl` 是空壳。
 /// 标记先把"位置/朝向/名字/血量"这条链验通 —— 换精灵时只改这一个函数。
 #[allow(clippy::too_many_arguments)]
-fn draw_entity_marker(
+fn draw_entity_marker<'a, T>(
     canvas: &mut WindowCanvas,
-    cam: (i32, i32),
+    tc: &'a TextureCreator<T>,
+    names: &mut font::TextCache<'a>,
+    cam: (f32, f32),
     cx: i32,
     cy: i32,
     color: Color,
@@ -1729,6 +2363,10 @@ fn draw_entity_marker(
     hp: u32,
     max_hp: u32,
     dir: i32,
+    // 鼠标悬停在它身上 ⇒ 名字画亮（标记这条路没有"再画一遍"可用）
+    highlight: bool,
+    // 画 `当前/总量`（只有自己那份传 true）
+    show_numbers: bool,
 ) -> Result<(), sdl3::Error> {
     let (sx, sy) = cell_to_screen(cam, cx, cy);
     // 视口外直接跳过（地图比视口大得多）
@@ -1758,43 +2396,77 @@ fn draw_entity_marker(
     }
     draw_name_bar(
         canvas,
+        tc,
+        names,
         sx + UNIT_X as f32 / 2.0,
         sy,
         name,
         hp,
         max_hp,
         color,
+        highlight,
+        show_numbers,
     )
 }
 
 /// 名字 + 血条（精灵与标记两条路共用；名字居中在**格子中心**上方）。
 ///
 /// 血条只在"受了伤"时画，否则一屏全是条。
-fn draw_name_bar(
+#[allow(clippy::too_many_arguments)]
+fn draw_name_bar<'a, T>(
     canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    names: &mut font::TextCache<'a>,
     center_x: f32,
     cell_top: f32,
     name: &str,
     hp: u32,
     max_hp: u32,
     color: Color,
+    // 悬停 ⇒ 名字换亮色（原版悬停只换光标/加一遍混合；名字亮一点是最省事的等价反馈）
+    highlight: bool,
+    // 画 `当前/总量`（**只有自己**：参考图里玩家头顶带数值，怪只给一条血条）
+    show_numbers: bool,
 ) -> Result<(), sdl3::Error> {
+    // ⚠️ 名字必须走**真字体**（`font::TextCache`）：SDL3 那个 8×8 调试字体
+    // **只认 ASCII** ⇒ 中文名字一个字都画不出来（用户 2026-10-09 报的"没有显示名字，
+    // 更像字体问题"）；选角/登录早就换成真字体了（D-25），世界里这条是漏的。
+    //
+    // 版式（照参考图）：**血条在最上、名字在血条下面、再往下才是人**。
     let label = trunc(name, 12);
-    text(
+    let col = if highlight { C_HOVER_NAME } else { color };
+    names.draw(
         canvas,
+        tc,
         &label,
-        center_x - label.chars().count() as f32 * 4.0,
-        cell_top - 9.0,
-        color,
+        center_x - names.width(&label) / 2.0,
+        cell_top - names.line_height() - 2.0,
+        (col.r, col.g, col.b),
+        // 白字黑边（原版 `BoldTextOut` 就是描一遍黑边，见 font.rs 的说明）
+        Some((0, 0, 0)),
     )?;
-    if max_hp > 0 && hp < max_hp {
+    // 血条：自己**一直画**（参考图里自己的条常驻），别人只在掉血时画（否则一屏全是条）
+    if max_hp > 0 && (hp < max_hp || show_numbers) {
         let w = UNIT_X as f32 - 16.0;
         let frac = (hp as f32 / max_hp as f32).clamp(0.0, 1.0);
-        let y = cell_top + UNIT_Y as f32 - 6.0;
+        let y = cell_top - names.line_height() - 10.0;
         canvas.set_draw_color(Color::RGB(40, 40, 40));
-        canvas.fill_rect(FRect::new(center_x - w / 2.0, y, w, 3.0))?;
+        canvas.fill_rect(FRect::new(center_x - w / 2.0, y, w, 5.0))?;
         canvas.set_draw_color(Color::RGB(220, 60, 60));
-        canvas.fill_rect(FRect::new(center_x - w / 2.0, y, w * frac, 3.0))?;
+        canvas.fill_rect(FRect::new(center_x - w / 2.0, y, w * frac, 5.0))?;
+        if show_numbers {
+            // `当前/总量`（参考图：压在这条上）
+            let t = format!("{hp}/{max_hp}");
+            names.draw(
+                canvas,
+                tc,
+                &t,
+                center_x - names.width(&t) / 2.0,
+                y + 5.0 - names.line_height(),
+                (255, 255, 255),
+                Some((0, 0, 0)),
+            )?;
+        }
     }
     Ok(())
 }
@@ -1803,14 +2475,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
 
+    let (win_w, win_h) = window_size();
     let window = video
-        .window("MIR2 1.76 CLIENT - DEV VIEWER", WIN_W, WIN_H)
+        .window("MIR2 1.76 CLIENT - DEV VIEWER", win_w, win_h)
         .position_centered()
+        // 可拉大拉小：逻辑呈现会把 800×600 的界面**等比**铺到新尺寸（见 [`WIN_W`]）
+        .resizable()
         .build()
         .map_err(|e| format!("创建窗口失败: {e}"))?;
 
     video.text_input().start(&window);
     let mut canvas = window.into_canvas();
+    // 画布按 **800×600**（设计尺寸）画，SDL 负责铺满窗口 —— 于是登录/选角的背景图
+    // 自然铺满，而且**界面与背景一起缩放**（选角界面的按钮/面板是画在背景图里的，
+    // 只拉伸背景会把它们撕开 ⇒ 必须整体一个比例）。
+    //
+    // ⚠️ 用**逻辑呈现**而不是 `set_scale`：`set_scale` 只管坐标倍率，窗口不是 4:3 时
+    // 画面会露出一角底色、鼠标换算也要自己写；`LETTERBOX` 这两件事都替我们做了。
+    canvas
+        .set_logical_size(
+            WIN_W,
+            WIN_H,
+            sdl3_sys::render::SDL_LOGICAL_PRESENTATION_LETTERBOX,
+        )
+        .map_err(|e| format!("设置逻辑呈现失败: {e}"))?;
     let tex_creator = canvas.texture_creator();
 
     // ---------- 音频 ----------
@@ -1872,6 +2560,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 选角场景（登录成功、状态机停在"等你选"时才建）与真字体绘制器
     let mut select_scene: Option<select::Select> = None;
     let mut texts = font::TextCache::new(mir2_core::text::UI_PX);
+    // 世界里的字（怪物名字/伤害飘字）单独一份、小一档 —— 见 `text::NAME_PX`。
+    let mut names = font::TextCache::new(mir2_core::text::NAME_PX);
 
     // 素材浏览器的状态（F3）
     let mut status = String::from("READY");
@@ -1885,10 +2575,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                           // 鼠标走路：目标格 + 是否跑（左键走、右键跑；松开清空）。`move_at` 是步频节流。
     let mut move_target: Option<(i32, i32, bool)> = None;
     let mut move_at = Instant::now();
+    // **按住的是哪个键**（松开清掉）+ 上次"重取目标"的时刻 —— 按住时每
+    // [`MOUSE_REPEAT_MS`] 重跑一遍按下逻辑（照原版 `DXDrawMouseMove`）。
+    let mut held_move: Option<MouseButton> = None;
+    let mut retarget_at = Instant::now();
+    // 移动被拒的"记账"（`World::move_fail` 的上一帧读数）与**锁到什么时候**
+    //（照原版 `ActionFailLock`，见 [`MOVE_FAIL_LOCK_MS`]）。
+    let mut last_move_fail = 0u64;
+    let mut move_block_until = Instant::now();
+    // 悬停的那个实体（由 `draw_map_view` 每帧算出来 —— 要精灵落点，见 `actor_rect`）
+    let mut hover: Option<u64>;
+    // 进世界的按键提示只推一次（见下面那段）
+    let mut hint_pushed = false;
+    // 悬停可攻击目标时把光标换成"准星"（Crystal 是 `MouseCursor.Attack`，
+    // `GameScene.cs:432-433`）；只在**状态变了**才设，别每帧调。
+    let cursor_arrow = Cursor::from_system(SystemCursor::Arrow)?;
+    let cursor_cross = Cursor::from_system(SystemCursor::Crosshair)?;
+    let mut cursor_is_cross = false;
+    // **锁定的攻击目标**（左键点怪锁住）：之后每帧自动"靠近 / 出手"，直到它死掉或消失
+    //（照原版 `g_TargetCret` + `MouseTimerTimer`，`ClMain.pas:2863-2878 / 2962-2997`）。
+    // `attack_at` 是出手节流 —— 原版是 `CanNextHit`。
+    let mut combat_target: Option<u64> = None;
+    let mut attack_at = Instant::now();
     let mut map_i: usize = 0;
     let mut map: Option<Map> = None;
     let mut map_err = String::new();
-    let mut cam = (0i32, 0i32);
+    // 相机：**浮点格**（进了世界由 [`follow_cam`] 每帧算；离线时是手动镜头）。
+    let mut cam = (0f32, 0f32);
     let mut libs: HashMap<String, Option<Wzl>> = HashMap::new();
     let mut tiles: HashMap<TileKey, TileTex<'_>> = HashMap::new();
     let mut sprites = SpriteCache::new();
@@ -1944,6 +2657,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         started = Instant::now();
 
         for ev in events.poll_iter() {
+            // ⚠️ 事件里的 `x/y` 是**窗口坐标**（高 DPI 下还是物理像素），而界面画在
+            // 800×600 的逻辑空间里 ⇒ 一律让 SDL 换算（它同时管逻辑呈现的缩放与留边）。
+            // 漏了它的表现是"按钮点不中 / 点哪走哪偏一截"（踩过）。
+            let ev = ev.get_converted_coords(&canvas).unwrap_or(ev);
             match ev {
                 Event::Quit { .. } => break 'main,
                 Event::KeyDown {
@@ -2042,41 +2759,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // 方向键：**联网且在世界里 ⇒ 走一步**（相机跟着自己）；否则平移镜头。
                         Some(Keycode::Left) => {
                             if !walk_if_online(&net, mir2_protocol::Direction::DirLeft) {
-                                cam.0 -= 2
+                                cam.0 -= 2.0
                             }
                         }
                         Some(Keycode::Right) => {
                             if !walk_if_online(&net, mir2_protocol::Direction::DirRight) {
-                                cam.0 += 2
+                                cam.0 += 2.0
                             }
                         }
                         Some(Keycode::Up) => {
                             if !walk_if_online(&net, mir2_protocol::Direction::DirUp) {
-                                cam.1 -= 2
+                                cam.1 -= 2.0
                             }
                         }
                         Some(Keycode::Down) => {
                             if !walk_if_online(&net, mir2_protocol::Direction::DirDown) {
-                                cam.1 += 2
+                                cam.1 += 2.0
                             }
                         }
                         // Tab = **小地图**开关、M = **大地图**开关（原版 1.76 的键位，
                         // 见 `docs/use.md`；音乐已经挪到 Ctrl+M，不再抢 M）。
                         Some(Keycode::Tab) => minimap_on = !minimap_on,
                         Some(Keycode::M) => bigmap_on = !bigmap_on,
-                        // 空格：打一下身边的目标（A′：走 + 砍 = 能玩）。
+                        // 空格：打一下身边的目标（A′：走 + 砍 = 能玩）。**左键点怪**才是
+                        // 主路（会锁住目标、自动靠近）—— 见下面 `MouseButtonDown` 那段。
                         Some(Keycode::Space) => {
                             if let Some(n) = net.as_ref().filter(|n| n.world.in_world()) {
                                 if n.attack_adjacent() {
-                                    // 挥刀声：按**武器形状**分类（`Actor.pas:2254-2261`）。
-                                    // 原版在攻击动画的**帧 2** 播（`:2396-2401`），我们在
-                                    // 按下这一帧就播 —— 差几十毫秒，接线简单得多。
-                                    let shape = n
-                                        .world
-                                        .self_feature
-                                        .as_ref()
-                                        .map_or(0, |f| (f.weapon / 2) as u16);
-                                    sfx(&sound, &sounds, mir2_core::sound::swing(shape));
+                                    swing_sfx(n, &sound, &sounds);
                                 } else {
                                     println!("[net] 身边没有可打的目标（八格内）");
                                 }
@@ -2097,7 +2807,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-                        Some(Keycode::Home) => cam = (0, 0),
+                        Some(Keycode::Home) => cam = (0.0, 0.0),
                         // ---- 调试叠加层（只在地图模式，避免污染登录输入框）----
                         // 辅助线/坐标叠加层：默认关闭（见 `DEBUG_OVERLAY`）
                         Some(Keycode::D) if DEBUG_OVERLAY => {
@@ -2143,7 +2853,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("[layer] 过滤循环   →   当前可见 {}", layers_desc(layers));
                         }
                         Some(Keycode::P) => {
-                            dump_draws(&draws, cam, &tiles, layers);
+                            dump_draws(&draws, cam_parts(cam).cell, &tiles, layers);
                         }
                         Some(Keycode::LeftBracket) | Some(Keycode::RightBracket) => {
                             if let Some(a) = &archive {
@@ -2161,6 +2871,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     },
                     _ => {}
                 },
+                // 鼠标位置（已在循环头换算成界面的 800×600 空间）
                 Event::MouseMotion { x, y, .. } => mouse = (x, y),
                 // 鼠标移动：**在世界里 ⇒ 左键走 / 右键跑**（照原版 `ClMain.pas:2246-2352`：
                 // 左键 = 走，右键 = 跑；方向由鼠标相对角色的方位定，见 `dir_to`）。
@@ -2172,24 +2883,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let in_world = net.as_ref().is_some_and(|n| n.world.in_world());
                     match mouse_btn {
                         MouseButton::Left | MouseButton::Right if in_world => {
-                            let (tx, ty) = screen_to_cell(cam, x, y);
+                            let cell = screen_to_cell(cam, x, y);
                             let run = mouse_btn == MouseButton::Right;
-                            move_target = Some((tx, ty, run));
+                            // 按住时每 300ms 要拿"当前鼠标位置"重取目标（见下面 `MOUSE_REPEAT_MS`
+                            // 那段）⇒ 按下这一刻就得把位置记上（光等 `MouseMotion` 会漏掉
+                            // "按下后一动不动"的那种按住）。
+                            mouse = (x, y);
+                            // 照原版 `_DXDrawMouseDown`（`ClMain.pas:2805-2878`）：
+                            // **先清掉旧目标**，点到**活怪**就锁住它（之后每帧自动靠近/出手，
+                            // 直到它死掉或消失）；点空地 ⇒ 走/跑到那一格。
+                            let (ct, mt) = net
+                                .as_ref()
+                                .map(|n| mouse_intent(&n.world, cell, run))
+                                .unwrap_or((None, None));
+                            combat_target = ct;
+                            move_target = mt;
+                            attack_at = Instant::now(); // 立刻判"该出手还是该靠近"
                             move_at = Instant::now(); // 立刻踏出第一步
-                            println!(
-                                "[move] 目标格 ({tx},{ty})：{}",
-                                if run { "跑" } else { "走" }
-                            );
+                                                      // ⚠️ **按住不放要能一直走**：原版靠 `DXDrawMouseMove`
+                                                      //（`ClMain.pas:2678-2679`）—— 按住时只要距上次 >300ms 就**重跑一遍
+                                                      // 按下逻辑**，于是"鼠标那一格"被反复重新当成目标。少了它，
+                                                      // 目标格是按下那一刻定死的 ⇒ 走到那儿就停（用户 2026-10-08 报的
+                                                      // "按住只能走数次"）。
+                            held_move = Some(mouse_btn);
+                            retarget_at = Instant::now();
+                            match ct {
+                                Some(id) => {
+                                    println!("[net] 锁定目标 ActorId={id}（靠近后自动出手）");
+                                }
+                                None => println!(
+                                    "[move] 目标格 ({},{})：{}",
+                                    cell.0,
+                                    cell.1,
+                                    if run { "跑" } else { "走" }
+                                ),
+                            }
                         }
                         MouseButton::Left => probe_at(x, y, cam, &draws, &tiles, layers),
                         _ => {}
                     }
                 }
                 // 松开就停（原版也是松手清目标：`ClMain.pas:2384-2389`）
+                // ⚠️ **不清** `combat_target`：原版锁住的目标是"打到它死/消失"为止
+                //（`MouseTimerTimer`，`ClMain.pas:2962-2997`），不是"松手就取消"。
                 Event::MouseButtonUp { mouse_btn, .. }
                     if mode == 2 && matches!(mouse_btn, MouseButton::Left | MouseButton::Right) =>
                 {
                     move_target = None;
+                    held_move = None;
                 }
                 Event::MouseButtonDown {
                     mouse_btn: MouseButton::Left,
@@ -2198,12 +2939,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ..
                 } if mode == 4 => {
                     if let (Some(dir), Some(scene)) = (asset_dir.as_ref(), select_scene.as_mut()) {
+                        // 弹窗的几何要给进去：它那颗 [确定] 也走"按下与抬起同一颗"
+                        let msg = select::msgbox_geom(&mut ui, dir, (WIN_W, WIN_H));
                         if let Some(l) =
                             mir2_core::select_ui::Layout::build((WIN_W, WIN_H), |c, i| {
                                 ui.size(dir, c, i)
                             })
                         {
-                            scene.on_down((x, y), &l);
+                            scene.on_down((x, y), &l, msg);
                         }
                     }
                 }
@@ -2215,10 +2958,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } if mode == 4 => {
                     let act = match (asset_dir.as_ref(), select_scene.as_mut()) {
                         (Some(dir), Some(scene)) => {
+                            // 弹窗的几何也要给进去：不然它那颗 [确定] 点不中（见 `Select::on_up`）
+                            let msg = select::msgbox_geom(&mut ui, dir, (WIN_W, WIN_H));
                             match mir2_core::select_ui::Layout::build((WIN_W, WIN_H), |c, i| {
                                 ui.size(dir, c, i)
                             }) {
-                                Some(l) => scene.on_up((x, y), &l),
+                                Some(l) => scene.on_up((x, y), &l, msg),
                                 None => select::Action::None,
                             }
                         }
@@ -2300,17 +3045,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             //   ① 失败 ⇒ 弹窗（原版也是 `DMessageDlg`），并把"登录中"解掉；
             //   ② 进世界 ⇒ 开始播开门动画（原版 `IntroScn.pas:907-914`），播完切地图；
             //   ③ 成功拿到的会话号存下来 —— 之后重连走 `Reconnect`，不必再输口令。
-            if let Some(why) = n.entrance.failed() {
-                if login.error.is_none() {
-                    login.error = Some(why.to_string());
-                    login.busy = false;
-                }
-            }
-            // 连接层失败（连不上/被断开）：同样要弹出来并解掉"登录中"，
-            // 否则界面会一直转圈 —— 而原因只在终端里（踩过）。
-            if let Some(why) = n.fail.clone() {
-                if login.error.is_none() {
-                    login.error = Some(connect_hint(&why));
+            // ⚠️ **取走**失败原因，而不是每帧读 `entrance.failed()` / `n.fail`：
+            // 两者都是粘性状态（`stage == Failed` 会一直挂着）⇒ 每帧读的话，用户点了[确定]
+            // 之后下一帧它又弹回来，看着就是"弹窗关不掉"（用户 2026-10-08 报的）。
+            // 弹窗正开着就不取（那条失败会等关掉之后再弹）—— 免得把两条原因挤掉一条。
+            if login.error.is_none() {
+                if let Some(why) = n.take_fail() {
+                    login.error = Some(why);
                     login.busy = false;
                 }
             }
@@ -2404,6 +3145,103 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 原版是"按住每 ≥300ms 重新触发一次 `_DXDrawMouseDown`、松开清目标"
         //（`ClMain.pas:2115-2116 / 2384-2389`），步频本身受服务端节流限制 ⇒
         // 我们按 `WALK_MS`/`RUN_MS` 发，到了目标格就停。
+        //
+        // ⚠️ "这一步走还是跑"由 [`next_move_step`] 定：**距离 < 2 就不许跑** ——
+        // 跑步一次跨 2 格，奇数距离时不许跑才不会"跨过去再跨回来"（用户报的"左右乱换"）。
+
+        // **按住鼠标不放 ⇒ 一直走/跑**：每 [`MOUSE_REPEAT_MS`] 拿**当前鼠标那一格**重新定目标。
+        //
+        // 照原版 `ClMain.pas:2678-2679`（`DXDrawMouseMove` 里"按住且距上次 >300ms ⇒
+        // 重跑一遍 `_DXDrawMouseDown`"）。少了这一步，目标格就是按下那一刻定死的 ⇒
+        // 走到那儿就停（用户 2026-10-08 报的"按住只能走数次"）。
+        //
+        // ⚠️ 它必须与"人物不动、地图卷动"（[`follow_cam`]）配套：镜头跟着人走，鼠标**屏幕**
+        // 位置不变时它对应的**格子**会往前跑 ⇒ 按住不放就是**一直走下去**（原版的"按住跑直线"）。
+        // 镜头不卷或者目标不重取，两样单独都做不出这个手感。
+        if mode == 2
+            && held_move.is_some()
+            && retarget_at.elapsed() >= Duration::from_millis(MOUSE_REPEAT_MS)
+        {
+            retarget_at = Instant::now();
+            if let Some(n) = net.as_ref().filter(|n| n.world.in_world()) {
+                let cell = screen_to_cell(cam, mouse.0, mouse.1);
+                let run = held_move == Some(MouseButton::Right);
+                // ⚠️ 用 `mouse_repeat` 而不是 `mouse_intent`：按住时**不能**因为
+                // "光标不在怪身上了"就把锁住的怪丢掉（镜头跟着人走，光标一定会滑开，
+                // 否则按住点怪会半路变成走路）。见 `mouse_repeat` 的说明。
+                let (ct, mt) = mouse_repeat(&n.world, cell, run, combat_target);
+                combat_target = ct;
+                move_target = mt;
+            }
+        }
+
+        // **锁定的攻击目标**：够近就出手、不够近就靠近。
+        //
+        // 照原版：`_DXDrawMouseDown` 点到怪就 `g_TargetCret := target`（`ClMain.pas:2866`），
+        // 之后 `MouseTimerTimer`（`ClMain.pas:2962-2997`）**每帧**对那个目标调 `AttackTarget`
+        // —— `AttackTarget`（`:2691-2743`）自己判"相邻就砍、不够近就朝它旁边那格走/跑"。
+        // 也就是原版**没有"按住才打"这一说**：锁住了就一直打，直到它死掉或消失。
+        if mode == 2 && !net.as_ref().is_some_and(|n| n.world.self_dead) {
+            if let Some(id) = combat_target {
+                let step = net
+                    .as_ref()
+                    .filter(|n| n.world.in_world())
+                    .and_then(|n| n.world.combat_step(id));
+                match step {
+                    // 死了 / 消失了（尸体被清）/ 自己掉线了 ⇒ 解除锁定
+                    None => {
+                        println!("[net] 目标不在了，解除锁定");
+                        combat_target = None;
+                        move_target = None;
+                    }
+                    Some(mir2_core::world::CombatStep::Attack) => {
+                        // ⚠️ **这一步走完再出手** —— 原版 `CanNextAction` = `g_MySelf.IsIdle`
+                        //（`Actor.pas:1722-1736`：`m_nCurrentAction <> 0` 就"不空"，不许发下一个动作），
+                        // 而 `ActionFinished` 看的是**动画有没有播到 `m_nEndFrame`**
+                        // ⇒ 走路那段动作没播完，原版**发不出攻击**。
+                        //
+                        // 为什么我们特别需要它：我们不做移动预测，位置是**服务端权威**的 ——
+                        // 服务端确认"到了"时，画面上的补间才刚起步 ⇒ `combat_step` 已经说"相邻、
+                        // 该出手"，于是挥砍动画在人还没走到时就播了（用户 2026-10-08 报的）。
+                        let stepping = net
+                            .as_ref()
+                            .and_then(|n| n.anims.get(&n.world.self_id))
+                            .is_some_and(|a| a.moving(started));
+                        if can_attack(stepping, attack_at.elapsed()) {
+                            if let Some(n) = net.as_ref() {
+                                let _ = n.attack_target(id);
+                                swing_sfx(n, &sound, &sounds);
+                            }
+                            attack_at = Instant::now();
+                        }
+                    }
+                    // 够不着：复用鼠标走路那条路（步频/节流/"到了就停"都在下面那段里）
+                    Some(mir2_core::world::CombatStep::Approach { x, y, run }) => {
+                        move_target = Some((x, y, run));
+                    }
+                }
+            }
+        }
+
+        // 服务端**拒了这一步**（`MoveRejected`）⇒ 照原版 `ActionFailed`
+        //（`ClMain.pas:4005-4012`：清走法目标 + 锁 1 秒不许再发）。
+        //
+        // ⚠️ 少了这个反应，撞墙时客户端会朝同一个方向每 `WALK_MS` 发一次、每次都被拒，
+        // 人物就"卡在那儿不动"，而且服务端日志刷满 —— "跑不到怪身边"多半有它一份。
+        // 计数**变没变**就是"刚刚被拒了一次"的信号（见 `World::move_fail`）。
+        let fails = net.as_ref().map_or(0, |n| n.world.move_fail);
+        if fails != last_move_fail {
+            let reason = net.as_ref().map_or(0, |n| n.world.move_fail_reason);
+            last_move_fail = fails;
+            move_target = None;
+            move_at = Instant::now();
+            move_block_until = Instant::now() + Duration::from_millis(MOVE_FAIL_LOCK_MS);
+            println!(
+                "[move] 服务端拒绝了这一步（reason={reason}，1=超速 2=越界 3=阻挡）\
+                 —— 清走法目标 + 锁 {MOVE_FAIL_LOCK_MS}ms"
+            );
+        }
+
         if mode == 2 {
             if let Some((tx, ty, run)) = move_target {
                 let here = net
@@ -2413,17 +3251,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match here {
                     // 没进世界（掉线/还没到）⇒ 目标作废，别攒着一堆移动
                     None => move_target = None,
-                    // 到了 ⇒ 收工（原版到点也停）
-                    Some(pos) if pos == (tx, ty) => move_target = None,
-                    Some(pos) => {
-                        let gap = if run { RUN_MS } else { WALK_MS };
-                        if move_at.elapsed() >= Duration::from_millis(gap) {
-                            if let Some(dir) = dir_to(pos, (tx, ty)) {
-                                move_if_online(&net, dir, run);
+                    Some(pos) => match next_move_step(pos, (tx, ty), run) {
+                        // 已经站在目标格上 ⇒ 收工（原版到点也停）
+                        None => move_target = None,
+                        Some((dir, step_run)) => {
+                            let gap = if step_run { RUN_MS } else { WALK_MS };
+                            // 被拒后的锁还没到期 ⇒ 先别发（原版 `IsUnLockAction`，
+                            // `ClMain.pas:4014-4021`：锁着就一律不许动）
+                            if move_block_until <= Instant::now()
+                                && move_at.elapsed() >= Duration::from_millis(gap)
+                            {
+                                move_if_online(&net, dir, step_run);
+                                move_at = Instant::now();
                             }
-                            move_at = Instant::now();
                         }
-                    }
+                    },
                 }
             }
         }
@@ -2501,16 +3343,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // 进了世界就让相机跟着自己（离线时保持手动镜头）。
-        if let Some(c) = net.as_ref().and_then(|n| n.follow_cam()) {
-            cam = c;
+        //
+        // ⚠️ 跟的是**渲染位置**（补间后的浮点格），不是服务端那一格 —— 见 [`follow_cam`]。
+        // 于是"人在屏幕中间不动、地图往前卷"，而不是"人在视口里蹭、镜头一格一跳"。
+        if let Some(render) = net.as_ref().and_then(|n| n.self_render(started)) {
+            cam = follow_cam(render);
         }
 
         // 地图镜头夹在合理范围内（允许露出边缘一格）
         if let Some(m) = &map {
-            let max_x = (m.width as i32 - (WIN_W as i32 / UNIT_X) + 2).max(0);
-            let max_y = (m.height as i32 - (VIEW_H as i32 / UNIT_Y) + 2).max(0);
-            cam.0 = cam.0.clamp(-2, max_x);
-            cam.1 = cam.1.clamp(-2, max_y);
+            let max_x = (m.width as i32 - (WIN_W as i32 / UNIT_X) + 2).max(0) as f32;
+            let max_y = (m.height as i32 - (VIEW_H as i32 / UNIT_Y) + 2).max(0) as f32;
+            cam.0 = cam.0.clamp(-2.0, max_x);
+            cam.1 = cam.1.clamp(-2.0, max_y);
         }
 
         // 前景动画的节拍：官方 `m_nAniCount` **每 50 ms 加一**（`PlayScn.pas:963`，
@@ -2521,10 +3366,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         canvas.set_draw_color(C_BG);
         canvas.clear();
 
+        // 悬停的那个实体（由 `draw_map_view` 按精灵落点算出来）—— 光标/高亮都用它
         if mode == 2 {
-            draw_map_view(
+            hover = draw_map_view(
                 &mut canvas,
                 &tex_creator,
+                &mut names,
+                &mut ui,
                 &mut libs,
                 &mut tiles,
                 &mut draws,
@@ -2540,7 +3388,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mouse,
                 ani_count,
                 net.as_ref(),
+                combat_target,
             )?;
+            // 光标跟着悬停状态走：悬停的是**怪**才换准星（原版悬停谁都不换光标，
+            // 这是 Crystal 那套；换成"能打的东西"上才有意义）
+            let want_cross = hover.is_some_and(|id| {
+                net.as_ref().is_some_and(|n| {
+                    n.world
+                        .entities
+                        .get(&id)
+                        .is_some_and(|e| e.kind == mir2_core::world::KIND_MONSTER)
+                })
+            });
+            if want_cross != cursor_is_cross {
+                cursor_is_cross = want_cross;
+                if want_cross {
+                    cursor_cross.set();
+                } else {
+                    cursor_arrow.set();
+                }
+            }
+
             // 小地图 / 大地图（原版 `PlayScn.pas:791` 的 `DrawMiniMap`）
             draw_minimaps(
                 &mut canvas,
@@ -2608,23 +3476,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
         }
 
-        // 顶部/底部公共条
-        let hint = hint_text(mode);
-        fill(
-            &mut canvas,
-            0.0,
-            WIN_H as f32 - BAR_BOTTOM,
-            WIN_W as f32,
-            BAR_BOTTOM,
-            C_PANEL,
-        )?;
-        text(
-            &mut canvas,
-            &trunc(hint, TEXT_COLS),
-            4.0,
-            WIN_H as f32 - BAR_BOTTOM + 6.0,
-            C_DIM,
-        )?;
+        // 底部那条**开发用**提示条撤了：现在那儿是 HUD 操作面板（字会压在按钮上）。
+        // 按键提示改在**进世界时推一行到聊天区**（玩家看得到的那处）。
+        if !hint_pushed && mode == 2 {
+            if let Some(n) = net.as_mut() {
+                if n.entered_once {
+                    hint_pushed = true;
+                    n.chat.push(trunc(hint_text(2), 30), C_CHAT_SYS);
+                    println!("[hud] 按键提示已进聊天区：{}", trunc(hint_text(2), 30));
+                }
+            }
+        }
 
         let _ = canvas.present();
     }
@@ -2634,7 +3496,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// 切换到第 `i` 张地图（按容器内名字升序）。
-fn load_map(a: &Archive, i: usize, map: &mut Option<Map>, err: &mut String, cam: &mut (i32, i32)) {
+fn load_map(a: &Archive, i: usize, map: &mut Option<Map>, err: &mut String, cam: &mut (f32, f32)) {
     let Some(e) = a.entries().get(i) else {
         return;
     };
@@ -2659,7 +3521,7 @@ fn load_map(a: &Archive, i: usize, map: &mut Option<Map>, err: &mut String, cam:
             let (tx, ty) = m.nearest_front_tile(w / 2, h / 2).unwrap_or((w / 2, h / 2));
             let cols = WIN_W as i32 / UNIT_X;
             let rows = VIEW_H as i32 / UNIT_Y;
-            *cam = (tx - cols / 2, ty - rows / 2);
+            *cam = (tx as f32 - cols as f32 / 2.0, ty as f32 - rows as f32 / 2.0);
             *err = String::new();
             *map = Some(m);
         }
@@ -2672,10 +3534,186 @@ fn load_map(a: &Archive, i: usize, map: &mut Option<Map>, err: &mut String, cam:
     }
 }
 
+/// 底部操作面板（HUD）：面板 + 血/魔法球 + 等级 + 经验条 + 聊天行 + 地图名/坐标。
+///
+/// 版式与图号**照抄原版**（`FState.pas` 的 `TFrmDlg.DBottomDirectPaint`，引文见上面那组常量）。
+/// 它画在**世界之上**（原版也是最后贴上去的），所以在 `draw_map_view` 末尾调。
+#[allow(clippy::too_many_arguments)]
+fn draw_hud<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    ui: &mut ui::UiCache<'a>,
+    names: &mut font::TextCache<'a>,
+    dir: &Path,
+    net: Option<&Net>,
+    // 地图名（容器里的标题；空则退回服务端那个代号）
+    map_title: &str,
+) -> Result<(), sdl3::Error> {
+    let (bw, bh) = ui.size(dir, "Prguse", HUD_BOARD).unwrap_or((800, 251));
+    let (bw, bh) = (bw as f32, bh as f32);
+    // 原版：`btop := SCREENHEIGHT - d.height`
+    let board_y = WIN_H as f32 - bh;
+    // ⚠️ 一张 alpha 贴图就等价于原版那两刀（上半 120px 走色键、下半不透明）：
+    // 我们的解码把调色板索引 0 当透明，上半正好是空的。
+    //
+    // 面板分三段贴（见 `HUD_SIDE_W`）：左右 1:1，中间那段拉宽到窗口宽 ——
+    // 于是 1024 窗口下球和按钮都不变形，只有聊天框变宽。
+    let mid_src_w = (bw - 2.0 * HUD_SIDE_W).max(1.0);
+    let mid_dst_w = (WIN_W as f32 - 2.0 * HUD_SIDE_W).max(mid_src_w);
+    for (sx, sw, dx, dw) in [
+        (0.0, HUD_SIDE_W, 0.0, HUD_SIDE_W),             // 左：球那一块
+        (HUD_SIDE_W, mid_src_w, HUD_SIDE_W, mid_dst_w), // 中：聊天框（拉宽）
+        (bw - HUD_SIDE_W, HUD_SIDE_W, hud_right_x(), HUD_SIDE_W), // 右：按钮/状态
+    ] {
+        ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            "Prguse",
+            HUD_BOARD,
+            FRect::new(sx, 0.0, sw, bh),
+            FRect::new(dx, board_y, dw, bh),
+            255,
+        );
+    }
+
+    // 血 / 魔法球：左半红 = HP、右半蓝 = MP，各自按比例从**下面**留一截（`gauge_band`）
+    let (hp, max_hp) = net.map_or((0, 0), |n| n.world.self_hp.unwrap_or((0, 0)));
+    let (mp, max_mp) = net.map_or((0, 0), |n| {
+        n.world
+            .ability
+            .as_ref()
+            .map_or((0, 0), |a| (a.mp, a.max_mp))
+    });
+    if max_hp > 0 && max_mp > 0 {
+        let (ow, oh) = ui.size(dir, "Prguse", HUD_ORB).unwrap_or((92, 90));
+        let (ow, oh) = (ow as i32, oh as i32);
+        let half = ow / 2 - 1; // 原版：`rc.Right := d.ClientRect.Right div 2 - 1`
+        let ball_y = board_y + ORB_AT.1;
+        // HP：源矩形右边界砍到中线
+        let (top, h) = gauge_band(hp as f32 / max_hp as f32, oh);
+        ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            "Prguse",
+            HUD_ORB,
+            FRect::new(0.0, top as f32, half as f32, h as f32),
+            FRect::new(ORB_AT.0, ball_y + top as f32, half as f32, h as f32),
+            255,
+        );
+        // MP：源矩形左边界从中线 +1 起，落点 x 也加它（原版 `40 + rc.Left`）
+        let left = ow / 2 + 1;
+        let (top, h) = gauge_band(mp as f32 / max_mp as f32, oh);
+        ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            "Prguse",
+            HUD_ORB,
+            FRect::new(left as f32, top as f32, (ow - 1 - left) as f32, h as f32),
+            FRect::new(
+                ORB_AT.0 + left as f32,
+                ball_y + top as f32,
+                (ow - 1 - left) as f32,
+                h as f32,
+            ),
+            255,
+        );
+    }
+
+    // 等级：原版 `PomiTextOut` —— 数字图（`Prguse[30..39]`，12×10）**每 8px 一位**，
+    // 且**第一位画在 `x + 8`**（`for i := 1 to Length(str)`），这里照做。
+    let level = net
+        .and_then(|n| n.world.ability.as_ref().map(|a| a.level))
+        .unwrap_or(1);
+    let (dw, dh) = ui.size(dir, "Prguse", HUD_DIGIT0).unwrap_or((12, 10));
+    let level_at = level_at();
+    for (i, ch) in level.to_string().chars().enumerate() {
+        let Some(d) = ch.to_digit(10) else { continue };
+        ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            "Prguse",
+            HUD_DIGIT0 + d,
+            FRect::new(0.0, 0.0, dw as f32, dh as f32),
+            FRect::new(
+                level_at.0 + (i as f32 + 1.0) * 8.0,
+                level_at.1,
+                dw as f32,
+                dh as f32,
+            ),
+            255,
+        );
+    }
+
+    // 经验条：⚠️ **画不出来** —— 协议 `Ability` 里没有 exp/max_exp（原版 `SM_ABILITY` 有），
+    // 服务端也没下发 ⇒ 这里如实留空（`HUD_EXP` / `EXP_AT` 先备着，见 D-49）。
+
+    // 聊天行：原版是"每行自带背景色、OPAQUE 画"（`FState.pas:3868-3886`）——
+    // 所以面板上那块浅色框只是**垫底**，真正的深底是文字自己铺出来的。
+    // 我们铺一次深底 + 逐行前景色，效果一致。
+    if let Some(n) = net {
+        let chat = &n.chat;
+        let shown = chat.lines.len().min(CHAT_VIEW_LINES);
+        if shown > 0 {
+            let skip = chat.lines.len() - shown;
+            canvas.set_draw_color(Color::RGB(24, 24, 30));
+            canvas.fill_rect(FRect::new(
+                CHAT_AT.0 - 4.0,
+                CHAT_AT.1 - 2.0,
+                // 聊天框在中间那段里（面板那一段是被拉宽的 ⇒ 底色也跟着宽）
+                (WIN_W as f32 - 2.0 * HUD_SIDE_W) - 12.0,
+                shown as f32 * CHAT_LINE_H + 4.0,
+            ))?;
+            for (i, (line, col)) in chat.lines.iter().skip(skip).enumerate() {
+                names.draw(
+                    canvas,
+                    tc,
+                    line,
+                    CHAT_AT.0,
+                    CHAT_AT.1 + i as f32 * CHAT_LINE_H,
+                    (col.r, col.g, col.b),
+                    Some((0, 0, 0)),
+                )?;
+            }
+        }
+    }
+
+    // 地图名 + 坐标（用户参考图里在左下角；原版 1.76 也在这块地方）
+    if let Some(n) = net {
+        if n.world.in_world() {
+            let title = if map_title.is_empty() {
+                n.world.map_name.as_str()
+            } else {
+                map_title
+            };
+            names.draw(
+                canvas,
+                tc,
+                &format!(
+                    "{}  {}:{}",
+                    trunc(title, 12),
+                    n.world.self_pos.0,
+                    n.world.self_pos.1
+                ),
+                8.0,
+                WIN_H as f32 - 20.0,
+                (C_HUD_COORD.r, C_HUD_COORD.g, C_HUD_COORD.b),
+                Some((0, 0, 0)),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_map_view<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
+    names: &mut font::TextCache<'a>,
+    ui: &mut ui::UiCache<'a>,
     libs: &mut HashMap<String, Option<Wzl>>,
     tiles: &mut HashMap<TileKey, TileTex<'a>>,
     draws: &mut Vec<TileDraw>,
@@ -2683,7 +3721,7 @@ fn draw_map_view<'a, T>(
     asset_dir: &Option<PathBuf>,
     map: &Option<Map>,
     map_err: &str,
-    cam: (i32, i32),
+    cam: (f32, f32),
     map_i: usize,
     map_count: usize,
     debug: bool,
@@ -2691,7 +3729,9 @@ fn draw_map_view<'a, T>(
     mouse: (f32, f32),
     ani_count: u32,
     net: Option<&Net>,
-) -> Result<(), sdl3::Error> {
+    // 锁定中的攻击目标（`None` = 没锁）—— 只用来给它的名字换色，让人看得出在打谁。
+    combat_target: Option<u64>,
+) -> Result<Option<u64>, sdl3::Error> {
     fill(canvas, 0.0, 0.0, WIN_W as f32, BAR_TOP, C_PANEL)?;
 
     let Some(dir) = asset_dir else {
@@ -2702,7 +3742,7 @@ fn draw_map_view<'a, T>(
             8.0,
             C_ERR,
         )?;
-        return Ok(());
+        return Ok(None);
     };
 
     if map.is_none() {
@@ -2712,7 +3752,7 @@ fn draw_map_view<'a, T>(
             format!("PARSE FAILED: {}", trunc(map_err, 60))
         };
         text(canvas, &msg, 4.0, 8.0, C_ERR)?;
-        return Ok(());
+        return Ok(None);
     }
     let m = map.as_ref().unwrap();
 
@@ -2720,24 +3760,50 @@ fn draw_map_view<'a, T>(
     // 有单测守着三层顺序与隔格规则）；这里只负责取纹理 + 上屏。
     let cols = WIN_W as i32 / UNIT_X + 3;
     let rows = VIEW_H as i32 / UNIT_Y + 3;
-    m.visible_tiles(cam.0, cam.1, cols, rows, ani_count, draws);
+    // 相机拆成"整格 + 亚格"：`visible_tiles` 只认整格（它给的落点是整数像素），
+    // 亚格那半格由 `draw_tile` 减掉 ⇒ 地图逐帧平滑卷动（见 `cam_parts`）。
+    let cp = cam_parts(cam);
+    m.visible_tiles(cp.cell.0, cp.cell.1, cols, rows, ani_count, draws);
     // 裁剪到地图视口：`visible_tiles` 左上会多给一格（坐标可能为负），
     // 且高图块（树/墙）本身上端会超出视口——不裁剪就会画到上下信息条上。
     canvas.set_clip_rect(Some(Rect::new(0, BAR_TOP as i32, WIN_W, VIEW_H as u32)));
     let view = viewport_rect();
     for d in draws.iter() {
-        // 逐层显隐（CTRL+1/2/3 / L）：关掉的层**既不画图块也不画调试框**
-        if layers & d.layer.bit() == 0 {
-            continue;
-        }
+        // 逐层显隐（CTRL+1/2/3 / L）：关掉的层**既不画图块也不画调试框**。
         // 视口剔除：前景向下多扫了 35 行，那批候选多半够不着视口。
         // 先按 WZL 记录（不解码像素）判掉，省下解码与贴图上传。
-        if !draw_rect_cold(libs, dir, d).is_some_and(|r| intersects(&r, &view)) {
+        // ⚠️ 判据与落点必须是**同一份**（都含亚格偏移）——见 `tile_in_view`。
+        if !tile_in_view(libs, dir, d, &cp, layers, &view) {
             continue;
         }
-        draw_tile(canvas, tc, libs, tiles, dir, d, BAR_TOP)?;
+        draw_tile(canvas, tc, libs, tiles, dir, d, BAR_TOP, cp.sub)?;
     }
     canvas.set_clip_rect(None::<Rect>);
+
+    // **悬停命中**（照原版 `g_FocusCret` / Crystal `MouseObject`）：按**精灵落点**
+    // 而不是按格子（见 `actor_rect` 的说明）。重叠时取**脚最靠下**的那个 ——
+    // Mir2 的 Y 序里它画在最前面，"指着谁就亮谁"。
+    let mut hover: Option<u64> = None;
+    if let Some(n) = net {
+        if n.world.in_world() {
+            let now = Instant::now();
+            let mut best = f32::MIN;
+            for e in n.world.entities.values() {
+                let Some(r) = actor_rect(tc, sprites, dir, cam, e, n.anims.get(&e.id), now) else {
+                    continue;
+                };
+                if mouse.0 >= r.x
+                    && mouse.0 < r.x + r.w
+                    && mouse.1 >= r.y
+                    && mouse.1 < r.y + r.h
+                    && e.y as f32 > best
+                {
+                    best = e.y as f32;
+                    hover = Some(e.id);
+                }
+            }
+        }
+    }
 
     // 实体标记（B：联网之后"看得见世界"）。画在世界之上、调试叠加层之下 ——
     // 这样按 D 打开叠加层时，格网仍然压在最上面（否则标记会盖住格线，很难读）。
@@ -2749,6 +3815,9 @@ fn draw_map_view<'a, T>(
                 // 这样"素材缺失 + 已死"也能一眼看出来。
                 let color = if e.dead {
                     C_ENT_DEAD
+                } else if combat_target == Some(e.id) {
+                    // 锁定的目标：名字换成高亮色（"在打谁"要有反馈）
+                    C_ENT_TARGET
                 } else {
                     match e.kind {
                         0 => C_ENT_PLAYER,
@@ -2759,6 +3828,7 @@ fn draw_map_view<'a, T>(
                 draw_actor(
                     canvas,
                     tc,
+                    names,
                     sprites,
                     dir,
                     cam,
@@ -2769,6 +3839,11 @@ fn draw_map_view<'a, T>(
                     e.hp,
                     e.max_hp,
                     color,
+                    // 悬停高亮（照原版 `g_FocusCret.DrawChr(..., blend=TRUE)`：
+                    // **再画一遍**、半透明 —— 见 `HOVER_TINT`）
+                    hover == Some(e.id),
+                    // 别人不画数值（参考图里只有玩家头顶带）
+                    false,
                 )?;
             }
 
@@ -2778,7 +3853,12 @@ fn draw_map_view<'a, T>(
             let me = mir2_core::world::Entity {
                 id: n.world.self_id,
                 kind: 0,
-                name: "[自己]".to_string(),
+                // 真名（协议 `EnterWorld.self_name`）；没给（老服务端）才退回占位符
+                name: if n.world.self_name.is_empty() {
+                    "[自己]".to_string()
+                } else {
+                    n.world.self_name.clone()
+                },
                 x: n.world.self_pos.0,
                 y: n.world.self_pos.1,
                 dir: n.world.self_dir,
@@ -2794,6 +3874,7 @@ fn draw_map_view<'a, T>(
             draw_actor(
                 canvas,
                 tc,
+                names,
                 sprites,
                 dir,
                 cam,
@@ -2804,6 +3885,8 @@ fn draw_map_view<'a, T>(
                 hp,
                 max_hp,
                 C_ENT_SELF,
+                false, // 自己永不算是"悬停高亮"（原版 `g_FocusCret <> g_MySelf`）
+                true,  // 自己头顶画 `当前/总量`（用户参考图）
             )?;
 
             // 伤害飘字（A′：打怪要看得见数字）。往上飘，三档亮度代替淡出 ——
@@ -2818,7 +3901,15 @@ fn draw_map_view<'a, T>(
                 } else {
                     C_DMG_DIM
                 };
-                text(canvas, txt, px + 18.0, py - 10.0 - age as f32 / 60.0, col)?;
+                names.draw(
+                    canvas,
+                    tc,
+                    txt,
+                    px + 18.0,
+                    py - 10.0 - age as f32 / 60.0,
+                    (col.r, col.g, col.b),
+                    Some((0, 0, 0)),
+                )?;
             }
         }
     }
@@ -2844,7 +3935,18 @@ fn draw_map_view<'a, T>(
             format!(" /{map_count}")
         }
     );
-    text(canvas, &trunc(&info, TEXT_COLS - 20), 4.0, 8.0, C_TITLE)?;
+    // **左上角叠加**（用户 2026-10-09：调试信息移到左上角、叠在游戏内容上）——
+    // 不带底条，靠黑边压住底下的地图；两行：地图信息 / 世界摘要。
+    let lh = names.line_height();
+    names.draw(
+        canvas,
+        tc,
+        &trunc(&info, 64),
+        4.0,
+        4.0,
+        (C_TITLE.r, C_TITLE.g, C_TITLE.b),
+        Some((0, 0, 0)),
+    )?;
     // 右上角：层可见性（三层全开时不显示，免得占地方）+ 纹理缓存数
     let base = if layers == LAYERS_ALL {
         format!("TILES {}", tiles.len())
@@ -2865,9 +3967,21 @@ fn draw_map_view<'a, T>(
         ),
         None => base,
     };
-    let rx = WIN_W as f32 - 6.0 - right.chars().count() as f32 * 8.0;
-    text(canvas, &right, rx, 8.0, C_DIM)?;
-    Ok(())
+    names.draw(
+        canvas,
+        tc,
+        &trunc(&right, 64),
+        4.0,
+        4.0 + lh,
+        (C_DIM.r, C_DIM.g, C_DIM.b),
+        Some((0, 0, 0)),
+    )?;
+
+    // **底部操作面板**：最后贴（原版也是最后贴的），盖住世界下沿
+    draw_hud(canvas, tc, ui, names, dir, net, &m.title)?;
+
+    // 悬停结果还给主循环：光标要跟着它换（Crystal 的 Attack 光标）
+    Ok(hover)
 }
 
 /// 素材浏览器（**开发用**，`F3` 进出）：任取一个容器里的第 N 张图，看它解码成什么样。
@@ -3539,6 +4653,7 @@ mod tests {
             from: Some((4, 5)),
             action: None,
             changed_at: now,
+            action_at: now,
             move_ms: move_ms(1, 0, false), // 走一格 = 600 ms（见 `move_ms`）
             walk_since: now,
         };
@@ -3599,24 +4714,56 @@ mod tests {
     #[test]
     fn 走跑动画按相位推帧() {
         // 走：相位 0 → 0 帧、90 → 1 帧、540 → 又回到 0（一轮 = 6×90）
-        assert_eq!(human_sample(None, 0, true, false, 0), (A::HAct::Walk, 0));
-        assert_eq!(human_sample(None, 0, true, false, 90), (A::HAct::Walk, 1));
-        assert_eq!(human_sample(None, 0, true, false, 450), (A::HAct::Walk, 5));
-        assert_eq!(human_sample(None, 0, true, false, 540), (A::HAct::Walk, 0));
+        assert_eq!(
+            human_sample(None, 0, true, false, 0, false),
+            (A::HAct::Walk, 0)
+        );
+        assert_eq!(
+            human_sample(None, 0, true, false, 90, false),
+            (A::HAct::Walk, 1)
+        );
+        assert_eq!(
+            human_sample(None, 0, true, false, 450, false),
+            (A::HAct::Walk, 5)
+        );
+        assert_eq!(
+            human_sample(None, 0, true, false, 540, false),
+            (A::HAct::Walk, 0)
+        );
         // 跑：同一套相位走在**另一段图**上（120 ms 一帧）
-        assert_eq!(human_sample(None, 0, true, true, 0), (A::HAct::Run, 0));
-        assert_eq!(human_sample(None, 0, true, true, 480), (A::HAct::Run, 4));
+        assert_eq!(
+            human_sample(None, 0, true, true, 0, false),
+            (A::HAct::Run, 0)
+        );
+        assert_eq!(
+            human_sample(None, 0, true, true, 480, false),
+            (A::HAct::Run, 4)
+        );
         // 站着：相位无关（stand 的帧按自己的 200 ms 走）
-        assert_eq!(human_sample(None, 0, false, true, 450).0, A::HAct::Stand);
+        assert_eq!(
+            human_sample(None, 0, false, true, 450, false).0,
+            A::HAct::Stand
+        );
     }
 
     /// 动作播完回站立 —— 否则实体会永远停在那一刀的末帧。
     #[test]
     fn 动作播完回站立() {
-        assert_eq!(human_sample(Some(1), 0, false, false, 0).0, A::HAct::Hit);
-        // ActHit 是 6 帧 × 85ms = 510ms ⇒ 600ms 后应回到站立
         assert_eq!(
-            human_sample(Some(1), 600, false, false, 0),
+            human_sample(Some(1), 0, false, false, 0, false).0,
+            A::HAct::Hit
+        );
+        // **尾巴**内（510+80=590ms 之前）：仍停在挥砍的最后一帧 —— 两刀之间不留缝
+        // （节拍 560ms，动画只有 510ms；不留尾巴就会闪 3 帧站立，看着像"砍一下停一下"）
+        assert_eq!(
+            human_sample(Some(1), 520, false, false, 0, false),
+            (A::HAct::Hit, A::HAct::Hit.act().last_frame()),
+            "尾巴内该停在最后一帧"
+        );
+
+        // ActHit 是 6 帧 × 85ms = 510ms ⇒ 过了尾巴（600ms）应回到站立
+        assert_eq!(
+            human_sample(Some(1), 600, false, false, 0, false),
             (A::HAct::Stand, 0)
         );
     }
@@ -3624,9 +4771,15 @@ mod tests {
     /// 手上的动作播完后，**走路**优先于站立（在走就别站着）。
     #[test]
     fn 动作播完且在走就播走路() {
-        assert_eq!(human_sample(Some(1), 600, true, false, 0).0, A::HAct::Walk);
+        assert_eq!(
+            human_sample(Some(1), 600, true, false, 0, false).0,
+            A::HAct::Walk
+        );
         // 跑也一样优先于站立，只是换成 ActRun
-        assert_eq!(human_sample(Some(1), 600, true, true, 0).0, A::HAct::Run);
+        assert_eq!(
+            human_sample(Some(1), 600, true, true, 0, false).0,
+            A::HAct::Run
+        );
     }
 
     /// **建号那条路的每一步都必须有翻译** —— 用户报的"点了建号没反应"根因就是
@@ -3803,6 +4956,47 @@ mod tests {
         assert_eq!(dir_to(at, (99, 10)), Some(D::DirRight));
     }
 
+    /// 鼠标连续走路：**距离 < 2 时不许跑**（照原版 `ClMain.pas:1950-1978`）。
+    ///
+    /// 少了这条，跑步（一次跨 2 格）遇到**奇数距离**的目标就会跨过去再跨回来 ——
+    /// 用户 2026-10-08 报的"奔跑位置左右乱换"。距离 < 2 时改成走一步，正好落到目标格。
+    #[test]
+    fn 鼠标走路距离近了不许跑() {
+        use mir2_protocol::Direction as D;
+        let at = (10, 10);
+        // 已经站在目标格 ⇒ 没有下一步（调用方收工）
+        assert_eq!(next_move_step(at, at, true), None);
+        assert_eq!(next_move_step(at, at, false), None);
+
+        // 相邻（距离 1，含斜向）⇒ **走**，哪怕想要跑（跑会跨过去）
+        assert_eq!(
+            next_move_step(at, (11, 10), true),
+            Some((D::DirRight, false))
+        );
+        assert_eq!(
+            next_move_step(at, (11, 11), true),
+            Some((D::DirDownRight, false))
+        );
+        assert_eq!(next_move_step(at, (10, 10), false), None);
+
+        // 距离 ≥ 2（切比雪夫：`ClFunc.pas:352` 的 `MAX(abs(dx),abs(dy))`）⇒ 想跑就真跑
+        assert_eq!(
+            next_move_step(at, (12, 10), true),
+            Some((D::DirRight, true))
+        );
+        assert_eq!(next_move_step(at, (10, 13), true), Some((D::DirDown, true)));
+        // 斜向 (2,2)：切比雪夫距离是 2 ⇒ 也算"够远"（跑一次正好 2 格斜向）
+        assert_eq!(
+            next_move_step(at, (12, 12), true),
+            Some((D::DirDownRight, true))
+        );
+        // 不想跑就永远走（左键）
+        assert_eq!(
+            next_move_step(at, (99, 10), false),
+            Some((D::DirRight, false))
+        );
+    }
+
     /// 小地图的换算：**X 是 1.5 倍、Y 是 1 倍**（原版 `PlayScn.pas:808-813`）——
     /// 这个不对称是原版就有的，写成 `*1.5/*1.5` 会让点位系统性偏左。
     #[test]
@@ -3896,6 +5090,7 @@ mod tests {
             from: Some((10, 20)),
             action: None,
             changed_at: now,
+            action_at: now,
             move_ms: move_ms(1, 0, false),
             walk_since: now,
         };
@@ -3913,10 +5108,160 @@ mod tests {
         assert_eq!(self_render_pos(Some(&anim), (11, 20), done), (11.0, 20.0));
     }
 
+    /// `MIR2_WINDOW` 的解析：比设计尺寸小 / 格式不对 ⇒ `None`（退回默认）。
+    ///
+    /// ⚠️ 设计尺寸 2026-10-09 起是 **1024×768**（之前 800×600 是被放大到 1024 的那档）⇒
+    /// `800x600` 现在**不认**了：那会把 1024 的版式缩小（HUD 面板都放不下）。
+    #[test]
+    fn 窗口尺寸参数解析() {
+        for (s, want) in [
+            ("1024x768", Some((1024, 768))),
+            ("1280x960", Some((1280, 960))),
+            ("1600x1200", Some((1600, 1200))),
+            // 大小写、空格都容错
+            (" 1280 X 960 ", Some((1280, 960))),
+            // 比设计尺寸（1024×768）小 ⇒ 不认
+            ("800x600", None),
+            ("1024x700", None),
+            ("640x480", None),
+            ("1024x500", None),
+            // 格式不对
+            ("1280*960", None),
+            ("1280", None),
+            ("abcxdef", None),
+            ("", None),
+        ] {
+            assert_eq!(parse_window(s), want, "「{s}」解析不对");
+        }
+    }
+
+    /// **登录/选角背景是 800×600**（真素材）—— 它们在 1024×768 的窗口里**居中**摆。
+    ///
+    /// 2026-10-09 之前设计空间就是 800×600，这条断言写作"素材 == 设计尺寸"；
+    /// 现在设计空间改成 1024×768（原生渲染、不放大），这条只钉素材尺寸。
+    #[test]
+    fn 登录与选角背景正好是设计尺寸() {
+        let Ok(dir) = std::env::var("MIR2_ASSET_DIR").or_else(|_| std::env::var("MIR2C_DATA"))
+        else {
+            eprintln!("跳过：未设置 MIR2_ASSET_DIR / MIR2C_DATA");
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        let mut ui = ui::UiCache::new();
+        for (what, lib, idx) in [
+            (
+                "登录背景",
+                mir2_core::login_ui::Art::BG.0,
+                mir2_core::login_ui::Art::BG.1,
+            ),
+            (
+                "选角背景",
+                mir2_core::select_ui::Art::BG.0,
+                mir2_core::select_ui::Art::BG.1,
+            ),
+        ] {
+            // ⚠️ 登录/选角那套素材是 **800×600**，而窗口/设计空间是 1024×768 ⇒
+            // 它们是**居中摆**、不缩放（原版也是这么干的：`(SCREENWIDTH-800) div 2`）。
+            // 这条钉住"素材尺寸没变" —— 变了各自的 `Layout::build` 会自动跟着居中。
+            assert_eq!(
+                ui.size(&dir, lib, idx),
+                Some((800, 600)),
+                "{what}（{lib}[{idx}]）该是 800×600（居中摆在 {WIN_W}×{WIN_H} 里）"
+            );
+        }
+    }
+
+    // 鼠标坐标换算**交给 SDL**（事件循环头的 `Event::get_converted_coords`，它同时管
+    // 逻辑呈现的缩放与留边）⇒ 这边没有可单测的纯函数了。
+    //
+    // ⚠️ 别再手写 `x / 某常数`：那个写法假设窗口是 4:3，窗口一改（现在可拉大拉小）
+    // 就会"点哪走哪偏一截"。
+
+    /// **走动/跑动时画面边缘不能露黑底**（用户 2026-10-08 报的"边缘一整片半格黑底，
+    /// 像是走动时叠瓦没盖全"）。
+    ///
+    /// 病根：视口剔除拿的是**没减亚格偏移**的框，而图块实际画在 `-sub` 处 ⇒
+    /// 视口右/下边缘那一溜图块被判成"在视口外"剔掉 ⇒ 露黑底（相机是整格时 `sub = 0`，
+    /// 所以只在**走动中**出现 —— 必须拿小数相机测）。
+    ///
+    /// 判据是"盖满"：真地图 + 真图库，扫视口里的像素，要求每一处都有**保留下来的
+    /// 地表图块**压着。用的还是剔除那条路（`draw_rect_cold`），所以它一退化就红。
+    #[test]
+    fn 走动时画面边缘不露黑底() {
+        let (Some(dir), Some(pack)) = (
+            mir2_core::paths::asset_dir(),
+            mir2_core::paths::map_container(),
+        ) else {
+            eprintln!("跳过：没有资产目录 / 地图容器");
+            return;
+        };
+        let Ok(a) = Archive::open(&pack) else {
+            eprintln!("跳过：地图容器打不开");
+            return;
+        };
+        // 优先用 "0"（新手村，地表是满的）；没有就用第一张
+        let name = if a.lookup("0").is_some() {
+            "0".to_string()
+        } else {
+            match a.entries().first() {
+                Some(e) => e.name.clone(),
+                None => return,
+            }
+        };
+        let Ok(m) = Map::load(&a, &name) else {
+            eprintln!("跳过：地图 {name} 打不开");
+            return;
+        };
+
+        let cols = WIN_W as i32 / UNIT_X + 3;
+        let rows = VIEW_H as i32 / UNIT_Y + 3;
+        let view = viewport_rect();
+        // 相机放在地图中央（保证视口整块都在图内 —— 图外的黑是应该的，不算漏画）
+        let cx = m.width as i32 / 2 - WIN_W as i32 / UNIT_X / 2;
+        let cy = m.height as i32 / 2 - VIEW_H as i32 / UNIT_Y / 2;
+        let mut libs: HashMap<String, Option<Wzl>> = HashMap::new();
+        let mut draws: Vec<TileDraw> = Vec::new();
+
+        for frac in [0.0f32, 0.25, 0.5, 0.75] {
+            let cam = (cx as f32 + frac, cy as f32 + frac);
+            let cp = cam_parts(cam);
+            m.visible_tiles(cp.cell.0, cp.cell.1, cols, rows, 0, &mut draws);
+            // "保留下来的地表图块" —— 走的就是绘制时那条剔除（同一个 `sub`）
+            // ⚠️ 用的是**绘制时那条判据本身**（`tile_in_view`），不是自己重算一遍 ——
+            // 自己重算就等于"只测了 `intersects`"，调用点漏减一次 `sub` 照样绿。
+            let mut kept: Vec<FRect> = Vec::new();
+            for d in draws.iter().filter(|d| d.layer == Layer::Ground) {
+                if !tile_in_view(&mut libs, &dir, d, &cp, LAYERS_ALL, &view) {
+                    continue;
+                }
+                if let Some(r) = draw_rect_cold(&mut libs, &dir, d, cp.sub) {
+                    kept.push(r);
+                }
+            }
+            assert!(!kept.is_empty(), "相机 {cam:?} 一块地表都没留下？");
+            // 4px 网格扫视口：够密（黑带至少几十像素宽），又不至于慢
+            let mut px = 0.5;
+            while px < WIN_W as f32 {
+                let mut py = BAR_TOP + 0.5;
+                while py < BAR_TOP + VIEW_H {
+                    assert!(
+                        kept.iter()
+                            .any(|r| r.x <= px && px < r.x + r.w && r.y <= py && py < r.y + r.h),
+                        "相机 {cam:?}（亚格偏移 {:.0}px）：视口像素 ({px},{py}) 没有地表图块盖着 \
+                         —— 走动时这里就是一条黑底",
+                        cp.sub.0
+                    );
+                    py += 4.0;
+                }
+                px += 4.0;
+            }
+        }
+    }
+
     /// 屏幕坐标 ↔ 格子互为逆（"点哪走到哪"靠这一对；鼠标那条路用的是反算）。
     #[test]
     fn 屏幕与格子互为逆() {
-        let cam = (100, 200);
+        let cam = (100.0, 200.0);
         for (cx, cy) in [(100, 200), (103, 205), (99, 199), (140, 260)] {
             let (px, py) = cell_to_screen(cam, cx, cy);
             // 取格内一点（+1px）再反算，避开格边界
@@ -3926,5 +5271,343 @@ mod tests {
                 "({cx},{cy}) 往返失败"
             );
         }
+        // 相机带小数时也一样（走路时相机就是小数格）
+        let camf = (100.25, 200.75);
+        let (px, py) = cell_to_screen(camf, 103, 205);
+        assert_eq!(screen_to_cell(camf, px + 1.0, py + 1.0), (103, 205));
+    }
+
+    /// **走路/跑动时人物钉在屏幕中间不动、地图往前卷**（原版 `PlayScn.pas:1084-1089`：
+    /// `m_ClientRect.Left := g_MySelf.m_nRx - 9`，`m_nRx` 是**渲染**坐标）。
+    ///
+    /// 这条是用户 2026-10-08 报的那个手感的判据：相机若取"服务端那一格"，
+    /// 人就变成"在视口里一格格蹭、蹭满一格镜头再跳一下"。
+    #[test]
+    fn 走路时人物钉在屏幕中间地图往前卷() {
+        let now = Instant::now();
+        let step = |anim: &ActorAnim, ms: u64| {
+            let render = anim.draw_pos((11, 10), now + Duration::from_millis(ms));
+            (render, follow_cam(render))
+        };
+        // 一跳：格 (10,10) → (11,10)，整跳 600ms
+        let a = ActorAnim {
+            cell: (11, 10),
+            from: Some((10, 10)),
+            action: None,
+            changed_at: now,
+            action_at: now,
+            move_ms: 600,
+            walk_since: now,
+        };
+        let mut cams = Vec::new();
+        for ms in [0u64, 150, 300, 450, 599] {
+            let (render, cam) = step(&a, ms);
+            let (px, py) = cell_to_screen_f(cam, render.0, render.1);
+            assert!(
+                (px - WIN_W as f32 / 2.0).abs() < 0.01
+                    && (py - VIEW_H / 2.0 - BAR_TOP).abs() < 0.01,
+                "{ms}ms 时人物不在视口正中：({px},{py})"
+            );
+            cams.push(cam.0);
+        }
+        // 相机确实在往前走（而且**每帧走一点**，不是攒够一整格才跳）
+        assert!(
+            cams[0] < cams[1] && cams[1] < cams[2],
+            "相机该平滑前进：{cams:?}"
+        );
+        let per_step = cams[1] - cams[0];
+        assert!(
+            per_step > 0.0 && per_step < 0.5,
+            "150ms 只该走 0.25 格（一格 600ms），实得 {per_step}"
+        );
+    }
+
+    /// 相机拆成"整格 + 亚格像素"：地图那条路只认整格，亚格靠绘制时减回来。
+    #[test]
+    fn 相机拆成整格加亚格() {
+        let cp = cam_parts((10.0, 20.0));
+        assert_eq!(cp.cell, (10, 20));
+        assert_eq!(cp.sub, (0.0, 0.0));
+        // 0.25 格 ⇒ 12px（UNIT_X = 48）；0.5 格 ⇒ 16px（UNIT_Y = 32）
+        let cp = cam_parts((10.25, 20.5));
+        assert_eq!(cp.cell, (10, 20));
+        assert_eq!(cp.sub, (12.0, 16.0));
+        // 负数相机（地图边缘会露出来一格）也要往下取整 —— 否则整格与亚格对不上
+        let cp = cam_parts((-0.25, -0.5));
+        assert_eq!(cp.cell, (-1, -1));
+        assert_eq!(cp.sub, (36.0, 16.0));
+    }
+
+    /// **出手不能比服务端允许的更快**（用户 2026-10-09 报的"砍几下就停"）。
+    ///
+    /// 服务端按 `520ms − 攻速×25ms` 限流（`netgate.go:63/112`），比它快的攻击**被丢掉**、
+    /// 而且**不发 `EntityAction`** ⇒ 我们自己的挥砍动画断一拍（动画完全来自服务端回包）。
+    /// 旧值取的是动作表时长 510ms ⇒ 每一刀丢一刀。
+    #[test]
+    fn 出手不比服务端快() {
+        let gap = attack_gap().as_millis() as u64;
+        assert!(
+            gap >= HIT_BASE_MS,
+            "出手间隔 {gap}ms 比服务端基数 {HIT_BASE_MS}ms 还快 ⇒ 会被丢掉、动画断拍"
+        );
+        // 也要够长到让挥砍动画播完（不然下一刀会把动画从头拽）
+        assert!(
+            gap >= u64::from(mir2_core::actor::HAct::Hit.act().duration_ms()),
+            "出手间隔比挥砍动画还短"
+        );
+    }
+
+    /// **死了要一直画尸骨**（用户 2026-10-09 报的"死后没有显示尸体状态"）。
+    ///
+    /// 病根：`Die` 是"一次播完"的动作，播完（`held_ms >= duration`）原来的代码会退回
+    /// **站立** ⇒ 画面上"死而复生"。现在 `dead = true` 一律钉在 `Die` 的最后一帧。
+    #[test]
+    fn 死了停在尸骨那帧() {
+        use mir2_core::actor as A;
+        // 任选一个有死亡段的品种（10 = 鸡/鹿那一族）
+        let race = 10u8;
+        let die = A::mon_actions(race)[A::MAct::Die as usize];
+        assert!(die.frame > 0, "这条用例要求该品种有死亡段");
+        let (act, frame) = monster_sample(
+            race,
+            Some(mir2_core::world::action::DEATH),
+            10_000_000,
+            false,
+            true,
+        );
+        assert_eq!(act, A::MAct::Die, "死了该是 Die");
+        assert_eq!(frame, die.last_frame(), "死了要停在**最后一帧**（尸骨）");
+        // 不管过了多久都不许动（原来就是这里退回站立的）
+        for ms in [0u32, die.duration_ms(), 10_000_000] {
+            let (act, frame) =
+                monster_sample(race, Some(mir2_core::world::action::DEATH), ms, false, true);
+            assert_eq!(
+                (act, frame),
+                (A::MAct::Die, die.last_frame()),
+                "{ms}ms 时不是尸骨"
+            );
+        }
+        // 玩家那条路同理
+        let (act, frame) = human_sample(None, 0, false, false, 0, true);
+        assert_eq!(act, A::HAct::Die);
+        assert_eq!(frame, A::HAct::Die.act().last_frame());
+
+        // 还在播的过程中（`dead = false`：刚收到动作、`Death` 包还没到）照旧按死亡动作播；
+        // ⚠️ 别把"播完回站立"这条也一起钉死 —— 那是攻击/受击该有的行为（只有 `dead` 才钉住）
+        let (act, frame) =
+            monster_sample(race, Some(mir2_core::world::action::DEATH), 0, false, false);
+        assert_eq!(act, A::MAct::Die, "收到死亡动作就按它播");
+        assert_eq!(frame, 0, "刚开始播是第一帧");
+    }
+
+    /// **移动不能让挥砍动作重播**（用户 2026-10-09："杀了怪，一跑起来又在砍"）。
+    ///
+    /// 病根是一个时钟干两件事：动作进度与移动补间共用 `changed_at` ⇒ 每走一格就把
+    /// 动作进度清零 ⇒ 那个早该过期的 `Some(1)`（`world.self_action` 一直留着）又播一遍。
+    #[test]
+    fn 移动不重播挥砍() {
+        let now = Instant::now();
+        // 只看"手上的动作"取到什么姿势：`Some(1)` = 挥砍
+        let hit = |anim: &ActorAnim, at: Instant| {
+            let (held, ms) = (anim.action, anim.action_ms(at));
+            human_sample(held, ms, anim.moving(at), false, anim.walk_ms(at), false).0
+        };
+        // t0 收到挥砍（动作钟 t0），t0+700ms 走了一步（**移动钟**被重置）
+        let mut a = ActorAnim {
+            cell: (3, 4),
+            from: None,
+            action: Some(1),
+            changed_at: now,
+            action_at: now,
+            move_ms: 600,
+            walk_since: now,
+        };
+        assert_eq!(hit(&a, now), A::HAct::Hit, "刚砍：是挥砍");
+        a.from = Some((2, 4));
+        a.changed_at = now + Duration::from_millis(700); // 移动**只**动移动钟
+        a.move_ms = 600;
+        assert_eq!(
+            hit(&a, now + Duration::from_millis(750)),
+            A::HAct::Walk,
+            "挥砍早过期了 ⇒ 走动时该是走路，不能又砍一刀"
+        );
+        // 而**新来**一个动作（服务端再发一次挥砍）当然要正常播
+        a.action_at = now + Duration::from_millis(750);
+        assert_eq!(hit(&a, now + Duration::from_millis(760)), A::HAct::Hit);
+    }
+
+    /// 球的"液面"裁切：**看得见的永远是下面那一截**（原版 `FState.pas:3784-3795`）。
+    ///
+    /// 判据是三条边界：满血 = 整张图不动；空 = 什么都不画；一半 = 下面一半。
+    #[test]
+    fn 球的液面裁切() {
+        assert_eq!(gauge_band(1.0, 90), (0, 90), "满：整张图");
+        assert_eq!(gauge_band(0.0, 90), (90, 0), "空：什么都不画");
+        assert_eq!(gauge_band(0.5, 90), (45, 45), "一半：下面一半");
+        assert_eq!(gauge_band(0.25, 90), (68, 22), "四分之一：下面四分之一");
+        // 越界要夹住（服务端给的 HP 可能一时大于 MaxHP）
+        assert_eq!(gauge_band(1.5, 90), (0, 90));
+        assert_eq!(gauge_band(-1.0, 90), (90, 0));
+        // 可视高度 + 液面 = 球高（画的两个矩形必须正好拼上）
+        for pct in [0.0, 0.1, 0.33, 0.5, 0.97, 1.0] {
+            let (top, h) = gauge_band(pct, 90);
+            assert_eq!(top + h, 90, "pct={pct} 时拼不上");
+        }
+    }
+
+    /// 出手的两重门：**手上这一步没走完不能打**（原版 `IsIdle`），
+    /// 以及出手冷却（原版 `CanNextHit`）。
+    #[test]
+    fn 走完这一步才出手() {
+        let gap = attack_gap();
+        assert!(can_attack(false, gap), "站着 + 冷却到点 ⇒ 能打");
+        assert!(
+            !can_attack(true, gap * 2),
+            "还在走这一步 ⇒ 不许出手（否则挥砍会在半路上播）"
+        );
+        assert!(!can_attack(false, gap / 2), "冷却没到 ⇒ 不许出手");
+    }
+
+    /// 自己这一步的补间**盖满**自己的发送步频 —— 否则每格末尾会空出几十毫秒
+    /// （走路动画闪回站立帧、镜头停一下），用户报的"走路没做好"里就有它。
+    ///
+    /// 别人用服务端的节流（`move_ms`，比自己的短）—— 它们的下一条由服务端驱动。
+    #[test]
+    fn 自己的补间盖满发送步频() {
+        assert_eq!(
+            self_move_ms(1, 0, false),
+            WALK_MS as u32,
+            "走一格 = 一个步频"
+        );
+        assert_eq!(self_move_ms(0, -1, false), WALK_MS as u32);
+        assert_eq!(
+            self_move_ms(2, 0, true),
+            RUN_MS as u32,
+            "跑一步 2 格 = 一个步频"
+        );
+        assert_eq!(self_move_ms(2, 2, true), RUN_MS as u32, "斜着跑也是 2 格");
+        assert_eq!(
+            self_move_ms(1, 0, true),
+            (RUN_MS / 2) as u32,
+            "被挡成 1 格的跑：按格数摊"
+        );
+        assert!(
+            move_ms(1, 0, false) < self_move_ms(1, 0, false),
+            "别人的补间该比自己短（600 < 650）"
+        );
+    }
+
+    /// 鼠标点一格算什么：**活怪 ⇒ 锁它**；空地/死怪/玩家/NPC ⇒ 走/跑到那格。
+    ///
+    /// 照原版 `_DXDrawMouseDown`（`ClMain.pas:2805-2878`）与 `AttackTarget`（`:2691`）。
+    #[test]
+    fn 点鼠标算什么() {
+        use mir2_core::world::{World, KIND_MONSTER};
+        let mut w = World::default();
+        w.self_id = 1;
+        w.self_pos = (10, 10);
+        let mut put = |id: u64, kind: u32, x: i32, y: i32, dead: bool| {
+            w.entities.insert(
+                id,
+                Entity {
+                    id,
+                    kind,
+                    name: "甲".into(),
+                    x,
+                    y,
+                    dir: 1,
+                    feature: None,
+                    hp: 10,
+                    max_hp: 10,
+                    run: false,
+                    status_bits: 0,
+                    dead,
+                    action: None,
+                },
+            );
+        };
+        put(100, KIND_MONSTER, 12, 10, false);
+        put(200, 0, 13, 10, false); // 玩家（要 Shift，那条线还没做）
+        put(300, KIND_MONSTER, 14, 10, true); // 死怪（尸骨）
+
+        // 点活怪 ⇒ 锁它，不去走
+        assert_eq!(mouse_intent(&w, (12, 10), false), (Some(100), None));
+        // 点空地 ⇒ 走那一格（右键 = 跑）
+        assert_eq!(
+            mouse_intent(&w, (11, 10), false),
+            (None, Some((11, 10, false)))
+        );
+        assert_eq!(
+            mouse_intent(&w, (11, 10), true),
+            (None, Some((11, 10, true)))
+        );
+        // 玩家 / 死怪 / 自己那格 ⇒ 走
+        assert_eq!(mouse_intent(&w, (13, 10), false).0, None);
+        assert_eq!(mouse_intent(&w, (14, 10), false).0, None);
+        assert_eq!(
+            mouse_intent(&w, (10, 10), false),
+            (None, Some((10, 10, false)))
+        );
+    }
+
+    /// **按住左键点怪**：光标滑开了也**不许把锁住的怪弄丢**（用户 2026-10-08 报的
+    /// "点怪之后站不住、掉头去走路"）。
+    ///
+    /// 病根是镜头跟着人走（`follow_cam`）—— 跑向怪的路上，光标（屏幕位置不动）
+    /// 对应的格子会从怪身上滑开，而按住时每 300ms 重取目标、照原版会先 `g_TargetCret := nil`
+    /// ⇒ 目标半路被丢。
+    #[test]
+    fn 按住不丢已锁的怪() {
+        use mir2_core::world::{World, KIND_MONSTER};
+        let mut w = World::default();
+        w.self_id = 1;
+        w.self_pos = (10, 10);
+        let put = |w: &mut World, id: u64, kind: u32, x: i32, y: i32, dead: bool| {
+            w.entities.insert(
+                id,
+                Entity {
+                    id,
+                    kind,
+                    name: "甲".into(),
+                    x,
+                    y,
+                    dir: 1,
+                    feature: None,
+                    hp: 10,
+                    max_hp: 10,
+                    run: false,
+                    status_bits: 0,
+                    dead,
+                    action: None,
+                },
+            );
+        };
+        put(&mut w, 100, KIND_MONSTER, 12, 10, false);
+
+        // 新鲜按下：光标在怪身上 ⇒ 锁它
+        assert_eq!(mouse_intent(&w, (12, 10), false), (Some(100), None));
+        // 按住重取：光标已经滑到**空地** ⇒ **仍然锁着它**（不是掉头去走）
+        assert_eq!(
+            mouse_repeat(&w, (15, 10), false, Some(100)),
+            (Some(100), None),
+            "按住时不该因为光标离开怪而丢目标"
+        );
+        // 光标滑到**另一只**怪身上 ⇒ 换目标
+        put(&mut w, 200, KIND_MONSTER, 11, 10, false);
+        assert_eq!(
+            mouse_repeat(&w, (11, 10), false, Some(100)),
+            (Some(200), None)
+        );
+        // 锁的那个死了 ⇒ 回到"走去光标那格"（光标在空地）
+        w.entities.get_mut(&100).unwrap().dead = true;
+        assert_eq!(
+            mouse_repeat(&w, (15, 10), false, Some(100)),
+            (None, Some((15, 10, false)))
+        );
+        // 没锁东西时与新鲜按下同一条路
+        assert_eq!(
+            mouse_repeat(&w, (15, 10), false, None),
+            (None, Some((15, 10, false)))
+        );
     }
 }

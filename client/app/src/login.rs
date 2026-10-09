@@ -299,6 +299,16 @@ impl Login {
         let Some(btn) = self.pressed.take() else {
             return Action::None;
         };
+        // ⚠️ 弹窗的 [Ok] 要**真的把窗关掉**（清 `error`）：原来自绘的那颗只是画着好看 ——
+        // `on_up` 不清 `error`、`main` 收到 `Dismiss` 也不做什么 ⇒ 点了没反应。
+        // 回车那条路（`on_key`）一直是清的，所以**两条路必须都清**（用户 2026-10-08 报的）。
+        if btn == Btn::MsgOk {
+            if l.msg_ok.hit(p) {
+                self.error = None;
+                return Action::Dismiss;
+            }
+            return Action::None;
+        }
         let (r, act) = match btn {
             Btn::Ok => (l.ok, Action::Submit),
             Btn::New => (l.new, Action::NewAccount),
@@ -354,8 +364,11 @@ impl Login {
             return text(canvas, msg, center_x(msg, 0.0, winf.0), winf.1 / 2.0, C_ERR);
         };
 
-        // ① 背景：800×600 的图铺在 1024×768 的窗口里，四周留底色
+        // ① 背景：800×600 的图**居中 1:1** 铺在 1024×768 的窗口里，四周拿素材自己的石纹补
+        //（不是纯黑 —— 用户 2026-10-09 报的"周围显示为黑底"；也不放大，那会糊）
         let bg = (Art::BG.0, Art::BG.1);
+        // 补边块 (552,496)：实测最平且与边框环同调（见 `tile_backdrop`）
+        ui.tile_backdrop(canvas, tc, dir, bg.0, bg.1, win, (552.0, 496.0));
         if let Some(sz) = ui.size(dir, bg.0, bg.1) {
             let (x, y) = Layout::bg_at(win, sz);
             ui.draw(canvas, tc, dir, bg.0, bg.1, x, y);
@@ -616,6 +629,42 @@ mod tests {
         assert!(l.account.is_empty(), "弹窗时不能往框里打字");
         assert_eq!(l.on_key(Keycode::Return), Action::Dismiss);
         assert!(l.error.is_none());
+    }
+
+    /// 弹窗那颗 [确定] **点了要真的关掉窗**（清 `error`）—— 与回车同一条路。
+    ///
+    /// 早先 `on_up` 只返回 `Dismiss` 而**不清 `error`** ⇒ 点了没反应（用户 2026-10-08 报的
+    /// "鼠标点击确定，窗口不关闭"）。这里把两条路都钉住。
+    #[test]
+    fn 弹窗确定按钮点得关() {
+        let l = {
+            let mk = |c: &'static str, i: u32| match (c, i) {
+                ("Prguse", 60) => Some((296, 254)),
+                ("Prguse", 62) => Some((76, 33)),
+                ("Prguse", 61) => Some((100, 32)),
+                ("Prguse", 53) => Some((128, 33)),
+                ("Prguse", 51) => Some((96, 34)),
+                ("Prguse", 52) => Some((96, 33)),
+                ("Prguse", 64) => Some((16, 23)),
+                ("Prguse", 360) => Some((452, 179)),
+                ("Prguse", 363) => Some((80, 34)),
+                _ => None,
+            };
+            Layout::build((1024, 768), mk).unwrap()
+        };
+        let mut s = Login::new();
+        s.error = Some("账号或口令不正确".into());
+        // 点在 [确定] 上 ⇒ 关掉
+        let c = (l.msg_ok.x + 4.0, l.msg_ok.y + 4.0);
+        s.on_down(c, &l);
+        assert_eq!(s.on_up(c, &l), Action::Dismiss);
+        assert!(s.error.is_none(), "点了[确定]必须把弹窗清掉");
+        // 弹窗开着时点别处：不该误关（原版 `DMessageDlg` 只认它那颗按钮）
+        s.error = Some("再来一次".into());
+        let out = (2.0, 2.0);
+        s.on_down(out, &l);
+        assert_eq!(s.on_up(out, &l), Action::None);
+        assert!(s.error.is_some(), "点弹窗外面不该关掉它");
     }
 
     /// 开门动画：10 帧 × 300ms（原版 `IntroScn.pas:826` 的 `> 300`，帧号 `ChrSel[23+n]`）。

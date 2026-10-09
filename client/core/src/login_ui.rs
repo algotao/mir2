@@ -233,15 +233,30 @@ impl Layout {
         )
     }
 
-    /// 开门动画相对 800×600 画布的偏移（原版 `IntroScn.pas:845-846`）：
+    /// 开门动画相对 800×600 画布的偏移。
+    ///
+    /// # ⚠️ 这个数字是**量出来的**，不是原版那两个字面量（2026-10-08 修正）
+    ///
+    /// 原版 `IntroScn.pas:845-846` 写的是 `+252 / +106`：
     ///
     /// ```text
     /// MSurface.Draw ((SCREENWIDTH - 800) div 2 + 252, (SCREENHEIGHT - 600) div 2 + 106, ...)
     /// ```
     ///
+    /// 那是写给**官方 1.76 那套 `Prguse`/`ChrSel`** 的 —— 它的门口正好在画布那个位置。
+    /// **我方的 `ChrSel[22]`（登录背景）是另一版**：门口更靠左。这是与 D-27 / D-42
+    /// 同一类问题（**素材不是那一套** ⇒ 坐标必须重测）。照抄 252 的表现是
+    /// **门整体右偏约 100px**（用户报的"门打开动画的位置偏了"）。
+    ///
+    /// 量法：把**关门那一帧**（`ChrSel[24]`，496×361）当模板在 `ChrSel[22]` 上滑
+    ///（先 1/8 降采样粗筛、再全分辨率细化，只算不透明像素）。实测最小差 **12.2**
+    /// 在 `(153,96)`，四邻都是 13.0~13.5（判别度 ~1.0）；而原版的 `(252,106)` 是 **23.6**、
+    /// `(0,0)` 是 26.0 —— 差得很干净。用门上的两处恶魔脸浮雕独立复核得 `(149,96)`/`(145,88)`
+    /// （同一侧，±5px 内）。由 [`真素材_门帧贴合背景`] 钉住。
+    ///
     /// ⚠️ 门**不是**整屏背景：帧是 **496×361** 的局部覆盖（实测 `ChrSel[24..32]`），
     /// 按"居中贴"画会把它糊到屏幕正中间去（踩过）。
-    pub const DOOR_AT: (f32, f32) = (252.0, 106.0);
+    pub const DOOR_AT: (f32, f32) = (153.0, 96.0);
 
     /// 原版 800×600 画布上的坐标 → 实际窗口坐标（画布居中后加偏移）。
     pub fn legacy_at(win: (u32, u32), off: (f32, f32)) -> (f32, f32) {
@@ -307,23 +322,94 @@ mod tests {
         }
     }
 
-    /// 开门动画的位置照原版（`IntroScn.pas:845-846`）—— 门是**局部覆盖**，不是居中贴。
+    /// 开门动画的位置：门是**局部覆盖**（不是居中贴），且**相对 800×600 画布**给偏移。
     ///
     /// 踩过的坑：按 `bg_at` 居中画，496×361 的门会跑到屏幕正中间，看着像"没有开门动画"。
+    /// 偏移的数值本身由 `真素材_门帧贴合背景` 钉住（这里只验换算）。
     #[test]
-    fn 开门位置照原版偏移() {
+    fn 开门位置随画布平移() {
         // 800×600 窗口 ⇒ 画布原点 (0,0)
         assert_eq!(
             Layout::legacy_at((800, 600), Layout::DOOR_AT),
-            (252.0, 106.0)
+            Layout::DOOR_AT
         );
-        // 1024×768 ⇒ 画布原点 (112, 84)，再加原版偏移
+        // 1024×768 ⇒ 画布原点 (112, 84)，再加偏移
         assert_eq!(
             Layout::legacy_at((1024, 768), Layout::DOOR_AT),
-            (112.0 + 252.0, 84.0 + 106.0)
+            (112.0 + Layout::DOOR_AT.0, 84.0 + Layout::DOOR_AT.1)
         );
-        // ⚠️ "门帧会不会画出 800×600 画布"不在这里断言：那要靠**实测帧尺寸**，
-        // 归 `真素材_登录素材齐全`（写死数字会被 clippy 判成"恒真断言"）。
+    }
+
+    /// **真素材验收**：开门动画的落点要**贴合登录背景上的门口** ——
+    /// 拿"关着门"那一帧（`ChrSel[24]`）当模板在 `ChrSel[22]` 上滑，最小差必须在
+    /// `DOOR_AT`，而且**附近没有更好的位置**。
+    ///
+    /// 这条是用户报的"门打开动画的位置偏了"的判据：原版那两个字面量（`+252/+106`）
+    /// 是给它自己那套素材的，照抄会让门右偏约 100px。
+    #[test]
+    fn 真素材_门帧贴合背景() {
+        use crate::wzl::Wzl;
+
+        let Ok(dir) = std::env::var("MIR2C_DATA") else {
+            eprintln!("跳过：未设置 MIR2C_DATA");
+            return;
+        };
+        let dir = std::path::PathBuf::from(&dir);
+        let lib = Wzl::open(dir.join(Art::BG.0)).expect("ChrSel");
+        let bg = lib.decode(Art::BG.1 as usize).expect("登录背景");
+        let frame = lib
+            .decode((Art::DOOR.1 + 1) as usize)
+            .expect("关门那一帧（ChrSel[24]）");
+
+        // 模板的**不透明像素**与背景（左上角在 (x,y)）的平均差。
+        // 步长 2 采样：17923 个不透明像素 → 约 4.5e3，够判别（实测次好差 16+）。
+        let diff_at = |x: i32, y: i32| -> Option<f32> {
+            let (mut sum, mut n) = (0u64, 0u64);
+            for ty in (0..frame.height as i32).step_by(2) {
+                let py = y + ty;
+                if py < 0 || py >= bg.height as i32 {
+                    return None;
+                }
+                for tx in (0..frame.width as i32).step_by(2) {
+                    let px = x + tx;
+                    if px < 0 || px >= bg.width as i32 {
+                        return None;
+                    }
+                    let ti = ((ty * frame.width as i32 + tx) * 4) as usize;
+                    if frame.rgba[ti + 3] < 128 {
+                        continue;
+                    }
+                    let bi = ((py * bg.width as i32 + px) * 4) as usize;
+                    for c in 0..3 {
+                        sum += (bg.rgba[bi + c] as i32 - frame.rgba[ti + c] as i32).unsigned_abs()
+                            as u64;
+                    }
+                    n += 3;
+                }
+            }
+            (n > 0).then(|| sum as f32 / n as f32)
+        };
+
+        let (dx, dy) = (Layout::DOOR_AT.0 as i32, Layout::DOOR_AT.1 as i32);
+        let here = diff_at(dx, dy).expect("落点在图内");
+        assert!(
+            here < 16.0,
+            "门帧在 {:?} 与背景差 {here:.2} —— 落点错了？",
+            Layout::DOOR_AT
+        );
+        // 附近（±8）不能有更好的位置
+        for oy in -8..=8 {
+            for ox in -8..=8 {
+                if let Some(d) = diff_at(dx + ox, dy + oy) {
+                    assert!(
+                        d >= here - 1e-3,
+                        "门帧在 ({},{}) 比 DOOR_AT 更贴背景（{d:.2} < {here:.2}）",
+                        dx + ox,
+                        dy + oy
+                    );
+                }
+            }
+        }
     }
 
     /// 素材缺一个就整体 `None`（宁可写"素材缺失"，也不画歪框）。

@@ -102,6 +102,11 @@ pub struct Entrance {
     /// 证明绑在**本条连接的 nonce** 上（D-24①）⇒ 换个连接就失效、重放不了；
     /// 而且它是**证明**不是口令（口令本身在算完那一刻就丢了，见 `on_salt`）。
     proof: Option<String>,
+    /// 这次失败是否已经**交给界面弹过窗**了（见 [`Entrance::take_failed`]）。
+    ///
+    /// ⚠️ `stage == Failed` 是**粘性**的（一直在），界面每帧读它会让"点了[确定]下一帧又弹回来"
+    ///（用户 2026-10-08 报的"弹窗关不掉"）⇒ 弹一次就记一个标记，新的失败再清掉它。
+    fail_taken: bool,
 }
 
 struct LoginState {
@@ -126,6 +131,7 @@ impl Entrance {
             nonce: Vec::new(),
             session_token: None,
             proof: None,
+            fail_taken: false,
         }
     }
 
@@ -147,6 +153,7 @@ impl Entrance {
             nonce: Vec::new(),
             session_token: None,
             proof: None,
+            fail_taken: false,
         }
     }
 
@@ -287,6 +294,28 @@ impl Entrance {
         }
     }
 
+    /// **进入失败**（唯一的入口）：顺手清掉"已弹过"的标记 ⇒ 新的失败一定会再弹一次。
+    fn fail(&mut self, why: String) {
+        self.stage = Stage::Failed(why);
+        self.fail_taken = false;
+    }
+
+    /// 取走失败原因，**只给一次**（`failed()` 是"随时可查的粘性事实"，这个是"要弹一次窗"）。
+    ///
+    /// 界面的弹窗关掉之后不该每帧又弹回来 —— `stage == Failed` 一直在，
+    /// 每帧读它就会"点了[确定]立刻又出现"（用户 2026-10-08 报的"登录失败弹窗关不掉"）。
+    pub fn take_failed(&mut self) -> Option<String> {
+        let why = match &self.stage {
+            Stage::Failed(why) => why.clone(),
+            _ => return None,
+        };
+        if self.fail_taken {
+            return None;
+        }
+        self.fail_taken = true;
+        Some(why)
+    }
+
     /// 下一条要发的消息（`None` = 现在什么都不用发：在等对端，或已经到站/已失败）。
     ///
     /// 调用方把它发出去即可 —— 也**必须**发出去，状态机不会自己发。
@@ -336,11 +365,11 @@ impl Entrance {
     pub fn on(&mut self, env: &Envelope) -> Option<Body> {
         match env.body.as_ref() {
             Some(Body::ServerError(se)) => {
-                self.stage = Stage::Failed(format!("服务端错误 {}：{}", se.code, se.message));
+                self.fail(format!("服务端错误 {}：{}", se.code, se.message));
                 None
             }
             Some(Body::Disconnect(d)) => {
-                self.stage = Stage::Failed(format!("被服务端断开 {}：{}", d.code, d.reason));
+                self.fail(format!("被服务端断开 {}：{}", d.code, d.reason));
                 None
             }
             Some(Body::ReconnectResult(r)) => {
@@ -349,7 +378,7 @@ impl Entrance {
                 }
                 match proto::ReconnectStatus::try_from(r.status) {
                     Ok(proto::ReconnectStatus::ReconnectFailed) => {
-                        self.stage = Stage::Failed("会话无效（token 被拒）".into());
+                        self.fail("会话无效（token 被拒）".into());
                         None
                     }
                     // 「租约仍在 ⇒ 直接回世界」：服务端接下来会推 EnterWorld，
@@ -399,7 +428,7 @@ impl Entrance {
                     return None;
                 }
                 let Some(id) = self.want_char.or(self.first_char) else {
-                    self.stage = Stage::Failed("这个账号还没有角色".into());
+                    self.fail("这个账号还没有角色".into());
                     return None;
                 };
                 self.stage = Stage::AwaitSelect;
@@ -446,7 +475,7 @@ impl Entrance {
                         self.pick_err = Some(why);
                         self.stage = Stage::AwaitPick;
                     } else {
-                        self.stage = Stage::Failed(why);
+                        self.fail(why);
                     }
                 }
                 // 成功：等 `EnterWorld`（服务端推），所以这里不发东西。
@@ -469,13 +498,13 @@ impl Entrance {
             return None; // 意外的/重复的，忽略
         }
         let Some(l) = self.login.as_mut() else {
-            self.stage = Stage::Failed("没在登录流程里却收到了盐".into());
+            self.fail("没在登录流程里却收到了盐".into());
             return None;
         };
         if self.nonce.is_empty() {
             // 没有 nonce 就发不出证明。这属调用方的错（忘了喂 `Ev::Connected` 的 nonce），
             // 明说比"发一个空证明被服务端拒掉"好定位。
-            self.stage = Stage::Failed("还没拿到握手 nonce（调用方要先喂 on_nonce）".into());
+            self.fail("还没拿到握手 nonce（调用方要先喂 on_nonce）".into());
             return None;
         }
         // K = PBKDF2(口令, 盐, 迭代数, 派生长)；证明 = HMAC(K, nonce‖account)。
@@ -509,7 +538,7 @@ impl Entrance {
     /// 协议注释（`account.proto` 的 `CreateAccount`）把这条差别写在明面上。
     fn on_signup_salt(&mut self, salt: &proto::LoginSalt) -> Option<Body> {
         let Some(s) = self.signup.as_mut() else {
-            self.stage = Stage::Failed("没在建号流程里却收到了盐".into());
+            self.fail("没在建号流程里却收到了盐".into());
             return None;
         };
         // 迭代数与派生长**用服务端下发的**（同登录：客户端不写死）。
@@ -537,7 +566,7 @@ impl Entrance {
         if r.code != proto::LoginCode::LoginOk as i32 {
             let code =
                 proto::LoginCode::try_from(r.code).unwrap_or(proto::LoginCode::LoginBadCredentials);
-            self.stage = Stage::Failed(format!("登录失败（{code:?}）：{}", r.message));
+            self.fail(format!("登录失败（{code:?}）：{}", r.message));
             return None;
         }
         // 服务端签发的会话号（4 字节小端）——记下来，之后重连用它。
@@ -1167,5 +1196,34 @@ mod tests {
             Stage::AwaitReconnect,
             "状态不该被无关消息推着走"
         );
+    }
+
+    /// `take_failed` **只给一次**：界面的弹窗关掉之后不该每帧又弹回来
+    /// （用户 2026-10-08 报的"登录失败弹窗关不掉"）；而**新的失败**要能再给一次。
+    #[test]
+    fn 失败原因取走一次就不再来() {
+        let mut e = Entrance::new(7, None);
+        assert!(e.take_failed().is_none(), "没失败时什么都没有");
+
+        // 服务端错误 ⇒ 第一次取得到，第二次为空（但 `failed()` 这个粘性事实还在）
+        e.on(&env(Body::ServerError(proto::ServerError {
+            code: 1,
+            message: "坏了".into(),
+        })));
+        assert!(e.failed().is_some(), "`failed()` 仍是可查的粘性事实");
+        let why = e.take_failed().expect("第一次该给");
+        assert!(why.contains("服务端错误"), "{why}");
+        assert!(
+            e.take_failed().is_none(),
+            "取过就不该再给（否则弹窗关不掉）"
+        );
+
+        // 再来一次**新的**失败 ⇒ 又要给（不能因为上次取过就永久哑掉）
+        e.on(&env(Body::ServerError(proto::ServerError {
+            code: 2,
+            message: "又坏了".into(),
+        })));
+        let why = e.take_failed().expect("新的失败该再给一次");
+        assert!(why.contains("又坏了"), "{why}");
     }
 }
