@@ -37,6 +37,38 @@ fn main() {
     let w = Wzl::open(dir.join(lib)).unwrap_or_else(|e| panic!("打开 {lib}.wzl: {e}"));
     println!("{lib}: {} 张图", w.len());
 
+    // `only-files` 模式：把**指定图号**逐个存成自己的文件（命名同上面的导出）。
+    //
+    // 与 `--only`（拼一张网格）的区别：这个适合"要一批散图给别人看"
+    //（比如把每把武器的外观单独导出成 PNG 让你认哪把是木剑）。
+    if let Some(pos) = env::args().position(|x| x == "--only-files") {
+        let all: Vec<String> = env::args().collect();
+        let want: Vec<usize> = all[pos + 1]
+            .split(',')
+            .filter_map(|x| x.trim().parse().ok())
+            .collect();
+        let mut wrote = 0;
+        for i in want {
+            let Some(sp) = w.decode(i) else {
+                println!("  [{i}] 取不到");
+                continue;
+            };
+            if sp.width == 0 || sp.height == 0 {
+                println!("  [{i}] 空图");
+                continue;
+            }
+            let name = format!(
+                "{i:05}_{}x{}_ax{}_ay{}.bmp",
+                sp.width, sp.height, sp.anchor_x, sp.anchor_y
+            );
+            write_bmp(&out.join(name), sp.width as u32, sp.height as u32, &sp.rgba)
+                .expect("写 BMP");
+            wrote += 1;
+        }
+        println!("逐个导出 {wrote} 张 → {}", out.display());
+        return;
+    }
+
     // `only` 模式：只看**指定图号**（逗号分隔，拼一张网格）—— 精挑细看用。
     // 用法：... Prguse 0 0 /tmp/ui --only 384,387,360
     if let Some(pos) = env::args().position(|x| x == "--only") {
