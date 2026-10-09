@@ -8,8 +8,11 @@
 //
 // 两个输入都是仓库内的种子 SQL（data/seed/），所以**不再依赖外部 checkout**：
 //
-//	data/seed/mir2_data.sql   OpenMir2 的 705 怪物 / 33 经典技能 / 物品（兼容回退源）
-//	data/seed/GEEM2.db.sql    GeeM2 官方 1.76 的 378 怪物 / 686 物品（默认覆盖前者）
+//	data/seed/mir2_data.sql   OpenMir2 的 705 怪物（跨境大表，兼当"经典怪名"白名单）/ 经典技能 / 物品
+//	data/seed/GEEM2.db.sql    GeeM2 的 378 怪物 / 686 物品（默认覆盖前者；⚠️ 不是纯 1.76）
+//
+// ⚠️ GeeM2 的怪物表混着 176 条后期扩展，默认按经典表裁剪（`-classic-monsters`，
+// 见 docs/decisions.md D-56/D-57）；裁剪后 Index 重排为连续值。
 //
 // 按列名映射而非按位置——SQL 的 magics 表字段顺序与 Delphi `SELECT * FROM Magic`
 // 不同，按位置取值会静默错位。
@@ -53,6 +56,12 @@ func main() {
 	// 使 MonGen/MonItems 与怪物模板配对，缺项由 gamesvr 启动时逐条告警。
 	geem2 := flag.String("geem2", "./data/seed/GEEM2.db.sql",
 		"GeeM2 数据库 SQL 路径；用同源 Monster/StdItems 覆盖 src 数据（默认开着）")
+	// ⚠️ GeeM2 的 Monster 表**不是纯 1.76**：378 条里混着 176 条后期扩展
+	// （南蛮/狐月/红洞/封魔/古代/一六男战…），而 Envir/mongen.txt 是 1.76+后期
+	// 的混合配置 ⇒ 那些怪会被刷到 1.76 的地图上（幻影寒虎就是这么进新手村的）。
+	// 默认只保留「OpenMir2 经典表里也有」的名字（见 docs/decisions.md D-57）。
+	classicMonsters := flag.Bool("classic-monsters", true,
+		"怪物表只保留 OpenMir2 经典表里也有的（GeeM2 独有 = 非 1.76，见 D-57）")
 	flag.Parse()
 
 	raw, err := os.ReadFile(*src)
@@ -70,6 +79,9 @@ func main() {
 	var items []*data.StdItem
 	var monsters []*data.MonsterInfo
 	var magics []*data.MagicInfo
+	// classicNames 是 OpenMir2 经典怪物表里的名字集合（`mir2_data.sql` 的 monsters 表）。
+	// GeeM2 表按它裁剪，见 -classic-monsters。
+	classicNames := map[string]bool{}
 
 	for _, loc := range insertRe.FindAllStringSubmatchIndex(text, -1) {
 		table := text[loc[2]:loc[3]]
@@ -88,7 +100,9 @@ func main() {
 			}
 		case "monsters":
 			for _, r := range rows {
-				monsters = append(monsters, monsterFromRow(r))
+				m := monsterFromRow(r)
+				classicNames[m.Name] = true
+				monsters = append(monsters, m)
 			}
 		case "magics":
 			for _, r := range rows {
@@ -129,6 +143,20 @@ func main() {
 		fmt.Printf("  怪物表已切换为 GeeM2 官方 1.76（%d 条）\n", len(gm))
 	}
 
+	// 怪物表按 1.76 裁剪：只留经典表里也有的名字，再重排 Index。
+	//
+	// ⚠️ Index 必须**连续**（`MonsterSet` 要求 Index == 下标+1），所以裁剪后要重排；
+	// 怪物是按名字被引用的（MonGen/MonItems/城堡配置都用名字），重排 Index 安全。
+	if *classicMonsters {
+		before := len(monsters)
+		monsters = pruneToClassic(monsters, classicNames)
+		for i, m := range monsters {
+			m.Index = int32(i + 1)
+		}
+		fmt.Printf("  怪物表按 1.76 裁剪：%d → %d 条（裁掉 %d 条 GeeM2 私有的后期怪）\n",
+			before, len(monsters), before-len(monsters))
+	}
+
 	// 城堡实体模板（城门 + 三段城墙）必须补在末尾。
 	//
 	// ⚠️ 它们**不在** OpenMir2 的 monsters 表里，取自 GeeM2 的 `GEEM2.db.sql`。
@@ -158,6 +186,24 @@ func main() {
 	}
 	fmt.Printf("生成完成 → %s\n  stditems %d\n  monsters %d\n  magics   %d\n",
 		*out, nItems, nMonsters, nMagics)
+}
+
+// pruneToClassic 只保留 `classic` 里也有的怪物（见 docs/decisions.md D-56/D-57）。
+//
+// 判据只有**一个方向**是有力的：GeeM2 表有、OpenMir2 经典表没有 ⇒ 这条是 GeeM2 私有的
+// （后期扩展或自造），不属于 1.76 官方 —— 幻影寒虎/南蛮*/狐月*/红洞*/封魔*/古代*/一六男战…
+// 反方向不成立：两张表都有的可能是 1.8+ 内容（比如 `魔龙刀兵`），但那些怪只刷在
+// 后期地图上，而 `prune176` 已经把那些地图和刷怪点摘了，模板留着不会被刷出来。
+//
+// 城堡四条（SabukDoor/SabukW1..3）不在 OpenMir2 表里，由 castleMonsters 单独补，不走这里。
+func pruneToClassic(ms []*data.MonsterInfo, classic map[string]bool) []*data.MonsterInfo {
+	out := make([]*data.MonsterInfo, 0, len(ms))
+	for _, m := range ms {
+		if classic[m.Name] {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // castleMonsters 返回 4 条城堡实体模板（Index 接在 base 之后）。

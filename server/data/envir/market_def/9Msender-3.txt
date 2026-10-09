@@ -62,11 +62,6 @@
 
 <返回/@main>
 
-[@h2]
-#if
-#act
-mapmove H001 73 67
-
 [@前往远古探险]
 人们费劲千辛万苦，终于找到了回到远古时期的方法，我们可以通\ 
 过在大陆深处的能量聚合点维持传送魔法回到过去，我听回来的人\
@@ -94,16 +89,6 @@ checkgold 20000
 #ACT
 take 金币 20000
 mapmove D715 272 90
-#ELSESAY
-金钱不足!
-<确定/@exit>
-
-[@远古苍月]
-#IF
-checkgold 20000
-#ACT
-take 金币 20000
-mapmove D2064 124 80
 #ELSESAY
 金钱不足!
 <确定/@exit>

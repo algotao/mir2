@@ -227,8 +227,6 @@
 
 [D001 兽人古墓一层 0] DARK
 [D002 兽人古墓二层 0] DARK
-[DM001 奸商 0] DARK
-[DM002 国王陵墓 0] DARK
 [D003  兽人古墓三层 0] DARK
 
 0   147,33    -> D001   155,358
@@ -258,7 +256,6 @@ D003  106,82  -> D002  117,96
 
 [D011  洞穴一层 0] DARK
 [D012  洞穴二层 0] DARK
-[DM011 奸商 0] DARK
 
 0     41,108  -> D011  150,363
 0     41,109  -> D011  150,362
@@ -2995,23 +2992,9 @@ D10051   179,54  -> D10061     20,25
 [F010 行会战争地图10 0] FIGHT3 DARK
 
 ;热血足球场
-[G003 热血足球场 0] DAY FIGHT3
-[G004 热血足球场 0] DAY QUIZ SAFE
-[G005 热血足球场 0] DAY FIGHT3
-[G006 热血足球场 0] DAY QUIZ SAFE
-[G007 热血足球场 0] DAY FIGHT3
-[G008 热血足球场 0] DAY QUIZ SAFE
-[G009 热血足球场 0] DAY FIGHT3
-[G010 热血足球场 0] DAY QUIZ SAFE
-[G011 热血足球场 0] DAY FIGHT3
-[G013 热血足球场 0] DAY FIGHT3
-[G014 热血足球场 0] DAY QUIZ SAFE
 [SD000  小黑屋  0] FIGHT
 [SD001  小黑屋  0] FIGHT 
 [SD002  小黑屋  0] FIGHT
-[F011 神秘战场 0]
-[F012 神秘战场 0]
-[F013 神秘战场 0]
 ;1.7新增地图
 ;[D12 新手训练营 0] NORECALL NORECONNECT(0131) FIGHT
 
@@ -3030,13 +3013,6 @@ D10051   179,54  -> D10061     20,25
 [D2011 魔魂殿 0] DARK NORECALL NORANDOMMOVE NORECONNECT(D2001)
 [D2012 炼狱回廊 0] DARK NORECALL NORECONNECT(D2001)
 [D2013 封魔殿 0] DARK NORECALL NORANDOMMOVE NORECONNECT(D2001)
-[B341 封魔堡 0] DAY
-[B342 恶魔铁匠铺 0] DAY 
-[B345 恶魔服装店 0] DAY 
-[B343 恶魔药书铺 0] DAY 
-[B344 恶魔首饰店 0] DAY 
-[B346 恶魔监牢 0] DAY 
-[B347 恶魔钱庄 0] DAY 
 ;[D10053	秘密通道 0] DARK 
 ;[D10054	秘密通道 0] DARK 
 ;[D12 新手训练营 0]  NORECALL NORECONNECT(0131)
@@ -3167,44 +3143,15 @@ D2013	80,85	->	D2012	18,23
 ;D2013	21,25	->	D2008	83,83
 
 [5  苍月岛 0]
-[B351  武器店 0] DAY 
-[B352  首饰店 0] DAY 
-[B353  服装店 0] DAY 
-[B354  仓库 0] DAY 
-[B355  书店 0] DAY 
-[B356  药店 0] DAY 
-
-[D2051 尸魔洞一层 0] DARK
-[D2052 尸魔洞三层 0] DARK
-[D2053 尸魔洞二层 0] DARK
-
-[D2054 尸魔洞 0] DARK
-[D2055 尸魔洞 0] DARK
-[D2056 尸魔洞 0] DARK
-
-[D2061 骨魔洞一层 0] DARK
-[D2062 骨魔洞二层 0] DARK
-[D2063 骨魔洞三层 0] DARK
-[D2064 骨魔洞四层 0] DARK
-[D2067 骨魔洞五层 0] DARK NORECALL NORANDOMMOVE
-
-[D2065 骨魔洞 0] DARK
-[D2066 骨魔洞 0] DARK
 
 
-[D2070 牛魔寺庙入口 0] DARK 
-[D2071 牛魔寺庙一层 0] DARK
-[D2072 牛魔寺庙二层 0] DARK
-[D2073 牛魔寺庙三层 0] DARK
 
-[D2075 牛魔寺庙四层 0] DARK
-[D2076 牛魔寺庙五层 0] DARK
 
-[D2078 牛魔寺庙六层 0] DARK NORECALL NORANDOMMOVE
-[D2079 牛魔寺庙大厅 0] DARK NORECALL NORANDOMMOVE NORECONNECT(D2070)
 
-[D2074 牛魔寺庙 0] DARK
-[D2077 牛魔寺庙 0] DARK
+
+
+
+
 
 
 
@@ -3352,22 +3299,6 @@ D2079   12,13   ->      D2078  255,254
 
 
 ;魔龙城
-[6 魔龙城]  
-[B357 魔龙军营] DAY
-[GA1 魔龙宫殿] DAY
-[61 魔龙东郊]    
-[62 魔龙西郊]    
-[63 魔龙岭]    
-[64 魔龙谷] NORECALL NORECONNECT(63)
-[65 龙源血路] NORECALL NORECONNECT(63)
-[66 魔龙血域] NORECALL NORECONNECT(63)
-[611 东林间胜地]    
-[621 西林间胜地]    
-[612 魔龙旧寨]    
-[613 魔龙祭坛]    
-[622 魔龙沼泽]    
-[632 东魔龙关] NORECALL NORECONNECT(63)   
-[631 西魔龙关] NORECALL NORECONNECT(63)  
 
 ;魔龙城
 ;魔龙城去魔龙西郊的坐标
@@ -3591,9 +3522,6 @@ GA1 25 38 -> B357 8 9
 66 256 213 -> 65 43 159
 66 255 214 -> 65 42 160
 
-[D2081 雷炎洞穴一层] DARK NORECALL NORANDOMMOVE NORECONNECT(63) THUNDER(10) LAVA(10)  
-[D2082 雷炎洞穴二层] DARK NORECALL NORANDOMMOVE NORECONNECT(63) THUNDER(10) LAVA(10)  
-[D2083 火龙殿] DARK NORECALL NORANDOMMOVE NORECONNECT(63) THUNDER(10) LAVA(10)  
 
 D2081 19,218 -> D2082 380,44 
 D2082 381,45 -> D2081 20,220 
@@ -3608,9 +3536,6 @@ D2083 44,86 -> D2082 373,274
 D2083 42,84 -> D2082 373,274
 
 ;狐月山
-[fox01 狐月密道] DARK  NORECALL NORANDOMMOVE NORECONNECT(3)  
-[fox02 狐月山] NORECALL NORANDOMMOVE NORECONNECT(3) 
-[fox03 狐月神殿] DARK NORECALL NORANDOMMOVE NORECONNECT(3) THUNDER(10) LAVA(10) 
 
 3 655,770 -> fox01 116,19
 fox01 115,18 -> 3 655,768
@@ -3620,7 +3545,6 @@ fox02 31,17  -> fox01 273,126
 ;fox02 223,305 -> fox03 43,55
 
 ;废弃之地
-[dygw 废弃之地]
 0 318,654 -> dygw 64,86
 0 318,655 -> dygw 64,86
 0 319,654 -> dygw 64,86
@@ -3636,14 +3560,12 @@ dygw 62,84 -> 0 317,652
 dygw 570,363 -> hsdk1 50,34
 dygw 570,364 -> hsdk1 50,34
 
-[hsdk1 血红洞窟1层] DARK
 hsdk1 50,37 -> dygw 569,365
 hsdk1 49,36 -> dygw 569,365
 ;左入
 hsdk1 288,175 -> hsdk2 17,147
 hsdk1 287,174 -> hsdk2 17,147
 
-[hsdk2 血红洞窟2层] DARK
 ;左出
 hsdk2 16,147 -> hsdk1 287,175
 hsdk2 17,148 -> hsdk1 287,175
@@ -3657,7 +3579,6 @@ hsdk2 285,165 -> hsdk778 62,72
 hsdk2 160,269 -> hsdk779 84,23
 hsdk2 161,270 -> hsdk779 84,23
 
-[hsdk777 血红洞窟迷宫] DARK
 ;左下出
 hsdk777 23,77 -> hsdk2 140,27
 hsdk777 24,78 -> hsdk2 140,27
@@ -3675,7 +3596,6 @@ hsdk777 84,85 -> hsdk782 62,72
 hsdk777 56,26 -> hsdk781 19,79
 hsdk777 56,27 -> hsdk781 19,79
 
-[hsdk778 血红洞窟迷宫] DARK
 ;左出
 hsdk778 17,80 -> hsdk780 83,83
 hsdk778 18,81 -> hsdk780 83,83
@@ -3687,7 +3607,6 @@ hsdk778 59,73 -> hsdk2 284,165
 hsdk778 60,74 -> hsdk2 284,165
 hsdk778 61,75 -> hsdk2 284,165
 
-[hsdk779 血红洞窟迷宫] DARK
 ;左出
 hsdk779 17,80 -> hsdk782 84,23
 hsdk779 18,81 -> hsdk782 84,23
@@ -3699,7 +3618,6 @@ hsdk779 59,73 -> hsdk777 56,79
 hsdk779 60,74 -> hsdk777 56,79
 hsdk779 61,75 -> hsdk777 56,79
 
-[hsdk780 血红洞窟迷宫] DARK
 ;左下出
 hsdk780 23,77 -> hsdk778 84,23
 hsdk780 24,78 -> hsdk778 84,23
@@ -3717,7 +3635,6 @@ hsdk780 84,85 -> hsdk778 19,79
 hsdk780 56,26 -> hsdk785 19,79
 hsdk780 56,27 -> hsdk785 19,79
 
-[hsdk781 血红洞窟迷宫] DARK
 ;左出
 hsdk781 17,80 -> hsdk777 55,28
 hsdk781 18,81 -> hsdk777 55,28
@@ -3729,7 +3646,6 @@ hsdk781 59,73 -> hsdk778 84,23
 hsdk781 60,74 -> hsdk778 84,23
 hsdk781 61,75 -> hsdk778 84,23
 
-[hsdk782 血红洞窟迷宫] DARK
 ;左出
 hsdk782 17,80 -> hsdk783 55,28
 hsdk782 18,81 -> hsdk783 55,28
@@ -3741,7 +3657,6 @@ hsdk782 59,73 -> hsdk777 83,83
 hsdk782 60,74 -> hsdk777 83,83
 hsdk782 61,75 -> hsdk777 83,83
 
-[hsdk783 血红洞窟迷宫] DARK
 ;左下出
 hsdk783 23,77 -> hsdk783 56,79
 hsdk783 24,78 -> hsdk783 56,79
@@ -3759,7 +3674,6 @@ hsdk783 84,85 -> hsdk786 56,79
 hsdk783 56,26 -> hsdk782 19,79
 hsdk783 56,27 -> hsdk782 19,79
 
-[hsdk784 血红洞窟迷宫] DARK
 ;左出
 hsdk784 17,80 -> hsdk781 84,23
 hsdk784 18,81 -> hsdk781 84,23
@@ -3771,7 +3685,6 @@ hsdk784 59,73 -> hsdk786 83,83
 hsdk784 60,74 -> hsdk786 83,83
 hsdk784 61,75 -> hsdk786 83,83
 
-[hsdk785 血红洞窟迷宫] DARK
 ;左出
 hsdk785 17,80 -> hsdk780 55,28
 hsdk785 18,81 -> hsdk780 55,28
@@ -3783,7 +3696,6 @@ hsdk785 59,73 -> hsdk783 26,76
 hsdk785 60,74 -> hsdk783 26,76
 hsdk785 61,75 -> hsdk783 26,76
 
-[hsdk786 血红洞窟迷宫] DARK
 ;左下出
 hsdk786 23,77 -> hsdk3 104,24
 hsdk786 24,78 -> hsdk3 104,24
@@ -3801,7 +3713,6 @@ hsdk786 84,85 -> hsdk3 17,104
 hsdk786 56,26 -> hsdk3 122,44
 hsdk786 56,27 -> hsdk3 122,44
 
-[hsdk3 邪恶之心] DARK
 ;左上出
 hsdk3 16,106 -> hsdk786 83,83
 ;左下出
@@ -3815,17 +3726,13 @@ hsdk3 123,44 -> hsdk786 56,79
 
 
 ;南蛮
-[ygfx1 南蛮]
 ygfx1 675,133 -> hsdk3 41,134
 ;ygfx1 664,452 -> ygfx2 28,51
 
-[ygfx2 古代秘密通道] DARK
 ygfx2 27,51 -> ygfx1 663,453
 ygfx2 28,52 -> ygfx1 663,453
 ygfx2 163,127 -> ygfx3 155,122
 ygfx2 164,126 -> ygfx3 155,122
 
-[ygfx3 古代城市遗迹]
 ygfx3 156,121 -> ygfx2 164,127
 
-[nanm 南蛮城]

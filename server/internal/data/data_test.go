@@ -19,9 +19,19 @@ func TestLoadDir(t *testing.T) {
 	if got := tb.Items.Len(); got == 0 {
 		t.Error("物品表为空")
 	}
-	// GeeM2 社区包含 378 个怪物模板，城堡模板由 seedgen 追加。
-	if got := tb.Monsters.Len(); got != 382 {
-		t.Errorf("怪物数 = %d, 期望 GeeM2 的 378 个模板 + 4 个城堡模板", got)
+	// 怪物表已按 1.76 裁过（`seedgen -classic-monsters`，见 docs/decisions.md D-56/D-57）：
+	// GeeM2 的 378 条里只有 202 条与 OpenMir2 经典表同名，再加 4 条城堡模板。
+	if got := tb.Monsters.Len(); got != 206 {
+		t.Errorf("怪物数 = %d, 期望 202 条经典怪 + 4 个城堡模板", got)
+	}
+	// 非 1.76 的 GeeM2 私有怪一个都不许在（幻影寒虎就是这么刷进新手村的）。
+	for _, name := range []string{
+		"幻影寒虎", "神石毒魔蛛", "祖玛击雷将", "魔龙石碑", "火龙教主",
+		"封魔尸王", "南蛮白虎", "狐月素狐", "红洞僵尸", "古代骷髅",
+	} {
+		if tb.Monsters.GetByName(name) != nil {
+			t.Errorf("怪物表里不该有非 1.76 的 %q", name)
+		}
 	}
 	for i, m := range tb.Monsters.All() {
 		if m.Index != int32(i)+1 {
