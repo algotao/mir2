@@ -1327,3 +1327,47 @@ fn 小地图区域标注表() {
     assert!(!labels_for("盟重省").is_empty(), "别的图也有");
     assert!(labels_for("不存在的图").is_empty());
 }
+
+/// 点 NPC 的两层判据（用户 2026-10-09 报「点 NPC 没反应、还往那边走」）。
+///
+/// ① `hover`（画出来的框）—— NPC 精灵比格子高，点头/肩时格子是**上面那一格**；
+/// ② `npc_at(cell)` —— 光标正好压在它脚下那格时的兜底。
+/// 这里把"什么算 NPC"（`npc_kind` / `npc_at`）钉住：只有 `kind == 2` 且活着才算。
+#[test]
+fn 点npc的判据() {
+    use mir2_core::world::{Entity, World, KIND_MONSTER, KIND_NPC};
+    let ent = |id: u64, kind: u32, name: &str, x: i32, y: i32| Entity {
+        id,
+        kind,
+        name: name.into(),
+        x,
+        y,
+        dir: 5,
+        feature: None,
+        hp: 0,
+        max_hp: 0,
+        run: false,
+        status_bits: 0,
+        dead: false,
+        action: None,
+        action_seq: 0,
+    };
+    let mut w = World::default();
+    // 一只怪（kind=1）：不算 NPC
+    w.entities.insert(1000, ent(1000, KIND_MONSTER, "鸡", 3, 2));
+    assert!(!w.npc_kind(1000), "怪不该被当成 NPC");
+    assert_eq!(w.npc_at(3, 2), None, "怪所在的格子不该给 NPC 命中");
+
+    // 一个 NPC 在 (5,5)
+    w.entities.insert(42, ent(42, KIND_NPC, "屠夫", 5, 5));
+    assert!(w.npc_kind(42));
+    assert_eq!(w.npc_at(5, 5), Some(42), "它脚下那格要能命中");
+    assert_eq!(w.npc_at(5, 4), None, "光标的格子判不了头顶 —— 那要靠 hover");
+
+    // 死了就不算（尸体不对话）
+    if let Some(e) = w.entities.get_mut(&42) {
+        e.dead = true;
+    }
+    assert!(!w.npc_kind(42));
+    assert_eq!(w.npc_at(5, 5), None);
+}

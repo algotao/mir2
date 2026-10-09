@@ -243,11 +243,30 @@ func (s *Server) goodsContains(def *data.NPC, name string) bool {
 }
 
 // npcDefOf 按 NPC 名字找它的定义（脚本与商品分类都挂在定义上）。
+// npcDefOf 找这个 NPC 在配置里的定义（脚本 id 与商品分类都从它来）。
+//
+// ⚠️ 不能只按**名字**匹配：配置文件里同名 NPC 不止一份 —— 比奇省就有 **3 个"屠夫"**、
+// 2 个"铁匠铺老板"（`merchant.txt`），各自是**不同的脚本 id**（`1Bme`/`1Gme`/…）。
+// 按名字取第一个，会给玩家开**别人家**的脚本与商品（用户 2026-10-09 验对话时就会撞上：
+// 走到另一家屠夫那儿，说的却是第一家的话）。
+//
+// 所以先按"**同图 + 同坐标**"精确匹配，匹配不到再退回名字（保留原来的容错）。
 func (s *Server) npcDefOf(npc *entity.Monster) *data.NPC {
+	mapID := ""
+	if m := npc.MapRef(); m != nil {
+		mapID = m.Name
+	}
+	var byName *data.NPC
 	for _, n := range s.npc.defs {
-		if n.Name == npc.Name {
+		if n.Name != npc.Name {
+			continue
+		}
+		if byName == nil {
+			byName = n
+		}
+		if n.MapID == mapID && n.X == npc.PosX() && n.Y == npc.PosY() {
 			return n
 		}
 	}
-	return nil
+	return byName
 }

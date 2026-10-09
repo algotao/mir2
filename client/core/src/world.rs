@@ -274,8 +274,20 @@ impl World {
     pub fn npc_at(&self, x: i32, y: i32) -> Option<u64> {
         self.entities
             .values()
-            .find(|e| e.kind == 2 && !e.dead && e.x == x && e.y == y)
+            .find(|e| e.kind == KIND_NPC && !e.dead && e.x == x && e.y == y)
             .map(|e| e.id)
+    }
+
+    /// 这个 ActorId 是不是一个**活着的 NPC**。
+    ///
+    /// ⚠️ 点 NPC 的判据必须是**它画出来的框**，不是"光标落在哪一格"：NPC 的精灵比
+    /// 格子高（锚点在脚下），点它的头/肩时 `screen_to_cell` 得到的是**上面那一格**
+    /// ⇒ 按格子判就成了"点了没反应、人还往那边走"（用户 2026-10-09 报的）。
+    /// 画面那一侧有 `actor_rect`（悬停高亮用的同一份判据），这里只负责认"是不是 NPC"。
+    pub fn npc_kind(&self, id: u64) -> bool {
+        self.entities
+            .get(&id)
+            .is_some_and(|e| e.kind == KIND_NPC && !e.dead)
     }
 
     /// 关掉对话（本地清掉；要不要告诉服务端由调用方决定）。
@@ -557,6 +569,8 @@ impl World {
 
 /// 怪物的 `kind`（`EntityState.kind`：0=玩家 1=怪物 2=NPC）。
 pub const KIND_MONSTER: u32 = 1;
+/// `EntityState.kind` = NPC（商人/功能 NPC）。**不可打**、点它是"说话"。
+pub const KIND_NPC: u32 = 2;
 
 /// 打一个目标时"这一步"干什么（[`World::combat_step`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -228,8 +228,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 上一次看到自己的位置：位置一变就说明"这一步走成了" ⇒ 绕障状态清掉。
     let mut last_self_pos = (0i32, 0i32);
     let mut move_block_until = Instant::now();
-    // 悬停的那个实体（由 `draw_map_view` 每帧算出来 —— 要精灵落点，见 `actor_rect`）
-    let mut hover: Option<u64>;
+    // 悬停的那个实体（由 `draw_map_view` 每帧算出来 —— 要精灵落点，见 `actor_rect`）。
+    // ⚠️ 必须初始化：事件处理排在画图**之前**，点 NPC 要靠"上一帧算出的悬停"做
+    // 像素级命中（与官方 `g_FocusCret` 同一套用法）。
+    let mut hover: Option<u64> = None;
     // 进世界的按键提示只推一次（见下面那段）
     let mut hint_pushed = false;
     // 悬停可攻击目标时把光标换成"准星"（Crystal 是 `MouseCursor.Attack`，
@@ -639,10 +641,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     held_move = None;
                                 }
                             }
-                            // ③ 点 NPC ⇒ **说话**，不是往它那格走
-                            //（用户 2026-10-09：那一格被 NPC 自己挡着 ⇒ 会一直 reason=3 重试）
+                            // ③ 点 NPC ⇒ **说话**，不是往它那格走。
+                            //
+                            // ⚠️ 判据分两层（用户 2026-10-09 报"点 NPC 没反应"）：
+                            //   1. `hover`（上一帧用 `actor_rect` = **画出来的框**算的）——
+                            //      NPC 的精灵比格子高，点它的头/肩时格子是**上面那一格**，
+                            //      只看格子就是"点了没反应、人还往那边走"；
+                            //   2. 兜底再用格子（光标正好压在它脚下那格时，`hover` 可能为空）。
                             if let Some(n) = net.as_ref() {
-                                if let Some(id) = n.world.npc_at(cell.0, cell.1) {
+                                let hit = hover
+                                    .filter(|id| n.world.npc_kind(*id))
+                                    .or_else(|| n.world.npc_at(cell.0, cell.1));
+                                if let Some(id) = hit {
                                     n.npc_click(id);
                                     combat_target = None;
                                     move_target = None;
