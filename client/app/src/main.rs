@@ -674,11 +674,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             println!("[net] 对话选项 {idx}");
                                         }
                                     }
-                                    // 点在面板上（含非选项处）⇒ 吞掉这次点击，别走路
-                                    combat_target = None;
-                                    move_target = None;
-                                    press_at = None;
-                                    held_move = None;
+                                    // ⚠️ **只有点在面板里**才吞掉这次点击。
+                                    // 用户 2026-10-09：「对话期间应仍能操作（走、跑、打架），
+                                    // 现在不能跑不能走，人被定在那里」—— 原来是无条件清空意图，
+                                    // 等于把整个屏幕都变成"对话区"。原版的对话窗是**非模态**的
+                                    //（`NPCDialog` 就是个窗口，`DrawScrn.pas` 里它跟世界各画各的），
+                                    // 外面照常点：此时才拦。
+                                    if input::dialog_hit(panel, (x, y)) {
+                                        combat_target = None;
+                                        move_target = None;
+                                        press_at = None;
+                                        held_move = None;
+                                    }
                                 }
                             }
                             // ②′ 背包窗开着：点格子 = 把"看到的是哪件"反馈到聊天区

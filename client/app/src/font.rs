@@ -211,10 +211,14 @@ impl<'a> TextCache<'a> {
             if let Some(t) = self.texs.get_mut(&(ch, px.to_bits())) {
                 if t.w > 0.0 {
                     t.tex.set_color_mod(color.0, color.1, color.2);
+                    // ⚠️ 落笔**取整到整像素**：`pen` 是小数累加（`g.advance` 带小数），
+                    // 亚像素落点会让 SDL 做线性采样 ⇒ 字发糊。用户 2026-10-09：
+                    // 「字体有点糊…请用字号调节，不要使用拉伸渲染」——字号本来就是原生的
+                    // （`UI_PX=14`，不再乘 1.28，见 D-64），糊的就是这个小数笔位。
                     canvas.copy(
                         &t.tex,
                         None::<FRect>,
-                        FRect::new(pen + g.xmin as f32, y + top.round(), t.w, t.h),
+                        FRect::new((pen + g.xmin as f32).round(), y + top.round(), t.w, t.h),
                     )?;
                 }
             }

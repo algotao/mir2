@@ -126,7 +126,32 @@ func (s *Server) tickPlayers(now time.Time) {
 		// 为什么不对所有人做：legacy 客户端会因此收到额外的 SM_TURN/SM_DISAPPEAR，
 		// 而 mir2cli 的 e2e 是按包序断言的（详见 tickProtoVision 的说明）。
 		s.tickProtoVision(p)
+		// 对话：**离远了自动关**（用户 2026-10-09 第 3 条："离开对话有效区域应自动关闭"）。
+		s.tickDialogRange(p)
 	}
+}
+
+// tickDialogRange 对话离得太远（或那个 NPC 已经不在了）就关掉并下行 `NpcClose`。
+//
+// 判据与"能不能点它"**同一条**（8 格，见 `onNpcClick`）—— 走出那个范围就不再算
+// "对着它说话"。原版也是这么做的：`TPlayObject.Run` 里走远了会 `ClearShopActor`
+// 把对话清掉（客户端侧 `ClMain.pas` 也有自己的距离检查）。
+//
+// ⚠️ 客户端自己**不知道**该关（它只收到过 `NpcSay`），所以必须由服务端下行 ——
+// 少了这条，玩家走远了那个面板会一直挂在那儿。
+func (s *Server) tickDialogRange(p *Player) {
+	if p == nil || p.Obj == nil || p.dialog == nil {
+		return
+	}
+	s.mu.RLock()
+	npc := s.world.monsters[p.dialog.npcID]
+	s.mu.RUnlock()
+	if npc != nil && npc.IsNPC && p.Obj.MapRef() == npc.MapRef() &&
+		p.Obj.Distance(npc.PosX(), npc.PosY()) <= npcTalkRange {
+		return
+	}
+	s.npcClose(p.conn, p)
+	p.dialog = nil
 }
 
 // tickPlayerStatus 在状态位**该变了**的时候补一次广播。

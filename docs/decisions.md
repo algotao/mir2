@@ -3471,3 +3471,70 @@ Result := g_WWeaponImages.GetCachedImage(HUMANFRAME * Weapon + nFrame, ax, ay);
 - 客户端 `对话正文的行内链接`：该行切成 `[空白, 链接, 文字]`；点链接 ⇒ 序号 1；
   点链接**右边**的正文 ⇒ 不命中；超出 `DIALOG_MAX_LINES` 的链接点不到。
 - `go test ./...` 25 包全绿；`cargo test --workspace` 227 例全绿；起服正常。
+
+## D-69 对话窗三件事 + 名字规则 + 字体落笔取整
+
+**用户 2026-10-09**（一次五条）：①对话的「退出」按钮怎么没有？②对话期间应仍能操作
+（走/跑/打架），现在不能跑不能走，人被定在那里；③离开对话有效区域应自动关窗；
+④名字显示：怪不显示名字（只有血条）、NPC 绿名、玩家一般白名/有些情况红名（"请去官方代码确认"）；
+⑤字体有点糊，请用字号调节、不要拉伸渲染。
+
+### ① 「退出」没显示：行数上限写死了
+
+陈家铺老板那段是 **7 行**（正文 1 + 空行 1 + 5 个行内选项），而 `DIALOG_MAX_LINES` **写死 5**
+⇒ 最后两行（「询问」「退出」）被截掉。现在**按背板几何算**：
+`(DIALOG_H - 2*DIALOG_PAD_Y) / DIALOG_LINE_H = (176-32)/18 = 8` 行 —— 背板尺寸一变它自己跟着变。
+
+### ② 对话期间不能走/跑/打架：把整屏当成了对话区
+
+旧代码在对话开着时**无条件**清空点击意图（`combat_target/move_target/press_at/held_move`）
+⇒ 屏幕任何地方都点不动 = 人被定住。原版的对话窗是**非模态**的（`DrawScrn.pas` 里它跟世界
+各画各的，`NPCDialog` 就是个窗口）⇒ 现在**只有点在面板里**才吞这次点击（`input::dialog_hit`）。
+
+### ③ 离开有效区域自动关
+
+新增 `tickDialogRange`（挂在每秒的 `tickPlayers` 上）：距离 > `npcTalkRange`（8 格，
+与 `onNpcClick` **共用同一个常量**）、或 NPC 不在、或换图 ⇒ `npcClose` + 清 `p.dialog`。
+⚠️ 必须服务端下行：客户端只收到过 `NpcSay`，自己不知道"该关了"。
+
+### ④ 名字规则（先在官方源码里核实）
+
+官方 1.76 客户端 `DrawScrn.pas:324-342`：
+
+- **名字颜色是服务端下发的数据**：`actor.m_nNameColor`（`Actor.pas:1246` 默认 `clWhite`），
+  服务器可以改（`SM_CHANGENAMECOLOR` / 实体消息里带 `GetRGB(...)`）；`ENEMYCOLOR` 是"敌对红"。
+- 官方**只画「选中的目标」与「自己」的名字**（`g_FocusCret` / `g_boSelectMyself`）。
+- 血条用 `WMain2` 的 `HEALTHBAR_BLACK` + `HEALTHBAR_RED`（`m_boOpenHealth` 时才画）。
+
+我们的实现（照用户给的规则，配色常量在 `app/colors.rs`）：
+
+| 实体 | 名字 | 血条 |
+|---|---|---|
+| 怪 | **不画**（悬停/锁定时才显示 —— 照官方 `g_FocusCret`） | 掉血才画 |
+| NPC | **绿名** | 不画 |
+| 玩家 | **白名**；红名档 ⇒ **红名** | 掉血才画 |
+| 自己 | 白名 | 常驻 + `当前/总量` |
+
+**红名怎么传**：新协议只有 `status_bits` 一条通道能把"这人是红名"告诉客户端 ⇒ 自定位
+`entity.StateRedName = 0x00008000`（置位条件 `pvp.PKLevel(pkPoint) >= 2`，与死亡掉落同一口径），
+客户端用 `mir2_core::world::STATE_RED_NAME`（**必须同值**，两边注释互相点名）。
+
+### ⑤ 字体糊：小数笔位
+
+`font.rs` 的 `paint` 里 `pen` 是**小数累加**（`g.advance` 带小数），落笔 `pen + g.xmin`
+就是亚像素坐标 ⇒ SDL 做线性采样 ⇒ 发糊。字号本身早就是原生的 14px（D-64 去掉了 ×1.28），
+所以**不是拉伸的问题**，是落点没有对齐像素网格 ⇒ 现在 `.round()`（字形尺寸一个字没改）。
+
+### 验证
+
+- 客户端 `对话行数上限装得下官方那段`：7 行全在、最后一行的链接是「退出」(序号 5)、
+  每行片段都不越出背板右边界（这条就是"退出看不到"的回归）。
+- 服务端 `TestDialogAutoClose`：2 格内不关；走到 20 格外 ⇒ 状态清掉 + **必须收到 `NpcClose`**；
+  NPC 不在了也关。`TestStatusBitsRedName`：PK 0/100 不置红名位，200 置。
+- `go test ./...` 25 包全绿、`cargo test --workspace` 228 例全绿、起服无 panic。
+
+### 遗留
+
+- **自己**那条绘制路径硬编码 `status_bits: 0` ⇒ 自己变成红名时名字**不会变红**（别人的会）。
+- 怪的**悬停/锁定名字**用的还是"目标色"（`C_ENT_TARGET`）；官方是按 `m_nNameColor`（默认白）。
+- 血条的素材还是自绘的方块；官方是 `WMain2` 的 `HEALTHBAR_BLACK/RED`（要找图号，同 D-67 的办法）。

@@ -47,4 +47,13 @@ const (
 	StateHolyArmor   = 0x00400000 // 防御上升（下标 9）
 	StateSoulShield  = 0x00200000 // 魔御上升（下标 10）
 	StateShield      = 0x00100000 // 魔法盾（下标 11）
+
+	// StateRedName 是**红名**（我们自定的位，原版靠 SM_CHANGENAMECOLOR 单独下发名字颜色）。
+	//
+	// 为什么借状态位：新协议只有 `status_bits` 这一条通道能把"这人是红名"告诉客户端
+	//（见 `protocol/scene.proto` 的说明），而名字颜色本来就是**服务端说了算**
+	//（原版 `m_nNameColor` 默认 `clWhite`，服务器可改，见 `DrawScrn.pas` 的画名那段）。
+	//
+	// ⚠️ 必须与客户端 `mir2_core::world::STATE_RED_NAME` **同值**（0x00008000）。
+	StateRedName = 0x00008000
 )

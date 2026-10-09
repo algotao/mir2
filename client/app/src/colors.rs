@@ -43,14 +43,19 @@ pub(crate) const C_CROSS: Color = Color::RGB(255, 255, 255);
 pub(crate) const C_TOPMOST: Color = Color::RGB(255, 90, 220);
 
 /// 联网实体标记的配色（按 `EntityState.kind`：0=玩家 1=怪物 2=NPC）。
-pub(crate) const C_ENT_PLAYER: Color = Color::RGB(120, 200, 255);
+// 名字颜色 —— **照用户 2026-10-09 给的规则**（出处见 docs/decisions.md D-69）：
+//   玩家 = 白名（红名时换 `C_RED_NAME`）；NPC = **绿名**；怪 = **不显示名字**（只血条）。
+pub(crate) const C_ENT_PLAYER: Color = Color::RGB(255, 255, 255);
 
 pub(crate) const C_ENT_MONSTER: Color = Color::RGB(255, 110, 110);
 
-pub(crate) const C_ENT_NPC: Color = Color::RGB(255, 220, 120);
+pub(crate) const C_ENT_NPC: Color = Color::RGB(0, 255, 0);
+/// **红名**玩家的名字颜色（PK 值到红名档，服务端用 `status_bits` 的
+/// `mir2_core::world::STATE_RED_NAME` 位告诉我们）。
+pub(crate) const C_RED_NAME: Color = Color::RGB(255, 64, 64);
 
 /// 自己（相机跟着它）。
-pub(crate) const C_ENT_SELF: Color = Color::RGB(120, 255, 140);
+pub(crate) const C_ENT_SELF: Color = Color::RGB(255, 255, 255);
 
 /// 尸体（`Death` 之后、`EntityDisappear` 之前 —— 原版里尸骨会留一会儿）。
 pub(crate) const C_ENT_DEAD: Color = Color::RGB(120, 120, 120);

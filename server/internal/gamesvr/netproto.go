@@ -1653,7 +1653,7 @@ func (ps *protoSession) onNpcClick(n *protocol.NpcClick) bool {
 		return true // 点空了/点的不是 NPC：静默忽略
 	}
 	// 距离校验与 legacy 同一条：够不着就不给隔空对话
-	if p.Obj.MapRef() != npc.MapRef() || p.Obj.Distance(npc.PosX(), npc.PosY()) > 8 {
+	if p.Obj.MapRef() != npc.MapRef() || p.Obj.Distance(npc.PosX(), npc.PosY()) > npcTalkRange {
 		return true
 	}
 	def := ps.srv.npcDefOf(npc)

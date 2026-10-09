@@ -1475,3 +1475,44 @@ fn 武器图层的图库与块大小() {
     assert_eq!(A::human_index(1, A::HAct::Stand, 0, 0), 600);
     assert_eq!(A::human_index(2, A::HAct::Stand, 0, 0), 1200, "铁剑 Shape=2");
 }
+
+/// 对话行数上限：**陈家铺老板那段必须完整显示**（含最后的「退出」）。
+///
+/// 用户 2026-10-09：「对话的『退出』按钮怎么没有？」—— 那段是
+/// 正文 1 行 + 空行 + 5 个行内选项 = **7 行**，而旧的 `DIALOG_MAX_LINES` 写死 5
+/// ⇒ 最后两行（「询问」「退出」）被截掉了。现在上限按背板几何算（(176-32)/18 = 8）。
+#[test]
+fn 对话行数上限装得下官方那段() {
+    // 服务端下发的样子（见 `server/internal/script` 的 `Label.Lines`）
+    let text = "欢迎. 我可以为你做什么吗?\n\n <打开/@1> 交易市场\n <购买/@2>  物品\n \
+                <出售/@3>  物品\n <询问/@4> 物品详细情况\n <退出/@5>";
+    let lines = input::dialog_lines(text, &[]);
+    assert_eq!(lines.len(), 7, "该段共 7 行，实得 {lines:?}");
+    assert!(
+        input::DIALOG_MAX_LINES >= lines.len(),
+        "背板能画 {} 行，但这只要 {} 行 —— 「退出」会被截掉",
+        input::DIALOG_MAX_LINES,
+        lines.len()
+    );
+    // 最后一行必须是「退出」（序号 5）
+    let last_link = lines[6]
+        .iter()
+        .find_map(|seg| match seg {
+            input::DialSeg::Link { index, text } => Some((*index, text.clone())),
+            _ => None,
+        })
+        .expect("第 7 行该有个链接");
+    assert_eq!(last_link, (5, "退出".to_string()), "第 7 行应可点「退出」");
+    // 每一行的行内选项都排得下（不越出背板右边界）
+    let mut measure = |t: &str| t.chars().count() as f32 * 14.0;
+    for (i, segs) in lines.iter().enumerate() {
+        for p in input::dialog_line_pieces(input::dialog_panel(), i, segs, &mut measure) {
+            let (px, _, pw, _) = p.rect;
+            assert!(
+                px + pw <= input::DIALOG_X + input::DIALOG_W,
+                "第 {} 行的片段超出背板右边界",
+                i + 1
+            );
+        }
+    }
+}

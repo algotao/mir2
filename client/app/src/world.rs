@@ -14,9 +14,20 @@ use sdl3::rect::Rect;
 use sdl3::render::{TextureCreator, WindowCanvas};
 
 use crate::actor::{actor_rect, draw_actor, SpriteCache};
-use crate::colors::{
-    C_DIM, C_DMG_DIM, C_DMG_HOT, C_DMG_MID, C_ENT_DEAD, C_ENT_MONSTER, C_ENT_NPC, C_ENT_PLAYER,
-    C_ENT_SELF, C_ENT_TARGET, C_ERR, C_PANEL, C_TITLE,
+use crate::colors::{C_DIM,
+    C_DMG_DIM,
+    C_DMG_HOT,
+    C_DMG_MID,
+    C_ENT_DEAD,
+    C_ENT_MONSTER,
+    C_ENT_NPC,
+    C_ENT_PLAYER,
+    C_ENT_SELF,
+    C_ENT_TARGET,
+    C_ERR,
+    C_PANEL,
+    C_RED_NAME,
+    C_TITLE,
 };
 use crate::debug::{draw_debug_overlay, layers_desc, DEBUG_OVERLAY};
 use crate::geom::{cam_parts, cell_to_screen};
@@ -188,7 +199,14 @@ pub(crate) fn draw_map_view<'a, T>(
                     C_ENT_TARGET
                 } else {
                     match e.kind {
-                        0 => C_ENT_PLAYER,
+                        // 玩家：白名；**红名**（`STATE_RED_NAME`）时红
+                        0 => {
+                            if e.status_bits & mir2_core::world::STATE_RED_NAME != 0 {
+                                C_RED_NAME
+                            } else {
+                                C_ENT_PLAYER
+                            }
+                        }
                         2 => C_ENT_NPC,
                         _ => C_ENT_MONSTER,
                     }
@@ -207,7 +225,13 @@ pub(crate) fn draw_map_view<'a, T>(
                     e,
                     n.anims.get(&e.id),
                     now,
-                    &e.name,
+                    // 怪**不显示名字**（用户 2026-10-09 第 4 条），但悬停/锁定它时给看 ——
+                    // 原版就是只画 `g_FocusCret` 的名字（`DrawScrn.pas:324-331`）。
+                    if e.kind == 1 && !(hover == Some(e.id) || combat_target == Some(e.id)) {
+                        ""
+                    } else {
+                        &e.name
+                    },
                     if npc { 0 } else { e.hp },
                     if npc { 0 } else { e.max_hp },
                     color,

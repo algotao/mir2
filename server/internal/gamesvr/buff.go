@@ -9,6 +9,7 @@ import (
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/obs"
 	"github.com/algotao/mir2/server/internal/proto"
+	"github.com/algotao/mir2/server/internal/pvp"
 )
 
 // 增益（Buff）系统。
@@ -125,6 +126,11 @@ func (p *Player) statusBits() uint32 {
 	// 石化/麻痹（原版 MakePosion(POISON_STONE,…) 会改状态位并 StatusChanged 广播）
 	if p.Obj.Stoned(time.Now()) {
 		v |= entity.StateStone
+	}
+	// **红名**：PK 值到红名档（`PKLevel ≥ 2`，与 `death.go` 的掉落判据同一个口径）。
+	// 客户端据此把名字画成红色（用户 2026-10-09 第 4 条：玩家一般白名、红名时红）。
+	if p.Char != nil && p.Char.Data != nil && pvp.PKLevel(int32(p.Char.Data.PkPoint)) >= 2 {
+		v |= entity.StateRedName
 	}
 	return v
 }

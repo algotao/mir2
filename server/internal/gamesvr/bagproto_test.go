@@ -5,8 +5,10 @@ import (
 	"testing"
 
 	"github.com/algotao/mir2/server/internal/data"
+	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/proto"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
+	"github.com/algotao/mir2/server/internal/world"
 	"github.com/algotao/mir2/server/protocol"
 )
 
@@ -154,5 +156,69 @@ func TestUpdateFeatureShapeAndEmpty(t *testing.T) {
 	if got := empty.Obj.FeatureBits(); proto.FeatureDress(got) != 0 || proto.FeatureWeapon(got) != 0 {
 		t.Errorf("空装备时外观位应为 0，实得 dress=%d weapon=%d",
 			proto.FeatureDress(empty.Obj.FeatureBits()), proto.FeatureWeapon(empty.Obj.FeatureBits()))
+	}
+}
+
+// TestDialogAutoClose 走出对话范围（或 NPC 不在了）要自动关，并下行 `NpcClose`。
+//
+// 用户 2026-10-09 第 3 条：「离开对话有效区域，应自动关闭对话窗口」。
+// 判据必须与"能不能点开"**同一条**（8 格）—— 两边不一致就会出现
+// "点不开却关不掉"这种怪状态。
+func TestDialogAutoClose(t *testing.T) {
+	s := testSlaveServer()
+	m := world.Generate("0", 60, 60, false)
+	npc := newTestMonster(proto.NpcIDBase+1, "屠夫", 1)
+	npc.IsNPC = true
+	npc.Object.SetPlace(m, 10, 10, entity.DirDown)
+	s.world.monsters[npc.ID] = npc
+
+	p := testMaster(100, "路人")
+	p.Obj.SetPlace(m, 12, 10, entity.DirDown) // 距离 2 ⇒ 在范围内
+	p.dialog = &dialog{scriptName: "x", npcID: npc.ID}
+	sink := &protoSink{ch: make(chan *protocol.Envelope, 4)}
+	p.protoOut = sink
+
+	s.tickDialogRange(p)
+	if p.dialog == nil {
+		t.Fatal("还在范围内（2 格），不该关")
+	}
+
+	// 走远到 8 格外
+	p.Obj.SetPlace(m, 40, 40, entity.DirDown)
+	s.tickDialogRange(p)
+	if p.dialog != nil {
+		t.Error("走出范围后应清掉对话状态")
+	}
+	select {
+	case env := <-sink.ch:
+		if env.GetNpcClose() == nil {
+			t.Errorf("应下行 NpcClose，实得 %T", env.Body)
+		}
+	default:
+		t.Error("走出范围必须下行 NpcClose —— 客户端自己不知道，面板会一直挂着")
+	}
+
+	// NPC 没了（换图/被清）也要关
+	p.dialog = &dialog{scriptName: "x", npcID: 999_999}
+	s.tickDialogRange(p)
+	if p.dialog != nil {
+		t.Error("NPC 不在了也该关")
+	}
+}
+
+// TestStatusBitsRedName 红名位：PK 值到红档（`PKLevel ≥ 2`）才置。
+func TestStatusBitsRedName(t *testing.T) {
+	p := testMaster(100, "张三")
+	p.Char.Data = &pb.CharacterData{PkPoint: 0}
+	if got := p.statusBits(); got&entity.StateRedName != 0 {
+		t.Errorf("PK 0 不该是红名（bits=%#x）", got)
+	}
+	p.Char.Data.PkPoint = 100 // PKLevel = 1
+	if got := p.statusBits(); got&entity.StateRedName != 0 {
+		t.Errorf("PKLevel=1 还不该是红名（bits=%#x）", got)
+	}
+	p.Char.Data.PkPoint = 200 // PKLevel = 2 ⇒ 红名
+	if got := p.statusBits(); got&entity.StateRedName == 0 {
+		t.Errorf("PKLevel=2 应是红名（bits=%#x）", got)
 	}
 }

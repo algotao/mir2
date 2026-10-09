@@ -671,6 +671,13 @@ pub const KIND_MONSTER: u32 = 1;
 /// `EntityState.kind` = NPC（商人/功能 NPC）。**不可打**、点它是"说话"。
 pub const KIND_NPC: u32 = 2;
 
+/// `EntityState.status_bits` 里的**红名**位。
+///
+/// ⚠️ 必须与服务端 `entity.StateRedName` **同值**（0x00008000）——
+/// 原版是 `SM_CHANGENAMECOLOR` 单独下发名字颜色（`m_nNameColor`，默认白），
+/// 我们这条协议只有一个 `status_bits`，就借它传"这个玩家是红名"。
+pub const STATE_RED_NAME: u64 = 0x0000_8000;
+
 /// 打一个目标时"这一步"干什么（[`World::combat_step`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CombatStep {

@@ -22,6 +22,12 @@ import (
 // 点击 NPC 时：有脚本 → 进入对话；没有 → 打开商店。
 
 // dialog 记录玩家当前所处的对话。
+// npcTalkRange 是**能跟 NPC 对话的距离**（格，切比雪夫）。
+//
+// 两个地方共用同一条口径：`onNpcClick`（点得开吗）与 `tickDialogRange`
+// （走远了自动关吗）—— 两边不一样就会出现"点不开但关不掉"这种怪状态。
+const npcTalkRange = 8
+
 type dialog struct {
 	scriptName string
 	// npcID 用于对白里的 @buy/@sell/@trading 打开对应商店。
