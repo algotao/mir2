@@ -3362,3 +3362,56 @@ txt/sql/pas/json/dat/ini/db/lua/md 全部扩展名）：**"新手指导"零命�
 而 600 在这份素材里是空的 ⇒ **服务端给的外观号是对的，但客户端可能仍然看不到剑**。
 要么这份素材的武器块有基址偏移，要么该版本的武器在别的库里 —— 下次量一下 `Weapon.wzl`
 第一个非空块与已知武器的对应关系再定。
+
+## D-67 武器素材在哪：`Weapon2.wzl`（不是 `Weapon.wzl`）
+
+**用户 2026-10-09**：「去找下武器素材在哪，目录 mir2standard、OpenMir2、Mir2-GeeM2、Crystal。」
+
+### 那 4 个仓库里没有 Mir2 的武器图
+
+| 仓库 | 里面有什么 | 结论 |
+|---|---|---|
+| `Mir2-GeeM2` | 只有 `Envir/` 配置与脚本 | 无素材 |
+| `OpenMir2` | C# 服务端 | 无素材 |
+| `mir2standard` | Delphi 服务端 + **客户端源码**（`GameOfMir/MirClient`） | **无素材，但有权威口径** ↓ |
+| `Crystal` | 另一支客户端（C#），武器是它自己的格式：`CWeapons` / `AWeaponsL,R`（`Settings.CWeaponPath` 等） | 命名与格式都不同，不能直接拿来 |
+
+**图只在本项目的 `mir2c/data/` 里。**
+
+### 但 `mir2standard` 给了公式（这才是关键）
+
+`mir2standard/GameOfMir/MirClient/Actor.pas`（Delphi 1.76 客户端）：
+
+```pascal
+HUMANFRAME = 600;                                     // 第 15 行
+m_nWeaponOffset := HUMANFRAME * m_btWeapon;           // 3189 / 1910
+// ClMain.pas:6869  GetWWeaponImg:
+Result := g_WWeaponImages.GetCachedImage(HUMANFRAME * Weapon + nFrame, ax, ay);
+```
+
+⇒ **武器与人物身体共用同一个块大小 600**（衣服也是 `HUMANFRAME * Dress`），
+武器号 = 物品的 `Shape`。也就是说我们的 `human_index(weapon, …)` 公式**本来就是对的**。
+
+### 错的是图库：`Weapon.wzl` 配错了
+
+用 `wzldump` 逐条量（`/tmp` 里的临时导出，未入库）：
+
+- `Weapon.wzx` 只有 **11403 条**记录，而 `Weapon.wzl` 头里写着 **45600 张** ⇒ 不是同一版；
+- 记录**大半是空壳**：`--list` 报得出尺寸（`1200 8x8`），`decode` 却取不到；
+- "站姿"模式（每方向 4 帧、步长 8）只在 **3600 / 4800** 出现 ⇒ 那份是 **1200/块**，
+  与源码口径的 600 也不符。
+
+### `Weapon2.wzl` 才是对的那一把
+
+- 从下标 **0** 就能解出（0..400 里 302 张）；
+- "站姿"模式出现在 **600 与 1200** 两个块起点 ⇒ 经典 **600/块**，与源码一致；
+- 取 600 导出来看：**正是握在手里的剑**（8 方向、带手套）—— `Shape=1` = 木剑 ⇒ 块 1。
+
+### 改动
+
+`mir2_core::actor::WEAPON_LIB`：`"Weapon"` → **`"Weapon2"`**（公式不变），
+`app/src/assets.rs` 的素材浏览器列表也跟着换；新增用例
+`武器图层的图库与块大小`（断言图库名 + `human_index(1, Stand, 0, 0) == 600`、
+`human_index(2, …) == 1200`），把"别改回 `Weapon`"钉住。
+
+⚠️ 未处理：`WeaponEffect.wzl`（武器发光特效）与 `Weapon9.wzl` 没查，等有发光武器再说。

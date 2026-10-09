@@ -1409,3 +1409,23 @@ fn 背包窗的格子命中() {
         );
     }
 }
+
+/// 武器图层：图库必须是 `Weapon2`、块大小必须与人物的 600 一致。
+///
+/// 2026-10-09：用户报"看不到手持武器"。服务端给的外观号是对的（另有 D-66 修），
+/// 问题在**取图**——本项目的 `Weapon.wzl` 与它的 `.wzx` 不是同一版（`.wzl` 头写 45600 张、
+/// `.wzx` 只有 11403 条记录，且大半是空壳：`--list` 有尺寸、`decode` 取不到），
+/// `Weapon2.wzl` 才是经典 **600/块** 的完整库（口径见 `mir2_core::actor::WEAPON_LIB` 的说明）。
+#[test]
+fn 武器图层的图库与块大小() {
+    use mir2_core::actor as A;
+    assert_eq!(
+        A::WEAPON_LIB, "Weapon2",
+        "武器必须走 Weapon2 —— Weapon.wzl 在本项目素材里是坏的那一对"
+    );
+    assert_eq!(A::HUMAN_FRAME, 600, "人物块大小");
+    // 木剑 Shape=1 ⇒ 第 2 块（下标从 0 起）的第 0 帧 = 600；
+    // 与人物身体共用同一套块大小，所以公式仍用 `human_index`。
+    assert_eq!(A::human_index(1, A::HAct::Stand, 0, 0), 600);
+    assert_eq!(A::human_index(2, A::HAct::Stand, 0, 0), 1200, "铁剑 Shape=2");
+}

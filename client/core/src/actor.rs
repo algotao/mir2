@@ -390,8 +390,27 @@ pub fn dir_of(direction: i32) -> u8 {
 
 /// 人物容器（`Hum.wzl`）。
 pub const HUM_LIB: &str = "Hum";
-/// 武器容器（`Weapon.wzl`）。
-pub const WEAPON_LIB: &str = "Weapon";
+/// 武器容器 —— **`Weapon2.wzl`**（不是 `Weapon.wzl`，见下）。
+///
+/// # 为什么是 `Weapon2`（2026-10-09 查证）
+///
+/// 1. **口径来自官方客户端源码**：`mir2standard/GameOfMir/MirClient/Actor.pas`
+///    （Delphi 1.76 客户端）里 `m_nWeaponOffset := HUMANFRAME * m_btWeapon`，
+///    而 `HUMANFRAME = 600` —— 与**人物身体共用同一个块大小**（衣服也是
+///    `HUMANFRAME * Dress`）。武器外观号 = 物品的 `Shape`。
+/// 2. **本项目素材里的 `Weapon.wzl` 是坏的一对**：它的 `.wzx` 只有 11403 条记录，
+///    而 `.wzl` 头里写着 45600 张；记录大半是空壳（`--list` 有尺寸、`decode` 取不到），
+///    "站姿"（每方向 4 帧、步长 8）只出现在 3600 / 4800 ⇒ 那份是 1200/块，且
+///    `.wzl` 与 `.wzx` 不是同一版。
+/// 3. **`Weapon2.wzl` 才是对的那一把**：从下标 0 就能解出，"站姿"模式出现在
+///    **600 与 1200** 两个块起点 ⇒ 经典 **600/块**，与源码口径一致；取 600
+///    （`Shape = 1` = 木剑）导出来一看，正是**握在手里的剑**（8 方向、带手套）。
+///
+/// 公式因此不用改（就是 [`human_index`] 的 600/块），只换图库。
+///
+/// ⚠️ 别改回 `Weapon`：那份素材的表现是"拿武器的人**手上什么都没有**"
+///（服务端给的外观号是对的，取图取空了）。
+pub const WEAPON_LIB: &str = "Weapon2";
 
 // ---------- 生成段 ----------
 // 由 `client/core/tools/gen_actor_tables.py` 从 Actor.pas 抽出；**不要手改数字**。
