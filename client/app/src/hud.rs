@@ -5,13 +5,13 @@
 use std::path::Path;
 
 use sdl3::pixels::Color;
-use sdl3::render::{FRect, TextureCreator, WindowCanvas};
+use sdl3::render::{BlendMode, FRect, TextureCreator, WindowCanvas};
 
 use crate::colors::C_HUD_COORD;
 use crate::gfx::trunc;
 use crate::layout::{
     exp_at, gauge_band, hud_right_x, level_at, weight_at, CHAT_AT, CHAT_LINE_H, HUD_BOARD,
-    HUD_DIGIT0, HUD_EXP, HUD_ORB, HUD_ORB_SOLO, HUD_ORB_SOLO_FILL, HUD_SIDE_W, ORB_AT,
+    HUD_BOARD_H, HUD_DIGIT0, HUD_EXP, HUD_ORB, HUD_ORB_SOLO, HUD_ORB_SOLO_FILL, HUD_SIDE_W, ORB_AT,
     ORB_SOLO_AT, ORB_TEXT_DY,
 };
 use crate::net::Net;
@@ -265,6 +265,9 @@ pub(crate) fn draw_hud<'a, T>(
         }
     }
 
+    // NPC 对话（有就画，压在所有东西之上）
+    draw_dialog(canvas, tc, ui, names, dir, net)?;
+
     // 左下角一行：`地图名 X : Y`（用户 2026-10-09 第 5 条，例 "银杏山谷 641 : 642"）。
     //
     // 官方出处：`DrawScrn.pas:513` 的
@@ -333,4 +336,75 @@ fn draw_prop_bar<'a, T>(
         FRect::new(at.0, at.1, fill as f32, h as f32),
         255,
     );
+}
+
+// ---------- NPC 对话面板（用户 2026-10-09：点 NPC 要出对话）----------
+
+/// 对话面板的几何 + 折好的正文行 —— **画与点命中都用它**（两边一致，别各算一份）。
+///
+/// 返回 `(面板矩形, 正文行)`；没对话 ⇒ `None`。
+pub(crate) fn dialog_geom(
+    net: Option<&Net>,
+    win: (u32, u32),
+) -> Option<((f32, f32, f32, f32), Vec<String>)> {
+    let n = net?;
+    let d = n.world.dialog.as_ref()?;
+    // 正文按**字数**硬折行（原版按字体量宽折；先用粗版，见 `input::wrap_text` 的说明）
+    let lines = crate::input::wrap_text(&d.text, DIALOG_WRAP_CHARS);
+    let panel = crate::input::dialog_panel(win, HUD_BOARD_H, lines.len(), d.options.len());
+    Some((panel, lines))
+}
+
+/// 一行正文最多几个字（中文按字算）。
+pub(crate) const DIALOG_WRAP_CHARS: usize = 34;
+
+/// 画 NPC 对话面板：正文若干行 + 可点选项（`1. 买肉` 这种）。
+fn draw_dialog<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    ui: &mut ui::UiCache<'a>,
+    names: &mut font::TextCache<'a>,
+    dir: &Path,
+    net: Option<&Net>,
+) -> Result<(), sdl3::Error> {
+    let Some((panel, lines)) = dialog_geom(net, (WIN_W, WIN_H)) else {
+        return Ok(());
+    };
+    let (x, y, w, h) = panel;
+    let d = net.and_then(|n| n.world.dialog.as_ref()).expect("geom 有则必有");
+    // 底板（半透明黑）+ 边框
+    canvas.set_blend_mode(BlendMode::Blend);
+    canvas.set_draw_color(Color::RGBA(0, 0, 0, 210));
+    canvas.fill_rect(FRect::new(x, y, w, h))?;
+    canvas.set_draw_color(Color::RGB(200, 180, 120));
+    canvas.draw_rect(FRect::new(x, y, w, h))?;
+    canvas.set_blend_mode(BlendMode::None);
+    // 正文
+    for (i, line) in lines.iter().enumerate() {
+        names.draw(
+            canvas,
+            tc,
+            line,
+            x + 8.0,
+            y + 8.0 + i as f32 * crate::input::DIALOG_LINE_H,
+            (235, 235, 210),
+            Some((0, 0, 0)),
+        )?;
+    }
+    // 选项：`序号. 文字`，可点（命中区与 `dialog_option_rect` 同源）
+    for (i, (idx, text)) in d.options.iter().enumerate() {
+        let (ox, oy, ow, oh) = crate::input::dialog_option_rect(panel, lines.len(), i);
+        canvas.set_draw_color(Color::RGB(40, 60, 40));
+        canvas.fill_rect(FRect::new(ox, oy, ow, oh))?;
+        names.draw(
+            canvas,
+            tc,
+            &format!("{idx}. {text}"),
+            ox + 6.0,
+            oy + 3.0,
+            (200, 240, 160),
+            Some((0, 0, 0)),
+        )?;
+    }
+    Ok(())
 }

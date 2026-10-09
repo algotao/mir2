@@ -174,3 +174,74 @@ pub(crate) fn next_move_step(
     let far = (to.0 - from.0).abs().max((to.1 - from.1).abs()) >= 2; // GetDistance（切比雪夫）
     Some((dir, want_run && far))
 }
+
+// ---------- NPC 对话面板（用户 2026-10-09：点 NPC 要出对话）----------
+
+/// 对话面板的尺寸与落点：**HUD 面板正上方**、水平居中。
+///
+/// ⚠️ 这里**不是**原版的版式：原版把"正文 + `[1] 选项`"当成一条系统消息发到
+/// **聊天区**（`SM_*` + 文本里的 `<文字/@标签>` 可点）。新协议把两者拆开了
+/// （`protocol/npc.proto` 的说明），所以先画一块自己的面板把功能跑通；
+/// 版式对齐原版留到后面（见 `docs/todo.md` 第 1 条）。
+///
+/// 返回 `(x, y, w, h)`（画布坐标）。
+pub(crate) fn dialog_panel(win: (u32, u32), hud_h: f32, text_lines: usize, options: usize) -> (f32, f32, f32, f32) {
+    const W: f32 = 460.0;
+    const PAD: f32 = 8.0;
+    let line = DIALOG_LINE_H;
+    let h = PAD * 2.0 + text_lines as f32 * line + options as f32 * DIALOG_OPT_H;
+    let x = (win.0 as f32 - W) / 2.0;
+    let y = (win.1 as f32 - hud_h - h - 6.0).max(4.0);
+    (x, y, W, h)
+}
+
+/// 对话面板里的正文行高 / 选项行高。
+pub(crate) const DIALOG_LINE_H: f32 = 16.0;
+pub(crate) const DIALOG_OPT_H: f32 = 20.0;
+
+/// 某个选项行在面板里的矩形 `(x, y, w, h)`（正文之后按顺序排）。
+pub(crate) fn dialog_option_rect(
+    panel: (f32, f32, f32, f32),
+    text_lines: usize,
+    i: usize,
+) -> (f32, f32, f32, f32) {
+    let (x, y, w, _) = panel;
+    let oy = y + 8.0 + text_lines as f32 * DIALOG_LINE_H + i as f32 * DIALOG_OPT_H;
+    (x + 8.0, oy, w - 16.0, DIALOG_OPT_H)
+}
+
+/// 鼠标落在哪个选项上（`None` = 没点中选项）。**纯函数**，与 `dialog_option_rect` 同源。
+pub(crate) fn dialog_option_at(
+    panel: (f32, f32, f32, f32),
+    text_lines: usize,
+    options: usize,
+    mouse: (f32, f32),
+) -> Option<usize> {
+    (0..options).find(|&i| {
+        let (x, y, w, h) = dialog_option_rect(panel, text_lines, i);
+        mouse.0 >= x && mouse.0 <= x + w && mouse.1 >= y && mouse.1 <= y + h
+    })
+}
+
+/// 点是否落在面板里（落在面板里但没点在选项上 ⇒ **别走路**）。
+pub(crate) fn dialog_hit(panel: (f32, f32, f32, f32), mouse: (f32, f32)) -> bool {
+    let (x, y, w, h) = panel;
+    mouse.0 >= x && mouse.0 <= x + w && mouse.1 >= y && mouse.1 <= y + h
+}
+
+/// 把一段文本按**字数**硬折行（中文按字算）。原版靠字体量宽折行，我们先用粗版：
+/// 每行 `max` 个字，`\n` 强制换行。返回折好的行。
+pub(crate) fn wrap_text(text: &str, max: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in text.split('\n') {
+        let chars: Vec<char> = raw.chars().collect();
+        if chars.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        for chunk in chars.chunks(max.max(1)) {
+            out.push(chunk.iter().collect());
+        }
+    }
+    out
+}

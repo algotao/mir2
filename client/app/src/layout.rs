@@ -37,6 +37,10 @@ pub(crate) const VIEW_H: f32 = WIN_H as f32 - BAR_TOP - BAR_BOTTOM;
 /// 底部操作面板（`Prguse[1]`，800×251）。
 pub(crate) const HUD_BOARD: u32 = 1;
 
+/// 底部面板的**高度**（`Prguse[1]` 实测 800×251）—— 对话面板要压在它上方，
+/// 而事件处理那一侧拿不到画图用的 `ui`/素材目录 ⇒ 这里给它一个常量（与图一致）。
+pub(crate) const HUD_BOARD_H: f32 = 251.0;
+
 /// 血/魔法球（`Prguse[4]`，92×90；左半红=HP、右半蓝=MP）。
 pub(crate) const HUD_ORB: u32 = 4;
 

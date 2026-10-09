@@ -85,6 +85,12 @@ pub enum Cmd {
     /// ⚠️ `target_id` 是**目标实体的 ActorId**（新协议显式给目标，legacy 靠朝向格）；
     /// `action` 用线上编号（`proto::AttackAction` 的值）。
     Attack { target_id: u64, action: i32 },
+    /// 点了个 NPC（原版 `CM_CLICKNPC`）—— 服务端回 `NpcSay`（正文 + 选项）。
+    NpcClick(u64),
+    /// 在对话里选了第 `index` 项（**1-based**，与 `NpcSay.options[].index` 同义）。
+    NpcSelect { npc_id: u64, index: u32 },
+    /// 关掉对话（原版 `@exit`）。
+    NpcClose(u64),
     /// 心跳（`Ping`）。
     Ping,
     /// 主动关闭。
@@ -264,6 +270,9 @@ fn writer_loop(stream: &mut TcpStream, cmds: Receiver<Cmd>) {
                 action,
                 client_tick: 0,
             }),
+            Cmd::NpcClick(npc_id) => Body::NpcClick(proto::NpcClick { npc_id }),
+            Cmd::NpcSelect { npc_id, index } => Body::NpcSelect(proto::NpcSelect { npc_id, index }),
+            Cmd::NpcClose(npc_id) => Body::NpcClose(proto::NpcClose { npc_id }),
             Cmd::Ping => Body::Ping(proto::Ping { client_time_ms: 0 }),
             Cmd::Close => return,
         };

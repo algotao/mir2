@@ -109,6 +109,10 @@ type Envelope struct {
 	//	*Envelope_RepairCostNotice
 	//	*Envelope_ChatInput
 	//	*Envelope_ChatMessage
+	//	*Envelope_NpcClick
+	//	*Envelope_NpcSay
+	//	*Envelope_NpcSelect
+	//	*Envelope_NpcClose
 	//	*Envelope_Raw
 	Body          isEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
@@ -785,6 +789,42 @@ func (x *Envelope) GetChatMessage() *ChatMessage {
 	return nil
 }
 
+func (x *Envelope) GetNpcClick() *NpcClick {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_NpcClick); ok {
+			return x.NpcClick
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetNpcSay() *NpcSay {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_NpcSay); ok {
+			return x.NpcSay
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetNpcSelect() *NpcSelect {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_NpcSelect); ok {
+			return x.NpcSelect
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetNpcClose() *NpcClose {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_NpcClose); ok {
+			return x.NpcClose
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetRaw() *Raw {
 	if x != nil {
 		if x, ok := x.Body.(*Envelope_Raw); ok {
@@ -1081,6 +1121,23 @@ type Envelope_ChatMessage struct {
 	ChatMessage *ChatMessage `protobuf:"bytes,2306,opt,name=chat_message,json=chatMessage,proto3,oneof"`
 }
 
+type Envelope_NpcClick struct {
+	// ---------- 0x0Axx NPC 对话（见 npc.proto）----------
+	NpcClick *NpcClick `protobuf:"bytes,2561,opt,name=npc_click,json=npcClick,proto3,oneof"`
+}
+
+type Envelope_NpcSay struct {
+	NpcSay *NpcSay `protobuf:"bytes,2562,opt,name=npc_say,json=npcSay,proto3,oneof"`
+}
+
+type Envelope_NpcSelect struct {
+	NpcSelect *NpcSelect `protobuf:"bytes,2563,opt,name=npc_select,json=npcSelect,proto3,oneof"`
+}
+
+type Envelope_NpcClose struct {
+	NpcClose *NpcClose `protobuf:"bytes,2564,opt,name=npc_close,json=npcClose,proto3,oneof"`
+}
+
 type Envelope_Raw struct {
 	// ---------- 逃生舱（protocol.md §4.1）----------
 	// 仅供 GM 工具 / 调试 / 插件注入；oneof 无法从外部扩展，这是唯一硬限制的出口。
@@ -1223,6 +1280,14 @@ func (*Envelope_ChatInput) isEnvelope_Body() {}
 
 func (*Envelope_ChatMessage) isEnvelope_Body() {}
 
+func (*Envelope_NpcClick) isEnvelope_Body() {}
+
+func (*Envelope_NpcSay) isEnvelope_Body() {}
+
+func (*Envelope_NpcSelect) isEnvelope_Body() {}
+
+func (*Envelope_NpcClose) isEnvelope_Body() {}
+
 func (*Envelope_Raw) isEnvelope_Body() {}
 
 // 逃生舱载荷：绕过 oneof 的直通消息。
@@ -1283,7 +1348,7 @@ var File_envelope_proto protoreflect.FileDescriptor
 const file_envelope_proto_rawDesc = "" +
 	"\n" +
 	"\x0eenvelope.proto\x12\x04mir2\x1a\rcontrol.proto\x1a\raccount.proto\x1a\vscene.proto\x1a\fcombat.proto\x1a\n" +
-	"item.proto\x1a\fsocial.proto\"\xac \n" +
+	"item.proto\x1a\fsocial.proto\x1a\tnpc.proto\"\xe9!\n" +
 	"\bEnvelope\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\rR\x03seq\x12\x17\n" +
 	"\aack_seq\x18\x02 \x01(\rR\x06ackSeq\x12\x1d\n" +
@@ -1382,7 +1447,12 @@ const file_envelope_proto_rawDesc = "" +
 	"\x12repair_cost_notice\x18\x90\x10 \x01(\v2\x16.mir2.RepairCostNoticeH\x00R\x10repairCostNotice\x121\n" +
 	"\n" +
 	"chat_input\x18\x81\x12 \x01(\v2\x0f.mir2.ChatInputH\x00R\tchatInput\x127\n" +
-	"\fchat_message\x18\x82\x12 \x01(\v2\x11.mir2.ChatMessageH\x00R\vchatMessage\x12\x1e\n" +
+	"\fchat_message\x18\x82\x12 \x01(\v2\x11.mir2.ChatMessageH\x00R\vchatMessage\x12.\n" +
+	"\tnpc_click\x18\x81\x14 \x01(\v2\x0e.mir2.NpcClickH\x00R\bnpcClick\x12(\n" +
+	"\anpc_say\x18\x82\x14 \x01(\v2\f.mir2.NpcSayH\x00R\x06npcSay\x121\n" +
+	"\n" +
+	"npc_select\x18\x83\x14 \x01(\v2\x0f.mir2.NpcSelectH\x00R\tnpcSelect\x12.\n" +
+	"\tnpc_close\x18\x84\x14 \x01(\v2\x0e.mir2.NpcCloseH\x00R\bnpcClose\x12\x1e\n" +
 	"\x03raw\x18\xff\x1f \x01(\v2\t.mir2.RawH\x00R\x03rawB\x06\n" +
 	"\x04body\"0\n" +
 	"\x03Raw\x12\x15\n" +
@@ -1473,6 +1543,10 @@ var file_envelope_proto_goTypes = []any{
 	(*RepairCostNotice)(nil),      // 67: mir2.RepairCostNotice
 	(*ChatInput)(nil),             // 68: mir2.ChatInput
 	(*ChatMessage)(nil),           // 69: mir2.ChatMessage
+	(*NpcClick)(nil),              // 70: mir2.NpcClick
+	(*NpcSay)(nil),                // 71: mir2.NpcSay
+	(*NpcSelect)(nil),             // 72: mir2.NpcSelect
+	(*NpcClose)(nil),              // 73: mir2.NpcClose
 }
 var file_envelope_proto_depIdxs = []int32{
 	2,  // 0: mir2.Envelope.client_hello:type_name -> mir2.ClientHello
@@ -1543,12 +1617,16 @@ var file_envelope_proto_depIdxs = []int32{
 	67, // 65: mir2.Envelope.repair_cost_notice:type_name -> mir2.RepairCostNotice
 	68, // 66: mir2.Envelope.chat_input:type_name -> mir2.ChatInput
 	69, // 67: mir2.Envelope.chat_message:type_name -> mir2.ChatMessage
-	1,  // 68: mir2.Envelope.raw:type_name -> mir2.Raw
-	69, // [69:69] is the sub-list for method output_type
-	69, // [69:69] is the sub-list for method input_type
-	69, // [69:69] is the sub-list for extension type_name
-	69, // [69:69] is the sub-list for extension extendee
-	0,  // [0:69] is the sub-list for field type_name
+	70, // 68: mir2.Envelope.npc_click:type_name -> mir2.NpcClick
+	71, // 69: mir2.Envelope.npc_say:type_name -> mir2.NpcSay
+	72, // 70: mir2.Envelope.npc_select:type_name -> mir2.NpcSelect
+	73, // 71: mir2.Envelope.npc_close:type_name -> mir2.NpcClose
+	1,  // 72: mir2.Envelope.raw:type_name -> mir2.Raw
+	73, // [73:73] is the sub-list for method output_type
+	73, // [73:73] is the sub-list for method input_type
+	73, // [73:73] is the sub-list for extension type_name
+	73, // [73:73] is the sub-list for extension extendee
+	0,  // [0:73] is the sub-list for field type_name
 }
 
 func init() { file_envelope_proto_init() }
@@ -1562,6 +1640,7 @@ func file_envelope_proto_init() {
 	file_combat_proto_init()
 	file_item_proto_init()
 	file_social_proto_init()
+	file_npc_proto_init()
 	file_envelope_proto_msgTypes[0].OneofWrappers = []any{
 		(*Envelope_ClientHello)(nil),
 		(*Envelope_ServerHello)(nil),
@@ -1631,6 +1710,10 @@ func file_envelope_proto_init() {
 		(*Envelope_RepairCostNotice)(nil),
 		(*Envelope_ChatInput)(nil),
 		(*Envelope_ChatMessage)(nil),
+		(*Envelope_NpcClick)(nil),
+		(*Envelope_NpcSay)(nil),
+		(*Envelope_NpcSelect)(nil),
+		(*Envelope_NpcClose)(nil),
 		(*Envelope_Raw)(nil),
 	}
 	type x struct{}

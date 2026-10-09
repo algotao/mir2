@@ -3,10 +3,23 @@
 > 用户点过名、或实现时明确记过账的**未完成项**。每条都写清：为什么、在哪、怎么验。
 > 做完一条就把这条删掉，并在 `docs/decisions.md` 里留一条 D-xx。
 
-## 1. NPC 对话 / 交易（用户 2026-10-09 明确要求记账）
+## 1. NPC 对话 / 交易（2026-10-09 开工：**对话已通**，商店还差）
 
-**现状**：点 NPC 不会有任何对话，而且**点上去会被当成"走到那一格"**（因为
-`attack_target_at` 不认 NPC ⇒ 走到 `mouse_intent` 的"点空地走路"那一支）。
+**已做（D-61）**：
+- 协议 `protocol/npc.proto`：`NpcClick` / `NpcSay`（正文 + `NpcOption[]`）/ `NpcSelect` / `NpcClose`
+- 服务端：`Server.npcSay` 分流（新协议发 `NpcSay`、legacy 发 `sysMsg`）；
+  `protoSession.onNpcClick/onNpcSelect/onNpcClose`；对话框内核 `dlgSelectIndex` 与 legacy 共用
+- 客户端：点 NPC **发 `NpcClick` 而不是走路**（就是"点 NPC 变成反复往那格走"的修法）；
+  对话面板（正文折行 + 可点选项，`Esc` 关闭）
+
+**还差**：
+1. **商店（买/卖）**：`openShop`/`sendGoods` 仍只发 legacy ⇒ proto 玩家收不到。
+   现在点"买/卖"会在对话里明说一句"商店买卖还没接新协议"。要加
+   `ShopList`/`ShopBuy`/`ShopSell` 三条消息 + 商品窗口（买东西还要背包窗口才能看结果）。
+2. **对话版式**：现在是一块**自己的面板**（功能优先）；原版是把"正文 + `[1] 选项`"
+   当系统消息发进**聊天区**、文本里的 `<文字/@标签>` 可点（`SM_*` 那套）。
+   要对齐原版就把面板改成聊天区渲染 + 文本内链接命中。
+3. 选项里的 `@@` 内嵌输入（建会/行会战那类）还没接新协议。
 
 **根因**：新协议里**没有** NPC 点击 / 对话消息。服务端的脚本引擎是齐的
 （`internal/gamesvr/npcdlg.go`：`startDialog` / `showLabel` / `handleDlgSelect` /

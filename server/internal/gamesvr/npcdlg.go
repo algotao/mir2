@@ -13,6 +13,7 @@ import (
 	"github.com/algotao/mir2/server/internal/script"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/internal/wire"
+	"github.com/algotao/mir2/server/protocol"
 )
 
 // NPC 对话与脚本执行。
@@ -108,8 +109,30 @@ func (s *Server) showLabel(c net.Conn, p *Player, sc *script.Script, l *script.L
 	// 选中的动作在显示之前执行（原版语义）。
 	s.runActs(c, p, acts)
 
-	msg := l.Say
-	for i, lk := range l.Links {
+	s.npcSay(c, p, p.dialog.npcID, l.Say, l.Links)
+}
+
+// npcSay 把一段对白发给玩家：**新协议**走结构化 `NpcSay`（正文 + 选项），legacy 走 `sysMsg`。
+//
+// ⚠️ 为什么必须分流：proto 玩家的 legacy 下行是**被丢弃**的（`protoDown`，见 netproto.go
+// 里 enterWorld 的说明）⇒ 只发 legacy 的话新协议客户端一个字都收不到 ——
+// 用户报的"点击 NPC 无法弹出对话"一半就是这个原因（另一半是客户端没发 NpcClick）。
+func (s *Server) npcSay(c net.Conn, p *Player, npcID uint32, text string, links []script.Link) {
+	if p != nil && p.protoOut != nil {
+		opts := make([]*protocol.NpcOption, 0, len(links))
+		for i, lk := range links {
+			opts = append(opts, &protocol.NpcOption{Index: uint32(i + 1), Text: lk.Text})
+		}
+		if text == "" && len(opts) == 0 {
+			text = "……"
+		}
+		p.protoOut.enqueue(&protocol.Envelope{Body: &protocol.Envelope_NpcSay{
+			NpcSay: &protocol.NpcSay{NpcId: uint64(npcID), Text: text, Options: opts}}})
+		return
+	}
+	// legacy：原版就是把选项编号拼进正文一起发（`[1] 选项`）
+	msg := text
+	for i, lk := range links {
 		if msg != "" {
 			msg += "\n"
 		}
@@ -136,8 +159,13 @@ func (s *Server) handleDlgSelect(c net.Conn, p *Player, m wire.Packet) {
 		s.handleDlgSelectText(c, p, body)
 		return
 	}
-	idx := int(m.Head.Recog) - 1
-	if idx < 0 || idx >= len(p.dialog.links) {
+	s.dlgSelectIndex(c, p, int(m.Head.Recog)-1)
+}
+
+// dlgSelectIndex 按**序号**（0-based）选一项（原版 `CM_MERCHANTDLGSELECT` 的简化形态：
+// Recog = 选项序号）。新协议的 `NpcSelect.index - 1` 也落在同一个函数上。
+func (s *Server) dlgSelectIndex(c net.Conn, p *Player, idx int) {
+	if p.dialog == nil || idx < 0 || idx >= len(p.dialog.links) {
 		return
 	}
 	lk := p.dialog.links[idx]
@@ -150,6 +178,12 @@ func (s *Server) handleDlgSelect(c net.Conn, p *Player, m wire.Packet) {
 		return
 	case "buy", "sell", "trading":
 		// 脚本里的商店入口
+		// ⚠️ 商店消息还没接新协议（`openShop`/`sendGoods` 只发 legacy，proto 玩家收不到）
+		// ⇒ 先在对话里明说一句，别让玩家以为"点了没反应"。见 docs/todo.md 第 1 条。
+		if c == nil && p.protoOut != nil {
+			s.npcSay(c, p, p.dialog.npcID, "（商店买卖还没接新协议，见 docs/todo.md）", nil)
+			return
+		}
 		s.openShop(c, p, p.dialog.npcID)
 		return
 	case "storage", "getback":

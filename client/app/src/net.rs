@@ -395,6 +395,26 @@ impl Net {
         let _ = self.sess.cmds.send(mir2_net::Cmd::Run(dir as i32));
     }
 
+    /// 点了个 NPC（原版 `CM_CLICKNPC`）：服务端会回 `NpcSay`（正文 + 选项）。
+    ///
+    /// ⚠️ 点 NPC **不发走路**（用户 2026-10-09 报的：点 NPC 变成反复往那一格走）。
+    pub(crate) fn npc_click(&self, npc_id: u64) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::NpcClick(npc_id));
+    }
+
+    /// 在对话里选了第 `index` 项（1-based）。
+    pub(crate) fn npc_select(&self, npc_id: u64, index: u32) {
+        let _ = self
+            .sess
+            .cmds
+            .send(mir2_net::Cmd::NpcSelect { npc_id, index });
+    }
+
+    /// 关掉对话（原版 `@exit`）。
+    pub(crate) fn npc_close(&self, npc_id: u64) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::NpcClose(npc_id));
+    }
+
     /// 把"这一帧看到的"折进各实体的动画状态：移动了就给补间的起止，动作变了就重置计时。
     ///
     /// ⚠️ 只在**变化时**刷新 `changed_at`：`EntityMove`/`EntityAction` 不是每帧都来，

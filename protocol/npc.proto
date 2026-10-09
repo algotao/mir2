@@ -1,0 +1,48 @@
+// MIR2 协议 · 0x0Axx NPC 对话与商店
+//
+// 原版把 NPC 对话拆成三条：CM_CLICKNPC(1010) + CM_MERCHANTDLGSELECT(1011) +
+// SM_MERCHANTDLG(**服务端把"文本 + 编号选项"拼成一整块**塞在 body 里发出去，
+// 见 `M2Server/npcdlg.go` 现在走的那条 legacy 路)，商店则是一堆 `SM_*` 号。
+//
+// 本版把它拆成**结构化**的样子：说一段话 + 一组可点选项，客户端回一个下标。
+// 好处是客户端不用解析中文文本里的 `[1] xxx` 编号，也不必猜哪几行是选项。
+//
+// ⚠️ 与 `npcdlg.go` 的映射：脚本里一段（`[@标签]`）的 `Say` 是 `NpcSay.text`，
+// `Links`（`<文字/@标签>`）逐条变成 `NpcOption`，`index` 从 **1** 起（与原版
+// "Recog = 选项序号" 那套一致，`ClMain.pas:3661-3681`）。
+syntax = "proto3";
+
+package mir2;
+
+option go_package = "github.com/algotao/mir2/server/protocol;protocol";
+
+// 客户端 → 服务端：点了一个 NPC（原版 `CM_CLICKNPC`，Recog = NPC 的 ActorId）。
+message NpcClick {
+  uint64 npc_id = 1;
+}
+
+// 一个可点选项（对应脚本里的 `<文字/@标签>`）。
+message NpcOption {
+  // 1-based 序号（客户端原样回传，服务端按下标找 `Links`）。
+  uint32 index = 1;
+  string text = 2;
+}
+
+// 服务端 → 客户端：NPC 说一段话 + 可点选项。
+message NpcSay {
+  uint64 npc_id = 1;
+  // 正文（可能多行；脚本里的续行符已去掉）。
+  string text = 2;
+  repeated NpcOption options = 3;
+}
+
+// 客户端 → 服务端：选了第 index 项（1-based）。
+message NpcSelect {
+  uint64 npc_id = 1;
+  uint32 index = 2;
+}
+
+// 客户端 → 服务端：关掉对话（原版 `@exit`；服务端清 `p.dialog`）。
+message NpcClose {
+  uint64 npc_id = 1;
+}

@@ -56,6 +56,20 @@ pub struct Entity {
     pub action_seq: u64,
 }
 
+/// 一个**开着的 NPC 对话**（`NpcSay`）。
+///
+/// 原版把"正文 + 编号选项"拼成一整块文本发过来（`SM_*`），客户端再靠玩家点文本里的
+/// `<文字/@标签>` 回包；新协议把两者**拆开**给（`protocol/npc.proto` 的说明），
+/// 所以这里存结构化的 `options`，客户端不必去解析中文里的编号。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NpcDialog {
+    pub npc_id: u64,
+    /// 正文（可能多行）。
+    pub text: String,
+    /// `(index, 文字)`，`index` 从 1 起（回包时原样带回去）。
+    pub options: Vec<(u32, String)>,
+}
+
 /// 一次伤害事件（`Damage`）。**由调用方取走**（`World::take_damage`）并决定怎么表现。
 ///
 /// 为什么不在这里做"飘字计时"：`World` 是纯状态、**没有时钟**（见文件头）。
@@ -177,6 +191,8 @@ pub struct World {
     pub self_name: String,
     /// 地图**名字**（本项目地图按名字索引，D-22）。
     pub map_name: String,
+    /// 开着的 NPC 对话（`NpcSay` 带来、`NpcClose`/选到 `@exit` 时清）。
+    pub dialog: Option<NpcDialog>,
     /// 地图的**显示名**（`EnterWorld`/`ChangeMap` 的 `map_title`，如"比奇省"）。
     ///
     /// 官方客户端左下角那行抬头用它（`g_sMapTitle`，`DrawScrn.pas:513`：
@@ -248,6 +264,23 @@ impl World {
         if !name.is_empty() {
             self.self_name = name.to_string();
         }
+    }
+
+    /// 某个格子上有没有 **NPC**（`kind == 2`）—— 点击时先用它判"是不是在跟 NPC 说话"。
+    ///
+    /// ⚠️ 为什么不能靠 `attack_target_at`：那个只认**可打的活怪**（原版
+    /// `GetAttackFocusCharacter`），NPC 不在其中 ⇒ 点在 NPC 上会被当成"点空地走路"，
+    /// 于是客户端反复往 NPC 那一格走、被挡（`reason=3`）、再试（用户 2026-10-09 报的）。
+    pub fn npc_at(&self, x: i32, y: i32) -> Option<u64> {
+        self.entities
+            .values()
+            .find(|e| e.kind == 2 && !e.dead && e.x == x && e.y == y)
+            .map(|e| e.id)
+    }
+
+    /// 关掉对话（本地清掉；要不要告诉服务端由调用方决定）。
+    pub fn close_dialog(&mut self) {
+        self.dialog = None;
     }
 
     /// 记下"这次进的那个角色的职业"（选角列表里就有，见 `CharacterSummary.class`）。
@@ -440,6 +473,18 @@ impl World {
                     self.unknown += 1;
                     return Change::None;
                 }
+                Change::World
+            }
+            Body::NpcSay(say) => {
+                self.dialog = Some(NpcDialog {
+                    npc_id: say.npc_id,
+                    text: say.text.clone(),
+                    options: say
+                        .options
+                        .iter()
+                        .map(|o| (o.index, o.text.clone()))
+                        .collect(),
+                });
                 Change::World
             }
             Body::MoveRejected(r) => {

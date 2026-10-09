@@ -332,6 +332,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // 的"ESC 退建号面板 / 关报错弹窗"全是**不可达死代码**。
                     // 现在放它们落到下面的 mode 分支去；场景要退（`Action::Exit` /
                     // `Action::Quit`）才真退。其余模式（世界/素材浏览器）保持原样。
+                    // NPC 对话开着 ⇒ ESC **先关对话**（原版 `@exit`），别顺手退了客户端
+                    Some(Keycode::Escape)
+                        if mode == 2
+                            && net.as_ref().is_some_and(|n| n.world.dialog.is_some()) =>
+                    {
+                        if let Some(n) = net.as_ref() {
+                            if let Some(d) = n.world.dialog.as_ref() {
+                                n.npc_close(d.npc_id);
+                            }
+                        }
+                        if let Some(n) = net.as_mut() {
+                            n.world.close_dialog();
+                        }
+                    }
                     Some(Keycode::Escape) if mode != 1 && mode != 4 => break 'main,
                     // ⚠️ **开发键让开原版键位**（口径见 `docs/use.md`）：F1~F8 是技能、
                     // F9~F12 是包裹/属性/技能/内挂、M 是大地图、Tab 是小地图、数字是快捷物品
@@ -594,6 +608,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     cell.1,
                                     if run { "跑" } else { "走" }
                                 ),
+                            }
+                            // ② 对话开着：点选项 = 选它；点面板别处 = 什么也别做（**别走路**）
+                            //
+                            // ⚠️ 这两条排在"走路/锁怪"那段**之后**，靠"清掉已写好的意图"
+                            // 实现（把上面那一大段包进 if 会多一层缩进、更容易漏改）。
+                            if let Some(n) = net.as_ref() {
+                                if let Some((panel, lines)) =
+                                    hud::dialog_geom(net.as_ref(), (WIN_W, WIN_H))
+                                {
+                                    if let Some(i) = input::dialog_option_at(
+                                        panel,
+                                        lines.len(),
+                                        n.world.dialog.as_ref().map_or(0, |d| d.options.len()),
+                                        (x, y),
+                                    ) {
+                                        if let Some(d) = n.world.dialog.as_ref() {
+                                            let (id, idx) = (
+                                                d.npc_id,
+                                                d.options.get(i).map(|o| o.0).unwrap_or(0),
+                                            );
+                                            n.npc_select(id, idx);
+                                            println!("[net] 对话选项 {idx}");
+                                        }
+                                    }
+                                    // 点在面板上（含非选项处）⇒ 吞掉这次点击，别走路
+                                    combat_target = None;
+                                    move_target = None;
+                                    press_at = None;
+                                    held_move = None;
+                                }
+                            }
+                            // ③ 点 NPC ⇒ **说话**，不是往它那格走
+                            //（用户 2026-10-09：那一格被 NPC 自己挡着 ⇒ 会一直 reason=3 重试）
+                            if let Some(n) = net.as_ref() {
+                                if let Some(id) = n.world.npc_at(cell.0, cell.1) {
+                                    n.npc_click(id);
+                                    combat_target = None;
+                                    move_target = None;
+                                    press_at = None; // 松开时别再改判成"走一格"
+                                    held_move = None;
+                                    println!("[net] 点 NPC ActorId={id}（等 NpcSay）");
+                                }
                             }
                         }
                         MouseButton::Left => probe_at(x, y, cam, &draws, &tiles, layers),

@@ -1276,3 +1276,36 @@ fn npc_精灵图号() {
     // 非 50 的 race 就是它自己那张表
     assert_eq!(A::npc_actions(11, 5), A::npc_actions(11, 5));
 }
+
+/// NPC 对话面板的**命中**与**折行**（用户 2026-10-09：点 NPC 要出对话、能点选项）。
+///
+/// 判据是"画与命中同源"：`dialog_option_at` 用的矩形就是 `dialog_option_rect` 算的，
+/// 而 `hud::draw_dialog` 画的是同一个 ⇒ 点哪选哪，不会差一行。
+#[test]
+fn 对话面板的命中与折行() {
+    let win = (1024u32, 768u32);
+    let hud = crate::layout::HUD_BOARD_H;
+    let panel = input::dialog_panel(win, hud, 3, 2);
+    // 面板在 HUD 上方、水平居中
+    let (x, y, w, h) = panel;
+    assert!((x + w / 2.0 - win.0 as f32 / 2.0).abs() < 0.51, "水平居中");
+    assert!(y + h <= win.1 as f32 - hud + 0.51, "压在面板上方（不盖住 HUD）");
+    // 选项行：第一行点得中，第二行点得中，正文区点不中
+    let r0 = input::dialog_option_rect(panel, 3, 0);
+    let r1 = input::dialog_option_rect(panel, 3, 1);
+    assert_eq!(
+        input::dialog_option_at(panel, 3, 2, (r0.0 + 2.0, r0.1 + 2.0)),
+        Some(0)
+    );
+    assert_eq!(
+        input::dialog_option_at(panel, 3, 2, (r1.0 + 2.0, r1.1 + 2.0)),
+        Some(1)
+    );
+    assert_eq!(input::dialog_option_at(panel, 3, 2, (x + 4.0, y + 4.0)), None);
+    assert!(input::dialog_hit(panel, (x + 4.0, y + 4.0)));
+    assert!(!input::dialog_hit(panel, (0.0, 0.0)));
+    // 折行：按字数、`\n` 强制换行
+    assert_eq!(input::wrap_text("abcdef", 3), vec!["abc", "def"]);
+    assert_eq!(input::wrap_text("a\nb", 5), vec!["a", "b"]);
+    assert_eq!(input::wrap_text("", 5), vec![""]);
+}

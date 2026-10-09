@@ -38,6 +38,7 @@ import (
 
 	"github.com/algotao/mir2/server/internal/authn"
 	"github.com/algotao/mir2/server/internal/chargen"
+	"github.com/algotao/mir2/server/internal/data"
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/frame"
 	"github.com/algotao/mir2/server/internal/obs"
@@ -443,6 +444,12 @@ func (ps *protoSession) dispatch(env *protocol.Envelope) (keep bool) {
 		return ps.onCreateCharacter(body.CreateCharacter)
 	case *protocol.Envelope_DeleteCharacter:
 		return ps.onDeleteCharacter(body.DeleteCharacter)
+	case *protocol.Envelope_NpcClick:
+		return ps.onNpcClick(body.NpcClick)
+	case *protocol.Envelope_NpcSelect:
+		return ps.onNpcSelect(body.NpcSelect)
+	case *protocol.Envelope_NpcClose:
+		return ps.onNpcClose(body.NpcClose)
 	case *protocol.Envelope_AttackInput:
 		return ps.onAttackInput(body.AttackInput)
 	default:
@@ -1591,4 +1598,59 @@ func (ps *protoSession) sendSelectResult(code protocol.SelectCharCode, msg strin
 	return ps.send(&protocol.Envelope{Body: &protocol.Envelope_SelectCharacterResult{
 		SelectCharacterResult: &protocol.SelectCharacterResult{
 			Code: code, Message: msg, CharacterId: id}}})
+}
+
+// ---------- NPC 对话（新协议出口，见 docs/todo.md 第 1 条）----------
+
+// onNpcClick 处理"点了个 NPC"（新协议，对应 legacy 的 `CM_CLICKNPC` / `handleClickNPC`）。
+//
+// ⚠️ 与 legacy 那条路的**唯一区别是出口**：proto 玩家的 legacy 下行会被 `protoDown`
+// 丢弃（见 enterWorld 处的说明）⇒ 只发 legacy 时客户端一个字都收不到，表现就是
+// 用户报的"点击 NPC 无法弹出对话"。对话正文与选项由 `Server.npcSay` 分流。
+func (ps *protoSession) onNpcClick(n *protocol.NpcClick) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	id := uint32(n.GetNpcId())
+	ps.srv.mu.RLock()
+	npc, ok := ps.srv.world.monsters[id]
+	ps.srv.mu.RUnlock()
+	if !ok || !npc.IsNPC {
+		return true // 点空了/点的不是 NPC：静默忽略
+	}
+	// 距离校验与 legacy 同一条：够不着就不给隔空对话
+	if p.Obj.MapRef() != npc.MapRef() || p.Obj.Distance(npc.PosX(), npc.PosY()) > 8 {
+		return true
+	}
+	def := ps.srv.npcDefOf(npc)
+	if def == nil {
+		def = &data.NPC{Name: npc.Name}
+	}
+	sc := ps.srv.npcScript(def.ID, p.Obj.MapRef().Name)
+	if sc == nil {
+		ps.srv.npcSay(nil, p, id, "（这个 NPC 没有脚本）", nil)
+		return true
+	}
+	ps.srv.startDialog(nil, p, sc, id)
+	log.Printf("%s 与 %s 开始对话（脚本 %s，新协议）", p.Char.Name, npc.Name, sc.Name)
+	return true
+}
+
+// onNpcSelect 处理"选了第 index 项"（1-based，与原版的选项序号同义）。
+func (ps *protoSession) onNpcSelect(n *protocol.NpcSelect) bool {
+	p := ps.player
+	if p == nil || p.dialog == nil {
+		return true
+	}
+	ps.srv.dlgSelectIndex(nil, p, int(n.GetIndex())-1)
+	return true
+}
+
+// onNpcClose 关掉对话（原版 `@exit`）。
+func (ps *protoSession) onNpcClose(n *protocol.NpcClose) bool {
+	if ps.player != nil {
+		ps.player.dialog = nil
+	}
+	return true
 }

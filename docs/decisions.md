@@ -3079,3 +3079,43 @@ if a.action != action { a.action = action; a.action_at = now; }   // ← 第二�
 ### ⑤ NPC 对话/交易：**记账到 `docs/todo.md` 第 1 条**（用户点名"免得忘记"）
 
 协议消息、服务端出口、客户端交互与窗口、验收步骤都写在那儿了。
+
+## D-61 NPC 对话打通（新协议出口）+ 点 NPC 不再变成走路
+
+**用户 2026-10-09 报**：「点击 NPC 无法弹出对话，并且其目标位置当成了跑动目标点，在反复尝试走动到该点」
+（日志里一串 `目标格 (644,614)：走` + `reason=3` 侧移重试）。
+
+### 根因两条，各修一处
+
+1. **客户端不认识 NPC**：`mouse_intent` / `attack_target_at` 只认**可打的活怪**（原版
+   `GetAttackFocusCharacter`），NPC 不在其中 ⇒ 点在 NPC 上落进"点空地走路"那一支，
+   而那一格被 NPC 自己挡着 ⇒ 服务端一直回 `reason=3`，客户端绕障、重试、再被挡
+   —— 就是那串日志。
+   **修**：`core::world::npc_at(cell)`（`kind == 2` 的实体）+ 鼠标按下的两条**覆盖**：
+   点在 NPC 上 ⇒ 发 `NpcClick`、清掉走路/锁怪意图（`press_at` 也清，免得松开时又被
+   改判成"走一格"）；对话开着时点在选项上 ⇒ 发 `NpcSelect`，点在面板别处 ⇒ 吞掉。
+2. **对话出口只有 legacy**：`npcdlg.go` 的 `showLabel` 最后是 `s.sysMsg(c, msg)`
+   （legacy 文本 `[1] xxx`），而 proto 玩家的 legacy 下行**会被 `protoDown` 丢弃**
+   ⇒ 就算点了也一个字都收不到。**修**：抽出 `Server.npcSay(c, p, npcID, text, links)`
+   —— proto 走结构化 `NpcSay`（正文 + `NpcOption[]`，客户端不用再解析中文里的编号），
+   legacy 保持原样；`handleDlgSelect` 的"按序号选"内核抽成 `dlgSelectIndex`，新协议的
+   `onNpcSelect` 复用同一个函数（两条链的行为不会漂）。
+
+### 新增协议（`protocol/npc.proto`，0x0Axx）
+
+`NpcClick{npc_id}` / `NpcSay{npc_id, text, options[{index, text}]}` /
+`NpcSelect{npc_id, index}` / `NpcClose{npc_id}` —— 已 `gen.sh` 生成 Go，Rust 侧由
+`build.rs` 生成；**兼容新增，不 bump `version.txt`**。
+
+### 客户端
+
+- `input::mouse_intent` 之后的两条"覆盖"（见上）+ `Esc` 先关对话（原版 `@exit`）。
+- 对话面板：`input::{dialog_panel, dialog_option_rect, dialog_option_at, dialog_hit, wrap_text}`
+  （**纯函数**，画与命中同源）+ `hud::draw_dialog`（正文折行 + 选项行）。
+  ⚠️ **版式与原版不同**（原版进聊天区、选项是文本内的可点链接）⇒ 记进 `docs/todo.md` 第 1 条。
+- 测试：`对话面板的命中与折行`。
+
+### 还没做（`docs/todo.md` 第 1 条）
+
+商店（`ShopList`/`ShopBuy`/`ShopSell` + 商品窗口）、对话版式对齐原版、`@@` 内嵌输入。
+现在点"买/卖"会在对话里明说一句，别让玩家以为点了没反应。

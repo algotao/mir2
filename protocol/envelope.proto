@@ -20,6 +20,7 @@ import "scene.proto";
 import "combat.proto";
 import "item.proto";
 import "social.proto";
+import "npc.proto";
 
 option go_package = "github.com/algotao/mir2/server/protocol;protocol";
 
@@ -116,6 +117,12 @@ message Envelope {
     // ---------- 0x09xx 聊天 ----------
     ChatInput chat_input = 0x0901;
     ChatMessage chat_message = 0x0902;
+
+    // ---------- 0x0Axx NPC 对话（见 npc.proto）----------
+    NpcClick npc_click = 0x0A01;
+    NpcSay npc_say = 0x0A02;
+    NpcSelect npc_select = 0x0A03;
+    NpcClose npc_close = 0x0A04;
 
     // ---------- 逃生舱（protocol.md §4.1）----------
     // 仅供 GM 工具 / 调试 / 插件注入；oneof 无法从外部扩展，这是唯一硬限制的出口。
