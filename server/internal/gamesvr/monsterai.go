@@ -112,7 +112,24 @@ func (s *Server) tickMonsters(now time.Time) {
 		//   · 守卫（`RC_GUARD(11)`/`RC_ARCHERGUARD(112)`）：只打**红名**
 		//     （原版 `ObjGuard.pas:87-126`：`PKLevel >= 2` 或目标是怪）。
 		//     城堡单位不走这条（它们有 `guardProperTarget` 那套行会/攻城关系）。
-		animal := m.Info != nil && entity.IsAnimalRace(m.Info.Race)
+		// `passive` = "动物：**不主动打人**"（官方 `UsrEngn.pas` 里两支都置
+		// `m_boAnimal := True`）。它管的是"要不要主动找目标"（下面那个 `case`）。
+		passive := m.Info != nil && entity.IsAnimalRace(m.Info.Race)
+		// ⚠️ "动物 = 只会逃跑"**不对**。原版是在**生成时**掷骰子定性格
+		//（`UsrEngn.pas:1841-1852`）：
+		//
+		//	ANIMAL_DEER（鹿）：`if Random(30) = 0 then TChickenDeer（只会逃跑）
+		//	                   else TMonster（**普通怪，会反击**）`
+		//
+		// ⇒ **29/30 的鹿是会打人的**。用户 2026-10-09 第 6 条：「鹿会反击，
+		// 现在的实现只会逃跑」说的就是这个（我们原来把 race 50..79 一律当逃跑型）。
+		// 羊同理（同一档 race）；鸡那一档（race 51）官方**一律**逃跑。
+		//
+		// 实现上用"按怪物 ID 定死的伪随机"代替"生成时掷骰子"：同一只怪每 tick 结果
+		// 都一样（不会一会儿打一会儿跑），分布仍是 1/30。以后有 spawn 钩子再改回真随机。
+		// `flee` = "**只会逃跑**"那一档（鸡一律、鹿 1/30）。**没进这一档的动物
+		// （29/30 的鹿）虽然不主动找人，但被打之后会还手** —— 用户 2026-10-09 第 6 条。
+		flee := passive && animalFlees(m.Info.Race, m.ID)
 		stick := m.Info != nil && entity.IsStickRace(m.Info.Race)
 		wildGuard := guardCastle == nil && m.Info != nil && entity.IsGuardRace(m.Info.Race)
 
@@ -125,7 +142,7 @@ func (s *Server) tickMonsters(now time.Time) {
 			if t := s.guardPick(m); t != nil {
 				target, targetMon = t.player, t.monster
 			}
-		case !animal && (s.cfg.aggro || guardCastle != nil):
+		case !passive && (s.cfg.aggro || guardCastle != nil):
 			if m.TargetID != 0 {
 				// ⚠️ 保留判据从"出视野(10 格)就丢"改成原版的两条：
 				// **30 秒没打到** 或 **距离 > 15 格**（`ObjBase.pas:3886-3891`）。
@@ -224,7 +241,7 @@ func (s *Server) tickMonsters(now time.Time) {
 		// 没有威胁就 `RunAwayMode := False` 落回游荡。**从不攻击**（没有 AttackTarget）。
 		// ⇒ 用户 2026-10-09 第 2 条问的"鹿、鸡在受攻击时有反击吗"：**没有，是跑**。
 		// ⚠️ 原来这里整段跳过 ⇒ 鸡/鹿被打也只会原地乱晃。
-		if animal {
+		if flee {
 			threat := s.nearestThreat(m)
 			if threat == nil {
 				// 没有威胁 ⇒ 落到下面"无目标：游荡"
@@ -320,7 +337,7 @@ const stickComeOut = 4
 // 否则一直埋着 —— 埋着的时候**不进任何人的视野**（见 `view.go`）。
 //
 // **调用方持 `s.mu`**（读 `world.players`）。隐身的玩家它看不见，与 AI 选目标同一条口径
-//（`tickMonsters` 里那句"隐身：怪物看不见"）。
+// （`tickMonsters` 里那句"隐身：怪物看不见"）。
 func (s *Server) stickShows(m *entity.Monster) bool {
 	for _, p := range s.world.players {
 		if p.Obj.MapRef() != m.MapRef() || p.hasBuff(entity.BuffInvisible) {
@@ -590,4 +607,18 @@ func (s *Server) monsterAt(m *world.Map, x, y int) *entity.Monster {
 		}
 	}
 	return nil
+}
+
+// animalFlees 判断这头"动物"是**只会逃跑**的那种，还是**普通怪（会反击）**。
+//
+// 官方在生成时掷骰子定性格（`UsrEngn.pas:1841-1852`）：
+//
+//	ANIMAL_DEER（鹿）：`if Random(30) = 0 then TChickenDeer`（只会逃跑）
+//	                   `else TMonster`（普通怪，**会反击**）
+//	鸡那一档：一律 `TChickenDeer` ⇒ 一直逃跑
+//
+// 我们用"按 ID 定死的伪随机"代替掷骰子：同一只怪结果恒定（不会一会儿打一会儿跑），
+// 分布仍是 1/30。用户 2026-10-09 第 6 条「鹿会反击，现在的实现只会逃跑」。
+func animalFlees(race uint16, id uint32) bool {
+	return race == entity.RaceChicken || id%30 == 0
 }

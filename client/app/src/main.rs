@@ -243,6 +243,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //（原版背包也是本地开合；服务端只管背包内容）。
     let mut bag_open = false;
     let mut bag_page = 0usize;
+    // 怪声音的随机源（`sfx::monster_ambient` 的 1/8 判定；不为这一处引 rand 依赖）
+    let mut sfx_rng: u32 = 0x1234_5678;
     // 悬停可攻击目标时把光标换成"准星"（Crystal 是 `MouseCursor.Attack`，
     // `GameScene.cs:432-433`）；只在**状态变了**才设，别每帧调。
     let cursor_arrow = Cursor::from_system(SystemCursor::Arrow)?;
@@ -673,6 +675,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             n.npc_select(d.npc_id, idx);
                                             println!("[net] 对话选项 {idx}");
                                         }
+                                    } else if input::dialog_close_hit(panel, (x, y)) {
+                                        // 右上角那个红 X（用户 2026-10-09 第 1 条：
+                                        // 「对话窗口右上角有个X按钮，现在你没有接上"关闭/退出"」）
+                                        // —— 与 ESC 走同一条路：告诉服务端 + 本地清。
+                                        if let Some(d) = n.world.dialog.as_ref() {
+                                            n.npc_close(d.npc_id);
+                                        }
+                                        if let Some(n) = net.as_mut() {
+                                            n.world.close_dialog();
+                                        }
+                                        println!("[net] 对话关闭（点 X）");
                                     }
                                     // ⚠️ **只有点在面板里**才吞掉这次点击。
                                     // 用户 2026-10-09：「对话期间应仍能操作（走、跑、打架），
@@ -1237,6 +1250,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             println!("[audio] BGM 停（进图音乐这条路还没接：手上没有 mp3、协议里也没有音乐号）");
         }
+        // 怪物"正常声"：鸡叫/鹿鸣…（用户 2026-10-09 第 4 条）。
+        // 官方规则与我们的近似写法见 `sfx::monster_ambient` 的说明。
+        if mode == 2 {
+            if let Some(n) = net.as_ref() {
+                monster_ambient(n, &sound, &sounds, Instant::now(), &mut sfx_rng);
+            }
+        }
         // 脚步：原版在走路动画的**帧 1 / 帧 4** 各响一次（`Actor.pas:2659-2660`），
         // 音色按**自己脚下那一格**定（原版把坐标对齐到偶数格，`Actor.pas:2146-2147`）。
         match (net.as_ref(), map.as_ref()) {
@@ -1423,6 +1443,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(n) = net.as_mut() {
                 if n.entered_once {
                     hint_pushed = true;
+                    // 外观诊断（用户 2026-10-09 第 2 条"木剑图不对"）：把自己的外观字节打出来。
+                    // `weapon` 就是服务端算给你的武器形状 ⇒ 取图 = `Weapon2.wzl[600 * weapon]`。
+                    // 手上真是木剑的话，这里该是 `weapon=1`；若是 `2`，那就是铁剑的图。
+                    if let Some(f) = n.world.self_feature.as_ref() {
+                        println!(
+                            "[look] 自己的外观：dress={} weapon={} hair={} race_img={}",
+                            f.dress, f.weapon, f.hair, f.race_img
+                        );
+                    }
                     n.chat.push(trunc(hint_text(2), 30), C_CHAT_SYS);
                     println!("[hud] 按键提示已进聊天区：{}", trunc(hint_text(2), 30));
                 }

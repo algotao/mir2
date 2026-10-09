@@ -218,6 +218,25 @@ pub(crate) const DIALOG_MAX_LINES: usize =
 /// 留点余量取 24（`\n` 仍然强制换行）。
 pub(crate) const DIALOG_WRAP_CHARS: usize = 24;
 
+/// 关闭按钮（右上角那个红 X）在**面板内**的位置。
+///
+/// 量自 `Prguse[384]` 的像素（`wzldump` 扫出来）：红叉落在 `x 401..411`、`y 0..15`，
+/// 命中框放宽一圈，手指点得中。
+pub(crate) const DIALOG_CLOSE_X: f32 = 397.0;
+pub(crate) const DIALOG_CLOSE_Y: f32 = 0.0;
+pub(crate) const DIALOG_CLOSE_W: f32 = 19.0;
+pub(crate) const DIALOG_CLOSE_H: f32 = 19.0;
+
+/// 鼠标点在右上角的关闭 X 上吗。
+pub(crate) fn dialog_close_hit(panel: (f32, f32, f32, f32), mouse: (f32, f32)) -> bool {
+    let (px, py, _, _) = panel;
+    let (lx, ly) = (mouse.0 - px, mouse.1 - py);
+    lx >= DIALOG_CLOSE_X
+        && lx < DIALOG_CLOSE_X + DIALOG_CLOSE_W
+        && ly >= DIALOG_CLOSE_Y
+        && ly < DIALOG_CLOSE_Y + DIALOG_CLOSE_H
+}
+
 /// 对话面板的矩形 `(x, y, w, h)`（画布坐标）—— 固定尺寸、固定左上角。
 pub(crate) fn dialog_panel() -> (f32, f32, f32, f32) {
     (DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H)

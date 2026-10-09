@@ -1516,3 +1516,38 @@ fn 对话行数上限装得下官方那段() {
         }
     }
 }
+
+/// 对话窗右上角那个 X（用户 2026-10-09 第 1 条：「现在你没有接上"关闭/退出"」）。
+///
+/// 命中框是从 `Prguse[384]` 的像素量出来的（红叉在面板内 x 401..411 / y 0..15）。
+#[test]
+fn 对话窗右上角的关闭叉() {
+    let panel = input::dialog_panel();
+    let (px, py, _, _) = panel;
+    // 红叉中心 ⇒ 命中
+    let cx = px + input::DIALOG_CLOSE_X + input::DIALOG_CLOSE_W / 2.0;
+    let cy = py + input::DIALOG_CLOSE_Y + input::DIALOG_CLOSE_H / 2.0;
+    assert!(input::dialog_close_hit(panel, (cx, cy)), "点红叉要关窗");
+    // 面板左上角（正文区）⇒ 不命中
+    assert!(!input::dialog_close_hit(panel, (px + 20.0, py + 20.0)));
+    // 面板**外面**右上（屏幕角落那点）⇒ 不命中
+    assert!(!input::dialog_close_hit(panel, (px + 500.0, py + 4.0)));
+}
+
+/// 挥刀声按**武器形状**取（用户 2026-10-09 第 3 条：「木剑攻击声音不对，更像挖矿」）。
+///
+/// 服务端发的 `weapon` 字节就是 `Shape`（D-66）⇒ `swing_sfx` 里原来那句
+/// `f.weapon / 2` 会把木剑(1) 算成 0 ⇒ 落到"赤手"那一档。这里钉住"1 与 0 不是一档"。
+#[test]
+fn 挥刀声按武器形状取() {
+    use mir2_core::sound;
+    assert_ne!(
+        sound::swing(0),
+        sound::swing(1),
+        "形状 0（赤手）与 1（木剑那一档）必须是不同的挥刀声 —— \
+         这正是 `f.weapon / 2` 那个 bug 的表现"
+    );
+    // 我们的分类表里 `1 => Weapon::Wooden` ⇒ 51（木剑）；`0`（赤手）落到拳头那一档 ⇒ 57
+    assert_eq!(sound::swing(1), 51, "木剑（Shape 1）= 木器那一档的挥刀声");
+    assert_eq!(sound::swing(0), 57, "形状 0（赤手）是拳头那一档");
+}

@@ -57,3 +57,9 @@ const (
 	// ⚠️ 必须与客户端 `mir2_core::world::STATE_RED_NAME` **同值**（0x00008000）。
 	StateRedName = 0x00008000
 )
+
+// RaceChicken 是鸡那一档的 race 值 —— 官方**一律**用只会逃跑的 `TChickenDeer`。
+//
+// 出处 `UsrEngn.pas:1836-1852`：鸡一律逃跑，而**鹿是 1/30 才逃跑**（其余是普通
+// `TMonster`、会反击）。见 `monsterai.go` 的用法（用户 2026-10-09 第 6 条）。
+const RaceChicken = 51

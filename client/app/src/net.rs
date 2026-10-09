@@ -296,6 +296,23 @@ impl Net {
             if d.target_id == self.world.self_id {
                 self.pending_sfx
                     .push(mir2_core::sound::scream(self.self_sex()));
+            } else if let Some(t) = self.world.entities.get(&d.target_id) {
+                // 挨打的是**怪** ⇒ 播它自己的"尖叫声"（用户 2026-10-09 第 5 条：
+                // 「怪物受击有受击声音」）。
+                //
+                // 官方在 `SM_STRUCK` 那一刻按顺序播三条（`Actor.pas:2384-2386`）：
+                // 攻击者的兵器碰撞声（`m_nStruckWeaponSound`）+ 挨打者的弯腰声
+                //（`m_nStruckSound`）+ 挨打者的**尖叫声**（`m_nScreamSound`）。
+                // 怪那套音的编号 = `200 + appr*10 + 段`（`Actor.pas:2344-2352`），
+                // 尖叫声是第 4 段 ⇒ 这里播 `Scream`。
+                if t.kind == 1 && !t.dead {
+                    if let Some(f) = t.feature.as_ref() {
+                        self.pending_sfx.push(mir2_core::sound::monster(
+                            f.appr as u16,
+                            mir2_core::sound::MonsterSound::Scream,
+                        ));
+                    }
+                }
             }
         }
         // 自己死了 ⇒ 死亡声 + game over 音乐（`Actor.pas:2368-2376`）。
