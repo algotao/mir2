@@ -336,6 +336,132 @@ fn draw_prop_bar<'a, T>(
     );
 }
 
+// ---------- 背包窗（`Prguse[3]`，F9 开关）----------
+
+/// 画面上的背包窗几何 `(窗口矩形, 当前页码)`（页码从 0 起）。
+///
+/// **画与点命中都用它**（与对话窗同一条纪律）。
+pub(crate) fn bag_geom(bag_len: usize, page: usize) -> ((f32, f32, f32, f32), usize) {
+    let (x, y) = crate::layout::bag_rect();
+    let pages = bag_len.div_ceil(crate::layout::BAG_PAGE_SLOTS).max(1);
+    let page = page.min(pages - 1);
+    (
+        (x, y, crate::layout::BAG_W, crate::layout::BAG_H),
+        page,
+    )
+}
+
+/// 画背包窗：背板 + 24 格物品图标 + 叠加数 + 金币 + 页码。
+///
+/// 图标取 `Items.wzl[looks]`（2026-10-09 用 `wzldump` 逐张比对确认：`looks=398` 是
+/// 金创药(小量) 的红瓶、`394` 是魔法药(小量) 的蓝瓶，与服务端物品表的 `Looks` 列一致）。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_bag<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    ui: &mut ui::UiCache<'a>,
+    texts: &mut font::TextCache<'a>,
+    dir: &Path,
+    net: Option<&Net>,
+    page: usize,
+) -> Result<(), sdl3::Error> {
+    let Some(n) = net else { return Ok(()) };
+    if !n.world.in_world() {
+        return Ok(());
+    }
+    let (rect, page) = bag_geom(n.world.bag.len(), page);
+    let (x, y, w, h) = rect;
+    canvas.set_blend_mode(BlendMode::Blend);
+    if ui.size(dir, "Prguse", crate::layout::BAG_BG).is_some() {
+        ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            "Prguse",
+            crate::layout::BAG_BG,
+            FRect::new(0.0, 0.0, w, h),
+            FRect::new(x, y, w, h),
+            255,
+        );
+    } else {
+        // 素材不在：画个深底 + 边框，版式不变（开发机上常见）
+        canvas.set_blend_mode(BlendMode::Blend);
+        canvas.set_draw_color(Color::RGBA(0, 0, 0, 215));
+        canvas.fill_rect(FRect::new(x, y, w, h))?;
+        canvas.set_draw_color(Color::RGB(190, 170, 120));
+        canvas.draw_rect(FRect::new(x, y, w, h))?;
+    }
+    canvas.set_blend_mode(BlendMode::None);
+
+    // 24 格
+    let base = page * crate::layout::BAG_PAGE_SLOTS;
+    for i in 0..crate::layout::BAG_PAGE_SLOTS {
+        let Some(Some(item)) = n.world.bag.get(base + i) else {
+            continue;
+        };
+        let (cx, cy, cw, ch) = crate::layout::bag_cell_rect(i);
+        let (cx, cy) = (x + cx, y + cy);
+        // 图标：`Items.wzl[looks]`，在格子里居中
+        if let Some((iw, ih)) = ui.size(dir, "Items", item.looks) {
+            let (iw, ih) = (iw as f32, ih as f32);
+            ui.draw_src(
+                canvas,
+                tc,
+                dir,
+                "Items",
+                item.looks,
+                FRect::new(0.0, 0.0, iw, ih),
+                FRect::new(
+                    cx + (cw - iw) / 2.0,
+                    cy + (ch - ih) / 2.0,
+                    iw,
+                    ih,
+                ),
+                255,
+            );
+        }
+        // 叠加数（右下角）+ 名称只留一行到鼠标提示里（这里不画名字，格子太小）
+        if item.count > 1 {
+            texts.draw(
+                canvas,
+                tc,
+                &item.count.to_string(),
+                cx + cw - 16.0,
+                cy + ch - 13.0,
+                (255, 255, 140),
+                Some((0, 0, 0)),
+            )?;
+        }
+    }
+
+    // 金币（服务端 `Ability.gold`）
+    if let Some(ab) = n.world.ability {
+        texts.draw(
+            canvas,
+            tc,
+            &format!("金币 {}", ab.gold),
+            x + crate::layout::BAG_GOLD_X,
+            y + crate::layout::BAG_GOLD_Y,
+            (255, 230, 130),
+            Some((0, 0, 0)),
+        )?;
+    }
+    // 页码（多于 1 页才画）
+    let pages = n.world.bag.len().div_ceil(crate::layout::BAG_PAGE_SLOTS);
+    if pages > 1 {
+        texts.draw(
+            canvas,
+            tc,
+            &format!("{}/{}", page + 1, pages),
+            x + crate::layout::BAG_W - 96.0,
+            y + crate::layout::BAG_GOLD_Y,
+            (210, 210, 210),
+            Some((0, 0, 0)),
+        )?;
+    }
+    Ok(())
+}
+
 // ---------- NPC 对话窗（用户 2026-10-09：点 NPC 要出对话；版式照官方截图改）----------
 
 /// 对话窗的几何 + 折好的正文行 —— **画与点命中都用它**（两边一致，别各算一份）。

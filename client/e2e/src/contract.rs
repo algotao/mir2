@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! ClientHello → ServerHello → Reconnect → ListCharacters → SelectCharacter
-//!   → EnterWorld → AbilityUpdate → Ping/Pong → MoveInput → EntityMove
+//!   → EnterWorld → AbilityUpdate → BagItems/EquippedItems → Ping/Pong → MoveInput → EntityMove
 //! ```
 //!
 //! 并**断言**每一步的消息类型与关键字段；`-expect-*` 给的是"服务端那侧已知的真值"
@@ -407,6 +407,21 @@ fn run(argv: &[String]) -> Result<(), String> {
         "[6] 能力值：{} 级 hp={}/{} mp={}/{} dc={}-{} ac={} 金币={}",
         ab.level, ab.hp, ab.max_hp, ab.mp, ab.max_mp, ab.dc_min, ab.dc_max, ab.ac, ab.gold
     );
+
+    // [6′] 背包与已穿戴（D-65）。角色没有物品 ⇒ 都是空表，但**消息必须在**：
+    // 客户端靠它们初始化背包格与装备栏（原来这两条只在 legacy 那条路上发，
+    // proto 玩家进图后背包永远是空的）。
+    let env = recv_ctl(&mut c, &mut pushed)?;
+    let bag = want(&env, |b| match b {
+        Body::BagItems(x) => Some(x.items.len()),
+        _ => None,
+    })?;
+    let env = recv_ctl(&mut c, &mut pushed)?;
+    let equip = want(&env, |b| match b {
+        Body::EquippedItems(x) => Some(x.items.len()),
+        _ => None,
+    })?;
+    println!("[6′] 背包 {bag} 格、已穿戴 {equip} 槽");
 
     // [7] 心跳
     c.send(Body::Ping(proto::Ping {

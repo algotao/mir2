@@ -119,6 +119,42 @@ impl Entity {
     }
 }
 
+/// 背包/装备里的一件物品（`ItemStack` 的客户端形态）。
+///
+/// 图标怎么取：**`Items.wzl[looks]`** —— 2026-10-09 用 `wzldump` 逐张比对确认过
+///（`looks=398` 是红瓶 = 金创药(小量)、`394` 是蓝瓶 = 魔法药(小量)，与服务端物品表的
+/// `Looks` 列一致）。所以这里只需把 `looks` 原样带过来，图号换算在渲染层。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BagItem {
+    /// 物品模板索引（1-based；0 = 空槽）。
+    pub index: u32,
+    pub name: String,
+    /// `Items.wzl` 的图号。
+    pub looks: u32,
+    /// 叠加数量。**可叠加物的数量来自 `dura`**（原版没有数量字段，见服务端 `itemStack`）。
+    pub count: u32,
+    pub dura: u32,
+    pub dura_max: u32,
+}
+
+impl BagItem {
+    fn from_proto(it: &proto::ItemStack) -> Self {
+        Self {
+            index: it.index,
+            name: it.name.clone(),
+            looks: it.looks,
+            count: it.count,
+            dura: it.dura,
+            dura_max: it.dura_max,
+        }
+    }
+
+    /// 空槽（`index = 0` 或没有名字）。
+    pub fn is_empty(&self) -> bool {
+        self.index == 0 && self.name.is_empty()
+    }
+}
+
 /// 自己的能力值（客户端要画血条/经验条/负重条）。
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Ability {
@@ -209,6 +245,17 @@ pub struct World {
     /// 视野内的实体，键为实体 id（`BTreeMap` ⇒ 遍历顺序稳定，画面不会每帧乱序）。
     pub entities: BTreeMap<u64, Entity>,
     pub ability: Option<Ability>,
+    /// 背包（`BagItems` 全量下发）。`None` = 该格是空的。
+    ///
+    /// ⚠️ 用户 2026-10-09 之前一直"看不到包裹"：`BagItems` 这条协议**两端都齐、
+    /// 服务端却从不构造**（只发 legacy，而 legacy 下行会被 `protoDown` 丢掉）。
+    /// 服务端补齐后（见 `docs/decisions.md` D-65）这里才拿得到东西。
+    pub bag: Vec<Option<BagItem>>,
+    /// 已穿戴（`EquippedItems`）。**按下标 = 槽位**（空槽是 `None`）。
+    ///
+    /// 与背包不同：装备槽的位置本身有意义（武器/衣服/项链…），所以服务端会为
+    /// 空槽也留位（见 `sendUseItems` 的说明）。
+    pub equip: Vec<Option<BagItem>>,
     /// 服务端最近一次给的 tick（`EnterWorld` 的 server_tick）。
     pub server_tick: u32,
     /// 累计收到多少条**实体事件**（出现/消失/移动）。
@@ -497,6 +544,58 @@ impl World {
                         .map(|o| (o.index, o.text.clone()))
                         .collect(),
                 });
+                Change::World
+            }
+            Body::BagItems(b) => {
+                self.bag.clear();
+                for it in &b.items {
+                    self.bag.push(if it.index == 0 {
+                        None
+                    } else {
+                        Some(BagItem::from_proto(it))
+                    });
+                }
+                Change::World
+            }
+            Body::EquippedItems(e) => {
+                self.equip.clear();
+                for it in &e.items {
+                    self.equip.push(if it.index == 0 {
+                        None
+                    } else {
+                        Some(BagItem::from_proto(it))
+                    });
+                }
+                Change::World
+            }
+            // 单件增删改：服务端目前发的是**全量** `BagItems`（`sendBagItems` 一个出口），
+            // 这三条留着照样实现 —— 将来做拖放优化时改发增量，客户端不用再改。
+            Body::AddItem(a) => {
+                let slot = a.slot as usize;
+                if let Some(it) = &a.item {
+                    while self.bag.len() <= slot {
+                        self.bag.push(None);
+                    }
+                    self.bag[slot] = if it.index == 0 {
+                        None
+                    } else {
+                        Some(BagItem::from_proto(it))
+                    };
+                }
+                Change::World
+            }
+            Body::RemoveItem(r) => {
+                let slot = r.slot as usize;
+                if slot < self.bag.len() {
+                    self.bag[slot] = None;
+                }
+                Change::World
+            }
+            Body::UpdateItem(u) => {
+                let slot = u.slot as usize;
+                if slot < self.bag.len() {
+                    self.bag[slot] = u.item.as_ref().filter(|i| i.index != 0).map(BagItem::from_proto);
+                }
                 Change::World
             }
             Body::MoveRejected(r) => {
@@ -1149,5 +1248,84 @@ mod tests {
         })));
         assert_eq!(w.move_fail, 2);
         assert_eq!(w.move_fail_reason, 1);
+    }
+}
+
+#[cfg(test)]
+mod bag_tests {
+    use super::*;
+
+    fn env(body: Body) -> Envelope {
+        Envelope {
+            seq: 1,
+            ack_seq: 0,
+            request_id: 0,
+            body: Some(body),
+        }
+    }
+
+    fn stack(index: u32, name: &str, looks: u32, count: u32) -> proto::ItemStack {
+        proto::ItemStack {
+            index,
+            name: name.into(),
+            looks,
+            count,
+            dura: count,
+            dura_max: 1,
+            ..Default::default()
+        }
+    }
+
+    /// 背包与已穿戴的解析（D-65）。
+    ///
+    /// ⚠️ 这条链原来是**两端都齐、服务端却从不构造**：客户端 core 里没有背包字段、
+    /// 没人在 `match body` 里接 `BagItems` ⇒ 玩家永远看不到包裹。服务端补齐后，
+    /// 这里把"收到之后世界变成什么样"钉住。
+    #[test]
+    fn 背包与已穿戴的解析() {
+        let mut w = World::default();
+
+        // 全量背包：两件药 + 名字为空的空槽（服务端按槽位发，空槽也要占位）
+        w.apply(&env(Body::BagItems(proto::BagItems {
+            items: vec![
+                stack(1, "金创药(小量)", 398, 3),
+                stack(2, "魔法药(小量)", 394, 1),
+                proto::ItemStack::default(),
+            ],
+        })));
+        assert_eq!(w.bag.len(), 3, "空槽也要占位（槽位不能整体前移）");
+        let first = w.bag[0].as_ref().expect("第 1 格应是金创药");
+        assert_eq!(
+            (first.name.as_str(), first.looks, first.count),
+            ("金创药(小量)", 398, 3),
+            "图标靠 looks 取 `Items.wzl[looks]`，数量在 count"
+        );
+        assert!(w.bag[2].is_none(), "index=0 的槽是空的");
+        assert_eq!(w.bag[1].as_ref().unwrap().count, 1);
+
+        // 已穿戴：第 0 槽空、第 1 槽有东西 —— 位置本身有意义，不能压缩
+        w.apply(&env(Body::EquippedItems(proto::EquippedItems {
+            items: vec![proto::ItemStack::default(), stack(9, "铁剑", 100, 1)],
+        })));
+        assert_eq!(w.equip.len(), 2);
+        assert!(w.equip[0].is_none(), "第 0 槽（武器？）空着");
+        assert_eq!(w.equip[1].as_ref().unwrap().name, "铁剑");
+
+        // 单件增删改：服务端现在发全量，但增量那条路也照实现（将来做拖放优化不用改客户端）
+        w.apply(&env(Body::AddItem(proto::AddItem {
+            slot: 5,
+            item: Some(stack(3, "回城卷", 402, 6)),
+        })));
+        assert_eq!(w.bag.len(), 6, "中间空出来的槽要补齐");
+        assert_eq!(w.bag[5].as_ref().unwrap().name, "回城卷");
+
+        w.apply(&env(Body::UpdateItem(proto::UpdateItem {
+            slot: 5,
+            item: Some(stack(3, "回城卷", 402, 5)),
+        })));
+        assert_eq!(w.bag[5].as_ref().unwrap().count, 5, "数量被改成 5");
+
+        w.apply(&env(Body::RemoveItem(proto::RemoveItem { slot: 5 })));
+        assert!(w.bag[5].is_none(), "删掉之后该格为空");
     }
 }

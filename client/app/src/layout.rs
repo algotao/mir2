@@ -131,3 +131,68 @@ pub(crate) const TEXT_COLS: usize = WIN_W as usize / 8 - 2;
 
 /// 右侧信息区每行最大列数（内置字体等宽 8px）。
 pub(crate) const INFO_LINE_H: f32 = 16.0;
+
+// ---------- 背包窗（`Prguse[3]`）----------
+
+/// 背包背板图号：`Prguse[3]`（336×270）。
+///
+/// 素材里的东西（2026-10-09 放大 2 倍 + 扫像素量出来的）：**6 列 × 4 行 = 24 格**、
+/// 左下角一个圆槽（原版是"手上的物品"）、右侧一条滚动条、右下 `USE`、右下角 **关闭 X**、
+/// 下面两条宽横条（金币显示用）。版式常量都是**从这张图的像素量出来的**，不是猜的。
+pub(crate) const BAG_BG: u32 = 3;
+pub(crate) const BAG_W: f32 = 336.0;
+pub(crate) const BAG_H: f32 = 270.0;
+
+/// 网格：6 列 × 4 行，格子 35.5×32.5（经典 Mir2 的物品格就是 36×32），
+/// 原点相对窗口 = (20.5, 8)。
+pub(crate) const BAG_COLS: usize = 6;
+pub(crate) const BAG_ROWS: usize = 4;
+pub(crate) const BAG_CELL_W: f32 = 35.5;
+pub(crate) const BAG_CELL_H: f32 = 32.5;
+pub(crate) const BAG_GRID_X: f32 = 20.5;
+pub(crate) const BAG_GRID_Y: f32 = 8.0;
+
+/// 一页几格（`BAG_COLS * BAG_ROWS`）。服务端背包是 46 格（`MAXBAGITEM`），
+/// 所以**要翻页**：滚轮在窗内翻页，页码画在网格右下角。
+pub(crate) const BAG_PAGE_SLOTS: usize = BAG_COLS * BAG_ROWS;
+
+/// 关闭按钮（`X`）在窗口内的位置 —— 素材右下角那个红叉。
+pub(crate) const BAG_CLOSE_X: f32 = 306.0;
+pub(crate) const BAG_CLOSE_Y: f32 = 174.0;
+pub(crate) const BAG_CLOSE_W: f32 = 24.0;
+pub(crate) const BAG_CLOSE_H: f32 = 20.0;
+
+/// 金币文字在窗口内的落点（下方那条宽横条里）。
+pub(crate) const BAG_GOLD_X: f32 = 56.0;
+pub(crate) const BAG_GOLD_Y: f32 = 186.0;
+
+/// 背包窗落点：**左侧、对话窗下面**（`(8, 188)`）。
+///
+/// 原版背包是可拖动的，默认在右上；右上在我们这儿被**小地图**占着，
+/// 左上被**对话窗**占着 ⇒ 放"左上但要避开对话窗"的位置，一眼就能看到。
+pub(crate) fn bag_rect() -> (f32, f32) {
+    (8.0, 4.0 + crate::input::DIALOG_H + 8.0)
+}
+
+/// 第 `slot` 格（**页内下标**）在窗口内的矩形 `(x, y, w, h)`。
+pub(crate) fn bag_cell_rect(slot: usize) -> (f32, f32, f32, f32) {
+    let col = (slot % BAG_COLS) as f32;
+    let row = (slot / BAG_COLS) as f32;
+    (
+        BAG_GRID_X + col * BAG_CELL_W,
+        BAG_GRID_Y + row * BAG_CELL_H,
+        BAG_CELL_W,
+        BAG_CELL_H,
+    )
+}
+
+/// 窗口内的一点落在哪一格（`None` = 没落在网格里）。与 [`bag_cell_rect`] 同源。
+pub(crate) fn bag_slot_at(local: (f32, f32)) -> Option<usize> {
+    for i in 0..BAG_PAGE_SLOTS {
+        let (x, y, w, h) = bag_cell_rect(i);
+        if local.0 >= x && local.0 < x + w && local.1 >= y && local.1 < y + h {
+            return Some(i);
+        }
+    }
+    None
+}

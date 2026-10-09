@@ -12,6 +12,8 @@ import (
 	"github.com/algotao/mir2/server/internal/proto"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/internal/wire"
+	// 新协议（`protocol/`）的 `ItemStack`/`BagItems` —— 与 legacy 的 `proto` 包区分开
+	"github.com/algotao/mir2/server/protocol"
 )
 
 // wearWeapon 攻击后损耗武器耐久。
@@ -106,6 +108,9 @@ func (s *Server) sendBagItems(c net.Conn, p *Player) {
 	// 遍历期间持锁（`buildClientItem` 只读物品表，不碰背包 ⇒ 不会自死锁），
 	// 但 `s.send` 放到锁外（避免在锁里做 I/O）。
 	var body []byte
+	// 新协议同一次遍历里一起攒（`docs/decisions.md` D-65：proto 玩家原来**收不到**背包，
+	// 因为这条只发 legacy，而 legacy 下行会被 `protoDown` 丢掉）。
+	var stack []*protocol.ItemStack
 	p.stateMu.Lock()
 	for _, it := range p.Char.Data.BagItems {
 		if it == nil || it.Index == 0 {
@@ -120,9 +125,15 @@ func (s *Server) sendBagItems(c net.Conn, p *Player) {
 			continue
 		}
 		body = ci.Append(body)
+		if st, ok := s.itemStack(it); ok {
+			stack = append(stack, st)
+		}
 	}
 	p.stateMu.Unlock()
 	s.send(c, proto.SM_BAGITEMS, 0, 0, 0, 0, string(body))
+	if p.protoOut != nil {
+		p.protoOut.bag(stack)
+	}
 }
 
 // takeBagItem 把背包某槽的物品拿走，并**保持背包没有空洞**（末尾补一个空槽）。
@@ -483,9 +494,42 @@ func (s *Server) buildClientItem(u *pb.UserItem) (*proto.ClientItem, bool) {
 	return &proto.ClientItem{S: si, MakeIndex: u.MakeIndex, Dura: uint16(u.Dura), DuraMax: uint16(u.DuraMax)}, true
 }
 
+// itemStack 把一件存档物品映射成新协议的 `ItemStack`（背包格 / 装备格 / 将来的商店格都用它）。
+//
+// 与 [`Server.buildClientItem`] **同源**（同一份模板查表）：那边产出定长二进制的
+// `ClientItem`，这边产出结构化字段。两处都得维护 ⇒ 以后加字段**记得两边都加**
+// （这正是 `Ability::from_proto` 那条"两个地方各写一遍必然漏一个"的教训）。
+func (s *Server) itemStack(u *pb.UserItem) (*protocol.ItemStack, bool) {
+	if u == nil || u.Index == 0 {
+		return nil, false
+	}
+	tmpl := s.data.tables.Items.Get(int(u.Index) - 1) // Index 是 1-based
+	if tmpl == nil {
+		return nil, false
+	}
+	// 可叠加物的**数量**在原版是塞在 `Dura` 里的（金创药的 Dura 就是瓶数）——
+	// legacy 的 `ClientItem` 压根没有数量字段，只有 Dura/DuraMax。
+	// 判据：`DuraMax <= 1` = 没有耐久 = 可叠加（药水/卷轴），此时 Dura 即数量。
+	count := uint32(1)
+	if tmpl.DuraMax <= 1 && u.Dura > 0 {
+		count = uint32(u.Dura)
+	}
+	return &protocol.ItemStack{
+		Index:   uint32(u.Index),
+		Name:    tmpl.Name,
+		Looks:   uint32(tmpl.Looks),
+		Count:   count,
+		Dura:    uint32(u.Dura),
+		DuraMax: uint32(u.DuraMax),
+	}, true
+}
+
 // sendUseItems 下发已穿戴装备（body：槽位/ClientItem/... 每 2 段一组）。
 func (s *Server) sendUseItems(c net.Conn, p *Player) {
 	var parts []string
+	// 新协议：**按槽位**排（空槽补 `index=0`）—— 装备槽的位置本身有意义
+	//（武器/衣服/项链…），不能像背包那样压缩。见 `docs/decisions.md` D-65。
+	var equip []*protocol.ItemStack
 	if p.Char.Data != nil {
 		for i, u := range p.Char.Data.HumItems {
 			ci, ok := s.buildClientItem(u)
@@ -493,7 +537,18 @@ func (s *Server) sendUseItems(c net.Conn, p *Player) {
 				continue
 			}
 			parts = append(parts, strconv.Itoa(i), string(ci.Append(nil)))
+			for len(equip) < i {
+				equip = append(equip, &protocol.ItemStack{})
+			}
+			if st, ok := s.itemStack(u); ok {
+				equip = append(equip, st)
+			} else {
+				equip = append(equip, &protocol.ItemStack{})
+			}
 		}
 	}
 	s.send(c, proto.SM_SENDUSEITEMS, 0, 0, 0, 0, strings.Join(parts, "/"))
+	if p.protoOut != nil {
+		p.protoOut.equip(equip)
+	}
 }

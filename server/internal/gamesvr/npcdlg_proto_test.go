@@ -183,6 +183,12 @@ func protoEnterWorld(t *testing.T, addr string, s *Server, sessionID int32, char
 		_, ok := e.Body.(*protocol.Envelope_EnterWorld)
 		return ok
 	})
+	// 进图序列的尾巴：`AbilityUpdate` 紧跟在 `EnterWorld` 后面（顺序是契约），
+	// 这里一并收掉 —— 否则后面的 `waitFor` 只放过实体事件，会被它判成"顺序错"。
+	cl.waitFor(ev, "AbilityUpdate", func(e *protocol.Envelope) bool {
+		_, ok := e.Body.(*protocol.Envelope_AbilityUpdate)
+		return ok
+	})
 	return cl, ev
 }
 
@@ -198,8 +204,13 @@ func waitNpcSay(t *testing.T, cl *protoClient, ev *protoEvents) *protocol.Envelo
 		if _, ok := e.Body.(*protocol.Envelope_NpcSay); ok {
 			return e
 		}
-		if _, ok := e.Body.(*protocol.Envelope_AbilityUpdate); ok {
-			continue // 正常流量：能力值随时会推
+		// 正常流量（与"顺序错"无关）：能力值随时会推；背包/已穿戴在进图与每次
+		// 拾取/穿戴/买卖后都会整份重发（`sendBagItems` 是全量口）。
+		switch e.Body.(type) {
+		case *protocol.Envelope_AbilityUpdate,
+			*protocol.Envelope_BagItems,
+			*protocol.Envelope_EquippedItems:
+			continue
 		}
 		if !ev.note(e) {
 			t.Fatalf("等 NpcSay 时收到无关消息 %T", e.Body)

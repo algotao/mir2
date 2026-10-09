@@ -242,6 +242,29 @@ func (k *protoSink) ability(ab *pb.Ability, gold int64) {
 		AbilityUpdate: &protocol.AbilityUpdate{Ability: protocolAbility(ab, gold)}}})
 }
 
+// bag 发一条**全量背包**（新协议 `BagItems`）。
+//
+// ⚠️ 用户 2026-10-09 报"包裹负重/经验比例没显示"时，背后的一件事就是这条链从来没接：
+// `sendBagItems` 只发 legacy，而 proto 玩家的 legacy 下行会被 `protoDown` 丢掉
+// ⇒ 新协议客户端**永远看不到背包**（协议里 `BagItems` 早就定义好了，只是没人构造它）。
+// 现在 `sendBagItems` 在同一次遍历里攒出这份结构化列表一起发（见 `docs/decisions.md` D-65）。
+//
+// 槽位约定：**按槽位顺序、尾部空槽省略**（服务端的背包本来就是"紧凑前缀 + 空尾巴"，
+// 见 `takeBagItemLocked`）⇒ 客户端把第 i 项放进第 i 格就是对的。
+func (k *protoSink) bag(items []*protocol.ItemStack) {
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_BagItems{
+		BagItems: &protocol.BagItems{Items: items}}})
+}
+
+// equip 发一条**已穿戴**（`EquippedItems`）。
+//
+// 与背包不同：装备槽的**位置本身有意义**（武器/衣服/项链…），所以空槽要占位
+// （发 `index = 0` 的 `ItemStack`），客户端按下标认槽。
+func (k *protoSink) equip(items []*protocol.ItemStack) {
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_EquippedItems{
+		EquippedItems: &protocol.EquippedItems{Items: items}}})
+}
+
 // exp 发一条经验获得（只有自己会收到）。
 func (k *protoSink) exp(amount, total uint64) {
 	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_ExperienceGain{
@@ -1094,6 +1117,16 @@ func (ps *protoSession) enterWorld(chr *storage.Character) bool {
 		AbilityUpdate: &protocol.AbilityUpdate{Ability: protocolAbility(chr.Data.Abil, chr.Data.Gold)}}}); err != nil {
 		return false
 	}
+
+	// **背包 + 已穿戴**（新协议 `BagItems` / `EquippedItems`）。
+	//
+	// ⚠️ 用户 2026-10-09「包裹负重没显示」：负重数值在 `AbilityUpdate` 里已经带了，
+	// 但**背包内容**这条链从来没接 —— `sendBagItems` / `sendUseItems` 只发 legacy，
+	// 而 proto 玩家的 legacy 下行会被 `protoDown` 丢掉 ⇒ 进图后背包永远是空的。
+	// 这里复用它们的**同一次遍历**（`c = nil` 有意为之：legacy 那份由 legacy 入口负责，
+	// 这里只要新协议这一份；`s.send(nil, …)` 自带 nil 守卫）。
+	ps.srv.sendBagItems(nil, p)
+	ps.srv.sendUseItems(nil, p)
 
 	// ⚠️ **快照就是"出现"**：先把这批实体记进视野账本，再让 updateVision 做差集。
 	// 不这么做的话，updateVision 会把同一批实体再当"新进入视野"推一遍 ——

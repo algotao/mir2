@@ -217,6 +217,20 @@ type protoEvents struct {
 }
 
 // note 若这条是实体事件就记下并返回 true（调用方据此跳过它）。
+// 这些是**随时可能来的自身状态推送**（能力值、背包、已穿戴）—— 它们不属于
+// "顺序契约"里那几步，遇到就记下跳过。加新消息时想清楚它是"步骤"还是"流量"。
+func isSelfStatePush(env *protocol.Envelope) bool {
+	switch env.Body.(type) {
+	case *protocol.Envelope_AbilityUpdate,
+		*protocol.Envelope_BagItems,
+		*protocol.Envelope_EquippedItems,
+		*protocol.Envelope_GoldChanged,
+		*protocol.Envelope_WeightChanged:
+		return true
+	}
+	return false
+}
+
 func (e *protoEvents) note(env *protocol.Envelope) bool {
 	switch b := env.Body.(type) {
 	case *protocol.Envelope_EntityAppear:
@@ -370,6 +384,21 @@ func TestProtoContractEnterWorld(t *testing.T) {
 	ab := abEnv.Body.(*protocol.Envelope_AbilityUpdate)
 	if got := ab.AbilityUpdate.GetAbility(); got.GetLevel() != 7 || got.GetHp() != 30 || got.GetMaxHp() != 40 {
 		t.Errorf("能力值 = %+v", got)
+	}
+
+	// ④′ 背包与已穿戴（`BagItems` / `EquippedItems`，见 `docs/decisions.md` D-65）。
+	//
+	// 本用例的角色**没有物品** ⇒ 两张表都是空的，但**消息必须在**：客户端靠它们初始化
+	// 背包格与装备栏（原来这两条只在 legacy 那条路上发，proto 玩家进来背包永远是空的）。
+	if env := cl.waitFor(ev, "BagItems", func(e *protocol.Envelope) bool {
+		return e.GetBagItems() != nil
+	}); env.GetBagItems().GetItems() == nil {
+		t.Log("背包为空（本用例的角色没有物品）—— 空表也照样发")
+	}
+	if env := cl.waitFor(ev, "EquippedItems", func(e *protocol.Envelope) bool {
+		return e.GetEquippedItems() != nil
+	}); env.GetEquippedItems().GetItems() == nil {
+		t.Log("身上没穿东西（同上）")
 	}
 
 	// ⑤ 心跳

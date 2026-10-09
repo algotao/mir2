@@ -239,6 +239,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut hover: Option<u64> = None;
     // 进世界的按键提示只推一次（见下面那段）
     let mut hint_pushed = false;
+    // 背包窗（F9）与它的页码 —— **纯客户端窗口状态**，不跟服务端同步
+    //（原版背包也是本地开合；服务端只管背包内容）。
+    let mut bag_open = false;
+    let mut bag_page = 0usize;
     // 悬停可攻击目标时把光标换成"准星"（Crystal 是 `MouseCursor.Attack`，
     // `GameScene.cs:432-433`）；只在**状态变了**才设，别每帧调。
     let cursor_arrow = Cursor::from_system(SystemCursor::Arrow)?;
@@ -339,6 +343,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // 的"ESC 退建号面板 / 关报错弹窗"全是**不可达死代码**。
                     // 现在放它们落到下面的 mode 分支去；场景要退（`Action::Exit` /
                     // `Action::Quit`）才真退。其余模式（世界/素材浏览器）保持原样。
+                    // 背包窗开着 ⇒ ESC **先关背包**
+                    Some(Keycode::Escape) if mode == 2 && bag_open => bag_open = false,
                     // NPC 对话开着 ⇒ ESC **先关对话**（原版 `@exit`），别顺手退了客户端
                     Some(Keycode::Escape)
                         if mode == 2
@@ -357,6 +363,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // ⚠️ **开发键让开原版键位**（口径见 `docs/use.md`）：F1~F8 是技能、
                     // F9~F12 是包裹/属性/技能/内挂、M 是大地图、Tab 是小地图、数字是快捷物品
                     // ⇒ 这些"开发查看器"入口统统收进 **Ctrl+**，原版键位留给真功能。
+                    // F9 = 背包窗（原版键位，见上面那条注释的口径）
+                    Some(Keycode::F9) if mode == 2 => {
+                        bag_open = !bag_open;
+                        bag_page = 0;
+                        println!("[ui] 背包窗 {}", if bag_open { "打开" } else { "关闭" });
+                    }
                     Some(Keycode::F1) if ctrl(keymod) => mode = 1,
                     Some(Keycode::F2) if ctrl(keymod) => mode = 2,
                     Some(Keycode::F3) if ctrl(keymod) => mode = 3,
@@ -560,6 +572,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 // 鼠标位置（已在循环头换算成界面的 800×600 空间）
                 Event::MouseMotion { x, y, .. } => mouse = (x, y),
+                // 背包窗内滚轮翻页（服务端背包 46 格 = 2 页，窗口一次只画 24 格）
+                Event::MouseWheel { y, .. } if bag_open && mode == 2 => {
+                    let (bx, by) = crate::layout::bag_rect();
+                    let inside = mouse.0 >= bx
+                        && mouse.0 < bx + crate::layout::BAG_W
+                        && mouse.1 >= by
+                        && mouse.1 < by + crate::layout::BAG_H;
+                    if inside {
+                        let pages = net
+                            .as_ref()
+                            .map_or(1, |n| {
+                                n.world
+                                    .bag
+                                    .len()
+                                    .div_ceil(crate::layout::BAG_PAGE_SLOTS)
+                            })
+                            .max(1);
+                        if y > 0.0 {
+                            bag_page = (bag_page + 1) % pages;
+                        } else if y < 0.0 {
+                            bag_page = (bag_page + pages - 1) % pages;
+                        }
+                    }
+                }
                 // 鼠标移动：**在世界里 ⇒ 左键走 / 右键跑**（照原版 `ClMain.pas:2246-2352`：
                 // 左键 = 走，右键 = 跑；方向由鼠标相对角色的方位定，见 `dir_to`）。
                 // 离线看地图（没进世界）时左键仍是那个诊断探针 —— 它是开发用的，
@@ -640,6 +676,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                     // 点在面板上（含非选项处）⇒ 吞掉这次点击，别走路
+                                    combat_target = None;
+                                    move_target = None;
+                                    press_at = None;
+                                    held_move = None;
+                                }
+                            }
+                            // ②′ 背包窗开着：点格子 = 把"看到的是哪件"反馈到聊天区
+                            //（`UseItem` 还没接新协议，见 `docs/todo.md`）；点关闭 X = 关窗；
+                            // 点在窗里别处 = 吞掉这次点击，**别走路**。
+                            if bag_open {
+                                let (bx, by) = crate::layout::bag_rect();
+                                let inside = x >= bx
+                                    && x < bx + crate::layout::BAG_W
+                                    && y >= by
+                                    && y < by + crate::layout::BAG_H;
+                                if inside {
+                                    let (lx, ly) = (x - bx, y - by);
+                                    let on_close = lx >= crate::layout::BAG_CLOSE_X
+                                        && lx < crate::layout::BAG_CLOSE_X + crate::layout::BAG_CLOSE_W
+                                        && ly >= crate::layout::BAG_CLOSE_Y
+                                        && ly < crate::layout::BAG_CLOSE_Y + crate::layout::BAG_CLOSE_H;
+                                    if on_close {
+                                        bag_open = false;
+                                        println!("[ui] 背包窗关闭（点 X）");
+                                    } else if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
+                                        let idx = bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
+                                        if let Some(n) = net.as_ref() {
+                                            let msg = match n.world.bag.get(idx) {
+                                                Some(Some(it)) => format!(
+                                                    "背包第 {} 格：{} x{}（外观图号 {}）",
+                                                    idx + 1,
+                                                    it.name,
+                                                    it.count,
+                                                    it.looks
+                                                ),
+                                                _ => format!("背包第 {} 格是空的", idx + 1),
+                                            };
+                                            println!("[ui] {msg}");
+                                            let shown = trunc(&msg, 30);
+                                            if let Some(n) = net.as_mut() {
+                                                n.chat.push(shown, C_CHAT_SYS);
+                                            }
+                                        }
+                                    }
                                     combat_target = None;
                                     move_target = None;
                                     press_at = None;
@@ -1225,6 +1305,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 net.as_ref(),
                 combat_target,
             )?;
+            // 背包窗画在**世界与 HUD 之上**（它是浮窗；原版也是最后贴）。
+            // 素材目录缺失时和 `draw_map_view` 一样什么都不画（那屏已经打了横幅提示）。
+            if bag_open {
+                if let Some(dir) = asset_dir.as_deref() {
+                    hud::draw_bag(
+                        &mut canvas,
+                        &tex_creator,
+                        &mut ui,
+                        &mut ui_texts,
+                        dir,
+                        net.as_ref(),
+                        bag_page,
+                    )?;
+                }
+            }
             // 光标跟着悬停状态走：悬停的是**怪**才换准星（原版悬停谁都不换光标，
             // 这是 Crystal 那套；换成"能打的东西"上才有意义）
             let want_cross = hover.is_some_and(|id| {

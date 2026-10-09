@@ -3255,3 +3255,59 @@ txt/sql/pas/json/dat/ini/db/lua/md 全部扩展名）：**"新手指导"零命�
 - **买/卖两个窗口**：素材已定位（买卖网格 `Prguse[3]`、交易窗 `[391]/[394]/[395]`、OK `[392]/[396]`），
   但窗口本身要等**商店协议**（`ShopList`/`ShopBuy`/`ShopSell`）+ 背包窗口（`Items.wzl` 图标）——
   现在点"买/卖"仍只在对话里明说一句。
+
+## D-65 背包窗口：把"协议里躺着、两边都没人用"的那条链接通
+
+**用户 2026-10-09**：「继续推进开发」（上一轮商定：背包窗口 → 商店协议 → 买窗 → 卖窗）。
+
+### 现状核对：不是"没做"，是**两边都齐、服务端从不构造**
+
+`protocol/item.proto` 里 `BagItems`/`AddItem`/`RemoveItem`/`UpdateItem`/`EquippedItems`/
+`WeightChanged`/`GoldChanged` 全都定义好了，`envelope.proto` 也注册进了 `Body` oneof；
+客户端 core 里却连**背包字段都没有**，`match body` 里也没有分支 ⇒ 落到 `_ => Change::None`。
+
+根因在服务端：`sendBagItems`/`sendUseItems` **只发 legacy**，而 proto 玩家的 legacy 下行
+会被 `protoDown` 丢掉 ⇒ 新协议客户端**永远看不到背包**。全仓 `grep "BagItems{"` 只命中
+生成代码本身 —— 从来没有人构造过它。（`docs/todo.md` 原先写"协议与服务端都齐了"，
+这句是错的，本轮更正。）
+
+### 做了什么
+
+| 层 | 改动 |
+|---|---|
+| 服务端 | `Server.itemStack`：存档物品 → 新协议 `ItemStack`（与 `buildClientItem` **同源**，同一份模板查表）；`sendBagItems`/`sendUseItems` 在**同一次遍历**里多攒一份结构化列表，`p.protoOut != nil` 时发 `BagItems`/`EquippedItems`；`protoSink.bag/equip` 两个下行 |
+| 进图 | `protoSession.enterWorld` 补 `sendBagItems`/`sendUseItems`（`c = nil`：legacy 那份由 legacy 入口负责）—— 少了这两句，进图背包永远是空的 |
+| 客户端 core | `BagItem` 类型 + `World.bag` / `World.equip`；`BagItems`/`EquippedItems`/`AddItem`/`RemoveItem`/`UpdateItem` 五个分支 |
+| 客户端 app | **F9 背包窗**（`Prguse[3]`）+ 24 格网格 + `Items.wzl[looks]` 图标 + 叠加数 + **金币** + 页码（滚轮翻页，46 格 = 2 页）；ESC/点 X 关窗；点窗内不走路 |
+
+### 两个"取错了就全错"的细节（都写进测试）
+
+1. **可叠加物的数量藏在 `Dura` 里**（原版没有数量字段）：判据 `DuraMax <= 1` ⇒ `count = Dura`。
+   取错了金创药会显示成"1 个"，或者把装备耐久当数量。
+2. **图标 = `Items.wzl[looks]`**：2026-10-09 用 `wzldump` 逐张比对确认（`looks=398` 红瓶 =
+   金创药(小量)、`394` 蓝瓶 = 魔法药(小量)），与服务端物品表的 `Looks` 列一致。
+
+背包窗版式也是**量出来的**（`Prguse[3]` 放大 2 倍 + 扫像素）：6 列 × 4 行、格子 **35.5×32.5**、
+网格原点 **(20.5, 8)**、左下圆槽、右下 `USE`、右下角关闭 `X`、下方两条宽横条（金币）。
+
+### 验证
+
+- `TestSendBagItemsProto`：用**真实物品表**造一个玩家，断言 `BagItems` 的名称/looks/数量。
+- `TestProtoBagOnEnter`（真 TCP）+ **两份契约**（Go `TestProtoContractEnterWorld`、
+  Rust `client/e2e` 剧本）：进图序列现在是
+  `EnterWorld → AbilityUpdate → BagItems → EquippedItems → …`，两边都必须认。
+- 客户端：`core` 的「背包与已穿戴的解析」（含空槽占位、增量三条）、`app` 的「背包窗的格子命中」
+  （画与命中同源）。
+- 起服实测：`物品=686 怪物模板=206 NPC=171 刷怪点=2`，无新增告警。
+
+### 一个"看不到东西"的预期，先说明
+
+**1.76 新角色只穿三件（布衣/木剑/蜡烛，见 `chargen.InitialItems`），背包本身是空的** ——
+所以按 F9 现在会看到一个**空背包 + 金币 0**。要看到格子里的东西，得先**捡到/买到**物品；
+商店（买卖）是下一项，做完就能"买东西 → 背包里出现 → 卖回去"整条验通。
+
+### 还没做
+
+- **商店协议**：`ShopList`/`ShopBuy`/`ShopSell` 三条消息 + 服务端双出口（`shop.go` 的
+  `openShop`/`sendGoods`/`handleBuyItem`/`handleSellItem` 全是 legacy）。
+- 背包交互（用/丢/穿/拖）与物品鼠标提示；`UseItem` 等 C→S 消息协议里有、客户端还没发。

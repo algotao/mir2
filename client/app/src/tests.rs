@@ -1381,3 +1381,31 @@ fn 点npc的判据() {
     assert!(!w.npc_kind(42));
     assert_eq!(w.npc_at(5, 5), None);
 }
+
+/// 背包窗的**画与命中同源**（`bag_slot_at` 用的矩形就是 `bag_cell_rect` 算的）。
+#[test]
+fn 背包窗的格子命中() {
+    use crate::layout::*;
+    // 6×4 = 24 格，一页正好铺满
+    assert_eq!(BAG_PAGE_SLOTS, 24);
+    let last = bag_cell_rect(BAG_PAGE_SLOTS - 1);
+    assert!(last.0 + last.2 <= BAG_W, "最后一列不能越出背板");
+    assert!(last.1 + last.3 <= BAG_H, "最后一行不能越出背板");
+    // 每格中心都能命中自己，且**只命中自己**
+    for i in 0..BAG_PAGE_SLOTS {
+        let (x, y, w, h) = bag_cell_rect(i);
+        assert_eq!(bag_slot_at((x + w / 2.0, y + h / 2.0)), Some(i), "第 {i} 格");
+    }
+    // 网格外面（比如金币条那儿）不该命中
+    assert_eq!(bag_slot_at((BAG_GOLD_X + 4.0, BAG_GOLD_Y + 4.0)), None);
+    // 关窗 X 也不该被当成格子
+    if let Some(i) = bag_slot_at((BAG_CLOSE_X + 4.0, BAG_CLOSE_Y + 4.0)) {
+        let (x, y, w, h) = bag_cell_rect(i);
+        assert!(
+            !(BAG_CLOSE_X + 4.0 >= x && BAG_CLOSE_X + 4.0 < x + w
+                && BAG_CLOSE_Y + 4.0 >= y
+                && BAG_CLOSE_Y + 4.0 < y + h),
+            "X 与格子重叠了（点 X 会误选物品）"
+        );
+    }
+}
