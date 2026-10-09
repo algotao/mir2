@@ -68,6 +68,11 @@ func TestProtoNpcDialog(t *testing.T) {
 	if !strings.Contains(say.GetText(), "要不要来点肉") {
 		t.Errorf("NpcSay.text = %q，应带上 [@main] 的正文字", say.GetText())
 	}
+	// 正文要带**行内标记**（`<文字/@序号>`）：客户端靠它把「打开」画在原行、并知道回哪个序号。
+	// 用户 2026-10-09「交易窗口渲染不对，应该为『打开 交易市场』在一行」就是指这个。
+	if !strings.Contains(say.GetText(), "<我要买/@1>") {
+		t.Errorf("NpcSay.text = %q，应含行内标记 `<我要买/@1>`（序号 1 起、与 options 次序一致）", say.GetText())
+	}
 	opts := say.GetOptions()
 	if len(opts) != 2 || opts[0].GetIndex() != 1 || opts[0].GetText() != "我要买" ||
 		opts[1].GetIndex() != 2 || opts[1].GetText() != "打听点事" {

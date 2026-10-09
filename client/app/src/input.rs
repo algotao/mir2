@@ -199,9 +199,10 @@ pub(crate) const DIALOG_Y: f32 = 4.0;
 pub(crate) const DIALOG_PAD_X: f32 = 24.0;
 pub(crate) const DIALOG_PAD_Y: f32 = 16.0;
 
-/// 正文行高 / 选项行高（14px 字 + 4px 行距，与截图里的疏密一致）。
+/// 行高（14px 字 + 4px 行距，与截图里的疏密一致）。
+///
+/// 正文与行内选项**同一行高** —— 它们本来就同行（以前那份"底部选项列表"是另一套）。
 pub(crate) const DIALOG_LINE_H: f32 = 18.0;
-pub(crate) const DIALOG_OPT_H: f32 = 18.0;
 
 /// 正文最多画几行。
 ///
@@ -219,49 +220,160 @@ pub(crate) fn dialog_panel() -> (f32, f32, f32, f32) {
     (DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H)
 }
 
-/// 某个选项行在面板里的矩形 `(x, y, w, h)`（正文之后按顺序排）。
-///
-/// ⚠️ `text_lines` 会**先截到 [`DIALOG_MAX_LINES`]** —— 画那边也截同一刀
-/// ⇒ "画与命中同源"这条仍然成立（否则选项会画在正文的位置上、点不中）。
-pub(crate) fn dialog_option_rect(
-    panel: (f32, f32, f32, f32),
-    text_lines: usize,
-    i: usize,
-) -> (f32, f32, f32, f32) {
-    let (x, y, w, _) = panel;
-    let lines = text_lines.min(DIALOG_MAX_LINES);
-    let oy = y + DIALOG_PAD_Y + lines as f32 * DIALOG_LINE_H + 6.0 + i as f32 * DIALOG_OPT_H;
-    (x + DIALOG_PAD_X, oy, w - DIALOG_PAD_X * 2.0, DIALOG_OPT_H)
+/// 对话正文里的一个片段：普通文字，或者一段**行内可点文字**。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DialSeg {
+    Text(String),
+    /// `index` 是回包要带的**选项序号**（1 起）。
+    ///
+    /// 服务端把脚本里的 `<打开/@trading>` 改写成 `<打开/@1>`（见
+    /// `server/internal/script/script.go` 的 `Label.Lines`）⇒ 客户端不用猜标签，
+    /// 直接拿它回 `NpcSelect{index}`。
+    Link { index: u32, text: String },
 }
 
-/// 鼠标落在哪个选项上（`None` = 没点中选项）。**纯函数**，与 `dialog_option_rect` 同源。
-pub(crate) fn dialog_option_at(
-    panel: (f32, f32, f32, f32),
-    text_lines: usize,
-    options: usize,
-    mouse: (f32, f32),
-) -> Option<usize> {
-    (0..options).find(|&i| {
-        if !dialog_option_fits(panel, text_lines, i) {
-            return false;
+/// 链接前面那个绿方块 + 间距占的宽度（官方样式：方块在文字左侧）。
+pub(crate) const DIALOG_BULLET_W: f32 = 12.0;
+
+/// 把服务端下发的正文切成**行 → 片段**（画与命中都用它，别各算一份）。
+///
+/// - 正文里带 `<文字/@序号>` ⇒ **留在原行**。用户 2026-10-09：「交易窗口渲染不对，
+///   应该为『打开 交易市场』在一行，其中『打开』可点击」—— 脚本本来就是这么写的
+///   （` <打开/@trading> 交易市场\`），旧版把链接抽到下面单列，所以看着不对。
+/// - 正文里**没有**标记但有 `options`（老服务端 / 没有行内链接的脚本）⇒ 把选项各排一行，
+///   与以前那个"底部选项列表"的行为一致。
+///
+/// ⚠️ 折行：**纯文字行**按 [`DIALOG_WRAP_CHARS`] 折（脚本正文常常很长）；
+/// **带链接的行**原样保留 —— 脚本作者自己用 `\` 断行，硬折会把链接与它修饰的
+/// 文字拆散（"打开 / 交易市场"分两行就回到老毛病了）。
+pub(crate) fn dialog_lines(text: &str, options: &[(u32, String)]) -> Vec<Vec<DialSeg>> {
+    let mut lines: Vec<Vec<DialSeg>> = Vec::new();
+    let mut any_link = false;
+    for raw in text.split('\n') {
+        let mut segs = Vec::new();
+        let has = parse_marked_line(raw, &mut segs);
+        if has {
+            any_link = true;
+            lines.push(segs);
+            continue;
         }
-        let (x, y, w, h) = dialog_option_rect(panel, text_lines, i);
-        mouse.0 >= x && mouse.0 <= x + w && mouse.1 >= y && mouse.1 <= y + h
-    })
+        if raw.trim().is_empty() {
+            lines.push(vec![DialSeg::Text(String::new())]); // 空行占位（脚本用它分段）
+            continue;
+        }
+        for chunk in wrap_text(raw.trim(), DIALOG_WRAP_CHARS) {
+            lines.push(vec![DialSeg::Text(chunk)]);
+        }
+    }
+    if !any_link && !options.is_empty() {
+        for (idx, t) in options {
+            lines.push(vec![DialSeg::Link {
+                index: *idx,
+                text: t.clone(),
+            }]);
+        }
+    }
+    lines
 }
 
-/// 这个选项在背板里**装得下**吗。
+/// 解析一行里的 `<文字/@序号>`，把片段推进 `out`；返回**本行有没有链接**。
+fn parse_marked_line(s: &str, out: &mut Vec<DialSeg>) -> bool {
+    let mut rest = s;
+    let mut has = false;
+    while let Some(lt) = rest.find('<') {
+        let Some(gt) = rest[lt..].find('>') else { break };
+        let inner = &rest[lt + 1..lt + gt];
+        let Some((text, index)) = inner.split_once("/@").and_then(|(t, n)| {
+            n.trim().parse::<u32>().ok().map(|i| (t.to_string(), i))
+        }) else {
+            break; // 不是标记：后面整段当文字
+        };
+        if lt > 0 {
+            out.push(DialSeg::Text(rest[..lt].to_string()));
+        }
+        out.push(DialSeg::Link { index, text });
+        has = true;
+        rest = &rest[lt + gt + 1..];
+    }
+    if !rest.is_empty() {
+        out.push(DialSeg::Text(rest.to_string()));
+    }
+    has
+}
+
+/// 一个片段排好之后的落点。
+pub(crate) struct DialPiece {
+    /// 完整命中矩形（链接**含**前面的绿方块）。
+    pub rect: (f32, f32, f32, f32),
+    /// 文字落笔的 x（链接是方块之后的那一点）。
+    pub text_x: f32,
+    pub seg: DialSeg,
+}
+
+/// 某一行的排版：`line_no` 从 0 起。
 ///
-/// 背板固定高 ⇒ 正文太长时后面的选项会排到框外。那种"画不出来"的选项
-/// **既不该画、也不该被点到**（否则会出现"点空白弹对话"）。画那边跳过同一批。
-pub(crate) fn dialog_option_fits(
+/// **画与命中同源** —— `draw_dialog` 与点击判定都调它。装不下的行返回空
+///（背板固定高 ⇒ 画不出来的东西也不该点得到）。
+pub(crate) fn dialog_line_pieces(
     panel: (f32, f32, f32, f32),
-    text_lines: usize,
-    i: usize,
-) -> bool {
-    let (_, y, _, h) = panel;
-    let (_, oy, _, oh) = dialog_option_rect(panel, text_lines, i);
-    oy + oh <= y + h
+    line_no: usize,
+    segs: &[DialSeg],
+    measure: &mut dyn FnMut(&str) -> f32,
+) -> Vec<DialPiece> {
+    let (px, py, _pw, ph) = panel;
+    if line_no >= DIALOG_MAX_LINES {
+        return Vec::new();
+    }
+    let y = py + DIALOG_PAD_Y + line_no as f32 * DIALOG_LINE_H;
+    if y + DIALOG_LINE_H > py + ph {
+        return Vec::new();
+    }
+    let mut x = px + DIALOG_PAD_X;
+    let mut out = Vec::with_capacity(segs.len());
+    for seg in segs {
+        match seg {
+            DialSeg::Text(t) => {
+                let w = measure(t);
+                out.push(DialPiece {
+                    rect: (x, y, w, DIALOG_LINE_H),
+                    text_x: x,
+                    seg: seg.clone(),
+                });
+                x += w;
+            }
+            DialSeg::Link { text, .. } => {
+                let w = measure(text) + DIALOG_BULLET_W;
+                out.push(DialPiece {
+                    rect: (x, y, w, DIALOG_LINE_H),
+                    text_x: x + DIALOG_BULLET_W,
+                    seg: seg.clone(),
+                });
+                x += w;
+            }
+        }
+    }
+    out
+}
+
+/// 鼠标点在某段**行内链接**上 ⇒ 返回选项序号（1 起）。
+pub(crate) fn dialog_link_at(
+    panel: (f32, f32, f32, f32),
+    lines: &[Vec<DialSeg>],
+    mouse: (f32, f32),
+    measure: &mut dyn FnMut(&str) -> f32,
+) -> Option<u32> {
+    for (i, segs) in lines.iter().enumerate() {
+        for p in dialog_line_pieces(panel, i, segs, measure) {
+            let DialSeg::Link { index, .. } = p.seg else {
+                continue;
+            };
+            let (x, y, w, h) = p.rect;
+            if mouse.0 >= x && mouse.0 <= x + w && mouse.1 >= y && mouse.1 <= y + h {
+                return Some(index);
+            }
+        }
+    }
+    None
 }
 
 /// 点是否落在面板里（落在面板里但没点在选项上 ⇒ **别走路**）。

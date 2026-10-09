@@ -42,8 +42,19 @@ type Link struct {
 // Label 是脚本中的一个段（[@xxx]）。
 type Label struct {
 	Name string
-	// Say 是要显示的文本（已去掉续行符）。
+	// Say 是要显示的文本（已去掉续行符、**已抽掉行内选项**）。
+	//
+	// ⚠️ 它丢掉了"选项在行内的位置"，只适合 legacy 那种"正文 + 底部选项列表"的画法。
+	// 要在原位置画行内可点文字，用 [`Label.Lines`]。
 	Say string
+	// Lines 是**原样的显示行**（去掉行尾续行符，保留行首空白）。
+	//
+	// 行内的选项标记已经**改写为 `<文字/@序号>`**（序号 1 起，与 `Links` 次序一致）——
+	// 客户端据此把「打开」画成可点文字、点了回 `NpcSelect{index}`。
+	//
+	// 用户 2026-10-09：「交易窗口渲染不对，应该为『打开 交易市场』在一行，其中『打开』可点击」
+	// —— 脚本是 ` <打开/@trading> 交易市场\`，就是这一行要原样渲染。
+	Lines []string
 	// Links 是本段的选项。
 	Links []Link
 	// Conds 是 #if 下的条件表达式（暂不求值，仅保留）。
@@ -154,13 +165,27 @@ func Parse(name string, r io.Reader) (*Script, error) {
 		case "elseact":
 			cur.ElseActs = append(cur.ElseActs, trimmed)
 		default:
-			// 正文：先抽选项，剩下的作为显示文本
-			rest := linkRe.ReplaceAllStringFunc(trimmed, func(m string) string {
+			// 正文：先把行内选项**编号**，再抽出来当显示文本
+			//
+			// ⚠️ 编号是给客户端用的（见 `Label.Lines`）：脚本里的
+			// ` <打开/@trading> 交易市场\` 要渲染成**一行**、其中「打开」可点，
+			// 客户端回包时只需要一个序号 ⇒ 把标记改写成 `<打开/@1>`（1 起，
+			// 与 `Links` 的次序一致）。
+			marked := linkRe.ReplaceAllStringFunc(trimmed, func(m string) string {
 				g := linkRe.FindStringSubmatch(m)
 				cur.Links = append(cur.Links, Link{Text: g[1], Label: g[2]})
-				return ""
+				return fmt.Sprintf("<%s/@%d>", g[1], len(cur.Links))
 			})
-			rest = strings.TrimRight(rest, ` \`) // 去掉续行符
+			// 整行保留（去掉行尾续行符 `\`，**保留行首空白** —— 脚本靠它缩进对齐）
+			//
+			// ⚠️ **空行也保留**：脚本用 ` \` 这种行当段落间隔（`7Gst-0.txt` 的
+			// `[@main]` 里就有一条），官方是照原样换行画的。只丢"连续行符都没有"的空行。
+			line := strings.TrimRight(marked, ` \`)
+			if line != "" || strings.TrimSpace(marked) != "" {
+				cur.Lines = append(cur.Lines, line)
+			}
+			rest := linkRe.ReplaceAllString(trimmed, "")
+			rest = strings.TrimRight(rest, ` \`)
 			rest = strings.TrimSpace(rest)
 			if rest != "" {
 				if cur.Say != "" {

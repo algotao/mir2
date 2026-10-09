@@ -153,3 +153,91 @@ func TestParseRealScripts(t *testing.T) {
 		t.Errorf("失败过多：%d/%d", bad, ok+bad)
 	}
 }
+
+// TestLabelLinesKeepInlineLinks 行内选项要**留在原行**，并把标记改写成 `<文字/@序号>`。
+//
+// 用户 2026-10-09：「交易窗口渲染不对，应该为『打开 交易市场』在一行，其中『打开』可点击」。
+// 脚本原文（`market_def/7Gst-0.txt`）是：
+//
+//	[@main]
+//	欢迎. 我可以为你做什么吗?\
+//	 \
+//	 <打开/@trading> 交易市场\
+//	 <购买/@buy>  物品\
+//	 <退出/@exit>
+//
+// 旧版只留 `Say`（行内选项被抽走）⇒ 客户端只能把选项单列到下面，看着就是"不对"。
+func TestLabelLinesKeepInlineLinks(t *testing.T) {
+	const src = "[@main]\r\n" +
+		"欢迎. 我可以为你做什么吗?\\\r\n" +
+		" \\\r\n" +
+		" <打开/@trading> 交易市场\\\r\n" +
+		" <购买/@buy>  物品\\\r\n" +
+		" <退出/@exit>\r\n"
+	sc, err := Parse("7Gst-0", strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("解析: %v", err)
+	}
+	l := sc.Label("main")
+	if l == nil {
+		t.Fatal("没有 [@main]")
+	}
+	// 选项按出现次序编号（1 起）—— 客户端回包用的就是这个序号
+	if len(l.Links) != 3 || l.Links[0].Label != "trading" || l.Links[2].Label != "exit" {
+		t.Fatalf("Links = %+v", l.Links)
+	}
+	// 行：欢迎 / 空行 / <打开/@1> 交易市场 / <购买/@2>  物品 / <退出/@3>
+	if len(l.Lines) != 5 {
+		t.Fatalf("行数 = %d，应为 5（含中间那个空行占位）：%q", len(l.Lines), l.Lines)
+	}
+	if got := l.Lines[2]; !strings.Contains(got, "<打开/@1>") || !strings.Contains(got, "交易市场") {
+		t.Errorf("第 3 行 = %q，应含 `<打开/@1>` 与 `交易市场`（同一行）", got)
+	}
+	if got := l.Lines[3]; !strings.Contains(got, "<购买/@2>") {
+		t.Errorf("第 4 行 = %q，应含 `<购买/@2>`", got)
+	}
+	// `Say` 仍然是"没有行内标记"的纯文本（legacy 那条路照旧）
+	if strings.Contains(l.Say, "<") || !strings.Contains(l.Say, "交易市场") {
+		t.Errorf("Say = %q，应是不含标记的纯文本", l.Say)
+	}
+}
+
+// TestRealMerchantScriptInline 拿**真实脚本**再验一遍（数据驱动的那一条）。
+//
+// `7Gst-0.txt` 是陈家铺老板（比奇省 643,611）的脚本，`[@main]` 就是用户截图里那句
+// 「欢迎. 我可以为你做什么吗?」。官方渲染成：
+//
+//	欢迎. 我可以为你做什么吗?
+//
+//	 ■打开 交易市场
+//	 ■购买  物品
+//	 ■出售  物品
+//	 ■询问 物品详细情况
+//	 ■退出
+//
+// 也就是**打开/购买/出售/询问/退出**各自可点、且与自己后面那串字**同行**。
+func TestRealMerchantScriptInline(t *testing.T) {
+	path := filepath.Join("..", "..", "data", "envir", "market_def", "7Gst-0.txt")
+	sc, err := ParseFile(path)
+	if err != nil {
+		t.Skipf("拿不到真实脚本（%v），跳过", err)
+	}
+	l := sc.Label("main")
+	if l == nil {
+		t.Fatal("没有 [@main]")
+	}
+	want := []string{"<打开/@1> 交易市场", "<购买/@2>  物品", "<出售/@3>  物品", "<询问/@4> 物品详细情况", "<退出/@5>"}
+	if len(l.Lines) < len(want)+1 {
+		t.Fatalf("行太少：%q", l.Lines)
+	}
+	// 前两行是正文 + 段落空行，接着是那 5 个行内选项
+	for i, w := range want {
+		got := l.Lines[i+2]
+		if !strings.Contains(got, w) {
+			t.Errorf("第 %d 行 = %q，应含 %q", i+3, got, w)
+		}
+	}
+	if len(l.Links) != 5 || l.Links[0].Text != "打开" || l.Links[0].Label != "trading" {
+		t.Errorf("Links = %+v", l.Links)
+	}
+}

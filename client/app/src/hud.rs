@@ -468,12 +468,14 @@ pub(crate) fn draw_bag<'a, T>(
 ///
 /// 返回 `(面板矩形, 正文行)`；没对话 ⇒ `None`。正文折行后**截到
 /// [`crate::input::DIALOG_MAX_LINES`]**（背板是固定高的）。
-pub(crate) fn dialog_geom(net: Option<&Net>) -> Option<((f32, f32, f32, f32), Vec<String>)> {
+pub(crate) fn dialog_geom(
+    net: Option<&Net>,
+) -> Option<((f32, f32, f32, f32), Vec<Vec<crate::input::DialSeg>>)> {
     let n = net?;
     let d = n.world.dialog.as_ref()?;
-    // 正文按**字数**硬折行（原版按字体量宽折；先用粗版，见 `input::wrap_text` 的说明）
-    let mut lines = crate::input::wrap_text(&d.text, crate::input::DIALOG_WRAP_CHARS);
-    lines.truncate(crate::input::DIALOG_MAX_LINES);
+    // 正文切成"行 → 片段"：行内链接留在原行（用户 2026-10-09 要的「打开 交易市场」一行）；
+    // 正文没有标记时把 `options` 排成底部列表（老服务端/简易脚本）。
+    let lines = crate::input::dialog_lines(&d.text, &d.options);
     Some((crate::input::dialog_panel(), lines))
 }
 
@@ -493,7 +495,6 @@ fn draw_dialog<'a, T>(
         return Ok(());
     };
     let (x, y, w, h) = panel;
-    let d = net.and_then(|n| n.world.dialog.as_ref()).expect("geom 有则必有");
     canvas.set_blend_mode(BlendMode::Blend);
     // 背板：`Prguse[384]`（416×176，**原生尺寸不缩放**）。素材取不到就退回
     // "半透明黑底 + 描边"——版式不变，只是不好看（开发机上常见）。
@@ -515,36 +516,46 @@ fn draw_dialog<'a, T>(
         canvas.draw_rect(FRect::new(x, y, w, h))?;
     }
     canvas.set_blend_mode(BlendMode::None);
-    // 正文（近白）
-    for (i, line) in lines.iter().enumerate() {
-        texts.draw(
-            canvas,
-            tc,
-            line,
-            x + crate::input::DIALOG_PAD_X,
-            y + crate::input::DIALOG_PAD_Y + i as f32 * crate::input::DIALOG_LINE_H,
-            (238, 238, 214),
-            Some((0, 0, 0)),
-        )?;
-    }
-    // 选项：绿点 + 黄字（命中区与 `dialog_option_rect` 同源；背板装不下的不画）
-    for (i, (_idx, text)) in d.options.iter().enumerate() {
-        if !crate::input::dialog_option_fits(panel, lines.len(), i) {
-            continue;
+    // 正文 + **行内可点文字**。先排版（只读字体量宽）、再落笔（可变借用）—— 两段借用分开。
+    let layout: Vec<Vec<crate::input::DialPiece>> = {
+        let mut measure = |t: &str| texts.width(t);
+        lines
+            .iter()
+            .enumerate()
+            .map(|(i, segs)| crate::input::dialog_line_pieces(panel, i, segs, &mut measure))
+            .collect()
+    };
+    for pieces in &layout {
+        for p in pieces {
+            let (rx, ry, _rw, rh) = p.rect;
+            match &p.seg {
+                crate::input::DialSeg::Text(t) => {
+                    texts.draw(
+                        canvas,
+                        tc,
+                        t,
+                        p.text_x,
+                        ry,
+                        (238, 238, 214),
+                        Some((0, 0, 0)),
+                    )?;
+                }
+                crate::input::DialSeg::Link { text, .. } => {
+                    // 官方样式：绿方块 + 黄字（方块也算在这片的命中矩形里）
+                    canvas.set_draw_color(Color::RGB(90, 205, 90));
+                    canvas.fill_rect(FRect::new(rx + 1.0, ry + rh / 2.0 - 2.5, 5.0, 5.0))?;
+                    texts.draw(
+                        canvas,
+                        tc,
+                        text,
+                        p.text_x,
+                        ry + 1.0,
+                        (232, 220, 96),
+                        Some((0, 0, 0)),
+                    )?;
+                }
+            }
         }
-        let (ox, oy, ow, oh) = crate::input::dialog_option_rect(panel, lines.len(), i);
-        let _ = ow;
-        canvas.set_draw_color(Color::RGB(90, 205, 90));
-        canvas.fill_rect(FRect::new(ox + 1.0, oy + oh / 2.0 - 2.5, 5.0, 5.0))?;
-        texts.draw(
-            canvas,
-            tc,
-            text,
-            ox + 13.0,
-            oy + 1.0,
-            (232, 220, 96),
-            Some((0, 0, 0)),
-        )?;
     }
     Ok(())
 }

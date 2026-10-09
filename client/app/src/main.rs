@@ -660,18 +660,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if let Some((panel, lines)) =
                                     hud::dialog_geom(net.as_ref())
                                 {
-                                    if let Some(i) = input::dialog_option_at(
-                                        panel,
-                                        lines.len(),
-                                        n.world.dialog.as_ref().map_or(0, |d| d.options.len()),
-                                        (x, y),
-                                    ) {
+                                    // **行内可点文字**：命中矩形由 `input::dialog_line_pieces`
+                                    // 算（与 `draw_dialog` 是同一份 ⇒ 画哪点哪），
+                                    // 片段自带**选项序号**（服务端把 `<打开/@trading>` 改写成了
+                                    // `<打开/@1>`），直接拿它回包。
+                                    let hit = {
+                                        let mut measure = |t: &str| ui_texts.width(t);
+                                        input::dialog_link_at(panel, &lines, (x, y), &mut measure)
+                                    };
+                                    if let Some(idx) = hit {
                                         if let Some(d) = n.world.dialog.as_ref() {
-                                            let (id, idx) = (
-                                                d.npc_id,
-                                                d.options.get(i).map(|o| o.0).unwrap_or(0),
-                                            );
-                                            n.npc_select(id, idx);
+                                            n.npc_select(d.npc_id, idx);
                                             println!("[net] 对话选项 {idx}");
                                         }
                                     }

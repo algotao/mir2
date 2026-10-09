@@ -1277,47 +1277,93 @@ fn npc_精灵图号() {
     assert_eq!(A::npc_actions(11, 5), A::npc_actions(11, 5));
 }
 
-/// NPC 对话面板的**命中**与**折行**（用户 2026-10-09：点 NPC 要出对话、能点选项）。
+/// NPC 对话窗：**版式 / 行内链接命中 / 折行**。
 ///
-/// 判据是"画与命中同源"：`dialog_option_at` 用的矩形就是 `dialog_option_rect` 算的，
-/// 而 `hud::draw_dialog` 画的是同一个 ⇒ 点哪选哪，不会差一行。
+/// 用户 2026-10-09：「交易窗口渲染不对，应该为『打开 交易市场』在一行，其中『打开』可点击」
+/// —— 脚本原文是 ` <打开/@trading> 交易市场\`，服务端下发时会把它改写成
+/// `<打开/@1> 交易市场`（见 `server/internal/script/script.go` 的 `Label.Lines`），
+/// 客户端必须**留在原行**、并让「打开」可点。
+///
+/// 判据仍是"画与命中同源"：`dialog_link_at` 用的矩形就是 `dialog_line_pieces` 算的，
+/// 而 `hud::draw_dialog` 画的是同一份。
 #[test]
-fn 对话面板的命中与折行() {
+fn 对话正文的行内链接() {
     let panel = input::dialog_panel();
     let (x, y, w, h) = panel;
-    // 官方版式（用户 2026-10-09 的截图）：背板是 `Prguse[384]` 的**原生尺寸**、
-    // **固定在屏幕左上角**，不随窗口/HUD 变。
+    // 官方版式：背板 = `Prguse[384]` 的原生尺寸、固定在屏幕左上角
     assert_eq!((w, h), (416.0, 176.0), "背板尺寸 = Prguse[384] 原生尺寸");
     assert_eq!((x, y), (8.0, 4.0), "贴左上角（留 8/4 的缝）");
     assert_eq!(input::DIALOG_BG, 384, "背板图号");
-    // 选项行：第一行点得中，第二行点得中，正文区点不中
-    let r0 = input::dialog_option_rect(panel, 3, 0);
-    let r1 = input::dialog_option_rect(panel, 3, 1);
+
+    // 真实脚本（`market_def/7Gst-0.txt` 的 [@main]）下发后的样子
+    let text = "欢迎. 我可以为你做什么吗?\n\n <打开/@1> 交易市场\n <购买/@2>  物品\n <退出/@5>";
+    let lines = input::dialog_lines(text, &[]);
+    // 「打开」与「交易市场」必须在**同一行**，且切成了"空白 / 链接 / 文字"
+    let third = lines[2].clone();
+    assert_eq!(third.len(), 3, "第 3 行应是 [空白, 链接, 文字]，实得 {third:?}");
+    assert!(
+        matches!(&third[1], input::DialSeg::Link { index, text } if *index == 1 && text == "打开")
+    );
+    assert!(matches!(&third[2], input::DialSeg::Text(t) if t.trim() == "交易市场"));
+
+    // 命中：点「打开」⇒ 序号 1；点同一行右边的正文 ⇒ 不该命中
+    let mut measure = |t: &str| t.chars().count() as f32 * 14.0; // 等宽假字体
+    let pieces = input::dialog_line_pieces(panel, 2, &third, &mut measure);
+    let link = pieces
+        .iter()
+        .find(|p| matches!(&p.seg, input::DialSeg::Link { .. }))
+        .expect("这一行有链接");
+    let (lx, ly, lw, lh) = link.rect;
     assert_eq!(
-        input::dialog_option_at(panel, 3, 2, (r0.0 + 2.0, r0.1 + 2.0)),
-        Some(0)
+        input::dialog_link_at(panel, &lines, (lx + 2.0, ly + lh / 2.0), &mut measure),
+        Some(1),
+        "点「打开」要选中序号 1"
     );
     assert_eq!(
-        input::dialog_option_at(panel, 3, 2, (r1.0 + 2.0, r1.1 + 2.0)),
-        Some(1)
+        input::dialog_link_at(panel, &lines, (lx + lw + 3.0, ly + lh / 2.0), &mut measure),
+        None,
+        "点链接右边的正文不该弹对话"
     );
-    assert_eq!(input::dialog_option_at(panel, 3, 2, (x + 4.0, y + 4.0)), None);
+    assert_eq!(
+        input::dialog_link_at(panel, &lines, (x + 1.0, y + 1.0), &mut measure),
+        None,
+        "点面板空白处不命中"
+    );
     assert!(input::dialog_hit(panel, (x + 4.0, y + 4.0)));
     assert!(!input::dialog_hit(panel, (0.0, 0.0)));
-    // 背板固定高 ⇒ 正文太长时最后的选项会排到框外：**画那边跳过，命中这边也必须跳过**
-    //（否则会出现点框外的空白反而弹对话）。
-    let many = input::DIALOG_MAX_LINES;
-    let last = input::dialog_option_rect(panel, many, 3);
-    assert!(!input::dialog_option_fits(panel, many, 3), "3 个选项在满行正文下装不下");
+
+    // 背板固定高 ⇒ 超出行数上限的链接**画不出来也不该点到**
+    let many: Vec<Vec<input::DialSeg>> = (0..input::DIALOG_MAX_LINES + 3)
+        .map(|_| {
+            vec![input::DialSeg::Link {
+                index: 9,
+                text: "x".into(),
+            }]
+        })
+        .collect();
+    let beyond_y = y
+        + input::DIALOG_PAD_Y
+        + (input::DIALOG_MAX_LINES as f32 + 1.0) * input::DIALOG_LINE_H;
     assert_eq!(
-        input::dialog_option_at(panel, many, 4, (last.0 + 2.0, last.1 + 2.0)),
+        input::dialog_link_at(
+            panel,
+            &many,
+            (x + input::DIALOG_PAD_X + 2.0, beyond_y),
+            &mut measure
+        ),
         None,
-        "装不下的选项不该被点到"
+        "超出上限的链接不该被点到"
     );
-    // 折行：按字数、`\n` 强制换行
+
+    // 折行：纯文字行按字数折、`\n` 强制换行
     assert_eq!(input::wrap_text("abcdef", 3), vec!["abc", "def"]);
     assert_eq!(input::wrap_text("a\nb", 5), vec!["a", "b"]);
     assert_eq!(input::wrap_text("", 5), vec![""]);
+
+    // 正文里没有标记 ⇒ 退回"选项各排一行"（老服务端 / 没有行内链接的脚本）
+    let plain = input::dialog_lines("你好", &[(1, "买".into()), (2, "卖".into())]);
+    assert_eq!(plain.len(), 3, "1 行正文 + 2 行选项");
+    assert!(matches!(&plain[1][0], input::DialSeg::Link { index, .. } if *index == 1));
 }
 
 /// 小地图**区域标注**（用户 2026-10-09 选的 (a)）：表由 `tools/gen_map_labels.py`

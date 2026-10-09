@@ -109,7 +109,16 @@ func (s *Server) showLabel(c net.Conn, p *Player, sc *script.Script, l *script.L
 	// 选中的动作在显示之前执行（原版语义）。
 	s.runActs(c, p, acts)
 
-	s.npcSay(c, p, p.dialog.npcID, l.Say, l.Links)
+	// 正文用**原样行**（带行内标记 `<打开/@1>`）：用户在 2026-10-09 报
+	// "交易窗口渲染不对 —— 应该为『打开 交易市场』在一行，其中『打开』可点击"，
+	// 根因就是旧版发的是 `l.Say`（行内选项已被抽走 ⇒ 只能单列成底部列表）。
+	// `Links` 仍然照发：客户端拿它兜底（正文没有标记时按"底部选项列表"画），
+	// 也方便老客户端。
+	text := l.Say
+	if len(l.Lines) > 0 {
+		text = strings.Join(l.Lines, "\n")
+	}
+	s.npcSay(c, p, p.dialog.npcID, text, l.Links)
 }
 
 // npcClose 告诉客户端"这段对话结束了"（新协议 `NpcClose`；legacy 没有对应下行，
