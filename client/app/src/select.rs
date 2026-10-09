@@ -28,13 +28,11 @@ use sdl3::keyboard::Keycode;
 use sdl3::pixels::Color;
 use sdl3::render::{TextureCreator, WindowCanvas};
 
-use crate::fill;
-
 use mir2_core::select_ui as su;
 use mir2_protocol as proto;
 
 use crate::font::{Rgb, TextCache};
-use crate::ui::UiCache;
+use crate::ui::{ui_inv_px, ui_px, uifill, UiCache};
 
 /// 名字/等级/职业 的字色（原版 `clWhite` + `clBlack` 描边，`IntroScn.pas:1519`）。
 const C_TEXT: Rgb = (255, 255, 255);
@@ -554,7 +552,7 @@ impl Select {
         let Some(dir) = asset_dir.as_deref() else {
             canvas.set_draw_color(sdl3::pixels::Color::RGB(80, 0, 0));
             canvas.clear();
-            return text.draw(
+            return text.draw_ui(
                 canvas,
                 tc,
                 "选角素材不在：设置 MIR2_ASSET_DIR",
@@ -567,7 +565,7 @@ impl Select {
         let Some(l) = su::Layout::build(win, |lib, idx| ui.size(dir, lib, idx)) else {
             canvas.set_draw_color(sdl3::pixels::Color::RGB(80, 0, 0));
             canvas.clear();
-            return text.draw(
+            return text.draw_ui(
                 canvas,
                 tc,
                 "选角素材缺失：需要 Prguse[65..72]（见 MIR2_ASSET_DIR）",
@@ -580,18 +578,9 @@ impl Select {
 
         canvas.set_draw_color(sdl3::pixels::Color::RGB(0, 0, 0));
         canvas.clear();
-        // 四周补边：800×600 的底图居中摆，空出来的一圈拿素材自己的石纹填上
-        //（用户 2026-10-09 报的"周围显示为黑底"；见 `UiCache::tile_backdrop`）
-        // 补边块 (728,296)：实测最平且与边框环同调（见 `UiCache::tile_backdrop`）
-        ui.tile_backdrop(
-            canvas,
-            tc,
-            dir,
-            su::Art::BG.0,
-            su::Art::BG.1,
-            win,
-            (728.0, 296.0),
-        );
+        // 底图**拉伸 1.28 倍铺满**画布（2026-10-09 改，见 `ui::UI_SCALE`）：落点就是设计空间的
+        // (0,0)（`l.bg` 在 `win = 800×600` 下恒为 (0,0)），`ui.draw` 把位置与尺寸一起乘 1.28
+        // ⇒ 800×1.28 = 1024、600×1.28 = 768，正好铺满。D-51 那套"1:1 居中 + 石纹平铺补边"删掉。
         ui.draw(
             canvas,
             tc,
@@ -646,7 +635,7 @@ impl Select {
             }
             // 名字 / 等级 / 职业（白字黑边，写在面板的字段框里）
             let t = su::slot_text(slot, l.bg);
-            text.draw(
+            text.draw_ui(
                 canvas,
                 tc,
                 &c.name,
@@ -655,7 +644,7 @@ impl Select {
                 C_TEXT,
                 Some(C_SHADOW),
             )?;
-            text.draw(
+            text.draw_ui(
                 canvas,
                 tc,
                 &c.level.to_string(),
@@ -664,7 +653,7 @@ impl Select {
                 C_TEXT,
                 Some(C_SHADOW),
             )?;
-            text.draw(
+            text.draw_ui(
                 canvas,
                 tc,
                 su::class_name(c.class),
@@ -799,7 +788,7 @@ fn draw_newchar<'a, T>(
 ) -> Result<(), sdl3::Error> {
     let b = su::DialogBox::build(win);
     let f = b.frame;
-    fill(
+    uifill(
         canvas,
         f.x - 2.0,
         f.y - 2.0,
@@ -807,8 +796,8 @@ fn draw_newchar<'a, T>(
         f.h + 4.0,
         Color::RGB(0, 0, 0),
     )?;
-    fill(canvas, f.x, f.y, f.w, f.h, Color::RGB(32, 28, 24))?;
-    text.draw(
+    uifill(canvas, f.x, f.y, f.w, f.h, Color::RGB(32, 28, 24))?;
+    text.draw_ui(
         canvas,
         tc,
         "新建角色",
@@ -818,8 +807,8 @@ fn draw_newchar<'a, T>(
         Some(C_SHADOW),
     )?;
     // 姓名（唯一输入框：光标用一个方块代替闪动 —— 够用就好）
-    text.draw(canvas, tc, "姓名", f.x + 24.0, b.name.y + 4.0, C_DIM, None)?;
-    fill(
+    text.draw_ui(canvas, tc, "姓名", f.x + 24.0, b.name.y + 4.0, C_DIM, None)?;
+    uifill(
         canvas,
         b.name.x,
         b.name.y,
@@ -827,7 +816,7 @@ fn draw_newchar<'a, T>(
         b.name.h,
         Color::RGB(14, 14, 18),
     )?;
-    text.draw(
+    text.draw_ui(
         canvas,
         tc,
         &format!("{}▌", d.name),
@@ -837,7 +826,7 @@ fn draw_newchar<'a, T>(
         None,
     )?;
     // 职业（选中那颗用亮底）
-    text.draw(
+    text.draw_ui(
         canvas,
         tc,
         "职业",
@@ -848,9 +837,9 @@ fn draw_newchar<'a, T>(
     )?;
     for (i, r) in b.job.iter().enumerate() {
         if d.job == i {
-            fill(canvas, r.x, r.y, r.w, r.h, Color::RGB(92, 72, 40))?;
+            uifill(canvas, r.x, r.y, r.w, r.h, Color::RGB(92, 72, 40))?;
         }
-        text.draw(
+        text.draw_ui(
             canvas,
             tc,
             su::class_name(i as i32 + 1),
@@ -861,7 +850,7 @@ fn draw_newchar<'a, T>(
         )?;
     }
     // 性别
-    text.draw(
+    text.draw_ui(
         canvas,
         tc,
         "性别",
@@ -872,9 +861,9 @@ fn draw_newchar<'a, T>(
     )?;
     for (i, r) in b.sex.iter().enumerate() {
         if d.sex == i {
-            fill(canvas, r.x, r.y, r.w, r.h, Color::RGB(92, 72, 40))?;
+            uifill(canvas, r.x, r.y, r.w, r.h, Color::RGB(92, 72, 40))?;
         }
-        text.draw(
+        text.draw_ui(
             canvas,
             tc,
             if i == 0 { "男" } else { "女" },
@@ -885,7 +874,7 @@ fn draw_newchar<'a, T>(
         )?;
     }
     // 两颗按钮
-    fill(
+    uifill(
         canvas,
         b.ok.x,
         b.ok.y,
@@ -893,7 +882,7 @@ fn draw_newchar<'a, T>(
         b.ok.h,
         Color::RGB(74, 62, 40),
     )?;
-    text.draw(
+    text.draw_ui(
         canvas,
         tc,
         "确定",
@@ -902,7 +891,7 @@ fn draw_newchar<'a, T>(
         C_TEXT,
         None,
     )?;
-    fill(
+    uifill(
         canvas,
         b.close.x,
         b.close.y,
@@ -910,7 +899,7 @@ fn draw_newchar<'a, T>(
         b.close.h,
         Color::RGB(52, 46, 40),
     )?;
-    text.draw(
+    text.draw_ui(
         canvas,
         tc,
         "关闭",
@@ -920,7 +909,7 @@ fn draw_newchar<'a, T>(
         None,
     )?;
     // 操作提示（键盘为主；鼠标也能点那几颗）
-    text.draw(
+    text.draw_ui(
         canvas,
         tc,
         "TAB 切换   ←→ 改   回车确定   ESC 取消",
@@ -954,10 +943,12 @@ fn draw_msgbox<'a, T>(
     if b.ok.w > 0.0 {
         ui.draw(canvas, tc, dir, "Prguse", 363, b.ok.x, b.ok.y);
     }
-    let cols = ((b.frame.w - 24.0) / text.width("中").max(1.0)) as usize;
+    // ⚠️ 框宽是**设计空间**、字宽是**画布像素**（字号按 1.28 放大过）⇒ 先 `ui_px` 换算，
+    // 否则算出的列数偏大 1.28 倍，行会顶出框外。
+    let cols = ((ui_px(b.frame.w - 24.0)) / text.width("中").max(1.0)) as usize;
     let mut y = b.frame.y + 20.0;
     for line in wrap(msg, cols.max(8)) {
-        text.draw(
+        text.draw_ui(
             canvas,
             tc,
             &line,
@@ -966,7 +957,8 @@ fn draw_msgbox<'a, T>(
             (255, 255, 255),
             Some((0, 0, 0)),
         )?;
-        y += text.line_height() + 2.0;
+        // ⚠️ 行高是**画布像素**（17.9px 字号算出来的），而 `y` 在设计空间里 ⇒ 除回去
+        y += ui_inv_px(text.line_height() + 2.0);
     }
     Ok(())
 }

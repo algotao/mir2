@@ -58,20 +58,13 @@ impl<'a> Libs<'a> {
         true
     }
 
-    /// 居中贴（原版居中就是 `(SCRW-w)/2`）。
-    fn blit_centered(
-        &mut self,
-        cv: &mut Canvas,
-        name: &'static str,
-        idx: u32,
-        win: (i32, i32),
-    ) -> bool {
-        let Some((w, h)) = self.size(name, idx) else {
-            println!("  ⚠️ {name}[{idx}] 量不到尺寸 —— 跳过");
-            return false;
-        };
-        let (x, y) = Layout::bg_at((win.0 as u32, win.1 as u32), (w, h));
-        self.blit(cv, name, idx, x as i32, y as i32)
+    /// 背景：摆到**设计空间**的 (0,0)。
+    ///
+    /// 2026-10-09 改（D-52）：这套界面现在是**整屏拉伸铺满**（跟官方一样），
+    /// 所以这里按 800×600 的**设计空间**画，最后再整体放大到 `-w/-h`
+    ///（app 里那一步是 `ui::UI_SCALE`）；不再有"居中 + 补边"。
+    fn blit_backdrop(&mut self, cv: &mut Canvas, name: &'static str, idx: u32) -> bool {
+        self.blit(cv, name, idx, 0, 0)
     }
 }
 
@@ -131,13 +124,15 @@ pub fn main(argv: &[String]) -> Result<(), String> {
     let mut libs = Libs::new(&dir);
 
     // 版式：与 app **同一份**（`core::login_ui`）
-    let l = Layout::build((win.0 as u32, win.1 as u32), |c, i| libs.size(c, i))
+    // 版式活在**设计空间**（素材原生 800×600）；-w/-h 只决定最后放大到多大。
+    const DESIGN: (i32, i32) = (800, 600);
+    let l = Layout::build((DESIGN.0 as u32, DESIGN.1 as u32), |c, i| libs.size(c, i))
         .ok_or("登录素材不全（需要 Prguse[60/61/62/64/360/363]）")?;
 
-    let mut cv = Canvas::new(win.0, win.1, [10, 14, 28]);
+    let mut cv = Canvas::new(DESIGN.0, DESIGN.1, [10, 14, 28]);
 
-    // ① 背景（ChrSel[22]）
-    if !libs.blit_centered(&mut cv, Art::BG.0, Art::BG.1, win) {
+    // ① 背景（ChrSel[22]）——铺满设计空间
+    if !libs.blit_backdrop(&mut cv, Art::BG.0, Art::BG.1) {
         println!("提示：背景缺失，只画对话框");
     }
     // ② 开门动画（`-door <ms>`）：原版 `OpenLoginDoor` = **先藏小窗**再开门
@@ -148,7 +143,8 @@ pub fn main(argv: &[String]) -> Result<(), String> {
     if let Some(ms) = door_ms {
         let f = (ms / Art::DOOR_MS as u64) as u32;
         let idx = Art::DOOR.1 + f.min(Art::DOOR_FRAMES - 1);
-        let (x, y) = Layout::legacy_at((win.0 as u32, win.1 as u32), Layout::DOOR_AT);
+        // 门的落点是**设计空间**的偏移（`DOOR_AT` 量在 800×600 上）
+        let (x, y) = Layout::DOOR_AT;
         let ok = libs.blit(&mut cv, Art::DOOR.0, idx, x as i32, y as i32);
         println!(
             "  开门第 {f} 帧（{ms}ms / 每帧 {}ms）= {}[{}] @ ({:.0},{:.0}){}",
@@ -163,8 +159,13 @@ pub fn main(argv: &[String]) -> Result<(), String> {
                 "  ← 空壳帧（本套素材 [23] 就是空壳）"
             }
         );
-        png::write_rgb(Path::new(&out), win.0 as u32, win.1 as u32, &cv.to_rgb())
-            .map_err(|e| format!("写 {out}: {e}"))?;
+        png::write_rgb(
+            Path::new(&out),
+            win.0 as u32,
+            win.1 as u32,
+            &cv.to_rgb_scaled(win.0, win.1),
+        )
+        .map_err(|e| format!("写 {out}: {e}"))?;
         println!("开门屏合成完成：{out}（登录小窗**没画** —— 与 app 的 login::draw 同一规则）");
         return Ok(());
     }
@@ -218,8 +219,14 @@ pub fn main(argv: &[String]) -> Result<(), String> {
         println!("  弹窗文字（app 画）：{text:?}");
     }
 
-    png::write_rgb(Path::new(&out), win.0 as u32, win.1 as u32, &cv.to_rgb())
-        .map_err(|e| format!("写 {out}: {e}"))?;
+    // 从设计空间（800×600）放大到 -w/-h —— app 里由 `ui::UI_SCALE` 干这一步
+    png::write_rgb(
+        Path::new(&out),
+        win.0 as u32,
+        win.1 as u32,
+        &cv.to_rgb_scaled(win.0, win.1),
+    )
+    .map_err(|e| format!("写 {out}: {e}"))?;
     println!(
         "登录界面合成完成：{out}（{}x{}）\n  对话框 {:.0}x{:.0} @ ({:.0},{:.0})  用户名框 ({:.0},{:.0})  密码框 ({:.0},{:.0})",
         win.0,

@@ -24,6 +24,68 @@ use mir2_core::wzl::{BBox, Wzl};
 /// 缓存上限（界面素材用量小，越界直接清空）。
 const UI_CACHE_CAP: usize = 256;
 
+/// **设计空间 → 画布**的缩放：登录/选角那套界面素材原生是 **800×600**
+///（实测 `ChrSel[22]` = 800×600、`Prguse[65]` = 800×600；本套素材里**没有** 1024 版，
+/// `Prguse[2]` 在 D-50 里量过是空壳），而画布是 [`crate::WIN_W`]×[`crate::WIN_H`]（1024×768）。
+///
+/// # 为什么是"拉伸"而不是"居中 1:1 + 补边"（2026-10-09 改，D-52）
+///
+/// 官方客户端（用户给的 `SQ 0.1.183.1963` 选角截图）**就是把 800×600 整屏拉伸 1.28 倍铺满**
+/// 1024×768 的 —— 实测：截图里两块凹槽落在**拉伸**预测的位置（117..483 / 539..928），
+/// 而不是"居中 1:1"的位置（204..489 / 533..837）。
+///
+/// 原来的做法（D-51）是 1:1 居中、四周拿素材自己的石纹平铺补边；那是**照原版 1.76**
+///（`FState.pas:934-953` / `IntroScn.pas:886-889` 全是 `(SCREENWIDTH-800) div 2 + x`，
+/// **不缩放**）。现代官方改了，用户要求跟现代官方（并明确"拉伸是最优解"）。
+///
+/// ⚠️ **只拉伸美术，不拉伸字**：字走 `font::TextCache`（TTF 光栅化），
+/// 按 `UI_PX * UI_SCALE` **重新光栅化** ⇒ 清晰（用户第 2 条：字体要"缩放"不要"拉伸"）。
+/// 位图字体在 1.28 倍下只能被拉糊，那正是 D-50 用户明确不喜欢的东西。
+pub const UI_SCALE: f32 = crate::WIN_W as f32 / 800.0;
+
+/// 设计空间（800×600）里的一个坐标/长度 → 画布坐标。
+///
+/// 登录/选角的**所有**绘制分成两半，这一半给"直接调 canvas 的"（自绘输入框、
+/// 8×8 调试字体、`font::TextCache::draw_ui` 内部也用它）；另一半是 `UiCache::draw*`
+/// —— 它内部自己乘 [`UI_SCALE`]，调用方照样传设计坐标。
+#[inline]
+pub fn ui_px(v: f32) -> f32 {
+    v * UI_SCALE
+}
+
+/// 同上，点。
+#[inline]
+pub fn ui_pt(p: (f32, f32)) -> (f32, f32) {
+    (p.0 * UI_SCALE, p.1 * UI_SCALE)
+}
+
+/// 画布坐标 → 设计空间（鼠标事件用的那个方向；见 [`UI_SCALE`]）。
+#[inline]
+pub fn ui_inv_pt(p: (f32, f32)) -> (f32, f32) {
+    (p.0 / UI_SCALE, p.1 / UI_SCALE)
+}
+
+/// 画布长度 → 设计空间长度（**字宽/行高是画布像素**，要挪进设计坐标的算式里时用它）。
+#[inline]
+pub fn ui_inv_px(v: f32) -> f32 {
+    v / UI_SCALE
+}
+
+/// **设计空间**的实心矩形（登录/选角里那些自绘的输入框、建角框）。
+///
+/// ⚠️ 它和 [`crate::fill`] 的分工得记牢：`fill` 是**画布坐标**（世界 HUD 也在用），
+/// `uifill` 收的是 800×600 的设计坐标。两者长得一样、错了不报错，只是画面偏 1.28 倍。
+pub fn uifill(
+    c: &mut WindowCanvas,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    col: sdl3::pixels::Color,
+) -> Result<(), sdl3::Error> {
+    crate::fill(c, ui_px(x), ui_px(y), ui_px(w), ui_px(h), col)
+}
+
 struct UiTex<'a> {
     tex: Texture<'a>,
 }
@@ -117,68 +179,26 @@ impl<'a> UiCache<'a> {
         // 透明度同理 —— `draw_src` 会给大地图设 140，没复位就会让后来贴的同一张图变半透明。
         t.tex.set_color_mod(tint.0, tint.1, tint.2);
         t.tex.set_alpha_mod(255);
+        // 界面这条路是**放大**（1.28 倍，见 [`UI_SCALE`]）⇒ 用线性采样：
+        // 最近邻在非整数倍下会"有的像素宽、有的像素窄"（D-50 用户报的"又糊又大"就是它）；
+        // 线性在 1:1（UI_SCALE == 1）时与最近邻逐像素等价。
+        t.tex.set_scale_mode(ScaleMode::Linear);
         canvas
             .copy(
                 &t.tex,
                 None::<FRect>,
-                FRect::new(x, y, q.width as f32, q.height as f32),
+                // 设计空间 → 画布：**位置和尺寸都乘**（800×600 的图铺到 1024×768 上）。
+                // 缩放本身交给 GPU（见 `ensure` 里设的 `ScaleMode::Linear`），
+                // 字不在这里 —— 字走 `TextCache::draw_ui`，按目标字号**重新光栅化**。
+                FRect::new(
+                    ui_px(x),
+                    ui_px(y),
+                    ui_px(q.width as f32),
+                    ui_px(q.height as f32),
+                ),
             )
             .ok()?;
         Some((q.width, q.height))
-    }
-
-    /// 用该图**自己左上角**的一小块石纹平铺铺满整窗 —— 登录/选角的**补边**。
-    ///
-    /// # 为什么这么补（用户 2026-10-09 报的"周围显示为黑底"）
-    ///
-    /// 登录/选角那套素材是 **800×600**（`ChrSel[22]` / `Prguse[65]`，都量过；本套素材里
-    /// **没有** 1024×768 的同款底图 —— ChrSel/Prguse/Prguse2/Prguse3 全扫过），
-    /// 而窗口是 1024×768（D-50 定的）⇒ 四周空出一圈。两条路：
-    ///
-    /// ① 把 800×600 放大 1.28 倍铺满 —— 像素被抽糊（正是用户明确不喜欢的那种）；
-    /// ② 保持 1:1、拿素材**自己的石纹**把四周补上（**这条**）。
-    ///
-    /// 补边块取 **64×64**：再小则 1024×768 要贴三千多次，再大则重复太扎眼。
-    ///
-    /// ⚠️ **块的位置是量出来的**（`patch`：取哪一块当纹理）：挑"**最平**、且亮度接近
-    /// 该图**边框环**均值"的那一块 —— 这样四周补出来的"墙"与底图边缘同调，接缝看不出来。
-    /// 实测：登录 `ChrSel[22]` ⇒ `(552,496)`（均值 17，边框环也是 17）；
-    /// 选角 `Prguse[65]` ⇒ `(728,296)`（均值 48，边框环 50）。
-    /// **换底图要重新量**（这俩常数是跟着那两张图走的）。
-    #[allow(clippy::too_many_arguments)] // 与 `draw`/`draw_tint` 同一情况：画布+图号+窗口+块位置
-    pub fn tile_backdrop<T>(
-        &mut self,
-        canvas: &mut WindowCanvas,
-        tc: &'a TextureCreator<T>,
-        dir: &Path,
-        lib: &'static str,
-        idx: u32,
-        win: (u32, u32),
-        patch: (f32, f32),
-    ) -> Option<()> {
-        const PATCH: f32 = 64.0;
-        self.ensure(dir, lib, idx, tc)?;
-        let t = self.texs.get_mut(&(lib, idx))?;
-        let q = t.tex.query();
-        if q.width < PATCH as u32 || q.height < PATCH as u32 {
-            return None;
-        }
-        // 复位（贴图是共用的，见 `draw_tint` 的说明）
-        t.tex.set_color_mod(255, 255, 255);
-        t.tex.set_alpha_mod(255);
-        let src = Some(FRect::new(patch.0, patch.1, PATCH, PATCH));
-        let mut y = 0.0;
-        while y < win.1 as f32 {
-            let mut x = 0.0;
-            while x < win.0 as f32 {
-                canvas
-                    .copy(&t.tex, src, Some(FRect::new(x, y, PATCH, PATCH)))
-                    .ok()?;
-                x += PATCH;
-            }
-            y += PATCH;
-        }
-        Some(())
     }
 
     /// 保证 `(lib, idx)` 那张图已经进了缓存（`draw_tint` / `draw_src` 共用）。

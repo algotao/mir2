@@ -31,8 +31,8 @@ use sdl3::render::{TextureCreator, WindowCanvas};
 use mir2_core::login_ui::{Art, Layout, Rect};
 
 use crate::font::{Rgb, TextCache};
-use crate::ui::UiCache;
-use crate::{center_x, fill, text, C_ACTIVE, C_BG, C_DIM, C_ERR, C_FIELD, C_OK, C_TEXT};
+use crate::ui::{ui_inv_px, ui_px, uifill, UiCache};
+use crate::{center_x, text, C_BG, C_DIM, C_ERR, C_FIELD, C_OK};
 
 /// 光标闪烁周期（原版是系统 `TEdit` 的光标；这里 500ms 闪一下）。
 const CARET_MS: u128 = 500;
@@ -40,6 +40,10 @@ const CARET_MS: u128 = 500;
 /// 弹窗文字那套配色（**真字体**那条路用 `Rgb`；本文件其余地方用的 `C_*` 是 SDL 的 `Color`）。
 const RGB_TEXT: Rgb = (255, 255, 255);
 const RGB_SHADOW: Rgb = (0, 0, 0);
+/// [`crate::C_DIM`] 的 `Rgb` 版（真字体那条路要 `Rgb`）。
+const RGB_DIM: Rgb = (120, 132, 156);
+/// [`crate::C_ACTIVE`] 的 `Rgb` 版（光标）。
+const RGB_ACTIVE: Rgb = (255, 236, 140);
 
 /// 界面上的动作（按键或点按产生；由 `main` 决定"接下来干什么"）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,21 +362,19 @@ impl Login {
         started: Instant,
     ) -> Result<(), sdl3::Error> {
         let winf = (win.0 as f32, win.1 as f32);
-        fill(canvas, 0.0, 0.0, winf.0, winf.1, C_BG)?;
+        uifill(canvas, 0.0, 0.0, winf.0, winf.1, C_BG)?;
         let Some(dir) = asset_dir else {
             let msg = "ASSETS NOT FOUND - SET MIR2_ASSET_DIR";
             return text(canvas, msg, center_x(msg, 0.0, winf.0), winf.1 / 2.0, C_ERR);
         };
 
-        // ① 背景：800×600 的图**居中 1:1** 铺在 1024×768 的窗口里，四周拿素材自己的石纹补
-        //（不是纯黑 —— 用户 2026-10-09 报的"周围显示为黑底"；也不放大，那会糊）
+        // ① 背景：800×600 的图**拉伸 1.28 倍铺满**画布（2026-10-09 改，见 `ui::UI_SCALE`）。
+        //
+        // 摆到设计空间的 (0,0) 就行 —— `ui.draw` 连**位置带尺寸**一起乘 1.28，
+        // 800×1.28 = 1024、600×1.28 = 768 ⇒ 正好铺满、不留边。
+        // D-51 那套"1:1 居中 + 拿素材石纹平铺补边"随之删掉（不再有空出来的那一圈）。
         let bg = (Art::BG.0, Art::BG.1);
-        // 补边块 (552,496)：实测最平且与边框环同调（见 `tile_backdrop`）
-        ui.tile_backdrop(canvas, tc, dir, bg.0, bg.1, win, (552.0, 496.0));
-        if let Some(sz) = ui.size(dir, bg.0, bg.1) {
-            let (x, y) = Layout::bg_at(win, sz);
-            ui.draw(canvas, tc, dir, bg.0, bg.1, x, y);
-        }
+        ui.draw(canvas, tc, dir, bg.0, bg.1, 0.0, 0.0);
 
         // ② 登录成功 ⇒ **先藏起登录小窗**，只留背景 + 开门动画。
         //
@@ -389,8 +391,16 @@ impl Login {
             if ui.size(dir, Art::DOOR.0, idx).is_some() {
                 // ⚠️ 门是 496×361 的**局部覆盖**，位置照原版（`IntroScn.pas:845-846`），
                 // 不是"居中贴整屏背景"。
-                let (x, y) = Layout::legacy_at(win, Layout::DOOR_AT);
-                ui.draw(canvas, tc, dir, Art::DOOR.0, idx, x, y);
+                // 位置是**设计空间**的（`DOOR_AT` 量在 800×600 上），`ui.draw` 自己乘 1.28
+                ui.draw(
+                    canvas,
+                    tc,
+                    dir,
+                    Art::DOOR.0,
+                    idx,
+                    Layout::DOOR_AT.0,
+                    Layout::DOOR_AT.1,
+                );
             }
             // 门在放：登录小窗（对话框/输入框/按钮/提示）**一律不画** —— 见上面的出处。
             return Ok(());
@@ -419,23 +429,50 @@ impl Login {
             // 复用登录对话框当底，标题与字段名用调试字体画（比原版"丑"，但能用；
             // 与"中文打不进来"是同一条已知限制）。
             let title = "NEW ACCOUNT";
-            text(
+            texts.draw_ui(
                 canvas,
+                tc,
                 title,
-                center_x(title, l.dialog.x, l.dialog.x + l.dialog.w),
+                // ⚠️ 标题宽是**画布像素**、对话框宽是**设计空间** ⇒ 先把字宽除回去
+                l.dialog.x + (l.dialog.w - ui_inv_px(texts.width(title))) / 2.0,
                 l.dialog.y + 60.0,
-                C_TEXT,
+                RGB_TEXT,
+                None,
             )?;
             for (label, r) in [("ID", l.account), ("PW", l.password), ("PW2", l.confirm)] {
-                text(canvas, label, r.x - 26.0, r.y + 4.0, C_DIM)?;
+                texts.draw_ui(canvas, tc, label, r.x - 26.0, r.y + 4.0, RGB_DIM, None)?;
             }
         }
-        self.field(canvas, l.account, &self.account, self.focus == 0, caret_on)?;
+        self.field(
+            canvas,
+            tc,
+            texts,
+            l.account,
+            &self.account,
+            self.focus == 0,
+            caret_on,
+        )?;
         let masked = "*".repeat(self.password.chars().count());
-        self.field(canvas, l.password, &masked, self.focus == 1, caret_on)?;
+        self.field(
+            canvas,
+            tc,
+            texts,
+            l.password,
+            &masked,
+            self.focus == 1,
+            caret_on,
+        )?;
         if self.signup() {
             let masked = "*".repeat(self.confirm.chars().count());
-            self.field(canvas, l.confirm, &masked, self.focus == 2, caret_on)?;
+            self.field(
+                canvas,
+                tc,
+                texts,
+                l.confirm,
+                &masked,
+                self.focus == 2,
+                caret_on,
+            )?;
         }
 
         // ⑤ 按钮（按下时 +1 位移）
@@ -483,16 +520,19 @@ impl Login {
             // 折行按**实测宽度**（不能按字符数：14px 的汉字 ≈14 宽、ASCII ≈7 宽，
             // 按"48 个字符"折出来的行会宽到框外去）；行数按框高截断，别压到 [确定] 上。
             // 提示可能带"下一步查什么"（`connect_hint`），所以行数留得比较宽。
+            // ⚠️ 这里两套单位必须分清：`lh` 及其步进是**画布像素**（按 17.9px 的光栅化字号
+            // 算出来），而 `l.msgbox` 是**设计空间**的框 ⇒ 框宽/框高先 `ui_px` 换算再相除，
+            // 否则"能塞几行"会算成 1.28 倍。
             let lh = texts.line_height().max(1.0);
-            let max_lines = (((l.msgbox.h - 96.0) / lh).floor() as usize).max(1);
-            let lines = wrap_px(|s| texts.width(s), err, l.msgbox.w - 56.0);
+            let max_lines = ((ui_px(l.msgbox.h - 96.0) / lh).floor() as usize).max(1);
+            let lines = wrap_px(|s| texts.width(s), err, ui_px(l.msgbox.w - 56.0));
             for (i, line) in lines.iter().take(max_lines).enumerate() {
                 texts.draw(
                     canvas,
                     tc,
                     line,
-                    l.msgbox.x + 28.0,
-                    l.msgbox.y + 56.0 + i as f32 * lh,
+                    ui_px(l.msgbox.x + 28.0),
+                    ui_px(l.msgbox.y + 56.0) + i as f32 * lh,
                     RGB_TEXT,
                     Some(RGB_SHADOW),
                 )?;
@@ -514,12 +554,14 @@ impl Login {
         }
 
         // ⑦ busy / 提示（原版没有；这是开发查看器需要的可见性）
+        // ⚠️ `text()` 是 8×8 调试字体（**直接画在画布上**，不走 `UiCache`）⇒ 这里得自己
+        // 把设计坐标换成画布坐标；`winf` 收的也是设计尺寸（见 `draw` 的 `win` 说明）。
         if self.busy {
             text(
                 canvas,
                 "CONNECTING ...",
-                l.dialog.x + 8.0,
-                l.dialog.y + l.dialog.h - 16.0,
+                ui_px(l.dialog.x + 8.0),
+                ui_px(l.dialog.y + l.dialog.h - 16.0),
                 C_OK,
             )?;
         } else if self.error.is_none() {
@@ -527,8 +569,8 @@ impl Login {
             text(
                 canvas,
                 tip,
-                center_x(tip, 0.0, winf.0),
-                winf.1 - 44.0,
+                ui_px(center_x(tip, 0.0, winf.0)),
+                ui_px(winf.1) - 44.0,
                 C_DIM,
             )?;
         }
@@ -536,25 +578,35 @@ impl Login {
     }
 
     /// 一个输入框：黑底（原版 TEdit 的颜色）+ 白字 + 闪烁光标。
-    fn field(
+    ///
+    /// ⚠️ 文字走**真字体**（`TextCache::draw_ui`，坐标是设计空间）—— 原来用的 8×8 调试字体
+    /// 在 1.28 倍下既小又只认 ASCII，而原版这里本来就是 GDI 的系统字体
+    ///（`ClFunc.pas:605`，见 `core::text` 的说明）。光标 x 按**实测字宽**推进。
+    #[allow(clippy::too_many_arguments)]
+    fn field<'a, T>(
         &self,
         canvas: &mut WindowCanvas,
+        tc: &'a TextureCreator<T>,
+        texts: &mut TextCache<'a>,
         r: Rect,
         shown: &str,
         focused: bool,
         caret_on: bool,
     ) -> Result<(), sdl3::Error> {
-        fill(canvas, r.x, r.y, r.w, r.h, C_FIELD)?;
+        uifill(canvas, r.x, r.y, r.w, r.h, C_FIELD)?;
         if focused && caret_on {
-            text(
+            texts.draw_ui(
                 canvas,
+                tc,
                 "|",
-                r.x + 2.0 + shown.chars().count() as f32 * 8.0,
+                // 同上：光标按**设计空间**的字宽推进（`draw_ui` 会再乘回 1.28）
+                r.x + 2.0 + ui_inv_px(texts.width(shown)),
                 r.y + 4.0,
-                C_ACTIVE,
+                RGB_ACTIVE,
+                None,
             )?;
         }
-        text(canvas, shown, r.x + 3.0, r.y + 4.0, C_TEXT)
+        texts.draw_ui(canvas, tc, shown, r.x + 3.0, r.y + 4.0, RGB_TEXT, None)
     }
 }
 

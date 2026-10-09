@@ -46,7 +46,7 @@ use mir2_core::m2pk::Archive;
 use mir2_core::map::{Layer, Lib, Map, TileDraw, LAYERS_ALL, UNIT_X, UNIT_Y};
 use mir2_core::wzl::Wzl;
 
-use sdl3::event::Event;
+use sdl3::event::{Event, WindowEvent};
 use sdl3::keyboard::{Keycode, Mod};
 use sdl3::mouse::{Cursor, MouseButton, SystemCursor};
 
@@ -95,6 +95,16 @@ pub(crate) fn open_lib(dir: &Path, name: &str) -> Option<Wzl> {
 const WIN_W: u32 = 1024;
 const WIN_H: u32 = 768;
 
+/// 登录/选角那两屏的**设计空间**（素材原生 800×600）。
+///
+/// `login_ui::Layout` / `select_ui::Layout` 都在这个空间里算（它们只认"窗口"尺寸），
+/// 画到 [`WIN_W`]×[`WIN_H`] 的画布上时由 [`ui::UI_SCALE`] 整体乘 1.28 —— 也就是
+/// **整屏拉伸铺满**，和官方客户端一样（见 `ui::UI_SCALE` 的说明与 D-52）。
+///
+/// ⚠️ 所以那两屏的**鼠标坐标**也得先除回这个空间（`ui::ui_inv_pt`），
+/// 而世界那套（`screen_to_cell` 等）用的是画布坐标，**不要**混。
+const UI_WIN: (u32, u32) = (800, 600);
+
 /// 启动时的窗口大小（用户随后可以随意拉大拉小；改这里**不影响版式**，见 [`WIN_W`]）。
 ///
 /// ⚠️ 别设得比设计尺寸还小：逻辑呈现只保证"完整可见 + 不变形"，不保证 1:1 以上
@@ -139,6 +149,48 @@ fn parse_window(s: &str) -> Option<(u32, u32)> {
     let (w, h) = s.split_once(['x', 'X'])?;
     let (w, h): (u32, u32) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
     (w >= WIN_W && h >= WIN_H).then_some((w, h))
+}
+
+/// 主显示器上**真正能放窗口**的那块（去掉菜单栏 / 任务栏 / Dock）。拿不到 ⇒ `None`。
+///
+/// 存在理由：`1024×768` 的屏上，标题栏一占，客户区就放不下 1024×768 了 ——
+/// 那时要么缩画面（糊）、要么裁边（见 [`apply_presentation`]）。
+fn usable_bounds(video: &sdl3::VideoSubsystem) -> Option<(u32, u32)> {
+    let d = video.get_primary_display().ok()?;
+    let r = d.get_usable_bounds().ok()?;
+    Some((r.width(), r.height()))
+}
+
+/// 把想要的窗口尺寸夹进可用区域（纯函数，便于单测）。
+fn fit_window(want: (u32, u32), usable: (u32, u32)) -> (u32, u32) {
+    (want.0.min(usable.0), want.1.min(usable.1))
+}
+
+/// 挑呈现模式（纯函数，便于单测）：窗口装得下 [`WIN_W`]×[`WIN_H`] 才允许等比缩放。
+fn present_mode(win: (u32, u32)) -> sdl3_sys::render::SDL_RendererLogicalPresentation {
+    if win.0 >= WIN_W && win.1 >= WIN_H {
+        sdl3_sys::render::SDL_LOGICAL_PRESENTATION_LETTERBOX
+    } else {
+        sdl3_sys::render::SDL_LOGICAL_PRESENTATION_DISABLED
+    }
+}
+
+/// 呈现策略（用户 2026-10-09 第 4 条）：**装得下就等比放大，装不下就 1:1 裁切，
+/// 绝不缩小、绝不拉伸**。
+///
+/// - 窗口 ≥ 1024×768 ⇒ `LETTERBOX`：等比放大 + 留边（窗口更大时画面跟着变大，不变形）；
+/// - 窗口 < 1024×768（例：1024×768 的屏 + 标题栏/菜单栏 ⇒ 客户区只有 1024×743）
+///   ⇒ `DISABLED`：**1:1 画**，右边/下边多出去的那点直接裁掉。
+///   注意 `LETTERBOX` 在这种情形下**会连画面一起缩**（1024×743 ⇒ 0.967 倍）——
+///   整屏糊一档，而在它和"裁掉最外圈的石头边框"之间，用户明确要后者。
+///
+/// ⚠️ 两种模式下**鼠标换算都不用自己写**：SDL 的 `Event::get_converted_coords`
+/// 认的正是这里的口径（缩放 / 留边 / 裁切它都管）。
+fn apply_presentation(canvas: &mut WindowCanvas) -> Result<(), String> {
+    let (w, h) = canvas.output_size().map_err(|e| e.to_string())?;
+    canvas
+        .set_logical_size(WIN_W, WIN_H, present_mode((w, h)))
+        .map_err(|e| format!("设置逻辑呈现失败: {e}"))
 }
 
 /// 地图视图的顶部信息条高度。
@@ -249,7 +301,6 @@ const C_TITLE: Color = Color::RGB(232, 200, 96);
 const C_TEXT: Color = Color::RGB(206, 212, 226);
 const C_DIM: Color = Color::RGB(120, 132, 156);
 const C_FIELD: Color = Color::RGB(8, 10, 20);
-const C_ACTIVE: Color = Color::RGB(255, 236, 140);
 const C_CHECKER_A: Color = Color::RGB(34, 38, 52);
 const C_CHECKER_B: Color = Color::RGB(26, 30, 42);
 const C_OK: Color = Color::RGB(120, 220, 150);
@@ -2476,7 +2527,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let video = sdl.video()?;
 
     let (win_w, win_h) = window_size();
-    let window = video
+    let mut window = video
         .window("MIR2 1.76 CLIENT - DEV VIEWER", win_w, win_h)
         .position_centered()
         // 可拉大拉小：逻辑呈现会把 800×600 的界面**等比**铺到新尺寸（见 [`WIN_W`]）
@@ -2485,20 +2536,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("创建窗口失败: {e}"))?;
 
     video.text_input().start(&window);
+    // 屏幕放不下"1024×768 的**客户区**"时（1024×768 的屏加上标题栏/菜单栏就放不下），
+    // 把窗口夹进**可用区域**：宁可窗口小一点、画面按 1:1 画、多出去的边裁掉，
+    // 也不把整屏缩小或拉变形（用户 2026-10-09 第 4 条）。
+    if let Some(u) = usable_bounds(&video) {
+        let fit = fit_window((win_w, win_h), u);
+        if fit != (win_w, win_h) {
+            println!(
+                "[mir2-app] 屏幕可用区域 {}×{} 装不下 {}×{} ⇒ 窗口取 {}×{}（画面 1:1、多出的边裁掉）",
+                u.0, u.1, win_w, win_h, fit.0, fit.1
+            );
+            window
+                .set_size(fit.0, fit.1)
+                .map_err(|e| format!("调整窗口大小失败: {e}"))?;
+        }
+    }
     let mut canvas = window.into_canvas();
-    // 画布按 **800×600**（设计尺寸）画，SDL 负责铺满窗口 —— 于是登录/选角的背景图
-    // 自然铺满，而且**界面与背景一起缩放**（选角界面的按钮/面板是画在背景图里的，
-    // 只拉伸背景会把它们撕开 ⇒ 必须整体一个比例）。
-    //
-    // ⚠️ 用**逻辑呈现**而不是 `set_scale`：`set_scale` 只管坐标倍率，窗口不是 4:3 时
-    // 画面会露出一角底色、鼠标换算也要自己写；`LETTERBOX` 这两件事都替我们做了。
-    canvas
-        .set_logical_size(
-            WIN_W,
-            WIN_H,
-            sdl3_sys::render::SDL_LOGICAL_PRESENTATION_LETTERBOX,
-        )
-        .map_err(|e| format!("设置逻辑呈现失败: {e}"))?;
+    apply_presentation(&mut canvas)?;
     let tex_creator = canvas.texture_creator();
 
     // ---------- 音频 ----------
@@ -2559,7 +2613,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ui = ui::UiCache::new();
     // 选角场景（登录成功、状态机停在"等你选"时才建）与真字体绘制器
     let mut select_scene: Option<select::Select> = None;
-    let mut texts = font::TextCache::new(mir2_core::text::UI_PX);
+    // 登录/选角专用：同一份字体、按**缩放后**的字号重新光栅化（`UI_PX * 1.28 ≈ 17.9px`）。
+    // 两屏的美术是整屏拉伸 1.28 的（见 `ui::UI_SCALE`），字**不能跟着位图一起拉** ——
+    // 那是"把 14px 的字拉成 17.9px"（糊）。这里直接把字号给足，落点由 `draw_ui` 换算。
+    let mut ui_texts = font::TextCache::new(mir2_core::text::UI_PX * ui::UI_SCALE);
     // 世界里的字（怪物名字/伤害飘字）单独一份、小一档 —— 见 `text::NAME_PX`。
     let mut names = font::TextCache::new(mir2_core::text::NAME_PX);
 
@@ -2663,6 +2720,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ev = ev.get_converted_coords(&canvas).unwrap_or(ev);
             match ev {
                 Event::Quit { .. } => break 'main,
+                // 窗口尺寸/像素尺寸变了 ⇒ 重挑呈现模式（见 `apply_presentation`）。
+                // ⚠️ 必须挂上：不然后面那次 resize 还把画布按老尺寸缩放（画面拉变形）。
+                Event::Window { win_event, .. } => {
+                    let changed = matches!(
+                        win_event,
+                        WindowEvent::Resized(..) | WindowEvent::PixelSizeChanged(..)
+                    );
+                    if changed {
+                        if let Err(e) = apply_presentation(&mut canvas) {
+                            eprintln!("[mir2-app] {e}");
+                        }
+                    }
+                }
                 Event::KeyDown {
                     keycode, keymod, ..
                 } => match keycode {
@@ -2938,13 +3008,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     y,
                     ..
                 } if mode == 4 => {
+                    // 这两屏的命中测试活在**设计空间**（800×600）里 ⇒ 鼠标先除回去
+                    let (x, y) = ui::ui_inv_pt((x, y));
                     if let (Some(dir), Some(scene)) = (asset_dir.as_ref(), select_scene.as_mut()) {
                         // 弹窗的几何要给进去：它那颗 [确定] 也走"按下与抬起同一颗"
-                        let msg = select::msgbox_geom(&mut ui, dir, (WIN_W, WIN_H));
+                        let msg = select::msgbox_geom(&mut ui, dir, UI_WIN);
                         if let Some(l) =
-                            mir2_core::select_ui::Layout::build((WIN_W, WIN_H), |c, i| {
-                                ui.size(dir, c, i)
-                            })
+                            mir2_core::select_ui::Layout::build(UI_WIN, |c, i| ui.size(dir, c, i))
                         {
                             scene.on_down((x, y), &l, msg);
                         }
@@ -2956,11 +3026,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     y,
                     ..
                 } if mode == 4 => {
+                    let (x, y) = ui::ui_inv_pt((x, y)); // 设计空间（见上面那条）
                     let act = match (asset_dir.as_ref(), select_scene.as_mut()) {
                         (Some(dir), Some(scene)) => {
                             // 弹窗的几何也要给进去：不然它那颗 [确定] 点不中（见 `Select::on_up`）
-                            let msg = select::msgbox_geom(&mut ui, dir, (WIN_W, WIN_H));
-                            match mir2_core::select_ui::Layout::build((WIN_W, WIN_H), |c, i| {
+                            let msg = select::msgbox_geom(&mut ui, dir, UI_WIN);
+                            match mir2_core::select_ui::Layout::build(UI_WIN, |c, i| {
                                 ui.size(dir, c, i)
                             }) {
                                 Some(l) => scene.on_up((x, y), &l, msg),
@@ -2980,10 +3051,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ..
                 } if mode == 1 => {
                     // 版式每帧现算（尺寸来自容器头，不解压 ⇒ 很便宜），用于命中判定。
+                    // ⚠️ 版式在**设计空间**（800×600）里 ⇒ 鼠标先除回去（见 `UI_WIN`）
+                    let (x, y) = ui::ui_inv_pt((x, y));
                     if let Some(dir) = asset_dir.as_ref() {
-                        let l = mir2_core::login_ui::Layout::build((WIN_W, WIN_H), |c, i| {
-                            ui.size(dir, c, i)
-                        });
+                        let l =
+                            mir2_core::login_ui::Layout::build(UI_WIN, |c, i| ui.size(dir, c, i));
                         if let Some(l) = l {
                             login.on_down((x, y), &l);
                         }
@@ -2995,10 +3067,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     y,
                     ..
                 } if mode == 1 => {
+                    let (x, y) = ui::ui_inv_pt((x, y)); // 设计空间（见上面那条）
                     if let Some(dir) = asset_dir.as_ref() {
-                        let l = mir2_core::login_ui::Layout::build((WIN_W, WIN_H), |c, i| {
-                            ui.size(dir, c, i)
-                        });
+                        let l =
+                            mir2_core::login_ui::Layout::build(UI_WIN, |c, i| ui.size(dir, c, i));
                         if let Some(l) = l {
                             let act = login.on_up((x, y), &l);
                             // 按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` ⇒ 103）
@@ -3433,9 +3505,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &mut canvas,
                     &tex_creator,
                     &mut ui,
-                    &mut texts,
+                    &mut ui_texts,
                     &asset_dir,
-                    (WIN_W, WIN_H),
+                    // ⚠️ 给的是**设计尺寸**（800×600）：版式算在设计空间里，画的时候整体乘 1.28
+                    UI_WIN,
                     started,
                 )?;
             }
@@ -3455,10 +3528,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             login.draw(
                 &mut canvas,
                 &mut ui,
-                &mut texts,
+                &mut ui_texts,
                 &tex_creator,
                 &asset_dir,
-                (WIN_W, WIN_H),
+                // ⚠️ 同上：设计尺寸
+                UI_WIN,
                 started,
             )?;
         } else {
@@ -5609,5 +5683,42 @@ mod tests {
             mouse_repeat(&w, (15, 10), false, None),
             (None, Some((15, 10, false)))
         );
+    }
+
+    /// 登录/选角那两屏：设计空间 800×600 铺到 1024×768 画布上应当是**整数关系**的
+    /// 正好铺满（800×1.28 = 1024、600×1.28 = 768）—— 这是"拉伸"那条政策的地基。
+    #[test]
+    fn 设计空间拉伸正好铺满画布() {
+        assert_eq!(ui::UI_SCALE, 1024.0 / 800.0);
+        assert_eq!(800.0 * ui::UI_SCALE, WIN_W as f32);
+        assert_eq!(600.0 * ui::UI_SCALE, WIN_H as f32);
+        // 换算互为逆（鼠标那条路：画布 → 设计）
+        for p in [(0.0, 0.0), (252.0, 173.0), (800.0, 600.0)] {
+            let back = ui::ui_inv_pt(ui::ui_pt(p));
+            assert!((back.0 - p.0).abs() < 0.01 && (back.1 - p.1).abs() < 0.01);
+        }
+        // 版式里那两个字面量：登录框在设计空间居中 ⇒ 画布上也居中
+        let (cx, cy) = ui::ui_pt((252.0, 173.0));
+        assert!(((WIN_W as f32 - 296.0 * ui::UI_SCALE) / 2.0 - cx).abs() < 0.01);
+        assert!(((WIN_H as f32 - 254.0 * ui::UI_SCALE) / 2.0 - cy).abs() < 0.01);
+    }
+
+    /// 窗口尺寸夹进屏幕可用区域（1024×768 的屏 + 标题栏 ⇒ 客户区只有 1024×743 那种）。
+    #[test]
+    fn 窗口夹进可用区域() {
+        assert_eq!(fit_window((1024, 768), (1920, 1080)), (1024, 768));
+        assert_eq!(fit_window((1024, 768), (1024, 743)), (1024, 743));
+        assert_eq!(fit_window((1280, 960), (1280, 800)), (1280, 800));
+    }
+
+    /// 呈现模式：**装得下就等比缩放，装不下就 1:1 裁切**（绝不缩小 —— 用户第 4 条）。
+    #[test]
+    fn 呈现模式不缩小() {
+        let lb = sdl3_sys::render::SDL_LOGICAL_PRESENTATION_LETTERBOX;
+        let dis = sdl3_sys::render::SDL_LOGICAL_PRESENTATION_DISABLED;
+        assert_eq!(present_mode((1024, 768)), lb, "正好装得下 ⇒ 等比");
+        assert_eq!(present_mode((1920, 1200)), lb, "更大 ⇒ 等比放大");
+        assert_eq!(present_mode((1024, 743)), dis, "矮一点 ⇒ 1:1 裁切（不缩）");
+        assert_eq!(present_mode((900, 768)), dis, "窄一点 ⇒ 1:1 裁切（不缩）");
     }
 }

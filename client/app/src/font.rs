@@ -136,6 +136,54 @@ impl<'a> TextCache<'a> {
         self.draw(canvas, tc, s, x, y, color, shadow)
     }
 
+    /// 画一串字，坐标是**设计空间（800×600）**的 —— 内部乘 [`crate::ui::UI_SCALE`]。
+    ///
+    /// # 登录/选角为什么单开一个入口（2026-10-09，D-52）
+    ///
+    /// 那两屏的美术是 800×600、画布是 1024×768 ⇒ 整屏拉伸 1.28（跟官方客户端一样）。
+    /// 但**字不能跟着位图一起拉**（用户明确要求"字体应该是缩放侧不是拉伸"）：它的位图
+    /// 是 14px 的话，被拉成 17.9px 就是糊的。所以字走**另一条路** ——
+    ///
+    /// - 建这个 cache 时就按 `UI_PX * UI_SCALE`（≈ 17.9px）**重新光栅化**（清晰）；
+    /// - 落点由这里乘 `UI_SCALE` 换算到画布。
+    ///
+    /// 调用方（`login.rs` / `select.rs`）拿到的是设计坐标（`Layout` / `SlotText` 给的
+    /// 都是 800×600 空间的），照原样传进来即可。世界那套（头顶名字、伤害飘字）**不要**
+    /// 用这个入口 —— 那是画布坐标，用 [`TextCache::draw`]。
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_ui<T>(
+        &mut self,
+        canvas: &mut WindowCanvas,
+        tc: &'a TextureCreator<T>,
+        s: &str,
+        x: f32,
+        y: f32,
+        color: Rgb,
+        shadow: Option<Rgb>,
+    ) -> Result<(), sdl3::Error> {
+        let (x, y) = crate::ui::ui_pt((x, y));
+        self.draw(canvas, tc, s, x, y, color, shadow)
+    }
+
+    /// [`TextCache::draw_ui`] 的居中版（`cx` 也是设计坐标；`self.width` 已经按
+    /// 光栅化字号算，所以只换算中心点）。
+    #[allow(dead_code)] // 门面：与 `draw_centered` 对称（登录/选角暂时没有居中的字）
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_ui_centered<T>(
+        &mut self,
+        canvas: &mut WindowCanvas,
+        tc: &'a TextureCreator<T>,
+        s: &str,
+        cx: f32,
+        y: f32,
+        color: Rgb,
+        shadow: Option<Rgb>,
+    ) -> Result<(), sdl3::Error> {
+        let x = crate::ui::ui_px(cx) - self.width(s) / 2.0;
+        let y = crate::ui::ui_px(y);
+        self.draw(canvas, tc, s, x, y, color, shadow)
+    }
+
     /// 真正落笔（逐字推进笔位）。
     fn paint<T>(
         &mut self,

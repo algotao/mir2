@@ -110,6 +110,23 @@ impl Canvas {
     }
 
     /// 压成 PNG 要的 RGB 缓冲。
+    /// 放大到 `w×h`（**最近邻**）—— 等价于 app 里 `ui::UI_SCALE` 那一步
+    ///（800×600 的设计空间铺到 1024×768；app 用线性采样、这里用最近邻，
+    /// e2e 只是拿来看版式的，不逐像素对拍）。
+    pub fn to_rgb_scaled(&self, w: i32, h: i32) -> Vec<u8> {
+        let mut out = vec![0u8; (w * h * 3) as usize];
+        for y in 0..h {
+            let sy = (y as i64 * self.h as i64 / h as i64) as i32;
+            for x in 0..w {
+                let sx = (x as i64 * self.w as i64 / w as i64) as i32;
+                let p = self.pixel(sx, sy);
+                let o = ((y * w + x) * 3) as usize;
+                out[o..o + 3].copy_from_slice(&p);
+            }
+        }
+        out
+    }
+
     pub fn to_rgb(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.px.len() * 3);
         for p in &self.px {
