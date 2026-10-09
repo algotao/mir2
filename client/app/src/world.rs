@@ -191,6 +191,10 @@ pub(crate) fn draw_map_view<'a, T>(
                         _ => C_ENT_MONSTER,
                     }
                 };
+                // ⚠️ NPC **不画血条/数值**（用户 2026-10-09 第 1 条：截图里"夏家店老板 7/35"
+                // 就是给它画了血条）。原版只给可打的对象画血条，NPC 只显示名字 ——
+                // 传 0/0 给 `draw_name_bar` 就不会铺那条血条（它按 max_hp > 0 判）。
+                let npc = e.kind == 2;
                 draw_actor(
                     canvas,
                     tc,
@@ -202,8 +206,8 @@ pub(crate) fn draw_map_view<'a, T>(
                     n.anims.get(&e.id),
                     now,
                     &e.name,
-                    e.hp,
-                    e.max_hp,
+                    if npc { 0 } else { e.hp },
+                    if npc { 0 } else { e.max_hp },
                     color,
                     // 悬停高亮（照原版 `g_FocusCret.DrawChr(..., blend=TRUE)`：
                     // **再画一遍**、半透明 —— 见 `HOVER_TINT`）
@@ -234,6 +238,8 @@ pub(crate) fn draw_map_view<'a, T>(
                 status_bits: 0,
                 dead: n.world.self_dead,
                 action: n.world.self_action,
+                // 自己的动作事件计数（判"又砍了一刀"用它，不看值 —— 普通攻击恒为 1）
+                action_seq: n.world.self_action_seq,
             };
             draw_actor(
                 canvas,

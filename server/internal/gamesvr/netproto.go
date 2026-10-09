@@ -1065,8 +1065,10 @@ func (ps *protoSession) enterWorld(chr *storage.Character) bool {
 		SelfEntityId: uint64(p.Obj.ID),
 		// ⚠️ `map_id` 暂置 0：地图在本项目是**按名字**索引的（D-22，容器里就是 `<名字>.map`），
 		// 新协议的 `map_id` 语义还没定（见 protocol.md §11 待办）。客户端请用 `map_name`。
-		MapId:       0,
-		MapName:     p.Obj.MapRef().Name,
+		MapId:   0,
+		MapName: p.Obj.MapRef().Name,
+		// 左下角那行的抬头 = 地图显示名（官方是服务端下发的描述，见 mapTitleOf）
+		MapTitle:    s.mapTitleOf(p.Obj.MapRef().Name),
 		Position:    &protocol.Vec2{X: int32(p.Obj.PosX()), Y: int32(p.Obj.PosY())},
 		Direction:   directionOf(p.Obj.Facing()),
 		Entities:    states,
@@ -1325,6 +1327,7 @@ func (s *Server) sendMapSnapshotTo(p *Player, mapID string) {
 			SelfFeature: featureOf(p.Obj.FeatureBits()),
 			// 换图了就是另一张缩略图
 			MinimapIndex: s.minimapIndexOf(mapID),
+			MapTitle:     s.mapTitleOf(mapID),
 		}}})
 	if p.Char != nil && p.Char.Data != nil {
 		p.protoOut.ability(p.Char.Data.Abil, p.Char.Data.Gold)

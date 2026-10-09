@@ -210,6 +210,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                           // 鼠标走路：目标格 + 是否跑（左键走、右键跑；松开清空）。`move_at` 是步频节流。
     let mut move_target: Option<(i32, i32, bool)> = None;
     let mut move_at = Instant::now();
+    // 「单击」判据（用户 2026-10-09 第 3 条）：按下那一刻的时刻与光标那格，
+    // 抬起时若没超过 `input::CLICK_MS` 就改判成"走一格"（`input::click_step`）。
+    let mut press_at: Option<Instant> = None;
+    let mut press_cell = (0, 0);
     // **按住的是哪个键**（松开清掉）+ 上次"重取目标"的时刻 —— 按住时每
     // [`MOUSE_REPEAT_MS`] 重跑一遍按下逻辑（照原版 `DXDrawMouseMove`）。
     let mut held_move: Option<MouseButton> = None;
@@ -551,6 +555,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // 那段）⇒ 按下这一刻就得把位置记上（光等 `MouseMotion` 会漏掉
                             // "按下后一动不动"的那种按住）。
                             mouse = (x, y);
+                            // 左键才判"单击"（用户第 3 条说的是左键）；右键仍是按住=跑
+                            if mouse_btn == MouseButton::Left {
+                                press_at = Some(Instant::now());
+                                press_cell = cell;
+                            } else {
+                                press_at = None;
+                            }
                             // 照原版 `_DXDrawMouseDown`（`ClMain.pas:2805-2878`）：
                             // **先清掉旧目标**，点到**活怪**就锁住它（之后每帧自动靠近/出手，
                             // 直到它死掉或消失）；点空地 ⇒ 走/跑到那一格。
@@ -606,6 +617,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if mode == 2 && matches!(mouse_btn, MouseButton::Left | MouseButton::Right) =>
                 {
                     held_move = None;
+                    // ⚠️ 单击 = 走**一格**（用户 2026-10-09 第 3 条）：按下那一刻已经把
+                    // "走到光标那格"当成目标了（`mouse_intent`），够快松手就把它换成
+                    // **紧邻那一格** ⇒ 一步之后"到达"、目标自清。按住（> `CLICK_MS`）
+                    // 仍是一路走过去。
+                    if mouse_btn == MouseButton::Left {
+                        if let Some(t) = press_at.take() {
+                            if t.elapsed() < Duration::from_millis(input::CLICK_MS) {
+                                if let Some(n) = net.as_mut() {
+                                    if n.world.in_world() {
+                                        let (ct, mt) = input::click_step(
+                                            &n.world,
+                                            n.world.self_pos,
+                                            press_cell,
+                                            false,
+                                        );
+                                        if ct.is_some() || mt.is_some() {
+                                            combat_target = ct;
+                                            move_target = mt;
+                                            attack_at = Instant::now();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 Event::MouseButtonDown {
                     mouse_btn: MouseButton::Left,

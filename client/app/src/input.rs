@@ -24,6 +24,36 @@ pub(crate) fn mouse_intent(
     }
 }
 
+/// **单击**（按下即抬）算什么：往光标那个方向**走一格**（用户 2026-10-09 第 3 条）。
+///
+/// 与 [`mouse_intent`]（按下 = 把光标那格当目标、一路走过去）的区别只有一处：
+/// 目标被换成**紧邻的那一格** ⇒ 走一步就"到达"、目标自清（`next_move_step` 的
+/// `dir_to` 返回 `None` 那支），于是表现就是"点一下走一格"。
+///
+/// 点的是**活怪**时与按下同一条规则：锁它，不动脚。
+/// 点在自己身上（同一格）⇒ 什么都不做。
+pub(crate) fn click_step(
+    world: &mir2_core::world::World,
+    from: (i32, i32),
+    cell: (i32, i32),
+    run: bool,
+) -> (Option<u64>, Option<(i32, i32, bool)>) {
+    if let Some(id) = world.attack_target_at(cell) {
+        return (Some(id), None);
+    }
+    let (dx, dy) = ((cell.0 - from.0).signum(), (cell.1 - from.1).signum());
+    if dx == 0 && dy == 0 {
+        return (None, None);
+    }
+    (None, Some((from.0 + dx, from.1 + dy, run)))
+}
+
+/// 按下到抬起**多快**才算"单击"（而不是"按住走"）。
+///
+/// 判据取 200ms：比它短 ⇒ 一格（[`click_step`]）；按住会走 [`MOUSE_REPEAT_MS`]（300ms）
+/// 那条重取目标的链 ⇒ 阈值卡在两者之间，手感上"点一下"与"按住"不会互相误判。
+pub(crate) const CLICK_MS: u64 = 200;
+
 /// **按住不放**时每 [`MOUSE_REPEAT_MS`] 重取一次目标 —— 与新鲜按下（[`mouse_intent`]）
 /// 只差一条：光标底下什么都没有时，**不取消**已经锁住的那个怪物。
 ///

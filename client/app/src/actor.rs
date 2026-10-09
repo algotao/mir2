@@ -185,7 +185,12 @@ impl<'a> SpriteCache<'a> {
 ///
 /// 抽个别名是因为它要四处传（收集 / 遍历 / 调试），写成裸元组 clippy 会报 `type_complexity`，
 /// 更要紧的是读代码时看不出第四个 `bool` 是"跑"。
-pub(crate) type SeenEntity = (u64, (i32, i32), Option<u32>, bool);
+/// 一帧看到的实体：`(id, 格子, 动作值, 是不是跑, 动作事件计数)`。
+///
+/// ⚠️ 最后那个 `action_seq` 是**动作事件计数**（`core::world` 每收到一条 `EntityAction`
+/// 就 +1）：判"要不要重播挥砍动画"必须用它，不能只看动作值 —— 普通攻击的值恒为 1，
+/// 按值判会让**第二次以后的每一刀都没有挥砍动作**（用户 2026-10-09 反复报的那条）。
+pub(crate) type SeenEntity = (u64, (i32, i32), Option<u32>, bool, u64);
 
 /// 一个实体的动画状态（**渲染层**持有 —— 世界模型是不带时钟的纯状态）。
 pub(crate) struct ActorAnim {
@@ -195,6 +200,12 @@ pub(crate) struct ActorAnim {
     pub(crate) from: Option<(i32, i32)>,
     /// 最近一次动作（协议动作 id，见 `protocol.md` §9.5）。
     pub(crate) action: Option<u32>,
+    /// 上一次据以**重播**动画的动作事件计数（`core::world` 的 `action_seq`／
+    /// `self_action_seq`）。
+    ///
+    /// 每来一条新的 `EntityAction` 计数就变 ⇒ 重播一次挥砍；计数没变就绝不动
+    /// `action_at`（否则移动、状态刷新之类的每帧调用会把动画一次次摁回第一帧）。
+    pub(crate) action_seq: u64,
     /// **移动**的起始时刻（补间与 `moving()` 用它）。
     pub(crate) changed_at: Instant,
     /// **动作**的起始时刻（挥砍/受击的播放进度用它）。

@@ -2946,3 +2946,70 @@ OpenMir2 / Crystal 为准，冲突处我定夺。四份并行调查（各带 `�
    → `../mir2go/data/map`、`../../mir2go/data/map`，命中就**打一行日志说明换成了哪个**；
    全落空则原样返回、照旧告警（**不做静默兜底** —— 悄悄换目录会让人以为在看 A 图）。
    单测：`internal/gamesvr/mapdir_test.go`。
+
+## D-59 用户第二批截图反馈：攻击动作、单击走一格、球体数值、坐标抬头
+
+**用户 2026-10-09 第 3 批（带两张截图，6 条）**。本轮做掉 4 条半，两条（NPC 精灵、NPC 对话/交易）
+按下面的"下一轮"排。
+
+### ① 攻击只有第 1 下有挥砍动作（用户反复报过多次）——**真根因找到了**
+
+服务端**每次出手都发**一条 `EntityAction`（`combat.go sendSwing`），但普通攻击的
+`action` 值**恒为 1**（`netproto.go` 的动作值域：1..8 与 `AttackAction` 同值）。而客户端
+`app/src/net.rs::sync_anims` 是按**值变没变**决定要不要重播动画：
+
+```rust
+if a.action != action { a.action = action; a.action_at = now; }   // ← 第二刀起：值没变 ⇒ 不播
+```
+
+⇒ 只有第一下有挥砍；换目标也一样（值还是 1，仍然"没变"）。钱照掉、包照发，只是没动画。
+
+**修法**：判据换成**消息**而不是值 —— `core::world` 每收到一条 `EntityAction` 就给该实体
+`action_seq += 1`（自己那份是 `self_action_seq`），`ActorAnim` 按它重播。
+单测：`repeated_same_action_still_bumps_seq`（连砍三刀、值都不变，seq 必须是 3）。
+
+### ② 鼠标左键**单击**（按下即抬）= 往那个方向走**一格**
+
+新增 `input::click_step`（点空地 ⇒ 目标换成**紧邻那一格** ⇒ 走一步就"到达"、目标自清；
+点活怪 ⇒ 与按下同规则，锁怪不动脚）与 `input::CLICK_MS = 200`：按下到抬起短于它判"单击"，
+按住仍是一路走过去（500ms 那条重取目标的链，`MOUSE_REPEAT_MS`）。
+⚠️ 只对**左键**生效（用户第 3 条说的是左键）；右键仍是按住=跑。单测 `click_walks_exactly_one_step`。
+
+### ③ 球体下方显示 HP/MP 数值 + 只有血量时整球
+
+- **武士且 <28 级**走官方那一支：`Prguse[5]` 球底 + `Prguse[6]` 血条，落点 `(38, btop+90)`，
+  源矩形右边界都 `-2`，**不画魔量**（`FState.pas:3608-3619`）。职业由选角那一刻记下来
+  （`World::self_class`，协议不带职业 —— 官方客户端是从角色信息里拿的）。
+- **`MaxMP = 0`** 时也走单球：官方那种情况**什么都不画**，按用户"显示为整球体"的要求借同一套美术。
+- HP/MP **数值**画在球体下方（`HP/MaxHP` 左、`MP/MaxMP` 右）。
+  ⚠️ 官方 1.76 的底部面板**没有**这两个数（只有人物状态窗口 `FState.pas:2866-2867`），
+  这是照用户给的参考图加的。
+
+### ④ 左下角：`地图名 X : Y`
+
+官方机制是**服务端下发地图描述**：`ClientGetMapDescription`（`ClMain.pas:5215-5224`）收下
+`g_sMapTitle`，`DrawScrn.pas:513` 画 `g_sMapTitle + ' ' + X + ':' + Y`。
+于是 `EnterWorld`/`ChangeMap` 各加一个 `map_title` 字段，服务端从 `mapinfo.txt` 的那一段取
+（`Server::mapTitleOf`，如 "0" → "比奇省"）；客户端画成用户要的 `"名称 X : Y"`（带空格）。
+**⚠️ 关于"银杏山谷"**：那是**地图 0 内部的一片区域**（官方 mapinfo 的门表里，
+`;银杏山谷` 那一段的门都在 0 号图上：`0 625,620 -> 0135 9,9`），
+而地图 0 的描述在配置里是**比奇省** ⇒ 现在显示"比奇省 641 : 642"。
+想要"银杏山谷"是**改一行数据**（`mapinfo.txt` 的 `[0 比奇省 0]` → `[0 银杏山谷 0]`），一句话的事。
+
+### ⑤ NPC 显示（用户第 1 条）：本轮先修掉"血条"
+
+截图里"夏家店老板 **7/35**"是我们给 NPC 画了血条 —— 原版只给可打对象画，NPC 只有名字。
+已在 `app/src/world.rs` 对 `kind == 2` 传 `hp/max_hp = 0`（`draw_name_bar` 按 `max_hp > 0` 判）。
+
+**NPC 精灵（还是标记）下一轮做**，公式已定位：官方 `TNpcActor` 用
+`g_WNpcImgImages`（= `Npc.wzl`）+ `GetNpcOffset(appr)`（`Actor.pas:1156`）+ 与怪物同一张
+动作表（`GetRaceByPM(race, appr)`，`Actor.pas:2866-2896`）；`appearance ∈ [42..47]` 不画身体、
+`33/34` 走特效。素材**都在**（`$WS/mir2c/data/npc.wzl … npc4.wzl`）。
+需要顺带确认服务端把 NPC 的 `race/RaceImg/Appr` 发出去（`Npc_def` 里有 race 与 脸/身体 两列）。
+
+### ⑥ NPC 对话 / 交易（用户第 2 条）：下一轮
+
+"点 NPC 变成走路"是因为新协议里**没有** NPC 点击/对话消息（`npcdlg.go` 只走 legacy `SM_*`），
+`attack_target_at` 也不认 NPC ⇒ 点上去就是"走"。下一轮要加的是：
+`NpcClick{npc_id}`（客户端 → 服务端）、`NpcSay{文本 + 选项}`、`NpcSelect{选了哪条}`，
+再加一个对话窗口；服务端的脚本引擎与 `shop.go` 已经在了，主要是**新协议出口 + UI**。

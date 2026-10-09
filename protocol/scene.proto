@@ -51,6 +51,11 @@ message EnterWorld {
   // 快照里不含自己（见 `self_feature` 的说明），所以名字必须单独给 —— 否则客户端
   // 只能显示占位符（我们之前写的是 "[自己]"）。
   string self_name = 10;
+  // 地图的**显示名**（`mapinfo.txt` 里那一段，如"比奇省"）—— 底部左下角那行的抬头，
+  // 官方是服务端下发的地图描述（`ClMain.pas:5215-5224 ClientGetMapDescription`：
+  // `g_sMapTitle + ' ' + X + ':' + Y`，`DrawScrn.pas:513`）。
+  // ⚠️ 与 `map_name` 不是一回事：那个是**地图号**（本项目按名字索引地图，D-22）。
+  string map_title = 11;
 }
 
 // 服务端 → 客户端：切换地图（重发新图快照）。
@@ -64,6 +69,8 @@ message ChangeMap {
   EntityFeature self_feature = 6;
   // 小地图图号 —— 换图了就是另一张缩略图，与 `EnterWorld.minimap_index` 同义。
   uint32 minimap_index = 7;
+  // 地图显示名，与 `EnterWorld.map_title` 同义（换图要换抬头）。
+  string map_title = 8;
 }
 
 // 大块地图数据 —— 独立分块传输（protocol.md §2：大二进制块单独分帧）。

@@ -26,6 +26,7 @@ fn ent(kind: u32, f: mir2_protocol::EntityFeature) -> Entity {
         status_bits: 0,
         dead: false,
         action: None,
+        action_seq: 0,
     }
 }
 
@@ -168,6 +169,7 @@ fn 移动补间() {
         cell: (5, 5),
         from: Some((4, 5)),
         action: None,
+        action_seq: 0,
         changed_at: now,
         action_at: now,
         move_ms: move_ms(1, 0, false), // 走一格 = 600 ms（见 `move_ms`）
@@ -606,6 +608,7 @@ fn 走动时地图取的是补间位置() {
         cell: (11, 20),
         from: Some((10, 20)),
         action: None,
+        action_seq: 0,
         changed_at: now,
         action_at: now,
         move_ms: move_ms(1, 0, false),
@@ -810,6 +813,7 @@ fn 走路时人物钉在屏幕中间地图往前卷() {
         cell: (11, 10),
         from: Some((10, 10)),
         action: None,
+        action_seq: 0,
         changed_at: now,
         action_at: now,
         move_ms: 600,
@@ -943,6 +947,7 @@ fn 移动不重播挥砍() {
         cell: (3, 4),
         from: None,
         action: Some(1),
+        action_seq: 0,
         changed_at: now,
         action_at: now,
         move_ms: 600,
@@ -1051,6 +1056,7 @@ fn 点鼠标算什么() {
                 status_bits: 0,
                 dead,
                 action: None,
+                action_seq: 0,
             },
         );
     };
@@ -1107,6 +1113,7 @@ fn 按住不丢已锁的怪() {
                 status_bits: 0,
                 dead,
                 action: None,
+                action_seq: 0,
             },
         );
     };
@@ -1174,4 +1181,22 @@ fn 呈现模式不缩小() {
     assert_eq!(present_mode((1920, 1200)), lb, "更大 ⇒ 等比放大");
     assert_eq!(present_mode((1024, 743)), dis, "矮一点 ⇒ 1:1 裁切（不缩）");
     assert_eq!(present_mode((900, 768)), dis, "窄一点 ⇒ 1:1 裁切（不缩）");
+}
+
+/// 用户 2026-10-09 第 3 条：左键**单击**（按下即抬）= 往那个方向走**一格**。
+///
+/// 判据是"目标格 = 紧邻的一格"（走一步之后 `dir_to` 就返回 `None` ⇒ 目标自清）。
+/// 点自己身上不动；点活怪仍然是锁怪（那条与按住一致）。
+#[test]
+fn click_walks_exactly_one_step() {
+    let w = mir2_core::world::World::default();
+    // 从 (10,10) 点 (15,13)：只迈一格，方向按**符号**取（右下）
+    let (ct, mt) = input::click_step(&w, (10, 10), (15, 13), false);
+    assert!(ct.is_none(), "空地上不该锁目标");
+    assert_eq!(mt, Some((11, 11, false)), "只迈一格，按符号取方向");
+    // 正左/正上这些也要对
+    assert_eq!(input::click_step(&w, (10, 10), (2, 10), true).1, Some((9, 10, true)));
+    assert_eq!(input::click_step(&w, (10, 10), (10, 3), false).1, Some((10, 9, false)));
+    // 点在自己身上（同一格）⇒ 什么都不做
+    assert_eq!(input::click_step(&w, (10, 10), (10, 10), false), (None, None));
 }

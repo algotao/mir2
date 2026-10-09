@@ -11,7 +11,8 @@ use crate::colors::C_HUD_COORD;
 use crate::gfx::trunc;
 use crate::layout::{
     exp_at, gauge_band, hud_right_x, level_at, weight_at, CHAT_AT, CHAT_LINE_H, HUD_BOARD,
-    HUD_DIGIT0, HUD_EXP, HUD_ORB, HUD_SIDE_W, ORB_AT,
+    HUD_DIGIT0, HUD_EXP, HUD_ORB, HUD_ORB_SOLO, HUD_ORB_SOLO_FILL, HUD_SIDE_W, ORB_AT,
+    ORB_SOLO_AT, ORB_TEXT_DY,
 };
 use crate::net::Net;
 use crate::window::{WIN_H, WIN_W};
@@ -86,15 +87,50 @@ pub(crate) fn draw_hud<'a, T>(
         );
     }
 
-    // 血 / 魔法球：左半红 = HP、右半蓝 = MP，各自按比例从**下面**留一截（`gauge_band`）
+    // 血 / 魔法球。官方分**两支**（`FState.pas:3606-3640`）：
+    //
+    //   ① **武士 且 等级 < 28** ⇒ `Prguse[5]` 球底 + `Prguse[6]` 血条，**只有血量**，
+    //      落点 `(38, btop+90)`、源矩形右边界都 `-2`；
+    //   ② 其余 ⇒ `Prguse[4]`：左半红 = HP、右半蓝 = MP，各自按比例从**下面**留一截。
+    //
+    // ⚠️ 我们多接一支：**`MaxMP = 0` 时也用单球**（官方那种情况什么都不画）。
+    // 用户 2026-10-09 第 6 条："当职业当前状态只有血量时，显示为整球体，不显示魔量"。
     let (hp, max_hp) = net.map_or((0, 0), |n| n.world.self_hp.unwrap_or((0, 0)));
-    let (mp, max_mp) = net.map_or((0, 0), |n| {
-        n.world
-            .ability
-            .as_ref()
-            .map_or((0, 0), |a| (a.mp, a.max_mp))
-    });
-    if max_hp > 0 && max_mp > 0 {
+    let ability = net.and_then(|n| n.world.ability.as_ref());
+    let (mp, max_mp) = ability.map_or((0, 0), |a| (a.mp, a.max_mp));
+    // 武士 = `CharClass` 0（选角时记下来的，协议不带职业，见 `World::self_class`）
+    let solo = (max_hp > 0 && max_mp == 0)
+        || (net.and_then(|n| n.world.self_class) == Some(0)
+            && ability.is_some_and(|a| a.level < 28)
+            && max_hp > 0);
+    if solo {
+        let (ow, oh) = ui.size(dir, "Prguse", HUD_ORB_SOLO).unwrap_or((92, 90));
+        let (ow, oh) = (ow as i32, oh as i32);
+        let ball_y = board_y + ORB_SOLO_AT.1;
+        // 球底（原版 `rc.Right := d.ClientRect.Right - 2`）
+        ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            "Prguse",
+            HUD_ORB_SOLO,
+            FRect::new(0.0, 0.0, (ow - 2) as f32, oh as f32),
+            FRect::new(ORB_SOLO_AT.0, ball_y, (ow - 2) as f32, oh as f32),
+            255,
+        );
+        // 血条（同一套裁切：`rc.Top := Round(rc.Bottom / Max * (Max - Cur))`）
+        let (top, h) = gauge_band(hp as f32 / max_hp as f32, oh);
+        ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            "Prguse",
+            HUD_ORB_SOLO_FILL,
+            FRect::new(0.0, top as f32, (ow - 2) as f32, h as f32),
+            FRect::new(ORB_SOLO_AT.0, ball_y + top as f32, (ow - 2) as f32, h as f32),
+            255,
+        );
+    } else if max_hp > 0 && max_mp > 0 {
         let (ow, oh) = ui.size(dir, "Prguse", HUD_ORB).unwrap_or((92, 90));
         let (ow, oh) = (ow as i32, oh as i32);
         let half = ow / 2 - 1; // 原版：`rc.Right := d.ClientRect.Right div 2 - 1`
@@ -129,6 +165,34 @@ pub(crate) fn draw_hud<'a, T>(
             ),
             255,
         );
+    }
+
+    // 球体下方的 HP / MP 数值（用户 2026-10-09 第 6 条）。
+    //
+    // ⚠️ 官方 1.76 的**底部面板**没有这两个数（只有人物状态窗口 `FState.pas:2866-2867`），
+    // 这是照用户给的参考图加的：左 HP、右 MP，各自贴着自己那半边。
+    if max_hp > 0 {
+        let text_y = board_y + ORB_TEXT_DY;
+        names.draw(
+            canvas,
+            tc,
+            &format!("{hp}/{max_hp}"),
+            ORB_SOLO_AT.0 - 26.0,
+            text_y,
+            (C_HUD_COORD.r, C_HUD_COORD.g, C_HUD_COORD.b),
+            Some((0, 0, 0)),
+        )?;
+        if max_mp > 0 {
+            names.draw(
+                canvas,
+                tc,
+                &format!("{mp}/{max_mp}"),
+                ORB_AT.0 + 36.0,
+                text_y,
+                (C_HUD_COORD.r, C_HUD_COORD.g, C_HUD_COORD.b),
+                Some((0, 0, 0)),
+            )?;
+        }
     }
 
     // 等级：原版 `PomiTextOut` —— 数字图（`Prguse[30..39]`，12×10）**每 8px 一位**，
@@ -201,19 +265,27 @@ pub(crate) fn draw_hud<'a, T>(
         }
     }
 
-    // 地图名 + 坐标（用户参考图里在左下角；原版 1.76 也在这块地方）
+    // 左下角一行：`地图名 X : Y`（用户 2026-10-09 第 5 条，例 "银杏山谷 641 : 642"）。
+    //
+    // 官方出处：`DrawScrn.pas:513` 的
+    // `BoldTextOut(MSurface, 8, SCREENHEIGHT-20, …, g_sMapTitle + ' ' + X + ':' + Y)`
+    // —— 抬头是**服务端下发的地图描述**（`ClMain.pas:5215-5224 ClientGetMapDescription`）。
+    // 所以顺序是：服务端的 `map_title`（官方机制）→ 容器里那张图的标题 → 地图号。
+    // ⚠️ 分隔符按用户给的样例写成 `" : "`（官方源码里是紧贴的 `':'`，见上面引文）。
     if let Some(n) = net {
         if n.world.in_world() {
-            let title = if map_title.is_empty() {
-                n.world.map_name.as_str()
-            } else {
+            let title = if !n.world.map_title.is_empty() {
+                n.world.map_title.as_str()
+            } else if !map_title.is_empty() {
                 map_title
+            } else {
+                n.world.map_name.as_str()
             };
             names.draw(
                 canvas,
                 tc,
                 &format!(
-                    "{}  {}:{}",
+                    "{} {} : {}",
                     trunc(title, 12),
                     n.world.self_pos.0,
                     n.world.self_pos.1

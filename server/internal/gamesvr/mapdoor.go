@@ -156,6 +156,25 @@ func (s *Server) minimapIndexOf(mapName string) uint32 {
 	return uint32(s.cfg.miniMaps[mapName])
 }
 
+// mapTitleOf 取地图的**显示名**（`mapinfo.txt` 里那一段，如 "0" → "比奇省"）。
+//
+// ⚠️ 官方客户端左下角那行抬头是**服务端下发的地图描述**，不是地图号：
+// `ClientGetMapDescription`（`ClMain.pas:5215-5224`）收下 `g_sMapTitle`，
+// `DrawScrn.pas:513` 画成 `抬头 + ' ' + X + ':' + Y`。
+// 拿不到（图不在 mapinfo 里）就退回地图号本身 —— 宁可见到 "0 641 : 642"，
+// 也不要空白。
+func (s *Server) mapTitleOf(mapName string) string {
+	for _, mi := range s.data.mapInfos {
+		if mi.ID == mapName {
+			if mi.Name != "" {
+				return mi.Name
+			}
+			break
+		}
+	}
+	return mapName
+}
+
 func (s *Server) handleWantMinimap(c net.Conn, p *Player) {
 	if p == nil || p.Obj == nil || p.Obj.MapRef() == nil {
 		return

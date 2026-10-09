@@ -406,7 +406,7 @@ impl Net {
             .world
             .entities
             .values()
-            .map(|e| (e.id, (e.x, e.y), e.action, e.run))
+            .map(|e| (e.id, (e.x, e.y), e.action, e.run, e.action_seq))
             .collect();
         if self.world.in_world() {
             live.push((
@@ -414,14 +414,16 @@ impl Net {
                 self.world.self_pos,
                 self.world.self_action,
                 self.world.self_run,
+                self.world.self_action_seq,
             ));
         }
         let ids: std::collections::HashSet<u64> = live.iter().map(|(id, ..)| *id).collect();
-        for (id, cell, action, run) in live {
+        for (id, cell, action, run, action_seq) in live {
             let a = self.anims.entry(id).or_insert(ActorAnim {
                 cell,
                 from: None,
                 action,
+                action_seq,
                 changed_at: now,
                 action_at: now,
                 // 刚出现/刚进视野：先按"走一格"算，下一步会据实重算
@@ -449,11 +451,20 @@ impl Net {
                 }
                 a.cell = cell;
             }
-            if a.action != action {
+            // ⚠️ 判据是**动作事件计数**（`action_seq`），不是动作值：普通攻击的值恒为 1，
+            // 按值判 ⇒ 第二次以后的每一刀都不重播挥砍（用户 2026-10-09 反复报的那条），
+            // 换目标也一样漏。计数每收到一条 `EntityAction` 就 +1，所以每刀都重播。
+            if a.action_seq != action_seq {
+                a.action_seq = action_seq;
                 a.action = action;
                 // ⚠️ 只动**动作钟**（见 `action_at` 的说明）：动 `changed_at` 会让补间从头开始
                 a.action_at = now;
                 // 换动作（砍/受击…）就从"走路的相位"里出来了 ⇒ 相位重开
+                a.walk_since = now;
+            } else if a.action != action {
+                // 计数没变而值变了（理论上不该发生）：照样认账，免得漏动作。
+                a.action = action;
+                a.action_at = now;
                 a.walk_since = now;
             }
         }

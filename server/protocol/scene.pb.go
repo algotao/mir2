@@ -223,7 +223,12 @@ type EnterWorld struct {
 	// 自己的**角色名**（要画在自己头顶：原版 `FState.pas` 的头顶血条 + 名字）。
 	// 快照里不含自己（见 `self_feature` 的说明），所以名字必须单独给 —— 否则客户端
 	// 只能显示占位符（我们之前写的是 "[自己]"）。
-	SelfName      string `protobuf:"bytes,10,opt,name=self_name,json=selfName,proto3" json:"self_name,omitempty"`
+	SelfName string `protobuf:"bytes,10,opt,name=self_name,json=selfName,proto3" json:"self_name,omitempty"`
+	// 地图的**显示名**（`mapinfo.txt` 里那一段，如"比奇省"）—— 底部左下角那行的抬头，
+	// 官方是服务端下发的地图描述（`ClMain.pas:5215-5224 ClientGetMapDescription`：
+	// `g_sMapTitle + ' ' + X + ':' + Y`，`DrawScrn.pas:513`）。
+	// ⚠️ 与 `map_name` 不是一回事：那个是**地图号**（本项目按名字索引地图，D-22）。
+	MapTitle      string `protobuf:"bytes,11,opt,name=map_title,json=mapTitle,proto3" json:"map_title,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -328,6 +333,13 @@ func (x *EnterWorld) GetSelfName() string {
 	return ""
 }
 
+func (x *EnterWorld) GetMapTitle() string {
+	if x != nil {
+		return x.MapTitle
+	}
+	return ""
+}
+
 // 服务端 → 客户端：切换地图（重发新图快照）。
 type ChangeMap struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
@@ -339,7 +351,9 @@ type ChangeMap struct {
 	// 自己的外观，与 `EnterWorld.self_feature` 同义（换图后重发一次）。
 	SelfFeature *EntityFeature `protobuf:"bytes,6,opt,name=self_feature,json=selfFeature,proto3" json:"self_feature,omitempty"`
 	// 小地图图号 —— 换图了就是另一张缩略图，与 `EnterWorld.minimap_index` 同义。
-	MinimapIndex  uint32 `protobuf:"varint,7,opt,name=minimap_index,json=minimapIndex,proto3" json:"minimap_index,omitempty"`
+	MinimapIndex uint32 `protobuf:"varint,7,opt,name=minimap_index,json=minimapIndex,proto3" json:"minimap_index,omitempty"`
+	// 地图显示名，与 `EnterWorld.map_title` 同义（换图要换抬头）。
+	MapTitle      string `protobuf:"bytes,8,opt,name=map_title,json=mapTitle,proto3" json:"map_title,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -421,6 +435,13 @@ func (x *ChangeMap) GetMinimapIndex() uint32 {
 		return x.MinimapIndex
 	}
 	return 0
+}
+
+func (x *ChangeMap) GetMapTitle() string {
+	if x != nil {
+		return x.MapTitle
+	}
+	return ""
 }
 
 // 大块地图数据 —— 独立分块传输（protocol.md §2：大二进制块单独分帧）。
@@ -1219,7 +1240,7 @@ const file_scene_proto_rawDesc = "" +
 	"\vstatus_bits\x18\t \x01(\x04R\n" +
 	"statusBits\x12\x16\n" +
 	"\x06action\x18\n" +
-	" \x01(\rR\x06action\"\x85\x03\n" +
+	" \x01(\rR\x06action\"\xa2\x03\n" +
 	"\n" +
 	"EnterWorld\x12$\n" +
 	"\x0eself_entity_id\x18\x01 \x01(\x04R\fselfEntityId\x12\x15\n" +
@@ -1234,7 +1255,8 @@ const file_scene_proto_rawDesc = "" +
 	"\fself_feature\x18\b \x01(\v2\x13.mir2.EntityFeatureR\vselfFeature\x12#\n" +
 	"\rminimap_index\x18\t \x01(\rR\fminimapIndex\x12\x1b\n" +
 	"\tself_name\x18\n" +
-	" \x01(\tR\bselfName\"\x92\x02\n" +
+	" \x01(\tR\bselfName\x12\x1b\n" +
+	"\tmap_title\x18\v \x01(\tR\bmapTitle\"\xaf\x02\n" +
 	"\tChangeMap\x12\x15\n" +
 	"\x06map_id\x18\x01 \x01(\rR\x05mapId\x12\x19\n" +
 	"\bmap_name\x18\x02 \x01(\tR\amapName\x12&\n" +
@@ -1244,7 +1266,8 @@ const file_scene_proto_rawDesc = "" +
 	"\vserver_tick\x18\x05 \x01(\rR\n" +
 	"serverTick\x126\n" +
 	"\fself_feature\x18\x06 \x01(\v2\x13.mir2.EntityFeatureR\vselfFeature\x12#\n" +
-	"\rminimap_index\x18\a \x01(\rR\fminimapIndex\"w\n" +
+	"\rminimap_index\x18\a \x01(\rR\fminimapIndex\x12\x1b\n" +
+	"\tmap_title\x18\b \x01(\tR\bmapTitle\"w\n" +
 	"\bMapChunk\x12\x15\n" +
 	"\x06map_id\x18\x01 \x01(\rR\x05mapId\x12\x1f\n" +
 	"\vchunk_index\x18\x02 \x01(\rR\n" +

@@ -43,6 +43,17 @@ pub struct Entity {
     pub dead: bool,
     /// 最近一次动作（见 `protocol.md` §9.5 的动作 id 值域：1..8 攻击 51 受击 52 死亡）。
     pub action: Option<u32>,
+    /// 收到过多少条 `EntityAction`（**动作事件计数**，不是值）。
+    ///
+    /// # ⚠️ 为什么需要它（用户 2026-10-09 报的"攻击只有第 1 下有挥砍"）
+    ///
+    /// 服务端**每次出手**都发一条 `EntityAction`，但普通攻击的 action 值**恒为 1**
+    ///（见 `netproto.go` 的 `EntityAction` 值域说明）⇒ 渲染层若按"值变没变"决定要不要
+    /// 重播动画，第二次以后的每一刀都是"值没变 ⇒ 不播"⇒ 表现就是**只有第一下有挥砍动作**，
+    /// 掉血照常。换目标也一样（值还是 1，仍然"没变"）。
+    ///
+    /// 所以判据必须是**消息**而不是值：每收到一条就 +1，渲染层按它重播动画。
+    pub action_seq: u64,
 }
 
 /// 一次伤害事件（`Damage`）。**由调用方取走**（`World::take_damage`）并决定怎么表现。
@@ -76,6 +87,7 @@ impl Entity {
             status_bits: s.status_bits,
             dead: false,
             action: None,
+            action_seq: 0,
         }
     }
 
@@ -147,6 +159,12 @@ pub enum Change {
 pub struct World {
     /// 自己的实体 id（0 = 还没进世界）。
     pub self_id: u64,
+    /// 自己的职业（`CharClass` 的原值：0 武士 / 1 法师 / 2 道士）。
+    ///
+    /// ⚠️ 协议里**没有**这个字段（官方客户端是从角色信息里拿的）。我们在**选角那一刻**
+    /// 就知道（`CharacterSummary.class`）⇒ 与 `self_name` 一起记住，见 `remember_self_class`。
+    /// 用途：HUD 的球体 —— 官方对"武士且未满 28 级"用另一套单球美术（`FState.pas:3608-3632`）。
+    pub self_class: Option<i32>,
     /// 自己的**角色名**（`EnterWorld.self_name`）—— 画在自己头顶。
     ///
     /// ⚠️ 它**不在** `entities` 里（快照刻意不含自己），协议也不在别处再给 ⇒
@@ -159,6 +177,11 @@ pub struct World {
     pub self_name: String,
     /// 地图**名字**（本项目地图按名字索引，D-22）。
     pub map_name: String,
+    /// 地图的**显示名**（`EnterWorld`/`ChangeMap` 的 `map_title`，如"比奇省"）。
+    ///
+    /// 官方客户端左下角那行抬头用它（`g_sMapTitle`，`DrawScrn.pas:513`：
+    /// `抬头 + ' ' + X + ':' + Y`）—— 服务端下发，不是客户端本地表。
+    pub map_title: String,
     /// 当前地图的**小地图图号**（0 = 该图没有小地图）。
     ///
     /// 服务端从 `MiniMap.txt` 查出来，随 `EnterWorld` / `ChangeMap` 一起下发
@@ -192,6 +215,9 @@ pub struct World {
     pub self_run: bool,
     /// 自己最近一次动作（挥砍…）—— 自己不在 `entities` 里，所以单列。
     pub self_action: Option<u32>,
+    /// 自己收到过多少条 `EntityAction`（同 `Entity::action_seq`：判"又砍了一刀"用的是
+    /// **消息**而不是动作值 —— 普通攻击的值恒为 1，按值判会漏掉第二次以后的每一刀）。
+    pub self_action_seq: u64,
     /// 自己的外观（`EnterWorld` / `ChangeMap` 里的 `self_feature`）。
     ///
     /// ⚠️ 它**不在** `entities` 里：快照刻意不含自己（见 `snapshot_drops_self`）。
@@ -224,6 +250,14 @@ impl World {
         }
     }
 
+    /// 记下"这次进的那个角色的职业"（选角列表里就有，见 `CharacterSummary.class`）。
+    ///
+    /// 用途只有一处：HUD 的球体按官方规则要分"武士且 <28 级"那一支
+    ///（`FState.pas:3608` 用 `m_btJob = 0`）—— 而协议没带职业，只能在这里记。
+    pub fn remember_self_class(&mut self, class: i32) {
+        self.self_class = Some(class);
+    }
+
     /// 应用一条信封。返回值只表示"画面要不要重画"。
     pub fn apply(&mut self, env: &Envelope) -> Change {
         let Some(body) = env.body.as_ref() else {
@@ -240,6 +274,7 @@ impl World {
                     self.self_name = ew.self_name.clone();
                 }
                 self.map_name = ew.map_name.clone();
+                self.map_title = ew.map_title.clone();
                 self.minimap_index = ew.minimap_index;
                 let pos = ew.position.unwrap_or_default();
                 self.self_pos = (pos.x, pos.y);
@@ -264,6 +299,7 @@ impl World {
             }
             Body::ChangeMap(cm) => {
                 self.map_name = cm.map_name.clone();
+                self.map_title = cm.map_title.clone();
                 self.minimap_index = cm.minimap_index; // 换图 = 换一张缩略图
                 self.self_feature = cm.self_feature;
                 // 回城/传送（含死亡回城）走的就是这条 ⇒ 自己恢复为活着的。
@@ -394,9 +430,12 @@ impl World {
                 self.actions += 1;
                 if let Some(e) = self.entities.get_mut(&a.entity_id) {
                     e.action = Some(a.action);
+                    // 每来一条就 +1：渲染层靠它重播动画（值可能没变，见 `action_seq`）。
+                    e.action_seq = e.action_seq.wrapping_add(1);
                 } else if a.entity_id == self.self_id {
                     // 自己的动作（挥砍）—— 自己不在 `entities` 里，单独存一份。
                     self.self_action = Some(a.action);
+                    self.self_action_seq = self.self_action_seq.wrapping_add(1);
                 } else {
                     self.unknown += 1;
                     return Change::None;
@@ -536,6 +575,7 @@ mod tests {
             self_feature: None,
             // 小地图图号：0 号图在 `MiniMap.txt` 里是 101（图库下标 = 100）
             minimap_index: 101,
+            map_title: "比奇省".into(),
         })
     }
 
@@ -571,6 +611,8 @@ mod tests {
         assert!(w.in_world());
         assert_eq!((w.self_id, w.map_name.as_str()), (1, "0"));
         assert_eq!(w.self_pos, (1, 1));
+        // 左下角那行的抬头来自服务端下发的地图描述（官方 `ClientGetMapDescription`）
+        assert_eq!(w.map_title, "比奇省");
         // 小地图图号要跟着进世界一起到（TAB 小地图靠它取图，见 `World::minimap_index`）
         assert_eq!(w.minimap_index, 101, "进世界该带上小地图图号");
         assert_eq!(w.server_tick, 42);
@@ -862,6 +904,36 @@ mod tests {
         })));
         assert_eq!(w.self_action, Some(1));
         assert_eq!(w.actions, 1);
+    }
+
+    /// 用户 2026-10-09 报的"攻击只有第 1 下有挥砍动作、后续掉血但没动作"：
+    ///
+    /// 服务端**每次出手**都发一条 `EntityAction`，但普通攻击的 action 值**恒为 1**
+    /// ⇒ 渲染层若按"值变没变"判重播，第二次以后的每一刀都会被判成"没变"而漏掉。
+    /// 这里锁住 `action_seq`：**值不变也要 +1**（判据是消息，不是值）。
+    #[test]
+    fn repeated_same_action_still_bumps_seq() {
+        let mut w = World::default();
+        w.apply(&env(enter_world()));
+        let act = |id: u64| {
+            env(Body::EntityAction(proto::EntityAction {
+                entity_id: id,
+                action: 1,
+                server_tick: 1,
+            }))
+        };
+        // 自己：连砍三刀（值都是 1）
+        for _ in 0..3 {
+            w.apply(&act(1));
+        }
+        assert_eq!(w.self_action, Some(1));
+        assert_eq!(w.self_action_seq, 3, "自己：每一条 EntityAction 都要计数");
+        // 别人（快照里的 `鸡`）：同样按消息计数
+        for _ in 0..2 {
+            w.apply(&act(1_000_001));
+        }
+        assert_eq!(w.entities[&1_000_001].action_seq, 2);
+        assert_eq!(w.entities[&1_000_001].action, Some(1));
     }
 
     #[test]
