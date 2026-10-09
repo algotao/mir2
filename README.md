@@ -105,8 +105,11 @@ go build -o /tmp/mir2dev/bin/gamesvr  ./cmd/gamesvr
     -user test -pass pw123 -new-char 勇士 -skip-game
 
 # 3) 游戏服（⚠️ `-proto-addr` **默认为空 = 新协议入口是关的**）
+#    ⚠️ `-map-dir` **必须给**：不给的话地图回退成空图，NPC/出生点全部越界不生成。
+#    想简化体验环境（只在新手村刷鹿）就加 `-mongen envir/mongen.newbie.txt`（见 D-58）。
 /tmp/mir2dev/bin/gamesvr -db /tmp/mir2dev/mir2go.db -data ./data -addr :7200 \
-    -proto-addr 127.0.0.1:7500 -map-dir $WS/mir2c/map -map 0
+    -proto-addr 127.0.0.1:7500 -map-dir $WS/mir2c/map -map 0 \
+    -mongen envir/mongen.newbie.txt
 
 # 4) 客户端（默认开在登录界面，输账号口令回车）
 cd client && MIR2_SERVER=127.0.0.1:7500 MIR2_ASSET_DIR=$WS/mir2c/data cargo run -p mir2-app

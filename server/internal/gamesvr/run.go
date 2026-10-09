@@ -66,7 +66,11 @@ func Main() {
 			"新角色出生点候选（`x,y;x,y`；**多于一个就随机挑一个**）。"+
 				"默认 = 原版 1.76 的两个新手村：银杏山谷(650,631) 与 边界村(289,618)"+
 				"（口径见 docs/use.md 与 D-40）；想钉死某个点就只留一个")
-		maxSpawns     = flag.Int("max-spawns", 0, "最多加载多少个刷怪点（0=不限）")
+		maxSpawns = flag.Int("max-spawns", 0, "最多加载多少个刷怪点（0=不限）")
+		// 开发期换刷怪表：默认是 1.76 的全量配置；`envir/mongen.newbie.txt` 只在新手村刷鹿
+		//（用户 2026-10-09 要的"简化体验环境"）。相对路径按 -data 目录解析。
+		monGenFile = flag.String("mongen", "envir/mongen.txt",
+			"刷怪表（相对 -data 目录）；envir/mongen.newbie.txt = 只在两个新手村刷鹿")
 		mapCacheLimit = flag.Int("map-cache", 0,
 			"已弃用：完整初始化要求全部地图常驻；非 0 值会被忽略")
 		scriptDir = flag.String("script-dir", "./data/envir/market_def",
@@ -330,7 +334,12 @@ func Main() {
 	srv.initPVP(srv.data.mapInfos, srv.data.startPoints)
 
 	// 社区包的 MonGen 与地图、怪物模板一并初始化；只禁用怪物实体时仍保留定义诊断。
-	monGenPath := filepath.Join(*dataDir, "envir", "mongen.txt")
+	// 默认 `envir/mongen.txt`（1.76 全量）；`-mongen` 可换成开发期的小表（见旗标说明）。
+	monGenPath := *monGenFile
+	if !filepath.IsAbs(monGenPath) {
+		monGenPath = filepath.Join(*dataDir, monGenPath)
+	}
+	log.Printf("刷怪表: %s", monGenPath)
 	spawns, spawnIssues, spawnErr := loadMonGen(monGenPath, tables, *maxSpawns)
 	if spawnErr != nil {
 		log.Printf("WARN: 刷怪配置读取失败（%s）: %v", monGenPath, spawnErr)

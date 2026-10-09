@@ -2868,3 +2868,67 @@ OpenMir2 / Crystal 为准，冲突处我定夺。四份并行调查（各带 `�
   引用不到物品，起服有 2 条告警）；客户端地图容器仍按 `$WS/mir2c/map` 全量打包（770 张，
   删掉的图进不了游戏但还占体积，见 assets.md D-22）；`merchant.txt`/`Npcs.txt` 里剩下的
   "会员/点卡" NPC 与 `9Gman`/`9lovegirl` 等无图号后缀脚本未动。
+
+## D-58 开发期体验环境一批：自己显示角色名、只在新手村刷鹿、HUD 补经验/负重条
+
+**用户 2026-10-09 第二批**（"先推送，然后……"）。
+
+### ① 显示"玩家自己"时用**角色名**，不再有占位词
+
+| 改了什么 | 依据 |
+|---|---|
+| `core::world`：`EnterWorld.self_name` 是**空串**时不再覆盖已知名字；新增 `remember_self_name()` | 名字在**选角那一刻**客户端就知道（`CharacterSummary.name`），不必等进图 |
+| `app/flow.rs`：选角发出 `SelectCharacter` 时把该角色的名字先记进世界 | 同上 |
+| `app/world.rs`：**删掉** `"[自己]"` 占位（头顶一律画角色名） | 用户要求；真拿不到名字宁可空着，也不显示假名字 |
+
+测试：`core::world::tests::self_name_keeps_character_name`（空 `self_name` 不冲掉已知名；
+服务端给了名字时以它为准）。
+
+### ② 开发期"只在新手村刷鹿"（简化体验环境）
+
+- 新增旗标 `-mongen <相对 -data 的路径>`（默认 `envir/mongen.txt` = 1.76 全量表）。
+- 新增 `data/envir/mongen.newbie.txt`：只在地图 0（比奇省）的两个出生点
+  `(289,618)`（边界村）与 `(650,631)`（银杏山谷）刷**鹿**，半径 8、3 只、1 分钟一刷。
+- 用法：`gamesvr … -mongen envir/mongen.newbie.txt`。
+- 实测：`刷怪表: data/envir/mongen.newbie.txt`、`刷怪点=2`、全图 770 张、NPC 定义 171 个。
+
+### ③ "地图上的 NPC 现在还没有吗？"
+
+**有**，三个前提要说清（也解释了用户看到的"没有"）：
+
+1. **必须带 `-map-dir $WS/mir2c/map` 起服**（README 里那条）。不给地图目录时地图回退成
+   程序生成的空图 ⇒ NPC 坐标全部越界、一个都不生成（日志会刷 `坐标 (…, …) 越界，未生成`）。
+   带上之后实测：`地图 0 生成 34 个 NPC`、全量 770 张图 / 171 个定义。
+2. **客户端目前把 NPC 画成标记**（`actor.rs` 注释说"`Npc.wzl` 缺失"）——
+   **这句已过时**：`$WS/mir2c/data` 里 `npc.wzl` … `npc4.wzl` 都在 ⇒ NPC 精灵可以接（待办）。
+3. **点 NPC 还不会有对话**：新协议里没有 NPC 对话/商店消息（`npcdlg.go` 只走 legacy `SM_*`）。
+
+### ④ HUD 补上经验条 / 负重条（协议加字段）
+
+- `protocol/common.proto` 的 `Ability` 加 `exp = 19` / `max_exp = 20`
+  （**兼容变更**：老客户端不读，不 bump `version.txt`，与 `MoveInput.run` 同例）。
+- 服务端 `protocolAbility`（新协议出口）一并下发 `Exp` 与 `MaxExp = entity.LevelNeed(level)`
+  —— 与 legacy 出口 `send.go` 的算法一致（原来只有 legacy 那边有，新协议缺这两个数）。
+- 客户端 `core::Ability` 补 `weight/max_weight/exp/max_exp`，用 `Ability::from_proto`
+  **一处映射**（`AbilityUpdate` 与 `LevelUp` 两个入口共用，免得下次加字段又漏一个）。
+- `app/hud.rs` 新增 `draw_prop_bar`：照原版 `FState.pas:3646-3671` 画两条 `Prguse[7]`
+  比例条（76×13）——**经验条**落点 `(666, SCREENHEIGHT-73)`、**负重条** `(666, H-40)`，
+  可见宽度 = `W * Cur / Max`（源矩形裁右边界 ⇒ 从左往右填）；`Cur`/`Max` 为 0 就不画。
+  ⚠️ 原版把两条一起挂在 `if (MaxExp>0) and (MaxWeight>0)` 下，这里**每条自己判**。
+- 等级本来就在画（`Prguse[30..39]` 数字图，`layout::level_at()`）。
+- 验证：`cargo test --workspace` 全绿（216 例）、`go test ./...` 全绿（25 包）。
+
+### ⑤ 用户点到的、**还没做**的（下一步）
+
+| 缺口 | 现状 |
+|---|---|
+| **背包窗口（F9）** | 协议与**服务端都已有**（`BagItems/AddItem/RemoveItem/UpdateItem/EquippedItems/WeightChanged/GoldChanged`，服务端 `sendBagItems` 在用）；缺的是客户端：`core::world` 不消费这些消息 + 没有窗口 |
+| **角色状态窗口（F10）** | 原版 `TFrmDlg.DStateWinDirectPaint` 是装备纸娃娃 + 属性 + 魔法列表（几百行、多层贴图）⇒ 值得单独一轮，先把数字行做出来也应算"能验" |
+| **NPC 对话 / 商店（验对话、交易）** | 协议里**没有**对应消息：需要新增"服务端说 + 选项"、"客户端选了哪条"，以及商店的"列表/买/卖"。服务端逻辑（`npcdlg.go` 的脚本引擎、`shop.go`）已存在，主要是**新协议出口** |
+| **NPC 精灵** | `npc.wzl` 素材其实有（见 ③-2），按 `ObjNpc.pas` 的外观公式接上就能从"标记"变"人" |
+
+### ⑥ 环境口径（顺带记下）
+
+- 起服（开发期，只刷鹿 + 真地图）：
+  `gamesvr -db … -data ./data -addr :7200 -proto-addr 127.0.0.1:7500 -map-dir $WS/mir2c/map -map 0 -mongen envir/mongen.newbie.txt`
+- 客户端：`MIR2_SERVER=127.0.0.1:7500 MIR2_ASSET_DIR=$WS/mir2c/data cargo run -p mir2-app`
