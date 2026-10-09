@@ -631,6 +631,12 @@ func (s *Server) attackPlayer(c net.Conn, attacker, victim *Player, dir uint8, b
 	}
 	ac := abilityFromPB(victim.Char.Data.Abil).AC
 	dmg := applyArmor(power, ac)
+	if dmg == 0 {
+		// 没破防：原版 `if nPower > 0` 不成立（不发 RM_STRUCK、不记 PK 标记）
+		logpvp("%s 的攻击没破开 %s 的防御（威力 %d ≤ AC）",
+			attacker.Char.Name, victim.Char.Name, power)
+		return
+	}
 	if !bonus.isZero() {
 		logpvp("%s 的%s命中 %s：威力 %d → 伤害 %d（HP %d/%d）",
 			attacker.Char.Name, bonus.name(), victim.Char.Name, power, dmg,

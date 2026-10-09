@@ -513,6 +513,52 @@ func (s *Server) keepCorpseOrRemove(m *entity.Monster) {
 // corpseLifetime 是尸体的存活时长（官方代码默认 `dwMakeGhostTime = 3 * 60 * 1000`）。
 const corpseLifetime = 3 * time.Minute
 
+// sweepCorpses 收走"躺够 [`corpseLifetime`]"的尸体（原版 `ObjBase.pas:3769`：
+// `GetTickCount - m_dwDeathTick > dwMakeGhostTime{3 分钟}`）。
+//
+// ⚠️ 这个函数是 2026-10-09 补的：`corpseLifetime` 早就定义着，但**全仓库没有第二个引用**
+// ⇒ 尸体永远留在地图上（用户问的"尸体应在一段时间后消失，现在这功能有没有？"）。
+// 现在挂在 `spawnLoop`（5 秒一档）里跑。
+//
+// 发包在**锁外**：先删（锁内），再给"看得见它的人"补一条 `EntityDisappear`，
+// 并把 id 从他们的 `visible` 里摘掉 —— 不摘的话下一轮视野 diff 会再发一次。
+func (s *Server) sweepCorpses(now time.Time) {
+	type corpse struct {
+		id uint32
+		m  *entity.Monster
+	}
+	var gone []corpse
+
+	s.mu.Lock()
+	for id, m := range s.world.monsters {
+		if m == nil || !m.IsDead() {
+			continue
+		}
+		if m.DeathAt.IsZero() || now.Sub(m.DeathAt) < corpseLifetime {
+			continue // 刚死的（或没记死亡时刻的）先留着
+		}
+		delete(s.world.monsters, id)
+		s.world.monsterIdx.Remove(m)
+		gone = append(gone, corpse{id, m})
+	}
+	viewers := make(map[*Player][]corpse)
+	for _, p := range s.world.players {
+		for _, g := range gone {
+			if p.visible.Remove(g.id) {
+				viewers[p] = append(viewers[p], g)
+			}
+		}
+	}
+	s.mu.Unlock()
+
+	for p, got := range viewers {
+		for _, g := range got {
+			// 坐标只是报文要求的填充（原版消失包也带位置）；客户端按 id 摘实体。
+			s.sendDisappear(p, g.id, g.m.PosX(), g.m.PosY())
+		}
+	}
+}
+
 // ---------- 小工具 ----------
 
 // absi 取绝对值（本包内多处要用）。

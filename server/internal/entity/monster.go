@@ -45,6 +45,12 @@ type Monster struct {
 
 	// TargetID 是当前追击的目标（0 表示无目标）。
 	TargetID uint32
+	// TargetFocusAt 是"上一次确认目标"的时刻（原版 `m_dwTargetFocusTick`）。
+	// 原版 `ObjBase.pas:3886-3891` 用它判"追了 30 秒还没打到就放弃"。
+	TargetFocusAt time.Time
+	// LastHiterAt 是"最后一次被谁打"的时刻（原版 `m_dwLastHiterTick`）。
+	// 与 `LastHiterID` 配对使用：原版 `ObjBase.pas:3898-3906` 规定 30 秒过期。
+	LastHiterAt time.Time
 
 	// wonderDir 是游荡方向偏好：完全随机每帧会让怪物原地抖动，
 	// 原版用 WalkStep/WalkWait 走一段停一段，这里简化为方向惯性。
@@ -288,6 +294,24 @@ const (
 	RcMonster     = 80  // RC_MONSTER
 	RcArcherGuard = 112 // RC_ARCHERGUARD
 )
+
+// RcStick 是**食人花**那一类的种族码（`ActorRace.MonsterStick = 85`，OpenMir2
+// `src/OpenMir2/Enums/Race.cs:78`）；数据侧对得上：`data/monsters.json` 里
+// `食人花` 的 `race` 就是 85。
+//
+// 原版行为在 `M2Server/Monster/Monsters/StickMonster.cs` 里写得很清楚：
+//
+//	StickMode = true        ⇒ **固定不动**（不追、不游荡）
+//	FixedHideMode = true    ⇒ **埋在地下**，默认不进视野
+//	ComeOutValue = 4        ⇒ 目标进到 4 格内才 `RM_DIGUP` 钻出来（`CheckComeOut`）
+//	AttackRange = 4         ⇒ 钻出来就地咬（不挪步）
+const RcStick = 85
+
+// IsStickRace 是**食人花**那一类（见 [`RcStick`]）。
+//
+// ⚠️ 它落在 `RC_MONSTER(80)` 区间里，所以**不能**用 [`IsAnimalRace`] 那套"动物不主动攻击"
+// 来判断 —— 食人花是要咬人的，只是**不挪窝**、而且要**先露头**。
+func IsStickRace(race uint16) bool { return race == RcStick }
 
 // IsAnimalRace 是**动物**（鸡/鹿…）。
 // 原版里它们**不主动攻击玩家**：`TChickenDeer.Run` 只会挑最近的威胁**逃跑**
@@ -536,21 +560,141 @@ func (m *Monster) CanAttack(now time.Time) bool {
 // MarkAttacked 记录一次攻击时刻。
 func (m *Monster) MarkAttacked(now time.Time) { m.lastAttack = now }
 
+// 放弃追击的两个阈值，照原版 `ObjBase.pas:3886-3891`：
+//
+//	(GetTickCount - m_dwTargetFocusTick) > 30000   或   |dx| > 15 或 |dy| > 15
+//
+// ⚠️ 我们原来是"出 `ViewRange`（默认 10）就丢目标"，比原版健忘得多
+//（怪追两步就放弃；用户 2026-10-09 第 2 条"遇到怪物的行为问题"）。
+const (
+	TargetDropWindow = 30 * time.Second
+	TargetDropRange  = 15
+)
+
+// MarkTargetFocus 记录"这一刻还在盯着目标"（攻击命中/重新锁定时调）。
+func (m *Monster) MarkTargetFocus(now time.Time) {
+	if m == nil {
+		return
+	}
+	m.TargetFocusAt = now
+}
+
+// TargetExpired 报告锁定目标是否该放弃（原版 `ObjBase.pas:3886-3891` 的两条）。
+func (m *Monster) TargetExpired(now time.Time, x, y int) bool {
+	if m == nil {
+		return true
+	}
+	if m.TargetFocusAt.IsZero() || now.Sub(m.TargetFocusAt) > TargetDropWindow {
+		return true
+	}
+	dx, dy := x-m.PosX(), y-m.PosY()
+	if dx < 0 {
+		dx = -dx
+	}
+	if dy < 0 {
+		dy = -dy
+	}
+	return dx > TargetDropRange || dy > TargetDropRange
+}
+
+// MarkHiter 记下"谁打了我"（原版 `SetLastHiter`，`ObjBase.pas:3898-3906`）。
+func (m *Monster) MarkHiter(attacker *Object, now time.Time) {
+	if m == nil || attacker == nil {
+		return
+	}
+	m.LastHiterID = attacker.ID
+	m.LastHiterAt = now
+}
+
+// LastHiter 返回"最后打我的人"，过期（30 秒）后返回 0。
+func (m *Monster) LastHiter(now time.Time) uint32 {
+	if m == nil || m.LastHiterID == 0 {
+		return 0
+	}
+	if m.LastHiterAt.IsZero() || now.Sub(m.LastHiterAt) > TargetDropWindow {
+		return 0
+	}
+	return m.LastHiterID
+}
+
+// StepDir 朝指定方向走一格（`Wonder`/`StepToward` 的公共出口）。
+//
+// ⚠️ 服务端在 moverun/statelock 那条路上给玩家加了"目标格被占"的校验
+//（`Server.cellOccupiedLocked`）；怪物这条同样需要 —— 调用方自己判完再调它。
+func (m *Monster) StepDir(dir uint8) bool {
+	if m == nil {
+		return false
+	}
+	return m.Object.MoveTo(dir)
+}
+
+// StepAway 朝"背离 (tx,ty)"的方向走一格（逃跑用），八方向。
+//
+// ⚠️ **与原版有一处刻意偏差**：原版 `TChickenDeer.Run`（`ObjMon.pas:585-593`）把逃跑点
+// 算成 `GetNextPosition(威胁点, self→威胁 方向, 5)` —— 即**威胁的另一侧**，配合
+// `GotoTargetXY`（`ObjBase.pas:2709-2770`，"朝目标点走、被挡就随机扰动重试"）
+// 实际表现是**围着玩家乱撞**。这里按"逃跑"的本意取**背离方向**（直觉上也是玩家看到的
+// "鸡/鹿被我打就跑了"）。OpenMir2 `ChickenDeer.cs` 与原版同款，不采用。
+func (m *Monster) StepAway(tx, ty int) bool {
+	if m == nil {
+		return false
+	}
+	mx, my := m.PosX(), m.PosY()
+	var dir uint8
+	switch {
+	case tx > mx && ty > my:
+		dir = DirUpLeft
+	case tx > mx && ty < my:
+		dir = DirDownLeft
+	case tx < mx && ty > my:
+		dir = DirUpRight
+	case tx < mx && ty < my:
+		dir = DirDownRight
+	case tx > mx:
+		dir = DirLeft
+	case tx < mx:
+		dir = DirRight
+	case ty > my:
+		dir = DirUp
+	case ty < my:
+		dir = DirDown
+	default:
+		return false
+	}
+	if m.Object.MoveTo(dir) {
+		return true
+	}
+	// 正后方被挡：两侧 45° 各试一次（原版 `GotoTargetXY` 的随机扰动，这里确定性试）
+	for _, alt := range [2]uint8{(dir + 1) % 8, (dir + 7) % 8} {
+		if m.Object.MoveTo(alt) {
+			return true
+		}
+	}
+	return false
+}
+
 // InView 报告坐标是否在怪物视野内。
 func (m *Monster) InView(x, y int) bool { return m.Distance(x, y) <= m.ViewRange }
 
 // Wonder 无目标时随机游荡：优先沿当前方向，撞墙则换向。
 //
 // 返回是否发生了移动。
-func (m *Monster) Wonder() bool {
+func (m *Monster) Wonder() bool { return m.WonderChecked(nil) }
+
+// WonderChecked 是 [`Monster.Wonder`] 的可校验版：`free(dir)` 返回 false 时那一步不走。
+//
+// 服务端用它把"目标格已被别的对象占着"（原版 `Envir.CanWalkEx`）也挡掉 ——
+// 怪物之间/怪物与玩家之间**不许叠格**，与玩家那条同一口径。
+func (m *Monster) WonderChecked(free func(dir uint8) bool) bool {
+	allow := func(d uint8) bool { return free == nil || free(d) }
 	// 先试当前方向
-	if m.Object.MoveTo(m.wonderDir) {
+	if allow(m.wonderDir) && m.Object.MoveTo(m.wonderDir) {
 		return true
 	}
-	// 撞墙：随机换一个能走的方向
+	// 撞墙（或被占）：随机换一个能走的方向
 	for i := 0; i < 8; i++ {
 		d := uint8(rand.IntN(8))
-		if m.Object.MoveTo(d) {
+		if allow(d) && m.Object.MoveTo(d) {
 			m.wonderDir = d
 			return true
 		}
@@ -565,33 +709,44 @@ func (m *Monster) Wonder() bool {
 //
 // 原版也没有 A*/FindPath（全库零命中），怪物靠 GetNextPosition 贪心靠近，
 // 卡住时 MapRandomMove。这里保持一致。
-func (m *Monster) StepToward(tx, ty int) bool {
+func (m *Monster) StepToward(tx, ty int) bool { return m.StepTowardChecked(tx, ty, nil) }
+
+// DirTo 取"从自己指向 (tx,ty)"的八方向（与 [`Monster.StepToward`] 同一套取法）。
+//
+// 单独抽出来是为了让调用方**先判目标格能不能落**再决定走不走
+//（`StepTowardChecked` 的 `free` 回调就是这么用的）。
+func (m *Monster) DirTo(tx, ty int) uint8 {
 	mx, my := m.Pos()
 	dx, dy := tx-mx, ty-my
-	var dir uint8
 	switch {
 	case dx > 0 && dy > 0:
-		dir = DirDownRight
+		return DirDownRight
 	case dx > 0 && dy < 0:
-		dir = DirUpRight
+		return DirUpRight
 	case dx < 0 && dy > 0:
-		dir = DirDownLeft
+		return DirDownLeft
 	case dx < 0 && dy < 0:
-		dir = DirUpLeft
+		return DirUpLeft
 	case dx > 0:
-		dir = DirRight
+		return DirRight
 	case dx < 0:
-		dir = DirLeft
+		return DirLeft
 	case dy > 0:
-		dir = DirDown
+		return DirDown
 	default:
-		dir = DirUp
+		return DirUp
 	}
-	if m.Object.MoveTo(dir) {
-		return true
+}
+
+// StepTowardChecked 是 [`Monster.StepToward`] 的可校验版：`free(dir)` 返回 false 的方向不走。
+func (m *Monster) StepTowardChecked(tx, ty int, free func(dir uint8) bool) bool {
+	if free == nil || free(m.DirTo(tx, ty)) {
+		if m.Object.MoveTo(m.DirTo(tx, ty)) {
+			return true
+		}
 	}
-	// 直线走不通，退化为随机游荡一次
-	return m.Wonder()
+	// 直线走不通（撞墙或被占），退化为随机游荡一次
+	return m.WonderChecked(free)
 }
 
 // LastStruckAt 返回最近一次被攻击的时刻（零值表示从未被打）。

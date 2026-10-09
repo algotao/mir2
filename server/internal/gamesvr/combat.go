@@ -118,6 +118,13 @@ func (s *Server) handleAttack(c net.Conn, p *Player, pkt wire.Packet) {
 	}
 	// 怪物 AC 是单值（非 Min/Max 打包），故 lo=hi
 	dmg := applyArmor(power, uint32(proto.PackMinMax(target.Info.AC, target.Info.AC)))
+	if dmg == 0 {
+		// **没破防**：原版 `_Attack` 里第二道 `if nPower > 0` 不成立 ⇒ 不发 RM_STRUCK、
+		// 不扣血、也不记仇恨（`SetLastHiter` 在 RM_STRUCK 里）。挥砍动画已经在上面
+		// `broadcastSwing` 发过了 ⇒ 表现就是"砍上去没反应、也没伤害数字"。
+		log.Printf("%s 的攻击没破开 %s 的防御（威力 %d ≤ AC）", p.Char.Name, target.Name, power)
+		return
+	}
 	// 红毒：目标受伤放大（原版 StruckDamage 在**受击方**算）
 	dmg = s.struckMonster(target, dmg, time.Now())
 	// 打了城堡单位（城门/城墙/守卫）⇒ 进 2 分钟仇恨窗口（TGuardUnit.Struck，见 guard.go）。
@@ -165,8 +172,14 @@ func (s *Server) handleAttack(c net.Conn, p *Player, pkt wire.Packet) {
 	}
 
 	// 死亡：广播 SM_DEATH，结算经验
+	// 尸体：**不从视野账本里摘掉**（原版 `Die` 之后对象仍留在图上，
+	// 3 分钟后 `MakeGhost → RM_DISAPPEAR` 才收走）。
+	//
+	// ⚠️ 这里原来是 `visible.Remove(...)` ⇒ 账本里没了它，`sweepCorpses`
+	//（`butch.go`）那句 `p.visible.Remove(g.id)` 恒为 false ⇒ **客户端尸体永远不消失**
+	//（用户 2026-10-09 问的第 4 条）。留着账本，收尸那条才发得出消失包。
 	s.broadcastToViewers(target.MapRef(), target.PosX(), target.PosY(), func(other *Player) {
-		if other.visible.Remove(target.ID) {
+		if other.visible.Contains(target.ID) {
 			s.sendDeathTo(other, target.ID, target.PosX(), target.PosY(), target.Facing(), p.Obj.ID)
 		}
 	})
@@ -392,7 +405,7 @@ func rollDamage(minAtk, maxAtk, ac uint32) uint32 {
 		armor = acLo + uint32(delphi.Random(int(acHi-acLo+1)))
 	}
 	if power <= armor {
-		return 1
+		return 0 // 没破防（原版 `_MAX(0, …)`）；调用方按"打空"处理
 	}
 	return power - armor
 }

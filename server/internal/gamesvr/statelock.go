@@ -5,6 +5,9 @@ import (
 	goproto "google.golang.org/protobuf/proto"
 	"math"
 	"time"
+
+	"github.com/algotao/mir2/server/internal/entity"
+	"github.com/algotao/mir2/server/internal/world"
 )
 
 // `Player.stateMu`：一个玩家的**私有状态**（随身财物 + 属性）的并发访问规则
@@ -449,26 +452,82 @@ func (p *Player) exp() uint64 {
 // （按坐标比对）会找不到这名玩家 ⇒ 两件事要放在同一段临界区里。
 // ⚠️ 调用方**不得**已持 `s.mu`（Go 的 Mutex 不可重入）。
 func (s *Server) movePlayer(p *Player, dir uint8) (x, y int, d uint8, moved bool) {
-	return s.movePlayerSteps(p, dir, 1)
+	x, y, d, moved, _ = s.movePlayerSteps(p, dir, 1)
+	return x, y, d, moved
 }
 
 // movePlayerSteps 朝 dir 连续走最多 `steps` 格（**跑 = 2 格**，照原版 `GetNextRunXY`）。
 //
 // ⚠️ 一格一格走、**撞墙就停**，而不是"算一个 +2 的落点"：中间有障碍时两者结果不同
 // （原版 `ClientRunXY` 也是逐步走、逐步判，`ObjBase.pas:9506-9535`）。
-func (s *Server) movePlayerSteps(p *Player, dir uint8, steps int) (x, y int, d uint8, moved bool) {
+// cellOccupiedLocked 报告 (x,y) 上是不是已经站着**别的**对象。
+//
+// 原版 `Envir.CanWalkEx`（`Envir.pas:488-540`）判两件事：地图 `chFlag` 与"该格上有没有
+// 其它对象"（`MoveToMovingObject:287-340`）。我们原来只判前者 ⇒ 两人/一人一怪能站同一格。
+//
+// `selfID` = 发起者的 ActorId（自己那格不算被占）。**尸体不算障碍**
+//（原版尸骨在图上，但不挡下一个对象生成 —— 这也是我们 `cellFreeLocked` 原来漏掉的）。
+//
+// **调用方持 `s.mu`**（空间索引本身无锁）。
+func (s *Server) cellOccupiedLocked(m *world.Map, x, y int, selfID uint32) bool {
+	if m == nil {
+		return false
+	}
+	for _, o := range s.world.monsterIdx.InRange(x, y, 0) {
+		e, ok := o.(*entity.Monster)
+		if !ok || e.IsDead() || e.MapRef() != m || e.PosX() != x || e.PosY() != y || e.ID == selfID {
+			continue
+		}
+		return true
+	}
+	for _, o := range s.world.index.InRange(x, y, 0) {
+		e, ok := o.(*Player)
+		if !ok || e.Obj.MapRef() != m || e.Obj.PosX() != x || e.Obj.PosY() != y || e.Obj.ID == selfID {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// movePlayerSteps 朝 dir 连续走最多 `steps` 格（**跑 = 2 格**，照原版 `GetNextRunXY`）。
+//
+// `reason`：0 = 成功；**2 = 越界**；**3 = 阻挡**（地形不可走，或目标格已被别人占）——
+// 与 `MoveRejected.reason` 一一对应（`netproto.go` 的 `rejectMove`）。
+//
+// ⚠️ **跑一格不让**：原版 `RunTo`（`ObjBase.pas:9255-9362`）先把两格都校验完、位移在
+// case 末尾**统一提交** ⇒ 第二格过不去时**一格都不动**。原来这里 `break` 之后照样提交
+// 第一格，于是"半跑"：客户端按 2 格补间动画，位置与服务端就此分叉。
+//
+// ⚠️ **不许叠格**：见 [`Server.cellOccupiedLocked`]。
+func (s *Server) movePlayerSteps(p *Player, dir uint8, steps int) (x, y int, d uint8, moved bool, reason uint32) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	x, y, d = p.Obj.PosX(), p.Obj.PosY(), p.Obj.Facing()
+	if dir > entity.DirUpLeft || steps < 1 {
+		return x, y, d, false, 3
+	}
+	m := p.Obj.MapRef()
+	if m == nil {
+		return x, y, d, false, 3
+	}
+	delta := entity.DirDelta[dir]
+	for i := 1; i <= steps; i++ {
+		cx, cy := x+delta[0]*i, y+delta[1]*i
+		if !m.InBounds(cx, cy) {
+			return x, y, d, false, 2
+		}
+		if !m.CanWalk(cx, cy) || s.cellOccupiedLocked(m, cx, cy, p.Obj.ID) {
+			return x, y, d, false, 3
+		}
+	}
 	for i := 0; i < steps; i++ {
 		if !p.Obj.MoveTo(dir) {
-			break // 被挡：停在原处（已走的那几格算数）
+			break // 上面已经校验过；真落不下来就停在这里，别越试越远
 		}
-		moved = true
 	}
-	if moved {
-		s.world.index.Update(p)
-	}
-	return p.Obj.PosX(), p.Obj.PosY(), p.Obj.Facing(), moved
+	s.world.index.Update(p)
+	return p.Obj.PosX(), p.Obj.PosY(), p.Obj.Facing(), true, 0
 }
 
 // turnPlayer 在 `s.mu` 下改玩家朝向，返回移动后的 (x, y, dir) 快照与是否成功。

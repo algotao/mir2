@@ -14,6 +14,9 @@ func (s *Server) spawnLoop() {
 	defer t.Stop()
 	for range t.C {
 		s.refillSpawns()
+		// 顺手收尸（原版 `dwMakeGhostTime` 3 分钟，见 `sweepCorpses`）。
+		// 挂在这一档（5 秒）而不是怪物 AI 那一档：尸体过期是分钟级的事。
+		s.sweepCorpses(time.Now())
 	}
 }
 

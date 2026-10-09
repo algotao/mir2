@@ -580,7 +580,7 @@ func (s *Server) handleMove(c net.Conn, p *Player, pkt wire.Packet, running bool
 	if running {
 		steps = 2
 	}
-	newX, newY, newDir, moved := s.movePlayerSteps(p, dir, steps)
+	newX, newY, newDir, moved, _ := s.movePlayerSteps(p, dir, steps)
 	if !moved {
 		s.send(c, proto.SM_MOVEFAIL, int32(p.Obj.ID), uint16(newX), uint16(newY), uint16(newDir), "")
 		return

@@ -324,7 +324,8 @@ func (s *Server) clearMapMonsters(mp *world.Map, monName string) (int, int) {
 	// 广播放在锁外（发包不做 IO 阻塞是对的，但别在持锁时发）。
 	for _, m := range victims {
 		s.broadcastToViewers(mp, m.PosX(), m.PosY(), func(o *Player) {
-			if o.visible.Remove(m.ID) {
+			// 尸体留在视野账本里（见 combat.go 同段的说明），3 分钟后 sweepCorpses 收
+			if o.visible.Contains(m.ID) {
 				s.sendDeathTo(o, m.ID, m.PosX(), m.PosY(), m.Facing(), 0)
 			}
 		})

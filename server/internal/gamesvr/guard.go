@@ -68,7 +68,7 @@ func (s *Server) markHiter(attacker *entity.Object, victim *entity.Monster, now 
 	if attacker == nil || victim == nil {
 		return
 	}
-	victim.LastHiterID = attacker.ID
+	victim.MarkHiter(attacker, now)
 	if victim.IsCastleUnit() {
 		attacker.SetCastleAggroUntil(now.Add(guardAggroWindow))
 	}

@@ -410,9 +410,11 @@ func TestKillLeavesCorpse(t *testing.T) {
 	if mon.DeathAt.IsZero() {
 		t.Error("死亡时刻该被记下")
 	}
-	// 到点 ⇒ tick 收走
+	// 到点 ⇒ 收走。⚠️ 收尸**只在 sweepCorpses**（5 秒那一档）里做：
+	// `tickMonsters` 里原来还有一份不发包的清理，会把尸体先删掉，
+	// 导致 `sweepCorpses` 发不出 EntityDisappear（客户端尸体永不消失）。
 	mon.DeathAt = time.Now().Add(-corpseLifetime - time.Second)
-	s.tickMonsters(time.Now())
+	s.sweepCorpses(time.Now())
 	if s.monsterByID(mon.ID) != nil {
 		t.Error("超过 corpseLifetime 的尸体该被收走")
 	}

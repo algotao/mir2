@@ -200,8 +200,23 @@ impl Login {
             if !(ch.is_ascii_graphic() || ch == ' ') || field.chars().count() >= max {
                 continue;
             }
+            // 原版 `EdLoginPasswdKeyPress`（`IntroScn.pas:594-611`）把 `~` 与 `'` 换成 `_`
+            //（`~`/`'` 在 6bit 报文里有特殊含义，原版就地规避；账号框也要，见 `:594`）。
+            let ch = if ch == '~' || ch == '\'' { '_' } else { ch };
             field.push(ch);
         }
+    }
+
+    /// 登录/建号被服务端拒了：弹提示 + **把焦点还给账号框**。
+    ///
+    /// 原版 `PassWdFail`（`IntroScn.pas:613-619`）会重新显示两个 `TEdit` 并 `SetFocus`
+    /// 到账号框 —— 用户接着就能重打，不用先按 Tab 摸回焦点。
+    pub fn fail(&mut self, why: String) {
+        self.error = Some(why);
+        self.busy = false;
+        // 焦点一律回**账号框**（原版 `PassWdFail` 就是 `m_EdId.SetFocus`）——
+        // 建号失败时同理：三个框里第一个就是账号。
+        self.focus = 0;
     }
 
     pub fn on_key(&mut self, k: Keycode) -> Action {
@@ -238,8 +253,14 @@ impl Login {
                 Action::None
             }
             Keycode::Return | Keycode::KpEnter => {
+                // 原版 `IntroScn.pas:583-611`：**账号框回车只把焦点跳到密码框**
+                //（`m_EdPasswd.SetFocus`），**密码框回车才发 `SendLogin`**（两框都非空时）。
+                // 我们原来任何框回车都直接提交 ⇒ 账号还没打完就发起登录了。
                 if self.signup() {
                     self.try_signup()
+                } else if self.focus == 0 {
+                    self.focus = 1;
+                    Action::None
                 } else {
                     Action::Submit
                 }
@@ -365,7 +386,15 @@ impl Login {
         uifill(canvas, 0.0, 0.0, winf.0, winf.1, C_BG)?;
         let Some(dir) = asset_dir else {
             let msg = "ASSETS NOT FOUND - SET MIR2_ASSET_DIR";
-            return text(canvas, msg, center_x(msg, 0.0, winf.0), winf.1 / 2.0, C_ERR);
+            // ⚠️ `text()` 是 8×8 调试字体，**直接画在画布上**；而 `winf` 是**设计空间**。
+            // 不换算的话这句话会落在 (400,300) 而不是画布中心 (512,384)（偏 112/84px）。
+            return text(
+                canvas,
+                msg,
+                center_x(msg, 0.0, ui_px(winf.0)),
+                ui_px(winf.1) / 2.0,
+                C_ERR,
+            );
         };
 
         // ① 背景：800×600 的图**拉伸 1.28 倍铺满**画布（2026-10-09 改，见 `ui::UI_SCALE`）。
@@ -408,7 +437,14 @@ impl Login {
 
         let Some(l) = Layout::build(win, |c, i| ui.size(dir, c, i)) else {
             let msg = "LOGIN ART MISSING - NEED Prguse.wzl";
-            return text(canvas, msg, center_x(msg, 0.0, winf.0), winf.1 / 2.0, C_ERR);
+            // 同上：`winf` 是设计空间，交给画布字体前要 `ui_px`
+            return text(
+                canvas,
+                msg,
+                center_x(msg, 0.0, ui_px(winf.0)),
+                ui_px(winf.1) / 2.0,
+                C_ERR,
+            );
         };
 
         // ③ 对话框
@@ -601,12 +637,21 @@ impl Login {
                 "|",
                 // 同上：光标按**设计空间**的字宽推进（`draw_ui` 会再乘回 1.28）
                 r.x + 2.0 + ui_inv_px(texts.width(shown)),
-                r.y + 4.0,
+                // ⚠️ 用 `FIELD_TEXT_TOP`（=1，居中）而不是写死 4：+4 会让文字底顶出框底
+                r.y + mir2_core::login_ui::FIELD_TEXT_TOP,
                 RGB_ACTIVE,
                 None,
             )?;
         }
-        texts.draw_ui(canvas, tc, shown, r.x + 3.0, r.y + 4.0, RGB_TEXT, None)
+        texts.draw_ui(
+            canvas,
+            tc,
+            shown,
+            r.x + 3.0,
+            r.y + mir2_core::login_ui::FIELD_TEXT_TOP,
+            RGB_TEXT,
+            None,
+        )
     }
 }
 

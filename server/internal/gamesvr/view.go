@@ -65,7 +65,20 @@ func (s *Server) updateVision(p *Player) {
 	}
 	for _, o := range s.world.monsterIdx.InRange(p.Obj.PosX(), p.Obj.PosY(), s.cfg.viewRange) {
 		m, ok := o.(*entity.Monster)
-		if !ok || m.IsDead() {
+		if !ok {
+			continue
+		}
+		// ⚠️ **尸体也算"在视野里"**：原版 `Die` 之后对象仍留在图上
+		//（`ObjBase.pas:20785-21071`），3 分钟后 `MakeGhost → RM_DISAPPEAR` 才收走；
+		// 而且是**先发给在场的人**（我们这里 `sendAppear` 对死怪发的是 `sendDeathTo`）。
+		//
+		// 原来这里 `|| m.IsDead()` 直接跳过 ⇒ 一是差集把它当 `left` 立刻发消失
+		//（客户端尸体当场没了），二是**新进视野的人根本看不到尸体**
+		//（原版 `ObjBase.pas:25708-25717` 会给刚进视野的死亡对象补发 RM_DEATH）。
+		// 埋着的食人花（`StickMonster.FixedHideMode`）：**不进视野** —— 玩家走到 4 格内
+		// 它才 `RM_DIGUP` 钻出来（用户 2026-10-09 第 3 条的"还会隐藏，直到人靠近"）。
+		// 口径与"露头半径"见 `stickShows`。
+		if m.Info != nil && entity.IsStickRace(m.Info.Race) && !s.stickShows(m) {
 			continue
 		}
 		if m.MapRef() == p.Obj.MapRef() && m.Distance(p.Obj.PosX(), p.Obj.PosY()) <= s.cfg.viewRange {
@@ -114,9 +127,17 @@ func (s *Server) sendAppear(to *Player, id uint32) {
 	}
 	m := s.world.monsters[id]
 	s.mu.RUnlock()
-	if m != nil {
-		s.sendMonsterAppear(to, m)
+	if m == nil {
+		return
 	}
+	if m.IsDead() {
+		// 尸体：新进视野的人也只该看到"躺着的它"（原版补发 `RM_DEATH` / `RM_SKELETON`）。
+		// ⚠️ 账本里要留一笔 —— `sweepCorpses` 收尸时靠 `visible.Remove` 才知道该给谁发消失包。
+		to.visible.Add(m.ID)
+		s.sendDeathTo(to, m.ID, m.PosX(), m.PosY(), m.Facing(), 0)
+		return
+	}
+	s.sendMonsterAppear(to, m)
 }
 
 // sendPlayerAppear 通知 to：玩家 who 出现（SM_TURN + TCharDesc）。

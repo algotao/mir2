@@ -106,6 +106,12 @@ pub enum Action {
 enum Hit {
     /// 某一块面板的「选择」按钮（= 选这个槽）。
     Sel(usize),
+    /// **点角色本体**（凹槽那一块）也算选中这个槽。
+    ///
+    /// ⚠️ 原版只认下方那颗「选择」钮（`TSelectChrScene` 没有自定义 `OnInRealArea`），
+    /// 这是用户 2026-10-09 要的增强："应支持鼠标点击角色选择，而不仅是下方的选择按钮"。
+    /// 命中范围见 `su::slot_at`。
+    Slot(usize),
     /// 中间菜单的第 i 项（顺序同 `su::MENU`）。
     Menu(usize),
     /// 弹窗那颗 [Ok]（`Prguse[363]`）。
@@ -358,10 +364,19 @@ impl Select {
     }
 
     fn hit_at(&self, p: (f32, f32), l: &su::Layout) -> Option<Hit> {
+        // 先判"点角色本体"（凹槽整块）—— 与下面那两类不重叠，顺序无所谓（见 `su::slot_at`）
+        if let Some(i) = su::slot_at(p, l.bg) {
+            return Some(Hit::Slot(i));
+        }
         for (i, r) in l.sel.iter().enumerate() {
             if r.hit(p) {
                 return Some(Hit::Sel(i));
             }
+        }
+        // ⚠️ 「开始」那颗**石台**（83×40，`su::START_PLATE_SRC`）比钮本身（44×21）大得多
+        // ⇒ 先按台子判一次，否则"看得见台子、点不中"（用户 2026-10-09 第 1 条里那份观感）。
+        if su::start_plate_at(l.menu[0]).hit(p) {
+            return Some(Hit::Menu(0));
         }
         for (i, r) in l.menu.iter().enumerate() {
             if r.hit(p) {
@@ -472,7 +487,8 @@ impl Select {
     /// 真正做一件事（鼠标/键盘共用）。
     fn activate(&mut self, hit: Hit) -> Action {
         match hit {
-            Hit::Sel(i) => {
+            // 点「选择」钮与点角色本体是**同一件事**：选这个槽
+            Hit::Sel(i) | Hit::Slot(i) => {
                 self.pick_slot(i);
                 Action::None
             }
@@ -687,6 +703,8 @@ impl Select {
             // 弹窗那颗 [Ok] 没有按下态图（原版那颗也只是同一张：登录界面那边按下是 +1 位移，
             // 选角这边按下的反馈就是"弹窗被点掉了"，不必再画一层）
             Some(Hit::MsgOk) => {}
+            // 点角色本体：不额外叠图（选中的反馈就是"这个小人不石化/开始摆手"）
+            Some(Hit::Slot(_)) => {}
             Some(Hit::Sel(i)) => {
                 let r = l.sel[i];
                 ui.draw_tint(

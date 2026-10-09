@@ -467,11 +467,20 @@ func (o *Object) Distance(x, y int) int {
 // 那是 2002 年拨号/ADSL 条件下的产物。现代做法直接在服务端按时间戳限流，
 // 逻辑更直白，也更容易调参。
 type MoveLimiter struct {
-	lastWalk time.Time
-	lastRun  time.Time
+	// last 是**走跑共用**的"上一次移动时刻"。
+	//
+	// ⚠️ 原版走与跑读的是**同一个** `m_dwMoveTick`（`ObjBase.pas:9604` 的
+	// `ClientWalkXY` 与 `:9521` 的 `ClientRunXY` 都在查它）⇒ 走一步之后紧接着跑
+	// 也要等满一个间隔。我们原来分开记两个时间戳 ⇒ "走→跑→走"交替能把平均压到
+	// 约 266ms/格，等于送了个变速齿轮。
+	last time.Time
 
 	// MinWalk / MinRun 是两次移动之间的最小间隔。
-	// 典型值：走路 ~600ms、跑步 ~400ms（与客户端动画时长对齐）。
+	//
+	// ⚠️ 原版两个都是 **600ms**（`GameConfig.pas:1038-1052` 的 `dwWalkIntervalTime`
+	// 与 `dwRunIntervalTime` 同为 600）—— 跑是"600ms 走 2 格"（300ms/格），
+	// 不是"间隔更短"。我们原来写 MinRun=400 ⇒ 跑比原版**快 50%**，
+	// 视觉上就是"滑步"（`RUN_STEP_MS` 也是按错的值推的）。
 	MinWalk time.Duration
 	MinRun  time.Duration
 }
@@ -480,29 +489,30 @@ type MoveLimiter struct {
 func NewMoveLimiter() *MoveLimiter {
 	// ⚠️ 限流跟随全局倍速（tscale）：e2e 加速时服务端与客户端必须同速，
 	// 否则客户端按键节奏跟不上，会大量丢步（表现为"追不上怪"）。
-	return &MoveLimiter{MinWalk: tscale.D(600 * time.Millisecond), MinRun: tscale.D(400 * time.Millisecond)}
+	return &MoveLimiter{
+		MinWalk: tscale.D(600 * time.Millisecond),
+		MinRun:  tscale.D(600 * time.Millisecond), // 原版同为 600：跑 = 600ms / 2 格
+	}
 }
 
 // Allow 报告此刻是否允许移动；允许则同时更新时间戳。
 func (l *MoveLimiter) Allow(running bool, now time.Time) bool {
 	min := l.MinWalk
-	last := &l.lastWalk
 	if running {
 		min = l.MinRun
-		last = &l.lastRun
 	}
 	if min <= 0 {
 		return true
 	}
-	if !last.IsZero() && now.Sub(*last) < min {
+	// 走跑共用 `l.last`（见字段说明）
+	if !l.last.IsZero() && now.Sub(l.last) < min {
 		return false
 	}
-	*last = now
+	l.last = now
 	return true
 }
 
 // Reset 重置时间戳（切换地图时使用，避免刚传送就被限流）。
 func (l *MoveLimiter) Reset() {
-	l.lastWalk = time.Time{}
-	l.lastRun = time.Time{}
+	l.last = time.Time{}
 }

@@ -1146,10 +1146,11 @@ func (ps *protoSession) onMoveInput(m *protocol.MoveInput) bool {
 
 	_, fromX, fromY, _ := p.Obj.Place()
 	// 跑 = 一步 2 格（`steps` 在上面按 `run` 算好）
-	newX, newY, newDir, moved := ps.srv.movePlayerSteps(p, dir, steps)
+	newX, newY, newDir, moved, reason := ps.srv.movePlayerSteps(p, dir, steps)
 	if !moved {
-		// 被挡：同样回权威位置（原版 SM_MOVEFAIL 的对应物）。
-		return ps.rejectMove(3, newX, newY)
+		// 没走成：回权威位置 + 原因（原版 `SM_MOVEFAIL` 的对应物）。
+		// reason 现在有真值了：2=越界 / 3=阻挡（原来恒 3，越界那条是死枚举）。
+		return ps.rejectMove(reason, newX, newY)
 	}
 
 	// 自己的权威回显（客户端已经在本地预测过，这条用来对齐/纠偏）。

@@ -41,7 +41,7 @@ func TestWalkOneCellRunTwoCells(t *testing.T) {
 	// 跑：2 格（复位后重来）
 	p.Obj.SetPlace(p.Obj.MapRef(), x0, y0, dir)
 	x1, y1 := p.Obj.PosX(), p.Obj.PosY()
-	if _, _, _, moved := s.movePlayerSteps(p, dir, 2); !moved {
+	if _, _, _, moved, _ := s.movePlayerSteps(p, dir, 2); !moved {
 		t.Fatalf("方向 %d 该走得动", dir)
 	}
 	if got := dist(x1, y1, p.Obj.PosX(), p.Obj.PosY()); got != 2 {
@@ -53,7 +53,7 @@ func TestWalkOneCellRunTwoCells(t *testing.T) {
 	// 撞墙即停：连走 8 格应当停在第一次被挡的地方，且**不会 panic / 不会越界**
 	steps := 0
 	for i := 0; i < 8; i++ {
-		if _, _, _, moved := s.movePlayerSteps(p, dir, 2); !moved {
+		if _, _, _, moved, _ := s.movePlayerSteps(p, dir, 2); !moved {
 			break
 		}
 		steps++

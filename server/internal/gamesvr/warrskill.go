@@ -456,7 +456,15 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// applyArmor 是物理减伤（原版 GetHitStruckDamage）：掷 AC 后相减，**保底 1**。
+// applyArmor 是物理减伤（原版 `GetHitStruckDamage`，`ObjBase.pas:22414-22439`）：
+// 掷 AC 后相减，**下界 0**（原版 `nDamage := _MAX(0, nDamage - nArmor)`）。
+//
+// ⚠️ 返回 0 表示"这一刀没破防"，调用方**必须**当成一次打空处理：
+// 原版 `_Attack` 在 `GetHitStruckDamage` 之后还有第二道 `if nPower > 0 then`
+//（`ObjBase.pas:22253-22261`）—— 不破防就**不发 RM_STRUCK、不扣血**。
+//
+// 我们原来在这里**保底 1** ⇒ 高防目标"永远掉 1 点血"，与官方手感不符
+//（用户 2026-10-09 第 3 条"普通攻击的正确性"）。
 func applyArmor(power int, ac uint32) uint32 {
 	acLo, acHi := uint32(proto.UnpackLo(ac)), uint32(proto.UnpackHi(ac))
 	if acHi < acLo {
@@ -467,7 +475,7 @@ func applyArmor(power int, ac uint32) uint32 {
 		armor = acLo + uint32(delphi.Random(int(acHi-acLo+1)))
 	}
 	if power <= int(armor) {
-		return 1
+		return 0 // 没破防（原版 `_MAX(0, …)`）
 	}
 	return uint32(power) - armor
 }
@@ -505,6 +513,11 @@ func (s *Server) playerAtLocked(m *world.Map, x, y int) *Player {
 // 与 handleAttack 的单格路径保持同一套包序（先 SM_STRUCK，死亡再 SM_DEATH）；
 // 复活/击杀结算复用 killMonsterBy（经验 + 掉落），避免三处各写一份。
 func (s *Server) hitMonster(p *Player, m *entity.Monster, dmg uint32) {
+	// 没破防（`applyArmor` 返回 0）：原版 `if nPower > 0` 不成立 ⇒ 不发受击包、不扣血。
+	if dmg == 0 {
+		log.Printf("%s 的攻击没破开 %s 的防御（AC ≥ 威力）", p.Char.Name, m.Name)
+		return
+	}
 	// 红毒：目标受伤放大（原版 StruckDamage）。战士技能的公共落点都在这里。
 	dmg = s.struckMonster(m, dmg, time.Now())
 	// 打了城堡单位 ⇒ 进 2 分钟仇恨窗口（原版 TGuardUnit.Struck，见 guard.go）
@@ -522,8 +535,14 @@ func (s *Server) hitMonster(p *Player, m *entity.Monster, dmg uint32) {
 	if !died {
 		return
 	}
+	// 尸体：**不从视野账本里摘掉**（原版 `Die` 之后对象仍留在图上，
+	// 3 分钟后 `MakeGhost → RM_DISAPPEAR` 才收走）。
+	//
+	// ⚠️ 这里原来是 `visible.Remove(...)` ⇒ 账本里没了它，`sweepCorpses`
+	//（`butch.go`）那句 `p.visible.Remove(g.id)` 恒为 false ⇒ **客户端尸体永远不消失**
+	//（用户 2026-10-09 问的第 4 条）。留着账本，收尸那条才发得出消失包。
 	s.broadcastToViewers(m.MapRef(), m.PosX(), m.PosY(), func(other *Player) {
-		if other.visible.Remove(m.ID) {
+		if other.visible.Contains(m.ID) {
 			s.sendDeathTo(other, m.ID, m.PosX(), m.PosY(), m.Facing(), p.Obj.ID)
 		}
 	})
@@ -1017,6 +1036,9 @@ func (s *Server) strikeMotaebo(c net.Conn, p *Player, cand pushCandidate, raw in
 		dmg := applyArmor(raw, abilityFromPB(cand.pl.Char.Data.Abil).AC)
 		log.Printf("%s 的野蛮冲撞撞到 %s：威力 %d → 伤害 %d",
 			p.Char.Name, cand.pl.Char.Name, raw, dmg)
+		if dmg == 0 {
+			return // 没破防：与 `_Attack` 的第二道 nPower > 0 同口径
+		}
 		s.damagePlayer(c, p, cand.pl, dmg, now)
 	}
 }
@@ -1027,6 +1049,9 @@ func (s *Server) selfDamage(c net.Conn, p *Player, raw int) {
 		return
 	}
 	dmg := applyArmor(raw, abilityFromPB(p.abilCopy()).AC)
+	if dmg == 0 {
+		return
+	}
 	hp := p.addHP(-int64(dmg)) // 自伤（持锁；夹到 0）
 	maxHP := p.maxHP()
 	s.broadcastToViewers(p.Obj.MapRef(), p.Obj.PosX(), p.Obj.PosY(), func(o *Player) {

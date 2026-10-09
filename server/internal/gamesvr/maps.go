@@ -473,7 +473,9 @@ func (s *Server) cellFreeLocked(m *world.Map, x, y int) bool {
 		return false
 	}
 	for _, o := range s.world.monsterIdx.InRange(x, y, 0) {
-		if e, ok := o.(*entity.Monster); ok && e.MapRef() == m && e.PosX() == x && e.PosY() == y {
+		// 尸体不算障碍（原版尸骨在图上但不挡下一个对象生成）
+		if e, ok := o.(*entity.Monster); ok && !e.IsDead() &&
+			e.MapRef() == m && e.PosX() == x && e.PosY() == y {
 			return false
 		}
 	}

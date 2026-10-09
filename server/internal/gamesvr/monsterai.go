@@ -61,22 +61,11 @@ func (s *Server) broadcastMonsterMove(mv monsterMove) {
 // 目标选取 → 距离判定（相邻则攻击，否则靠近）→ 冷却控制。
 func (s *Server) tickMonsters(now time.Time) {
 	s.mu.Lock()
-	// 尸体收尾（原版 `Run` 里那句 `GetTickCount - m_dwDeathTick > dwMakeGhostTime`，
-	// ObjBase.pas:3769）：到点就把尸体从世界里摘掉。顺手给"没有死亡时刻"的
-	// 死怪补一个时间戳 —— 避免哪条路径漏了 `keepCorpseOrRemove` 时尸体永久滞留。
-	for id, m := range s.world.monsters {
-		if !m.IsDead() {
-			continue
-		}
-		if m.DeathAt.IsZero() {
-			m.DeathAt = now
-			continue
-		}
-		if now.Sub(m.DeathAt) > corpseLifetime {
-			delete(s.world.monsters, id)
-			s.world.monsterIdx.Remove(m)
-		}
-	}
+	// 尸体收尾**只在 `sweepCorpses`（5 秒那一档）里做**。
+	//
+	// ⚠️ 这里原来还有一份"到点就 delete"的清理 —— 它不发 `EntityDisappear`，
+	// 而且跑在 500ms 这一档 ⇒ 尸体总是**先被它删掉**，`sweepCorpses` 再也找不到，
+	// 于是客户端那边尸体**永远不消失**（用户 2026-10-09 问的第 4 条）。
 	var moved []monsterMove
 	var hits []monsterHit
 	var petHits []petHit   // 宠物打怪（petattack.go）
@@ -124,6 +113,7 @@ func (s *Server) tickMonsters(now time.Time) {
 		//     （原版 `ObjGuard.pas:87-126`：`PKLevel >= 2` 或目标是怪）。
 		//     城堡单位不走这条（它们有 `guardProperTarget` 那套行会/攻城关系）。
 		animal := m.Info != nil && entity.IsAnimalRace(m.Info.Race)
+		stick := m.Info != nil && entity.IsStickRace(m.Info.Race)
 		wildGuard := guardCastle == nil && m.Info != nil && entity.IsGuardRace(m.Info.Race)
 
 		var target *Player
@@ -137,8 +127,11 @@ func (s *Server) tickMonsters(now time.Time) {
 			}
 		case !animal && (s.cfg.aggro || guardCastle != nil):
 			if m.TargetID != 0 {
+				// ⚠️ 保留判据从"出视野(10 格)就丢"改成原版的两条：
+				// **30 秒没打到** 或 **距离 > 15 格**（`ObjBase.pas:3886-3891`）。
+				// 原来的写法让怪追两步就放弃（用户报的"怪物的行为"）。
 				if p := s.world.players[m.TargetID]; p != nil && p.Obj.MapRef() == m.MapRef() &&
-					m.InView(p.Obj.PosX(), p.Obj.PosY()) {
+					!m.TargetExpired(now, p.Obj.PosX(), p.Obj.PosY()) {
 					target = p
 				} else {
 					m.TargetID = 0
@@ -152,6 +145,18 @@ func (s *Server) tickMonsters(now time.Time) {
 				// 野生守卫：目标"洗白"了（PK 值降下来）也立刻放下武器
 				if target != nil && wildGuard && !target.isRedName() {
 					m.TargetID, target = 0, nil
+				}
+			}
+			// ① 先看"最后打我的人"（原版 `RM_STRUCK → SetTargetCreat(hiter)`，
+			// `ObjBase.pas:2761-2806`：怪被打就转过去咬打它的人，哪怕那人不是最近的）。
+			// ⚠️ 原来没有这条 ⇒ 两个玩家一起打，怪只咬"视野内最近的"；被隐身玩家打永不还手。
+			if target == nil && guardCastle == nil {
+				if id := m.LastHiter(now); id != 0 {
+					if p := s.world.players[id]; p != nil && p.Obj.MapRef() == m.MapRef() &&
+						!m.TargetExpired(now, p.Obj.PosX(), p.Obj.PosY()) {
+						target, m.TargetID = p, p.Obj.ID
+						m.MarkTargetFocus(now)
+					}
 				}
 			}
 			if target == nil {
@@ -188,7 +193,52 @@ func (s *Server) tickMonsters(now time.Time) {
 						logpvp("城堡守卫 %s 锁定目标 %s", m.Name, target.Char.Name)
 					}
 					m.TargetID = target.Obj.ID
+					m.MarkTargetFocus(now)
 				}
+			}
+		}
+
+		// 1.5 食人花（`StickMonster`）：**不挪步**（`StickMode`）+ 埋着（`FixedHideMode`）。
+		//
+		// ⚠️ 它以前走的是下面那套普通怪 AI ⇒ **会追着人跑**（用户 2026-10-09 报的
+		// "食人花在走动，请参考官方实现"）。出处与字段含义见 `entity.RcStick` 的注释。
+		//
+		// ⚠️ **咬人只在相邻八格**：原版 `StickMonster.AttackTarget` 用的是基类
+		// `GetAttackDir`（`ObjBase.pas:18449-18502`，只认八邻域），`AttackRange = 4`
+		// 不是攻击距离 —— 它的作用是 `Run` 里那句 "目标出了 4 格就 `ComeDown` 缩回地下"
+		//（`ObjMon2.pas:205-222/276-281`）。原来我们按 `<4 格` 判定咬人，
+		// 等于给它装了门 4 格远程炮。
+		if stick {
+			if target != nil && m.Distance(target.Obj.PosX(), target.Obj.PosY()) <= 1 && m.CanAttack(now) {
+				m.MarkAttacked(now)
+				m.MarkTargetFocus(now)
+				hits = append(hits, s.monsterStrike(m, target))
+			}
+			continue
+		}
+
+		// 1.6 动物（鸡/鹿…，race 50..79）：**不还手，只逃跑**。
+		//
+		// 原版 `TChickenDeer.Run`（`ObjMon.pas:542-598`）：按 tick 扫 `m_VisibleActors`
+		// 取**最近的威胁**（曼哈顿距离），置 `m_boRunAwayMode := True` 并朝背离方向跑；
+		// 没有威胁就 `RunAwayMode := False` 落回游荡。**从不攻击**（没有 AttackTarget）。
+		// ⇒ 用户 2026-10-09 第 2 条问的"鹿、鸡在受攻击时有反击吗"：**没有，是跑**。
+		// ⚠️ 原来这里整段跳过 ⇒ 鸡/鹿被打也只会原地乱晃。
+		if animal {
+			threat := s.nearestThreat(m)
+			if threat == nil {
+				// 没有威胁 ⇒ 落到下面"无目标：游荡"
+			} else if m.CanAct(now) {
+				m.MarkActed(now)
+				fromX, fromY := m.PosX(), m.PosY()
+				if m.StepAway(threat.Obj.PosX(), threat.Obj.PosY()) {
+					s.world.monsterIdx.Update(m)
+					moved = append(moved, monsterMove{id: m.ID, x: m.PosX(), y: m.PosY(),
+						dir: m.Facing(), mapRef: m.MapRef(), fromX: fromX, fromY: fromY})
+				}
+				continue
+			} else {
+				continue
 			}
 		}
 
@@ -215,6 +265,8 @@ func (s *Server) tickMonsters(now time.Time) {
 			if m.Distance(target.Obj.PosX(), target.Obj.PosY()) <= 1 {
 				if m.CanAttack(now) {
 					m.MarkAttacked(now)
+					// 打到人就刷新"盯着目标"的计时（原版 `m_dwTargetFocusTick`）
+					m.MarkTargetFocus(now)
 					hits = append(hits, s.monsterStrike(m, target))
 				}
 				continue
@@ -224,7 +276,7 @@ func (s *Server) tickMonsters(now time.Time) {
 			}
 			m.MarkActed(now)
 			fromX, fromY := m.PosX(), m.PosY()
-			if m.StepToward(target.Obj.PosX(), target.Obj.PosY()) {
+			if m.StepTowardChecked(target.Obj.PosX(), target.Obj.PosY(), s.monsterFreeLocked(m)) {
 				s.world.monsterIdx.Update(m)
 				moved = append(moved, monsterMove{id: m.ID, x: m.PosX(), y: m.PosY(),
 					dir: m.Facing(), mapRef: m.MapRef(), fromX: fromX, fromY: fromY})
@@ -238,7 +290,7 @@ func (s *Server) tickMonsters(now time.Time) {
 		}
 		m.MarkActed(now)
 		fromX, fromY := m.PosX(), m.PosY()
-		if m.Wonder() {
+		if m.WonderChecked(s.monsterFreeLocked(m)) {
 			s.world.monsterIdx.Update(m)
 			moved = append(moved, monsterMove{id: m.ID, x: m.PosX(), y: m.PosY(),
 				dir: m.Facing(), mapRef: m.MapRef(), fromX: fromX, fromY: fromY})
@@ -260,6 +312,68 @@ func (s *Server) tickMonsters(now time.Time) {
 }
 
 // monsterStrike 怪物攻击玩家：算伤害并扣血。**调用方持锁**。
+// stickComeOut 是食人花的"露头半径"（原版 `StickMonster.ComeOutValue = 4`，单位：格）。
+const stickComeOut = 4
+
+// stickShows 报告这只**食人花**该不该露头（原版 `StickMonster.FixedHideMode` +
+// `CheckComeOut`）：有"该打的人"在两轴各自 < [`stickComeOut`] 格内就钻出来（`RM_DIGUP`），
+// 否则一直埋着 —— 埋着的时候**不进任何人的视野**（见 `view.go`）。
+//
+// **调用方持 `s.mu`**（读 `world.players`）。隐身的玩家它看不见，与 AI 选目标同一条口径
+//（`tickMonsters` 里那句"隐身：怪物看不见"）。
+func (s *Server) stickShows(m *entity.Monster) bool {
+	for _, p := range s.world.players {
+		if p.Obj.MapRef() != m.MapRef() || p.hasBuff(entity.BuffInvisible) {
+			continue
+		}
+		if absi(m.PosX()-p.Obj.PosX()) < stickComeOut &&
+			absi(m.PosY()-p.Obj.PosY()) < stickComeOut {
+			return true
+		}
+	}
+	return false
+}
+
+// nearestThreat 取动物"视野内最近的威胁"（原版 `TChickenDeer.Run` 的选法：
+// 曼哈顿距离最近、`IsProperTarget` 的对象；`ObjMon.pas:556-575`）。
+//
+// **调用方持 `s.mu`**。只挑玩家：宠物/召唤物对动物的威胁不建模（原版会一起算，
+// 但那依赖 PvP 状态判定，这里取最小口径）。
+func (s *Server) nearestThreat(m *entity.Monster) *Player {
+	if m == nil {
+		return nil
+	}
+	var best *Player
+	bestD := 1 << 30
+	for _, p := range s.world.players {
+		if p.Obj.MapRef() != m.MapRef() || p.hasBuff(entity.BuffInvisible) {
+			continue
+		}
+		if m.Distance(p.Obj.PosX(), p.Obj.PosY()) > m.ViewRange {
+			continue
+		}
+		d := absi(m.PosX()-p.Obj.PosX()) + absi(m.PosY()-p.Obj.PosY())
+		if d < bestD {
+			best, bestD = p, d
+		}
+	}
+	return best
+}
+
+// monsterFreeLocked 给出"怪朝 dir 走一格，目标格没被别人占"的判据，
+// 交给 `WonderChecked` / `StepTowardChecked`（原版 `Envir.CanWalkEx` 的对象阻挡）。
+//
+// **调用方持 `s.mu`**。
+func (s *Server) monsterFreeLocked(m *entity.Monster) func(dir uint8) bool {
+	return func(dir uint8) bool {
+		if dir > entity.DirUpLeft {
+			return false
+		}
+		d := entity.DirDelta[dir]
+		return !s.cellOccupiedLocked(m.MapRef(), m.PosX()+d[0], m.PosY()+d[1], m.ID)
+	}
+}
+
 func (s *Server) monsterStrike(m *entity.Monster, p *Player) monsterHit {
 	// 命中判定（原版怪物打玩家同样走 `_Attack` 的打空分支）。
 	// 例：鸡(hit=3) 打玩家(敏捷 15) 的命中率只有 4/15 ≈ 27%。
@@ -277,6 +391,12 @@ func (s *Server) monsterStrike(m *entity.Monster, p *Player) monsterHit {
 	dmg := maxAtk
 	if m.Info.Race != entity.RcGuard {
 		dmg = rollDamage(minAtk, maxAtk, s.playerAC(p))
+	}
+
+	if dmg == 0 {
+		// 没破防（`rollDamage` 下界 0）：原版 `_Attack` 的 `if nPower > 0` 不成立
+		// ⇒ 不发受击包、不扣血。借用 `miss` 那条路（调用方只按它决定发不发包）。
+		return monsterHit{monID: m.ID, playerID: p.Obj.ID, miss: true}
 	}
 
 	// 红毒：被打的人受伤放大（原版 StruckDamage 在受击方算；放在魔法盾之前，

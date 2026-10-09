@@ -111,12 +111,17 @@ func TestMoveLimiter(t *testing.T) {
 	if l.Allow(false, now.Add(100*time.Millisecond)) {
 		t.Error("间隔过短不应允许走")
 	}
-	// 跑步有自己的通道，不受走路限制
-	if !l.Allow(true, now.Add(100*time.Millisecond)) {
-		t.Error("跑步应走独立通道")
+	// ⚠️ 走跑**共用**同一个时间戳（原版 `m_dwMoveTick`，`ObjBase.pas:9521/9604`）：
+	// 走一步之后紧接着跑也要等满间隔 —— 否则"走→跑→走"交替等于变速齿轮。
+	if l.Allow(true, now.Add(100*time.Millisecond)) {
+		t.Error("刚走过就不该允许跑（走跑共用 m_dwMoveTick）")
+	}
+	// 跑同样要等满 600ms（原版 `dwRunIntervalTime` 也是 600）
+	if !l.Allow(true, now.Add(700*time.Millisecond)) {
+		t.Error("间隔足够应允许跑")
 	}
 	// 走够 600ms 后可以再走
-	if !l.Allow(false, now.Add(700*time.Millisecond)) {
+	if !l.Allow(false, now.Add(1400*time.Millisecond)) {
 		t.Error("间隔足够应允许走")
 	}
 
