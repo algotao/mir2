@@ -137,12 +137,33 @@ func TestUpdateFeatureShapeAndEmpty(t *testing.T) {
 	s.updateFeature(p)
 	f := p.Obj.FeatureBits()
 	// 布衣(女)：Shape=1、StdMode=11 ⇒ Dress = 1*2+1 = 3（Hum.wzl 第 3 块 = 布衣女）
-	// 铁剑：Shape=2 ⇒ Weapon = 2
+	// 铁剑：Shape=2、角色男 ⇒ Weapon = 2*2+0 = 4（`ObjBase.pas:20018` 的 `Shape*2+性别`）
 	if got := proto.FeatureDress(f); got != 3 {
 		t.Errorf("Dress = %d，应为 3（布衣(女) Shape=1、女装 +1）—— 用 Looks 会得到 80", got)
 	}
-	if got := proto.FeatureWeapon(f); got != 2 {
-		t.Errorf("Weapon = %d，应为 2（铁剑 Shape=2）—— 用 Looks 会得到 36", got)
+	if got := proto.FeatureWeapon(f); got != 4 {
+		t.Errorf("Weapon = %d，应为 4（铁剑 Shape=2、男 ⇒ 2*2+0）—— 用 Looks 会得到 36", got)
+	}
+
+	// 木剑 —— **用户 2026-10-09 截图里那把**：`Shape=1` ⇒ 男 = 2、女 = 3，
+	// 正好落在 `Weapon.wzl` 的块 2/3（图号 1200/1800），那两块导出来就是
+	// "握在手里的**棕木剑**"（用户给的官方截图与之一致）。
+	//
+	// 这是本用例最该钉住的一条：`Shape*2+性别` 一旦退回 `Shape`，木剑会画成
+	// 块 1 = **下一把武器**（细长银剑，用户原话"更像长剑铁剑"）。
+	for _, c := range []struct {
+		sex  uint32
+		want uint8
+	}{{0, 2}, {1, 3}} {
+		q := testMaster(200+c.sex, "持木剑的")
+		q.Char.Data = &pb.CharacterData{
+			Sex:      c.sex,
+			HumItems: []*pb.UserItem{nil, byName("木剑")},
+		}
+		s.updateFeature(q)
+		if got := proto.FeatureWeapon(q.Obj.FeatureBits()); got != c.want {
+			t.Errorf("木剑 性别%d：Weapon = %d，应为 %d（Shape=1 ⇒ 1*2+性别）", c.sex, got, c.want)
+		}
 	}
 	// 头发/race 不能被外观重算弄丢
 	if got := proto.FeatureHair(f); got != 0 {

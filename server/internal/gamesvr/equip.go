@@ -258,14 +258,24 @@ const (
 // 见 `Items.wzl[looks]`）。两者完全不同：木剑 `Shape=1 / Looks=30`，
 // 用 `Looks` 去取 `Weapon.wzl` 会取到第 30 块（不存在的东西）。
 //
-// 口径照原版（`ObjBase.pas` 的 `RecalcAbilitys`/外观重算）：
+// 口径照原版（`ObjBase.pas:20004-20021`，用户 2026-10-09 让我"对应库里的素材"时查证的）：
 //
-//	武器：`Weapon := StdItem.Shape`            —— `Weapon.wzl` 的块号就是武器 Shape
-//	衣服：`Dress := StdItem.Shape * 2 + 性别`   —— `Hum.wzl` 里同一款式男/女各一块，
-//	                                            靠低位分（StdMode 10=男 → +0、11=女 → +1）
+//	nDress  := StdItem.Shape * 2;  Inc(nDress,  m_btGender);
+//	nWeapon := StdItem.Shape * 2;  Inc(nWeapon, m_btGender);
+//	nHair   := m_btHair * 2 + m_btGender;
 //
-// 客户端 `actor.rs` 的 `human_index(dress, …)` 期望的正是这个值（那边的说明也写着
-// "服务端已经算成 Shape*2+性别"）。
+// 即**特征字节 = `Shape*2 + 性别`（男 0 / 女 1）**；客户端再乘 600 取块
+// （`Actor.pas`：`m_nWeaponOffset := HUMANFRAME * m_btWeapon`，`HUMANFRAME = 600`）。
+//
+// ⚠️ 这里原来写的是 `Weapon := StdItem.Shape`（"块号就是武器 Shape"）—— **错的**，
+// 症状就是用户报的"木剑图不对，更像长剑"：`Weapon.wzl` 是**每把武器占两块**
+// （男/女），45600 张 = 76 块，**块 0/1 恒为空**（`Shape` 从 1 起 ⇒ 特征字节从 2 起，
+// 74 块非空 = 37 把 × 2 性别）。木剑 `Shape=1`、男 ⇒ 字节 **2** ⇒ 块 2（图号 1200）
+// = 官方的棕木剑；按旧的 `Shape` 去取块 1 会落到**下一把武器**上。
+//
+// [旧注释里的另一条错误，一并记下] "`Weapon.wzl` 是坏的一对" —— 那是当时把
+// `.wzx` 当 **16 字节/项**解析出来的假象；真实格式是 **48 字节头 + 4 字节/项偏移**
+// （见 `client/core/src/wzx.rs`），读取器一直是对的，坏的是我的取样位置（0/1 块本来就空）。
 func (s *Server) updateFeature(p *Player) {
 	if p == nil || p.Char == nil || p.Char.Data == nil || s.data.tables == nil {
 		return
@@ -280,21 +290,27 @@ func (s *Server) updateFeature(p *Player) {
 		}
 		return p.Char.Data.HumItems[slot]
 	}
+	// 角色性别（0 男 / 1 女）：官方公式里三处外观都要把它**加到低位**。
+	gender := uint8(0)
+	if p.Char.Data.Sex == 1 {
+		gender = 1
+	}
 	weapon, dress := uint8(0), uint8(0)
 	if it := at(proto.SlotWeapon); it != nil && it.Index != 0 {
 		if t := items.Get(int(it.Index) - 1); t != nil {
-			weapon = uint8(t.Shape)
+			weapon = t.Shape*2 + gender
 		}
 	}
 	if it := at(proto.SlotDress); it != nil && it.Index != 0 {
 		if t := items.Get(int(it.Index) - 1); t != nil {
-			// StdMode 10 = 男装、11 = 女装（`data.ItemTypeDress` 就覆盖这两档）。
-			// 原版是按**物品自己的** StdMode 分的，不是按角色性别。
-			gender := 0
+			// 衣服的性别取**物品自己的** StdMode（10 男装 / 11 女装），不是角色性别：
+			// 官方那两行都用 `m_btGender`，前提是"男装只能男穿"；我们的装备没有性别锁
+			// ⇒ 按物品走才不会出现"男角色穿女装却画成男装"。
+			itemGender := uint8(0)
 			if t.StdMode == stdModeDressFemale {
-				gender = 1
+				itemGender = 1
 			}
-			dress = t.Shape*2 + uint8(gender)
+			dress = t.Shape*2 + itemGender
 		}
 	}
 	p.Obj.SetFeatureBits(proto.MakeFeature(

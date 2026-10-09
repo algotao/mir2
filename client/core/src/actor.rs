@@ -390,27 +390,32 @@ pub fn dir_of(direction: i32) -> u8 {
 
 /// 人物容器（`Hum.wzl`）。
 pub const HUM_LIB: &str = "Hum";
-/// 武器容器 —— **`Weapon2.wzl`**（不是 `Weapon.wzl`，见下）。
+/// 武器容器（`Weapon.wzl`）。
 ///
-/// # 为什么是 `Weapon2`（2026-10-09 查证）
+/// # 为什么是 `Weapon`（2026-10-09 查证，用户给了"手持木剑"的官方截图）
 ///
-/// 1. **口径来自官方客户端源码**：`mir2standard/GameOfMir/MirClient/Actor.pas`
-///    （Delphi 1.76 客户端）里 `m_nWeaponOffset := HUMANFRAME * m_btWeapon`，
-///    而 `HUMANFRAME = 600` —— 与**人物身体共用同一个块大小**（衣服也是
-///    `HUMANFRAME * Dress`）。武器外观号 = 物品的 `Shape`。
-/// 2. **本项目素材里的 `Weapon.wzl` 是坏的一对**：它的 `.wzx` 只有 11403 条记录，
-///    而 `.wzl` 头里写着 45600 张；记录大半是空壳（`--list` 有尺寸、`decode` 取不到），
-///    "站姿"（每方向 4 帧、步长 8）只出现在 3600 / 4800 ⇒ 那份是 1200/块，且
-///    `.wzl` 与 `.wzx` 不是同一版。
-/// 3. **`Weapon2.wzl` 才是对的那一把**：从下标 0 就能解出，"站姿"模式出现在
-///    **600 与 1200** 两个块起点 ⇒ 经典 **600/块**，与源码口径一致；取 600
-///    （`Shape = 1` = 木剑）导出来一看，正是**握在手里的剑**（8 方向、带手套）。
+/// 1. **公式来自官方服务端**：`mir2standard/GameOfMir/M2Server/ObjBase.pas:20018`
 ///
-/// 公式因此不用改（就是 [`human_index`] 的 600/块），只换图库。
+///    ```pascal
+///    nWeapon := StdItem.Shape * 2;  Inc(nWeapon, m_btGender);
+///    ```
 ///
-/// ⚠️ 别改回 `Weapon`：那份素材的表现是"拿武器的人**手上什么都没有**"
-///（服务端给的外观号是对的，取图取空了）。
-pub const WEAPON_LIB: &str = "Weapon2";
+///    即特征里的武器字节 = **`Shape*2 + 性别`（男 0 / 女 1）**，不是 `Shape`。
+///    客户端 `Actor.pas` 的 `m_nWeaponOffset := HUMANFRAME * m_btWeapon`（600 一块）
+///    直接拿它当块号 ⇒ [公式见 `human_index`]。
+/// 2. **素材印证**：`Weapon.wzl` 有 45600 张 = **76 块**，其中 **块 0/1 恒为空**
+///    （`Shape` 从 1 起 ⇒ 字节从 2 起），**块 2..75 共 74 块非空 = 37 把武器 × 2 性别**
+///    —— 与 `Shape*2+性别` 一格不差（用 `wzldump --avg` 逐块扫出来的）。
+///    块 2（图号 1200）= **浅棕木剑 + 握拳**，正是用户截图里木剑（`Shape=1`、男）的样子；
+///    块 4/5（铁剑/青铜剑 `Shape=2`）= 银灰钢剑。
+/// 3. **上一版写成 `Weapon2` 是误判**：当时把 `.wzx` 当 **16 字节/项**解析（真实格式是
+///    **48 字节头 + 4 字节偏移/项**，见 [`crate::wzx`]），算出的"记录数对不上"是假的；
+///    又恰好去 0/1 块取样（那两块本来就空）⇒ 得出"`Weapon.wzl` 坏了"的错误结论。
+///    `Weapon2.wzl` 只有 42 块（21 把 × 2 性别），是**另一套造型**，不是主武器库。
+///
+/// ⚠️ 同时记得：`Shape` 是外观号、`Looks` 才是 `Items.wzl` 里的**图标**号
+///（木剑 `Shape=1 / Looks=30`），两者不能混。
+pub const WEAPON_LIB: &str = "Weapon";
 
 // ---------- 生成段 ----------
 // 由 `client/core/tools/gen_actor_tables.py` 从 Actor.pas 抽出；**不要手改数字**。
@@ -2186,6 +2191,73 @@ mod tests {
             .decode(idx as usize)
             .unwrap_or_else(|| panic!("{lib} 图号 {idx} 没有图（共 {} 张）", mon.len()));
         assert!(!s.is_empty());
+
+        // ---- 武器层：块号必须是 `2*Shape + 性别`（不是 `Shape`）----
+        //
+        // 官方口径 `ObjBase.pas:20018`：`nWeapon := StdItem.Shape * 2; Inc(nWeapon, m_btGender)`；
+        // 客户端再乘 600 取块 ⇒ `Weapon.wzl` 是"**每把武器占两块**（男/女）"：
+        // 45600 张 = 76 块，**块 0/1 恒为空**（`Shape` 从 1 起 ⇒ 字节从 2 起），
+        // 块 2..75 共 74 块 = `Shape` 1..37 × 2。
+        //
+        // ⚠️ 用户 2026-10-09 给了"手持木剑"的官方截图才查出来：木剑 `Shape=1`、男
+        // ⇒ 块 2（图号 1200）才是那把棕木剑。之前公式写成 `Shape` ⇒ 取块 1，而块 1
+        // **整块是空的** ⇒ 看起来"拿武器的人手上什么都没有"，于是误判成"素材坏了"、
+        // 换去 `Weapon2`（`Shape=1` 落到那把**细长银剑**，用户原话"更像长剑铁剑"）。
+        let wp = Wzl::open(dir.join(WEAPON_LIB)).unwrap_or_else(|e| panic!("{WEAPON_LIB}.wzl: {e}"));
+        assert!(
+            wp.len() >= 76 * HUMAN_FRAME as usize,
+            "{WEAPON_LIB} 只有 {} 张（应 ≥ 76 块 × 600）",
+            wp.len()
+        );
+        let stand = human_pose(None, false, false).act;
+        for shape in 1..=37u8 {
+            for sex in 0..2u8 {
+                let part = shape * 2 + sex;
+                // 个别方向素材里就是**空占位**（朝上时剑被身体挡住，见 `--list` 里
+                // 那些 8x8 的记录）⇒ 只要 8 个站姿方向里**有一个能出图**就算这块有货。
+                let ok = (0..8u8).any(|d| {
+                    wp.decode(human_index(part, stand, d, 0) as usize)
+                        .is_some_and(|s| !s.is_empty())
+                });
+                assert!(ok, "武器 Shape={shape} 性别={sex}（块 {part}）：八个方向都没有图");
+            }
+        }
+        // 块 1（= `Shape 0` 那格）必须是空的 —— 它空着本身就是"字节从 2 起"的证据，
+        // 也是上一版误判的现场。它哪天有图了，说明口径要重查。
+        assert!(
+            wp.decode(human_index(1, stand, 4, 0) as usize)
+                .map_or(true, |s| s.is_empty()),
+            "块 1 竟然有图 ⇒ `2*Shape+性别` 这条口径要重新查"
+        );
+        // 木剑（`Shape=1`、男 ⇒ 块 2）画出来必须是**木头色**：给对了块的像素级证据
+        //（官方截图里那把木剑就是浅棕）。铁剑/青铜剑（`Shape=2` ⇒ 块 4/5）是银灰。
+        let mut brown = (0u64, 0u64, 0u64, 0u64);
+        let mut steel = (0u64, 0u64, 0u64, 0u64);
+        for (part, acc) in [(2u8, &mut brown), (4u8, &mut steel)] {
+            for d in 0..8u8 {
+                let Some(s) = wp.decode(human_index(part, stand, d, 0) as usize) else { continue };
+                for px in s.rgba.chunks(4) {
+                    if px[3] > 128 {
+                        acc.0 += px[0] as u64;
+                        acc.1 += px[1] as u64;
+                        acc.2 += px[2] as u64;
+                        acc.3 += 1;
+                    }
+                }
+            }
+        }
+        assert!(brown.3 > 0, "木剑（块 2）一个不透明像素都没有");
+        assert!(steel.3 > 0, "铁剑（块 4）一个不透明像素都没有");
+        let (r, g, b) = (brown.0 / brown.3, brown.1 / brown.3, brown.2 / brown.3);
+        assert!(
+            r > g && g > b && r - b > 20,
+            "木剑该是棕色（R>G>B 且偏暖），实得 rgb({r},{g},{b})"
+        );
+        let (sr, sg, sb) = (steel.0 / steel.3, steel.1 / steel.3, steel.2 / steel.3);
+        assert!(
+            (sr as i64 - sb as i64).abs() < 40 && (sg as i64 - sb as i64) < 40,
+            "铁剑该是银灰（近中性），实得 rgb({sr},{sg},{sb}) —— 别与木剑换块"
+        );
 
         // 头发：原版要的容器叫 `Hair`（`Share.pas:59` 的 `HAIRIMGIMAGESFILE`），
         // 而本套素材**没有这个文件**；有的是 `hair2`（真素材）与 `hair_ck` / `hair4_ck`

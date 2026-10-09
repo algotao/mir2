@@ -35,10 +35,14 @@
   ⇒ 进图从没算过；② 算的时候用 `Looks`（图标图号）而不是 `Shape`（外观块号）。
 - 现在在 `joinWorld`（两条入口共用的构造点）按 `Shape*2+性别` / `Shape` 算一次，
   端到端断言 `dress=2 / weapon=1`，并目视确认 `Hum.wzl` 块 2 = 布衣(男)。
-- ✅ 遗留已解决（D-67）：不是公式错，是**图库配错** —— 本项目素材的 `Weapon.wzl`/.wzx
-  不是同一版（头 45600 张 vs 索引 11403 条、大半空壳），改用同目录的 **`Weapon2.wzl`**
-  （经典 600/块，取 `Shape=1` 那块导出来就是握在手里的剑）。口径出自
-  `mir2standard/GameOfMir/MirClient/Actor.pas`：`HUMANFRAME=600; WeaponOffset := HUMANFRAME*Weapon`。
+- ✅ 遗留已解决（**D-71**，D-67 的结论是错的、已作废）：图库是 **`Weapon.wzl`**，
+  块号是 **`2*Shape + 性别`**（官方 `ObjBase.pas:20018`），不再是 `Weapon2` + `Shape`。
+  D-67 当年"`Weapon.wzl` 坏了"的依据是把 `.wzx` 按 16 字节/项解析出来的假象
+  （真实是 48 字节头 + 4 字节/项），且取样正好落在**本来就空的 0/1 块**上。
+- ⏳ **待查**：头发字节。官方 `nHair := m_btHair * 2 + m_btGender`，而我们的
+  `joinWorld` 发的是裸 `chr.Data.Hair`（`join.go`）。本期不动：客户端**不画头发**
+  （素材没有 `Hair.wzl`，见 `core/src/actor.rs` 的素材断言）⇒ 现在改了也验不了；
+  真要做头发层时连它一起改，并确认我们 DB 里 `Hair` 字段的语义是否已含性别。
 
 **2026-10-09 再补：对话正文的行内可点文字（D-68）**
 - 脚本 ` <打开/@trading> 交易市场\` 要渲染成**一行**、只有"打开"可点；旧版把链接抽到

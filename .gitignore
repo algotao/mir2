@@ -90,3 +90,6 @@ mir2go.db
 mir2go.db-journal
 mir2go.db-wal
 mir2go.db-shm
+
+# Python 工具（tools/imgtool.py）的字节码缓存
+__pycache__/

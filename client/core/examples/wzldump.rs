@@ -69,6 +69,43 @@ fn main() {
         return;
     }
 
+    // `avg` 模式：**逐张算平均色**并打印 `图号 宽 高 R G B 不透明像素数`。
+    //
+    // 为什么需要它：图库动辄几万张，"哪一块是浅棕色的木剑"靠一张张翻不现实。
+    // 先把每张的主色算出来，再用一行 awk/python 按颜色筛（木剑 ≈ 浅棕 R>G>B、R-B 大），
+    // 候选就从几万张缩到几十张 —— 然后再 `--only` 拼出来看。
+    if env::args().any(|x| x == "--avg") {
+        for i in start..end.min(w.len()) {
+            let Some(sp) = w.decode(i) else { continue };
+            if sp.width == 0 || sp.height == 0 {
+                continue;
+            }
+            let (mut r, mut g, mut b, mut n) = (0u64, 0u64, 0u64, 0u64);
+            for px in sp.rgba.chunks(4) {
+                if px[3] < 128 {
+                    continue; // 只算不透明的像素（半透明描边会把主色拉黑）
+                }
+                r += px[0] as u64;
+                g += px[1] as u64;
+                b += px[2] as u64;
+                n += 1;
+            }
+            if n == 0 {
+                continue;
+            }
+            println!(
+                "{i} {} {} {} {} {} {}",
+                sp.width,
+                sp.height,
+                r / n,
+                g / n,
+                b / n,
+                n
+            );
+        }
+        return;
+    }
+
     // `only` 模式：只看**指定图号**（逗号分隔，拼一张网格）—— 精挑细看用。
     // 用法：... Prguse 0 0 /tmp/ui --only 384,387,360
     if let Some(pos) = env::args().position(|x| x == "--only") {

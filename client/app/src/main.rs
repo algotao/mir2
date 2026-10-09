@@ -1444,8 +1444,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if n.entered_once {
                     hint_pushed = true;
                     // 外观诊断（用户 2026-10-09 第 2 条"木剑图不对"）：把自己的外观字节打出来。
-                    // `weapon` 就是服务端算给你的武器形状 ⇒ 取图 = `Weapon2.wzl[600 * weapon]`。
-                    // 手上真是木剑的话，这里该是 `weapon=1`；若是 `2`，那就是铁剑的图。
+                    // `weapon` = 服务端算的 **`Shape*2+性别`**（`ObjBase.pas:20018`）
+                    // ⇒ 取图 = `Weapon.wzl[600 * weapon]`（每把武器占男/女两块）。
+                    // 手上是木剑（`Shape=1`、男）→ `weapon=2`；若看到 `1`，那是**空块**
+                    //（`Shape` 从 1 起），若看到 `4`，那是铁剑。
                     if let Some(f) = n.world.self_feature.as_ref() {
                         println!(
                             "[look] 自己的外观：dress={} weapon={} hair={} race_img={}",
