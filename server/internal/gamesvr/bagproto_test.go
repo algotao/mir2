@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/algotao/mir2/server/internal/data"
+	"github.com/algotao/mir2/server/internal/proto"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/protocol"
 )
@@ -99,5 +100,59 @@ func TestProtoBagOnEnter(t *testing.T) {
 		return e.GetEquippedItems() != nil
 	}); env.GetEquippedItems().GetItems() == nil {
 		t.Log("身上没穿东西（同上）")
+	}
+}
+
+// TestUpdateFeatureShapeAndEmpty 外观位：衣服/武器要用 **Shape** 算，且**空装备不能 panic**。
+//
+// 两条都是 2026-10-09 用户报"看不到穿衣服/持武器"时挖出来的病根：
+//   - 用 `Looks`（背包图标图号）当外观号 ⇒ 取到 `Hum.wzl` 里不存在的块；
+//   - 进图那条路上从没调过 `updateFeature` ⇒ 光身空手（这条由契约用例守着）。
+//
+// 这里还钉住"空 `HumItems` 不许炸"：那个越界 panic 会把服务端连接直接关掉
+// （`Rust 选角剧本` 里的"小法"踩到过，表现为玩家掉线）。
+func TestUpdateFeatureShapeAndEmpty(t *testing.T) {
+	tables, err := data.LoadDir(filepath.Join("..", "..", "data"))
+	if err != nil {
+		t.Fatalf("加载数据表: %v", err)
+	}
+	s := testSlaveServer()
+	s.data.tables = tables
+
+	byName := func(n string) *pb.UserItem {
+		it := tables.Items.GetByName(n)
+		if it == nil {
+			t.Fatalf("物品表里没有 %q", n)
+		}
+		return &pb.UserItem{MakeIndex: 1, Index: uint32(it.Index), Dura: it.DuraMax, DuraMax: it.DuraMax}
+	}
+
+	p := testMaster(100, "穿衣的")
+	p.Char.Data = &pb.CharacterData{HumItems: []*pb.UserItem{
+		byName("布衣(女)"), // U_DRESS = 0
+		byName("铁剑"),    // U_WEAPON = 1
+	}}
+	s.updateFeature(p)
+	f := p.Obj.FeatureBits()
+	// 布衣(女)：Shape=1、StdMode=11 ⇒ Dress = 1*2+1 = 3（Hum.wzl 第 3 块 = 布衣女）
+	// 铁剑：Shape=2 ⇒ Weapon = 2
+	if got := proto.FeatureDress(f); got != 3 {
+		t.Errorf("Dress = %d，应为 3（布衣(女) Shape=1、女装 +1）—— 用 Looks 会得到 80", got)
+	}
+	if got := proto.FeatureWeapon(f); got != 2 {
+		t.Errorf("Weapon = %d，应为 2（铁剑 Shape=2）—— 用 Looks 会得到 36", got)
+	}
+	// 头发/race 不能被外观重算弄丢
+	if got := proto.FeatureHair(f); got != 0 {
+		t.Logf("Hair = %d（本用例没设过，0 正常）", got)
+	}
+
+	// 空装备：不许 panic，且两位都归 0
+	empty := testMaster(101, "光身的")
+	empty.Char.Data = &pb.CharacterData{}
+	s.updateFeature(empty)
+	if got := empty.Obj.FeatureBits(); proto.FeatureDress(got) != 0 || proto.FeatureWeapon(got) != 0 {
+		t.Errorf("空装备时外观位应为 0，实得 dress=%d weapon=%d",
+			proto.FeatureDress(empty.Obj.FeatureBits()), proto.FeatureWeapon(empty.Obj.FeatureBits()))
 	}
 }

@@ -3311,3 +3311,54 @@ txt/sql/pas/json/dat/ini/db/lua/md 全部扩展名）：**"新手指导"零命�
 - **商店协议**：`ShopList`/`ShopBuy`/`ShopSell` 三条消息 + 服务端双出口（`shop.go` 的
   `openShop`/`sendGoods`/`handleBuyItem`/`handleSellItem` 全是 legacy）。
 - 背包交互（用/丢/穿/拖）与物品鼠标提示；`UseItem` 等 C→S 消息协议里有、客户端还没发。
+
+## D-66 人物外观：穿衣服 / 持武器（两个叠在一起的 bug）
+
+**用户 2026-10-09**：「也没看到人物穿上衣服，手持武器的形象。是不是这部分还没做？」
+
+**客户端那半是做了的**（`app/actor.rs` 的 `body_sprite`/`weapon_sprite` 会按 `dress`/`weapon`
+取 `Hum.wzl`/`Weapon.wzl`）。问题全在服务端，而且是**两个 bug 叠在一起**：
+
+1. **进图这条路上从来没算过外观**。`joinWorld` 建玩家对象时给的是
+   `proto.MakeFeature(0, 0, hair, 0)` —— 字面意思"光身空手"；而 `updateFeature`（按装备重算
+   武器/衣服位）只在**穿脱装备**（`equip.go:206`）与**复活**（`death.go:136`）时调。
+   新角色出生自带布衣/木剑/蜡烛（`chargen.InitialItems`）⇒ 进图就是裸体空手。
+2. **算的时候用错了字段**：`t.Looks`（那是**背包/地面的图标**图号，见 `Items.wzl[looks]`）
+   被当成外观号。正确口径来自原版 `ObjBase.pas`：
+   - 武器 `Weapon := StdItem.Shape`（`Weapon.wzl` 的块号就是武器 Shape）
+   - 衣服 `Dress := StdItem.Shape * 2 + 性别`（StdMode 10=男 +0、11=女 +1）
+
+   实测两个值差得很远：布衣(男) `Shape=1 / Looks=60` ⇒ 正确 `Dress=2`、算错得 60；
+   木剑 `Shape=1 / Looks=30` ⇒ 正确 `Weapon=1`、算错得 30。
+
+### 修法
+
+- `updateFeature` 改用 `Shape`（衣服按 `Shape*2 + (StdMode-10)`），并在函数头写清
+  "`Looks` 是图标不是外观"。
+- 在 **`joinWorld`**（legacy / 新协议**两条入口共用的构造点**）末尾调一次 `updateFeature`
+  ⇒ 两边都对，且以后不会有人漏调。
+- 顺手补 `HumItems` 的**边界检查**：空数组直接下标越界会 panic，而会话 goroutine 里的 panic
+  表现是**服务端把连接关了**（玩家看到"掉线"）。这个坑是被 `TestProtoRustPickCharacter`
+  抓出来的（剧本里的第二个角色"小法"没有装备字段）。
+
+### 验证
+
+- **端到端**（`TestProtoContractEnterWorld`）：测试角色穿上布衣(男)+木剑，断言
+  `EnterWorld.self_feature` 的 `dress == 2`、`weapon == 1`；并加了一条**自校验**——
+  写死的两个物品索引必须与当前物品表对得上（数据表换版会先红在那条，而不是让外观断言
+  指着一个莫名其妙的数字）。
+  顺带发现：**`data/stditems.json` 比 `GEEM2.db.sql` 的 Idx 整体差一位**（生成表第 1 条是
+  「金币1」，与原版 `StdItems` 一致）—— 测试里两个索引按生成表取。
+- **单测**（`TestUpdateFeatureShapeAndEmpty`）：布衣(女) ⇒ `Dress=3`、铁剑 ⇒ `Weapon=2`；
+  空装备 ⇒ 两位都是 0 且**不许 panic**。
+- **目视**（`wzldump` 导 `Hum.wzl`）：块 0 = 裸男、块 1 = 裸女、**块 2 = 布衣(男)**、
+  块 3 = 布衣(女) ⇒ `dress=2` 就是字面上的"穿上布衣"。
+
+### ⚠️ 还剩一件（如实记下，下轮处理）
+
+**武器素材的块号对不上**：这套素材（`mir2c/data/Weapon.wzl`，45600 张）里 **0…约 4000 全空**，
+5000 之后才有内容（`5000` 是 24×39、`10000` 是 56×49 这种明显是武器的图）。
+我们的公式是经典口径（`human_index(weapon)` ⇒ 块 = `weapon * 600`），木剑 `Shape=1` ⇒ 600 那一块，
+而 600 在这份素材里是空的 ⇒ **服务端给的外观号是对的，但客户端可能仍然看不到剑**。
+要么这份素材的武器块有基址偏移，要么该版本的武器在别的库里 —— 下次量一下 `Weapon.wzl`
+第一个非空块与已知武器的对应关系再定。

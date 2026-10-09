@@ -90,7 +90,7 @@ func (s *Server) joinWorld(chr *storage.Character, sessionID int32, ip string) *
 	// 跨包构造统一走 `entity.NewObject`。
 	obj := entity.NewObject(s.world.actorSeq.Add(1), chr.Name, m, x, y,
 		uint8(chr.Data.Dir), proto.MakeFeature(0, 0, uint8(chr.Data.Hair), 0))
-	return &Player{
+	p := &Player{
 		Obj:         obj,
 		Char:        chr,
 		Limiter:     entity.NewMoveLimiter(),
@@ -103,4 +103,13 @@ func (s *Server) joinWorld(chr *storage.Character, sessionID int32, ip string) *
 		allowGuild:   false,
 		banGuildChat: true,
 	}
+	// ⚠️ **按身上的装备算一次外观**。上面 `MakeFeature(0,0,hair,0)` 是"光身空手"的
+	// 默认值，而新角色出生自带布衣/木剑/蜡烛（`chargen.InitialItems`）—— 不重算就是
+	// **光着身子、空手**进游戏（用户 2026-10-09 报的正是这个）。
+	//
+	// 原来 `updateFeature` 只在**穿脱装备**与**复活**时调，登录进图这条路上从来没有。
+	// 放在这里是因为 `joinWorld` 是**两条入口（legacy / 新协议）共用的构造点**：
+	// 在这儿算一次，两边都对，也省得以后再各写一遍。
+	s.updateFeature(p)
+	return p
 }

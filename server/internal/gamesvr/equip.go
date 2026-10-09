@@ -245,20 +245,56 @@ func (s *Server) sendFeatureChanged(to *Player, who *Player) {
 		uint16(f&0xFFFF), uint16(f>>16), 0, "")
 }
 
+// 衣服的两档 StdMode（`data.ItemTypeDress` = 10/11）。原版 `ObjBase.pas` 的
+// `Dress := Shape*2 + (StdMode-10)` 就是靠它分男/女款式。
+const (
+	stdModeDressMale   = 10
+	stdModeDressFemale = 11
+)
+
 // updateFeature 按当前装备重算外观的武器/衣服位。
+//
+// ⚠️ 用的是 **`Shape`**（外观号），不是 `Looks`（那是**背包/地上的图标**图号，
+// 见 `Items.wzl[looks]`）。两者完全不同：木剑 `Shape=1 / Looks=30`，
+// 用 `Looks` 去取 `Weapon.wzl` 会取到第 30 块（不存在的东西）。
+//
+// 口径照原版（`ObjBase.pas` 的 `RecalcAbilitys`/外观重算）：
+//
+//	武器：`Weapon := StdItem.Shape`            —— `Weapon.wzl` 的块号就是武器 Shape
+//	衣服：`Dress := StdItem.Shape * 2 + 性别`   —— `Hum.wzl` 里同一款式男/女各一块，
+//	                                            靠低位分（StdMode 10=男 → +0、11=女 → +1）
+//
+// 客户端 `actor.rs` 的 `human_index(dress, …)` 期望的正是这个值（那边的说明也写着
+// "服务端已经算成 Shape*2+性别"）。
 func (s *Server) updateFeature(p *Player) {
-	if p.Char.Data == nil {
+	if p == nil || p.Char == nil || p.Char.Data == nil || s.data.tables == nil {
 		return
 	}
+	items := s.data.tables.Items
+	// ⚠️ `HumItems` 可能是**空数组**（老存档、或只建了角色还没穿东西的那种 ——
+	// `Rust 选角剧本` 里的"小法"就是这样）⇒ 直接 `HumItems[slot]` 会越界 panic，
+	// 而 panic 在会话 goroutine 里的表现是**服务端把连接关了**（用户看到的是"掉线"）。
+	at := func(slot int) *pb.UserItem {
+		if slot < 0 || slot >= len(p.Char.Data.HumItems) {
+			return nil
+		}
+		return p.Char.Data.HumItems[slot]
+	}
 	weapon, dress := uint8(0), uint8(0)
-	if it := p.Char.Data.HumItems[proto.SlotWeapon]; it != nil && it.Index != 0 {
-		if t := s.data.tables.Items.Get(int(it.Index) - 1); t != nil {
-			weapon = uint8(t.Looks & 0xFF)
+	if it := at(proto.SlotWeapon); it != nil && it.Index != 0 {
+		if t := items.Get(int(it.Index) - 1); t != nil {
+			weapon = uint8(t.Shape)
 		}
 	}
-	if it := p.Char.Data.HumItems[proto.SlotDress]; it != nil && it.Index != 0 {
-		if t := s.data.tables.Items.Get(int(it.Index) - 1); t != nil {
-			dress = uint8(t.Looks & 0xFF)
+	if it := at(proto.SlotDress); it != nil && it.Index != 0 {
+		if t := items.Get(int(it.Index) - 1); t != nil {
+			// StdMode 10 = 男装、11 = 女装（`data.ItemTypeDress` 就覆盖这两档）。
+			// 原版是按**物品自己的** StdMode 分的，不是按角色性别。
+			gender := 0
+			if t.StdMode == stdModeDressFemale {
+				gender = 1
+			}
+			dress = t.Shape*2 + uint8(gender)
 		}
 	}
 	p.Obj.SetFeatureBits(proto.MakeFeature(

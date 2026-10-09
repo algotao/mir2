@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/algotao/mir2/server/internal/authn"
+	"github.com/algotao/mir2/server/internal/data"
 
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/frame"
@@ -61,6 +62,13 @@ func protoContractServer(t *testing.T) (*Server, storage.Store, string) {
 
 	s := testSlaveServer() // players / monsters / monsterIdx / social.groups
 	s.store = store
+	// 真实数据表：`itemStack`（背包下行）与 `updateFeature`（外观）都要查物品表，
+	// 空表的话这两条功能在测试里**静默失效**（有过先例：外观进了图却是光身空手）。
+	if tables, err := data.LoadDir(filepath.Join("..", "..", "data")); err == nil {
+		s.data.tables = tables
+	} else {
+		t.Fatalf("加载数据表: %v", err)
+	}
 	s.world.maps = mm
 	s.world.defaultMap = m
 	// 建角要用"默认地图号"当出生点（`newCharHome`）—— 测试服务器的默认地图就是 "0"。
@@ -110,6 +118,16 @@ func seedAccount(t *testing.T, store storage.Store) (sessionID int32, charID uin
 			// ⚠️ DC 必须给：打怪的伤害来自它，缺了就只有 0-0（战斗用例会验不到东西）
 			Abil: &pb.Ability{Level: 7, Hp: 30, MaxHp: 40, Mp: 5, MaxMp: 9,
 				Dc: &pb.MinMax{Min: 20, Max: 25}},
+			// 身上穿着布衣、拿着木剑（与真实建角一致，见 `chargen.InitialItems`；
+			// 槽位出处 `Grobal2.pas`：U_DRESS=0 / U_WEAPON=1）。
+			// 用例靠它验"进图时的外观位"，见 `TestProtoSelfAppearanceOnEnter`。
+			// ⚠️ 索引取自 `data/stditems.json`（**生成的**物品表）——注意它第 1 条是
+			// 「金币1」，比 `GEEM2.db.sql` 里的 Idx 整体差一位：布衣(男)=5、木剑=7。
+			// 下面 `TestProtoContractEnterWorld` 里有一条**自校验**，数据表换版就会红。
+			HumItems: []*pb.UserItem{
+				{MakeIndex: 1, Index: 5, Dura: 5000, DuraMax: 5000}, // 布衣(男) Shape=1
+				{MakeIndex: 2, Index: 7, Dura: 4000, DuraMax: 4000}, // 木剑   Shape=1
+			},
 		},
 	}
 	if err := store.Characters().Create(ctx, chr); err != nil {
@@ -356,6 +374,24 @@ func TestProtoContractEnterWorld(t *testing.T) {
 	// 存档里 Dir=右（原版 2）⇒ 新协议的 DIR_RIGHT(=3)。这是「新枚举 = 原版 + 1」的活证据。
 	if d := enter.GetDirection(); d != protocol.Direction_DIR_RIGHT {
 		t.Errorf("朝向 = %v，应为 DIR_RIGHT（存档 Dir=2 = 原版的「右」）", d)
+	}
+	// **自己的外观**：身上穿着布衣(男)（Shape=1 ⇒ Dress=2）、拿着木剑（Shape=1 ⇒ Weapon=1）。
+	//
+	// ⚠️ 用户 2026-10-09 报"看不到人物穿衣服/持武器"就是这里错了两次：
+	//   ① 进图这条路上从来没调 `updateFeature`（只在穿脱装备/复活时调）⇒ 光身空手；
+	//   ② 算的时候用了 `Looks`（背包图标图号）而不是 `Shape`（外观块号）。
+	// 断言用**具体数字**：布衣(男) Shape=1 ⇒ 1*2+0 = 2；木剑 Shape=1 ⇒ 1。
+	// 自校验：上面 `seedAccount` 里写死的两个物品索引要与**当前数据表**对得上
+	//（索引错了这条会先红，而不是让外观断言指着一个莫名其妙的数字）。
+	if it := s.data.tables.Items.Get(4); it == nil || it.Name != "布衣(男)" || it.Shape != 1 {
+		t.Fatalf("物品表第 5 条应为 布衣(男)（Shape=1），实得 %+v", it)
+	}
+	if it := s.data.tables.Items.Get(6); it == nil || it.Name != "木剑" || it.Shape != 1 {
+		t.Fatalf("物品表第 7 条应为 木剑（Shape=1），实得 %+v", it)
+	}
+	if f := enter.GetSelfFeature(); f.GetDress() != 2 || f.GetWeapon() != 1 {
+		t.Errorf("自己的外观 = dress %d / weapon %d，应为 2 / 1（布衣(男)/木剑 的 Shape 算法）",
+			f.GetDress(), f.GetWeapon())
 	}
 	// 视野内那只怪必须在初始快照里（否则客户端进图看不见旁边的怪）
 	var found *protocol.EntityState
