@@ -83,3 +83,10 @@ mir2.code-workspace
 # ===== 资产产物（由 tools/ 生成，原始文件是唯一真源）=====
 # 见 docs/assets.md §6：脚本产物不入库，用 tools/m2pk/build.sh 重建。
 /assets/
+
+# ===== 运行时数据 =====
+# gamesvr 起服时生成的 SQLite（角色/账号），不是源文件。
+mir2go.db
+mir2go.db-journal
+mir2go.db-wal
+mir2go.db-shm
