@@ -3707,3 +3707,53 @@ D-67 写"`Weapon.wzl` 的 `.wzx` 只有 11403 条记录、大半是空壳 ⇒ �
 
 `cargo test --workspace`（带 `MIR2C_DATA` 跑真素材）全绿 **81+139+7+3**、零警告；
 `go test ./...` **24 包全绿**。目视：锚点合成图 8 个方向、"木剑=棕 / 铁剑=银灰"。
+
+## D-72 权威口径账本：`docs/authority.md`（用户点名要的"避免后续犯错"文档）
+
+**用户 2026-10-09**：「把官方代码的武器、装备、素材、装备效果、效果特性等关联关系逻辑
+盘清楚，写到文档中，以避免后续犯错。哪一份素材、数据，到现在是最准确权威的，你也写到文档中。」
+
+起因很清楚：**连着两轮踩的都是"没有账本"的坑** —— D-67 把 `.wzx` 当 16 字节/项解析
+⇒ 断定素材坏了 ⇒ 换错图库；D-71 又发现文档里"`Npc` 素材缺失"也是错的（文件一直在，还带真图）。
+
+### 做了什么
+
+三路并行把源头盘清（官方 Delphi 服务端 / 官方 Delphi 客户端 / 我们自己的数据与实现），
+落成 **`docs/authority.md`**：
+
+| 节 | 内容 |
+|---|---|
+| §1 | **唯一真源表**：美术=`mir2c/data`（`artpack/build.sh` 写死 CANON，刻意不回退）、
+地图=`mir2c/map`、音频=`mir2c/wav`、配置=`Mir2-GeeM2/Envir`、物品表=`seed/GEEM2.db.sql`
+（覆盖 OpenMir2 的 dump）、**公式口径=`mir2standard/GameOfMir`**。另列"哪些不是权威" |
+| §2 | 特征位域：`MakeHumanFeature` 逐字节（Race/Weapon/Hair/Dress）+ `MakeMonsterFeature` + `featureEx`（坐骑/衣服特效） |
+| §3 | `StdItems` 全字段 → 表现/数值/特效 三分类；`Stdmode` 取值表；**`AniCount` 特效编号表**；重算与下发时机 |
+| §4 | 素材层与取图公式：库名表（官方常量 → 磁盘 → 我们）、`HUMANFRAME=600` + 动作表 + 方向步长、
+**`块 = 2*Shape+性别`**、`Shape ≥ 38` 的边界、怪物/NPC 的 `GetOffset`/`GetNpcOffset`、图标/大图/掉落 |
+| §5 | 特效：魔法/打击（`EffectBase`/`HitEffectBase`）、人物翅膀（`HumEffect`，来源是**右手物品的 Shape**）、
+武器断裂（`WPEFFECTBASE=3750`）；**并明确：这版客户端没有 "+N 武器发光"**（`DrawWeaponGlimmer` 整段被注释） |
+| §6 | 我方现状 / 缺口 / **术语对照表**（`Shape` vs `Looks` vs `Appr` vs `RaceImg`——我们的 Go 结构体
+把"主要部分"叫 `RaceImg`，其实是 Appr） |
+| §7 | **已踩过的 6 个坑** + 每条"怎么避免" |
+| §8 | 待查：头发双重加倍、`hair2` 能否当头发层、`Weapon2/Weapon9` 口径、`WeaponEffect` 用途、
+`SM_CHARACTERINFO` 不存在、`btValue[]` 语义 |
+| §9 | **核验命令**（当场判断"素材缺不缺/是不是空壳"、看图、放大拼版、带真素材跑测试） |
+
+### 顺带纠正的两条错结论（这次盘账翻出来的）
+
+1. **`Npc.wzl` 一直在**（5010 张、有真图；`npc_offset` 公式已对着真素材核过：地图 0 的
+   23 个商人 + 11 个 `Npcs.txt` 块里都有图，例：屠夫 `appr=4` → 块 240）。
+   而 `docs/assets.md` 与 `client/app/src/main.rs` 都写着"`Npc` 缺失 ⇒ NPC 画不出来、降级成标记"
+   ⇒ 已更正，并**加了一条素材断言**（`Npc.wzl` 必须能出图，哪天素材被裁成空壳就红）。
+   真"文件不存在"的只有 **`Hair.wil`** 与 **`Dragon.wil`**；`StateItem`/`HumEffect`/
+   `WeaponEffect` **都在**（14/22/25 MB）。
+   教训写进 §7 坑 3：**素材是登录器按需下载的，"缺不缺"会变 ⇒ 必须当场核验**。
+2. **武器 `Shape` 的覆盖边界**：物品表里 **7 把**武器（`Shape` 101..108，魔血剑/龙血剑/神血枪/
+   黑虎斧/火莲杖/鹤羽扇/炎狱血剑）的块号（202..216）远超 `Weapon.wzl` 的 76 块 ⇒ 现在画不出来
+   （客户端安静地不画，不报错）。`Weapon2`(42 块)/`Weapon9`(30 块) 是另一套造型，
+   **索引口径未确认**，写进 §4.4/§8 与 `todo.md` §0-3。
+
+### 验证
+
+`cargo test --workspace`（带 `MIR2C_DATA`）全绿；`go test ./...` 24 包全绿。
+**文档里的每条结论都注了 `文件:行号`**，不确定的单独列进 §8 并标注"推断/未证实"。

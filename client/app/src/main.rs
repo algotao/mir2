@@ -34,9 +34,12 @@
 //!   （口令怎么过网络未定，见 D-24），所以只能认领一个既有会话；
 //! * 连上之后：相机跟着自己、方向键 = 走一步（离线时仍是平移镜头）、
 //!   视野内的实体画成**标记**（位置/朝向/名字/血量）；
-//! * 实体画的是**真精灵**（角色/怪物）：图号公式在 `mir2_core::actor`（原版逐条翻译，
-//!   出处都注在那边）。取不到精灵时**退回标记**（`draw_entity_marker`）——
-//!   NPC 要 `Npc.wzl`、头发要 `Hair.wzl`，本套素材缺失（docs/assets.md §2）。
+//! * 实体画的是**真精灵**（角色/怪物/**NPC**）：图号公式在 `mir2_core::actor`（原版逐条
+//!   翻译，出处都注在那边）。取不到精灵时**退回标记**（`draw_entity_marker`）。
+//!   本套素材**真正缺的只有头发库**（官方要 `Hair.wil`，不存在；但有 `hair2.wzl` 待验）
+//!   与 `Dragon.wil` —— `Npc.wzl` / `HumEffect` / `WeaponEffect` / `StateItem` **都有真数据**。
+//!   ⚠️ 早先这里写"NPC 要 `Npc.wzl`、本套素材缺失"是**错的**（2026-10-09 更正：
+//!   没核验就记了结论）。来源与核验命令见 `docs/authority.md`。
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

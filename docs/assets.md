@@ -21,7 +21,11 @@
 ⚠️ 两个待确认项（**不阻塞开发**，但影响验收范围）：
 
 1. **完整度**：252 个 `.wzl` 中 **146 个是 64 字节空壳**（登录器按需下载）；
-   `Hair` / `Npc` / `StateItem` / `Dragon` **缺失**。
+   **文件真的不存在**的只有 **`Hair`（官方头发库）与 `Dragon`** —— `Npc`（5010 张）、
+   `StateItem`、`HumEffect`、`WeaponEffect` **都在且有真数据**。
+   ⚠️ **2026-10-09 更正**：本文早先写"`Hair`/`Npc`/`StateItem`/`Dragon` 缺失"是**错的**
+   （当时没核验就记上了）。素材是登录器**按需下载**的 ⇒ "缺不缺"会变，
+   **一律当场核验**，别照抄本文。来源与核验命令见 **`docs/authority.md`**（§1 / §9）。
 2. **美术一致性**（C-1 硬约束）：该客户端是**现代版**（有 `Objects25`/`Tiles8`/`Magic8-16`/宠物·龙等），
    需**抽查核心库**（`Prguse`/`Hum`/`Weapon`/`Magic`/`Items`/`Tiles`）是否与原版 1.76 一致。
 
@@ -369,9 +373,19 @@ fridx := fridx + (aniCount mod (ani + ani*anitick)) div (1 + anitick)
 `Actor.pas`（26 张怪物表 + 映射 + `GetOffset`），输出贴进 `actor.rs` 的生成段。
 重跑方式见脚本头部；源在 `mir2standard/GameOfMir/Client/`（仓库外）。
 
-**本套素材的边界**（§2 已记）：`Hum.wzl`/`Weapon.wzl`/`Mon1..34.wzl` 齐全；
-`Hair` **没有这个文件**（`hair_ck.wzl` 只有 64 字节的头、索引却是 5328 条）、
-`Npc` / `Dragon` 缺失 ⇒ 头发层、NPC、龙**画不出来**，实现里**降级成标记**而不是猜。
+**本套素材的边界**（§2 已记；2026-10-09 更正过一轮）：
+`Hum.wzl` / `Weapon.wzl` / **`Npc.wzl`** / `Mon1..22`+`Mon34` 齐全 ⇒ **NPC 画得出来**
+（块起点公式 `npc_offset` 已对着真素材验过：地图 0 的 23 个商人 + 11 个 `Npcs.txt` 全部有图，
+见 `docs/authority.md` §4.5）。
+
+**真正画不出来**的是：
+- **头发**：官方要 `Hair.wil`，本套**没有这个文件**（`hair_ck`/`hair4_ck` 是 64 字节空壳）；
+  但有 **`hair2.wzl`（2.6 MB 真数据）** —— 待验（`docs/authority.md` §8-2）。
+- **龙**：没有 `Dragon.wil`。
+- **146 个空壳库**：`mon23..42`、`objects11/12/19/35…`、`hum2..9`、`magic10-12`、
+  `tiles9/10/15-17`、`weapon3/4/10`、`weaponfashion*` 等（登录器未下载）。
+
+取不到精灵时实现里**降级成标记**而不是猜。
 
 ---
 

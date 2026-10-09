@@ -2267,6 +2267,25 @@ mod tests {
             Wzl::open(dir.join("Hair")).is_err(),
             "本套素材出现了 Hair.wzl ⇒ 头发层（Actor.pas:3162-3167）该实现了"
         );
+
+        // NPC：`Npc.wzl` **在**（5010 张、有真图）—— 曾长期被误判成"本套素材缺失"，
+        // 于是"NPC 只能降级成标记"这个错结论一直挂在文档与代码注释里（2026-10-09 更正）。
+        // 这条断言把"NPC 层能用"钉住：按 `npc_offset`（`Actor.pas:1156-1200`）算出的
+        // 块里必须有图。`appr = 4` 是 `merchant.txt` 里"屠夫"的"主要部分"列（块起点 240）。
+        let npc = Wzl::open(dir.join(NPC_LIB)).unwrap_or_else(|e| panic!("{NPC_LIB}.wzl: {e}"));
+        assert!(
+            npc.len() >= 4000,
+            "{NPC_LIB} 只有 {} 张（应在 5010 左右）—— 素材被裁成空壳了？见 docs/authority.md §9",
+            npc.len()
+        );
+        // 有的方向素材里就是空的（NPC 块 60 格只画一部分）⇒ 只要有一个方向能出图。
+        assert!(
+            (0..8u8).any(|d| npc
+                .decode(npc_index(50, 4, d, 0) as usize)
+                .is_some_and(|s| !s.is_empty())),
+            "屠夫（appr=4、块起点 {}）：八个方向都没图 ⇒ Npc 素材口径变了？",
+            npc_offset(4)
+        );
         if let Ok(hair_ck) = Wzl::open(dir.join("hair_ck")) {
             for i in 0..hair_ck.len().min(8) {
                 if let Some(s) = hair_ck.decode(i) {
