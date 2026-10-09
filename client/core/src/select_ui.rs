@@ -79,6 +79,24 @@ impl Art {
 
     /// 每个账号几个角色槽（这套素材的面板就是两块）。
     pub const SLOTS: usize = 2;
+
+    /// **「开始」那颗钮的石台**（用户 2026-10-09 要的：官方选角图里"开始"下面垫着一块石台）。
+    ///
+    /// # 它从哪来（实测，不是猜）
+    ///
+    /// 我们现在用的 1.76 底图 `Prguse[65]` 里**没有**这块台子 —— 那五项菜单就是烘在底图上的
+    /// 纯文字。但它就在**同一个容器**里：新版底图 `Prguse2[206]`（无台）与 `Prguse2[480]`
+    /// （有台）**只差这一块**：逐像素比对，差异区 `x 365..447, y 447..486`（83×40），
+    /// **其余平均差 0.0**。而 `Prguse[65]` 与 `Prguse2[206]` 除菜单文字外也几乎相同
+    ///（凹槽区平均差 0.0、整图 5.9）⇒ 两版底图是同一套版式 ⇒ 把这块**搬过来**正好落在
+    /// "开始"上（台心 406 vs 钮心 407）。
+    ///
+    /// ⇒ **只搬台子，保留 1.76 的文案**（用户选的这条）。换整张新版底图虽然更"原样"，
+    /// 但会把菜单第二项从"制作群"变成"恢复人物"（那是另一个功能）。
+    ///
+    /// ⚠️ 别把它当"按下态"用：它是**常态**。（1.76 原版的菜单图 `Prguse[68..72]` 是纯文字、
+    /// 且 `TDControl.DirectPaint` 不判 `Downed` ⇒ 原版这几项本来就没有"按下换图"。）
+    pub const START_PLATE: (&'static str, u32) = ("Prguse2", 480);
 }
 
 /// 中间菜单的 5 项（顺序 = 从上到下 = [`Art::MENU_DOWN`] 的顺序）。
@@ -132,6 +150,12 @@ const ALCOVE_FLOOR_MARGIN: f32 = 2.0;
 const FIELD_Y: [f32; 3] = [491.0, 520.0, 551.0];
 /// 三行文字的 **x**（左面板值框 `x 108..211` 内留 5px；右面板整个 +552）。
 const FIELD_X: [f32; 2] = [113.0, 665.0];
+
+/// [`Art::START_PLATE`] 在设计空间（800×600）里的**源矩形** `(x, y, w, h)`。
+///
+/// 就是上面量出来的差异区（阈值收紧到 8 后收敛到 `365..447 × 447..486`）。
+/// 由 `真素材_开始石台就是那两块底图的差` 钉住 —— 换了底图/图号这条会红。
+pub const START_PLATE_SRC: (f32, f32, f32, f32) = (365.0, 447.0, 83.0, 40.0);
 
 /// 一个矩形（屏幕绝对坐标）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -266,6 +290,20 @@ pub fn class_name(class: i32) -> &'static str {
 pub fn slot_anchor(slot: usize, bg: (f32, f32)) -> (f32, f32) {
     let (x0, _y0, x1, y1) = ALCOVE[slot.min(Art::SLOTS - 1)];
     (bg.0 + (x0 + x1) / 2.0, bg.1 + y1 - ALCOVE_FLOOR_MARGIN)
+}
+
+/// 「开始」那颗石台该画在哪（**设计空间**）—— 居中压在菜单第一项上。
+///
+/// 用 `menu[0]`（= [`Menu::Start`]）而不是写死 `(365,447)`：以后版式一动它跟着走；
+/// 与实测的原位（台心 406 / 钮心 407）差不到 1px，肉眼看不出。
+pub fn start_plate_at(menu0: Rect) -> Rect {
+    let (_, _, w, h) = START_PLATE_SRC;
+    Rect {
+        x: menu0.x + menu0.w / 2.0 - w / 2.0,
+        y: menu0.y + menu0.h / 2.0 - h / 2.0,
+        w,
+        h,
+    }
 }
 
 /// 一个槽里三行文字的位置。
@@ -1423,5 +1461,120 @@ mod tests {
         // 窗口比框还小时也不能算出负坐标
         let small = DialogBox::build((320, 200));
         assert!(small.frame.x >= 0.0 && small.frame.y >= 0.0);
+    }
+    /// 「开始」那颗石台画在哪：**居中压在菜单第一项上**，而且整块落在设计空间里。
+    #[test]
+    fn 开始石台居中压在开始钮上() {
+        // 实测的"开始"钮（`SEL_BTN` 那套量法的同一批数字）
+        let r = Rect {
+            x: 385.0,
+            y: 456.0,
+            w: 44.0,
+            h: 21.0,
+        };
+        let p = start_plate_at(r);
+        assert_eq!((p.w, p.h), (START_PLATE_SRC.2, START_PLATE_SRC.3));
+        // 台心 = 钮心
+        assert!(
+            (p.center().0 - r.center().0).abs() <= 0.5,
+            "{}",
+            p.center().0
+        );
+        assert!(
+            (p.center().1 - r.center().1).abs() <= 0.5,
+            "{}",
+            p.center().1
+        );
+        // 与实测的原位（`Prguse2[480]` 里那块）差不到 2px
+        assert!((p.x - START_PLATE_SRC.0).abs() <= 2.0, "x = {}", p.x);
+        assert!((p.y - START_PLATE_SRC.1).abs() <= 2.0, "y = {}", p.y);
+        // 整块笔在设计空间（800×600）里
+        assert!(p.x >= 0.0 && p.y >= 0.0 && p.x + p.w <= 800.0 && p.y + p.h <= 600.0);
+    }
+
+    /// **真素材**：`Art::START_PLATE` + [`START_PLATE_SRC`] 必须**正好**是
+    /// 「无台版 `Prguse2[206]`」与「有台版 `Prguse2[480]`」的**差**：
+    ///
+    /// - 框**内**：两块差得很多（那就是台子）；
+    /// - 框**外**：两块**一模一样**（换了图号或框偏一点，这条就红）；
+    /// - 我们自己在用的 1.76 底图 `Prguse[65]` 在框内与"无台版"接近 ⇒ 它确实没台子
+    ///   （这正是要"搬一块过来"的理由）。
+    #[test]
+    fn 真素材_开始石台就是那两块底图的差() {
+        use crate::wzl::{Sprite, Wzl};
+        use std::path::Path;
+
+        fn mean_diff(a: &Sprite, b: &Sprite, rect: (f32, f32, f32, f32)) -> f32 {
+            let (x0, y0) = (rect.0 as i32, rect.1 as i32);
+            let (w, h) = (rect.2 as i32, rect.3 as i32);
+            let (mut sum, mut n) = (0u64, 0u64);
+            for y in y0..y0 + h {
+                for x in x0..x0 + w {
+                    if x < 0 || y < 0 || x >= a.width as i32 || y >= a.height as i32 {
+                        continue;
+                    }
+                    let i = ((y * a.width as i32 + x) * 4) as usize;
+                    for c in 0..3 {
+                        sum += (a.rgba[i + c] as i32 - b.rgba[i + c] as i32).unsigned_abs() as u64;
+                        n += 1;
+                    }
+                }
+            }
+            sum as f32 / n.max(1) as f32
+        }
+
+        let Ok(dir) = std::env::var("MIR2C_DATA") else {
+            eprintln!("跳过：未设置 MIR2C_DATA");
+            return;
+        };
+        let dir = std::path::PathBuf::from(&dir);
+        let open = |name: &str| Wzl::open(Path::new(&dir).join(name)).expect("图库");
+        let p2 = open("Prguse2");
+        let no_plate = p2.decode(206).expect("Prguse2[206] 无台版");
+        let plate = p2
+            .decode(Art::START_PLATE.1 as usize)
+            .expect("Prguse2[480] 有台版");
+        // 图号必须指向"有台版"那张：反过来（[206]）这条的前半就会红
+        let ours = open(Art::BG.0)
+            .decode(Art::BG.1 as usize)
+            .expect("1.76 底图");
+
+        let inside = mean_diff(&no_plate, &plate, START_PLATE_SRC);
+        assert!(
+            inside > 20.0,
+            "框内两块底图只差 {inside:.1} —— 这不是台子那块（`START_PLATE_SRC` 错了？）"
+        );
+
+        // 框外：逐像素**完全一样**（差的只有台子）
+        let (x0, y0, w, h) = START_PLATE_SRC;
+        let mut out_sum = 0u64;
+        let mut out_n = 0u64;
+        for y in 0..no_plate.height as i32 {
+            for x in 0..no_plate.width as i32 {
+                if (x0 as i32..x0 as i32 + w as i32).contains(&x)
+                    && (y0 as i32..y0 as i32 + h as i32).contains(&y)
+                {
+                    continue;
+                }
+                let i = ((y * no_plate.width as i32 + x) * 4) as usize;
+                for c in 0..3 {
+                    out_sum += (no_plate.rgba[i + c] as i32 - plate.rgba[i + c] as i32)
+                        .unsigned_abs() as u64;
+                    out_n += 1;
+                }
+            }
+        }
+        let outside = out_sum as f32 / out_n.max(1) as f32;
+        assert!(
+            outside < 0.5,
+            "框外两块底图还差 {outside:.2} ⇒ `START_PLATE_SRC` 没框住（或超出）那块台子"
+        );
+
+        // 我们在用的 1.76 底图：框内与"无台版"接近（它就是纯文字，没有台子）
+        let ours_there = mean_diff(&ours, &no_plate, START_PLATE_SRC);
+        assert!(
+            ours_there < 30.0,
+            "1.76 底图那块的差别是 {ours_there:.1} —— 难道它本来就有台子？那就不用搬了"
+        );
     }
 }

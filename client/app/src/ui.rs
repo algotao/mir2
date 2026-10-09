@@ -201,6 +201,47 @@ impl<'a> UiCache<'a> {
         Some((q.width, q.height))
     }
 
+    /// 界面用的**裁剪贴**：`src` 与 `dst` 都收**设计空间**坐标（`dst` 内部乘 [`UI_SCALE`]，
+    /// `src` 是源图自己的像素 —— 那本来就是设计像素）。
+    ///
+    /// 用途：把"只存在别处一小块"的美术搬过来 —— 现在只有一处：「开始」那颗石台
+    ///（在 `Prguse2[480]` 里烘着，1.76 底图没有；见 `core::select_ui::START_PLATE`）。
+    ///
+    /// ⚠️ 与世界的 [`UiCache::draw_src`] 分开：那个收**画布**坐标、贴的是地图缩略图，
+    /// 而且不设采样模式（缩略图那套要最近邻）。这里必须**线性**——放大 1.28 倍，
+    /// 最近邻会抽出"有的像素宽有的窄"（见 [`draw_tint`] 里那条）。
+    #[allow(clippy::too_many_arguments)] // 画布+图号+源矩形+目标矩形，与 `draw_src` 同一情况
+    pub fn draw_ui_src<T>(
+        &mut self,
+        canvas: &mut WindowCanvas,
+        tc: &'a TextureCreator<T>,
+        dir: &Path,
+        lib: &'static str,
+        idx: u32,
+        src: (f32, f32, f32, f32),
+        dst: (f32, f32, f32, f32),
+    ) -> Option<()> {
+        self.ensure(dir, lib, idx, tc)?;
+        let t = self.texs.get_mut(&(lib, idx))?;
+        // 与 `draw_tint` 同一条纪律：颜色/透明度**每次都要重设**（它们粘在纹理上）
+        t.tex.set_color_mod(255, 255, 255);
+        t.tex.set_alpha_mod(255);
+        t.tex.set_scale_mode(ScaleMode::Linear);
+        canvas
+            .copy(
+                &t.tex,
+                Some(FRect::new(src.0, src.1, src.2, src.3)),
+                Some(FRect::new(
+                    ui_px(dst.0),
+                    ui_px(dst.1),
+                    ui_px(dst.2),
+                    ui_px(dst.3),
+                )),
+            )
+            .ok()?;
+        Some(())
+    }
+
     /// 保证 `(lib, idx)` 那张图已经进了缓存（`draw_tint` / `draw_src` 共用）。
     ///
     /// 抽出来的理由：两处各写一遍必然漂移 —— 缓存上限、混合/缩放模式、颜色复位

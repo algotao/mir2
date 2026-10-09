@@ -591,6 +591,23 @@ impl Select {
             l.bg.1,
         );
 
+        // 「开始」那颗**石台**：只存在于新版底图 `Prguse2[480]` 里，1.76 的底图没有 ⇒ 裁过来叠上。
+        // 用户 2026-10-09 要的（官方选角图里"开始"下面垫着台子）；出处与量法见
+        // `core::select_ui::START_PLATE`。画在**底图之上、小人之下**（台子是面板的一部分）。
+        {
+            let p = su::start_plate_at(l.menu[0]);
+            let (sx, sy, sw, sh) = su::START_PLATE_SRC;
+            let _ = ui.draw_ui_src(
+                canvas,
+                tc,
+                dir,
+                su::Art::START_PLATE.0,
+                su::Art::START_PLATE.1,
+                (sx, sy, sw, sh),
+                (p.x, p.y, p.w, p.h),
+            );
+        }
+
         // 这一帧的动画（dt 用真实时间；`tick` 内部按 300/50ms 进帧）
         let dt = now.saturating_duration_since(self.last).as_millis() as u32;
         self.last = now;
