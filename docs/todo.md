@@ -61,7 +61,17 @@
 若不对，先查服务端给的值（`npcRaceAppr`）与 `Npc.wzl` 的块起点，再查 race 50 的
 外观分派表（`Actor.pas:881-912`，已逐条搬进 `npc_actions`）。
 
-## 3. 地图"区域名"（银杏山谷）
+## 3. 地图"区域名"（银杏山谷）——**已按 (a) 实现**（2026-10-09）
+
+**做了**：`mir2c/data/MapDesc1.dat`（GBK，182 条）→ 生成器
+`client/core/tools/gen_map_labels.py` → `client/core/src/map_labels.rs`（154 条）；
+客户端在 **Tab 小地图**上按 `map_title` 查表并画出来（`minimap_point` 换算 +
+裁剪到 120×120 框内，见 D-62）。
+
+**还剩**：小地图上的字号（现在用同一个 `TextCache`，比原版大一号 —— 要更小就得
+再开一个字号缓存）。
+
+---
 
 **已查清**（2026-10-09）：
 

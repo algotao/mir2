@@ -77,8 +77,11 @@ pub(crate) fn draw_minimaps<'a, T>(
     tc: &'a TextureCreator<T>,
     ui: &mut ui::UiCache<'a>,
     asset_dir: &Option<std::path::PathBuf>,
-    // `(小地图图号, **补间后**的自己位置)` —— 位置见 `self_render_pos`
-    world: Option<(u32, (f32, f32))>,
+    // 画区域标注用的字体（原版小地图上就带"银杏山谷/边界村/店铺"这些字）
+    names: &mut crate::font::TextCache<'a>,
+    // `(小地图图号, **补间后**的自己位置, 地图显示名)` —— 位置见 `self_render_pos`；
+    // 显示名用来查 `core::map_labels`（那张表的键就是它，见生成器的说明）
+    world: Option<(u32, (f32, f32), &str)>,
     minimap_on: bool,
     bigmap_on: bool,
     win: (u32, u32),
@@ -86,7 +89,7 @@ pub(crate) fn draw_minimaps<'a, T>(
     if !minimap_on && !bigmap_on {
         return Ok(());
     }
-    let (Some(dir), Some((idx, pos))) = (asset_dir.as_ref(), world) else {
+    let (Some(dir), Some((idx, pos, map_title))) = (asset_dir.as_ref(), world) else {
         return Ok(()); // 没素材 / 还没进世界
     };
     if idx == 0 {
@@ -111,6 +114,36 @@ pub(crate) fn draw_minimaps<'a, T>(
             FRect::new(dx, dy, sw, sh),
             255,
         );
+        // 区域标注（用户 2026-10-09 选的 (a)）：原版小地图上就带这些字 ——
+        // `data/MapDesc1.dat` 的 182 条，位置是**格坐标** ⇒ 与图心同一套换算
+        // （`minimap_point`），落在 120×120 裁剪框外的直接不画。
+        //
+        // ⚠️ 裁剪：SDL 的 `copy` 不认"超出小地图那一块"，所以画字之前先设 clip ——
+        // 不设的话标签会糊到右边的游戏画面上。
+        canvas.set_clip_rect(Some(sdl3::rect::Rect::new(
+            dx as i32,
+            dy as i32,
+            MINIMAP_PX as u32,
+            MINIMAP_PX as u32,
+        )));
+        for l in mir2_core::map_labels::labels_for(map_title) {
+            let (_, lx, ly, text, rgb) = *l;
+            let (px, py) = minimap_point(lx as f32, ly as f32);
+            if px < sx || px > sx + sw || py < sy || py > sy + sh {
+                continue;
+            }
+            names.draw(
+                canvas,
+                tc,
+                text,
+                dx + (px - sx),
+                dy + (py - sy),
+                (((rgb >> 16) & 0xFF) as u8, ((rgb >> 8) & 0xFF) as u8, (rgb & 0xFF) as u8),
+                Some((0, 0, 0)),
+            )?;
+        }
+        canvas.set_clip_rect(None);
+
         // 自己那个点（原版：`surface.Pixels[mx, my] := 255`）
         let cx = dx + (mx - sx);
         let cy = dy + (my - sy);

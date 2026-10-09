@@ -1309,3 +1309,21 @@ fn 对话面板的命中与折行() {
     assert_eq!(input::wrap_text("a\nb", 5), vec!["a", "b"]);
     assert_eq!(input::wrap_text("", 5), vec![""]);
 }
+
+/// 小地图**区域标注**（用户 2026-10-09 选的 (a)）：表由 `tools/gen_map_labels.py`
+/// 从原版 `data/MapDesc1.dat`（GBK）生成，键是**地图显示名**（= 服务端的 `map_title`）。
+#[test]
+fn 小地图区域标注表() {
+    use mir2_core::map_labels::{labels_for, MAP_LABELS};
+    assert!(MAP_LABELS.len() > 100, "生成的表不该是空的");
+    let bq = labels_for("比奇省");
+    assert!(bq.len() >= 20, "比奇省的标注该有二十来条，实得 {}", bq.len());
+    // 用户截图里那两个字：银杏山谷 (620,626)、边界村 (294,630) ——
+    // 与 `StartPoint.txt` 的 (650,631)/(289,618) 同一片地儿
+    let gy = bq.iter().find(|l| l.3 == "银杏山谷").expect("该有银杏山谷");
+    assert_eq!((gy.1, gy.2), (620, 626));
+    assert_eq!(gy.4, 0xFFFF33, "颜色按 Delphi $BBGGRR → 0xRRGGBB 转");
+    assert!(bq.iter().any(|l| l.3 == "边界村"));
+    assert!(!labels_for("盟重省").is_empty(), "别的图也有");
+    assert!(labels_for("不存在的图").is_empty());
+}

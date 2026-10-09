@@ -17,6 +17,7 @@ pub mod image_lib;
 pub mod login_ui;
 pub mod m2pk;
 pub mod map;
+pub mod map_labels;
 pub mod palette;
 pub mod paths;
 pub mod select_ui;

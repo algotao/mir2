@@ -1234,12 +1234,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &tex_creator,
                 &mut ui,
                 &asset_dir,
+                &mut names,
                 net.as_ref().filter(|n| n.world.in_world()).map(|n| {
                     (
                         n.world.minimap_index,
                         // ⚠️ 取**补间后**的位置（与画精灵同一份）：服务端位置只在
                         // "到位"时变 ⇒ 拿它当图心就是"跑完一格图才跳一格"（用户报的）。
                         self_render_pos(n.anims.get(&n.world.self_id), n.world.self_pos, started),
+                        // 区域标注按**地图显示名**查（服务端下发的 `map_title` 就是它）
+                        n.world.map_title.as_str(),
                     )
                 }),
                 minimap_on,
