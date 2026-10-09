@@ -1283,13 +1283,13 @@ fn npc_精灵图号() {
 /// 而 `hud::draw_dialog` 画的是同一个 ⇒ 点哪选哪，不会差一行。
 #[test]
 fn 对话面板的命中与折行() {
-    let win = (1024u32, 768u32);
-    let hud = crate::layout::HUD_BOARD_H;
-    let panel = input::dialog_panel(win, hud, 3, 2);
-    // 面板在 HUD 上方、水平居中
+    let panel = input::dialog_panel();
     let (x, y, w, h) = panel;
-    assert!((x + w / 2.0 - win.0 as f32 / 2.0).abs() < 0.51, "水平居中");
-    assert!(y + h <= win.1 as f32 - hud + 0.51, "压在面板上方（不盖住 HUD）");
+    // 官方版式（用户 2026-10-09 的截图）：背板是 `Prguse[384]` 的**原生尺寸**、
+    // **固定在屏幕左上角**，不随窗口/HUD 变。
+    assert_eq!((w, h), (416.0, 176.0), "背板尺寸 = Prguse[384] 原生尺寸");
+    assert_eq!((x, y), (8.0, 4.0), "贴左上角（留 8/4 的缝）");
+    assert_eq!(input::DIALOG_BG, 384, "背板图号");
     // 选项行：第一行点得中，第二行点得中，正文区点不中
     let r0 = input::dialog_option_rect(panel, 3, 0);
     let r1 = input::dialog_option_rect(panel, 3, 1);
@@ -1304,6 +1304,16 @@ fn 对话面板的命中与折行() {
     assert_eq!(input::dialog_option_at(panel, 3, 2, (x + 4.0, y + 4.0)), None);
     assert!(input::dialog_hit(panel, (x + 4.0, y + 4.0)));
     assert!(!input::dialog_hit(panel, (0.0, 0.0)));
+    // 背板固定高 ⇒ 正文太长时最后的选项会排到框外：**画那边跳过，命中这边也必须跳过**
+    //（否则会出现点框外的空白反而弹对话）。
+    let many = input::DIALOG_MAX_LINES;
+    let last = input::dialog_option_rect(panel, many, 3);
+    assert!(!input::dialog_option_fits(panel, many, 3), "3 个选项在满行正文下装不下");
+    assert_eq!(
+        input::dialog_option_at(panel, many, 4, (last.0 + 2.0, last.1 + 2.0)),
+        None,
+        "装不下的选项不该被点到"
+    );
     // 折行：按字数、`\n` 强制换行
     assert_eq!(input::wrap_text("abcdef", 3), vec!["abc", "def"]);
     assert_eq!(input::wrap_text("a\nb", 5), vec!["a", "b"]);

@@ -191,10 +191,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ui = ui::UiCache::new();
     // 选角场景（登录成功、状态机停在"等你选"时才建）与真字体绘制器
     let mut select_scene: Option<select::Select> = None;
-    // 登录/选角专用：同一份字体、按**缩放后**的字号重新光栅化（`UI_PX * 1.28 ≈ 17.9px`）。
-    // 两屏的美术是整屏拉伸 1.28 的（见 `ui::UI_SCALE`），字**不能跟着位图一起拉** ——
-    // 那是"把 14px 的字拉成 17.9px"（糊）。这里直接把字号给足，落点由 `draw_ui` 换算。
-    let mut ui_texts = font::TextCache::new(mir2_core::text::UI_PX * ui::UI_SCALE);
+    // 界面文字（登录/选角/对话窗）**按原生字号光栅化，一像素都不缩放**
+    // （用户 2026-10-09 第 6 条：「界面显示文字在 1024×768 下不要缩放大小，
+    // 就维持正常输出，否则字会糊」）。
+    //
+    // ⚠️ 原来这里给的是 `UI_PX * 1.28 ≈ 17.9px` —— 想法是"素材拉伸 1.28，字不能跟着拉、
+    // 所以要按放大后的字号重光栅化"。**那也是缩放**：17.9px 既非整数倍、又与素材的像素
+    // 网格错位 ⇒ 看着就是糊的。现在字就是 14px 原生像素，落点仍按设计坐标 ×`UI_SCALE`
+    // 换算（位置跟着版式走，字形不变）。
+    let mut ui_texts = font::TextCache::new(mir2_core::text::UI_PX);
     // 世界里的字（怪物名字/伤害飘字）单独一份、小一档 —— 见 `text::NAME_PX`。
     let mut names = font::TextCache::new(mir2_core::text::NAME_PX);
 
@@ -617,7 +622,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // 实现（把上面那一大段包进 if 会多一层缩进、更容易漏改）。
                             if let Some(n) = net.as_ref() {
                                 if let Some((panel, lines)) =
-                                    hud::dialog_geom(net.as_ref(), (WIN_W, WIN_H))
+                                    hud::dialog_geom(net.as_ref())
                                 {
                                     if let Some(i) = input::dialog_option_at(
                                         panel,
@@ -1201,6 +1206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &mut canvas,
                 &tex_creator,
                 &mut names,
+                &mut ui_texts,
                 &mut ui,
                 &mut libs,
                 &mut tiles,

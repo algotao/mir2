@@ -79,6 +79,8 @@ pub(crate) fn draw_map_view<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
     names: &mut font::TextCache<'a>,
+    // 界面字号（`UI_PX` 原生 14px）—— 对话窗用它；世界里的名字/飘字仍走 `names`
+    ui_texts: &mut font::TextCache<'a>,
     ui: &mut ui::UiCache<'a>,
     libs: &mut HashMap<String, Option<Wzl>>,
     tiles: &mut HashMap<TileKey, TileTex<'a>>,
@@ -348,7 +350,7 @@ pub(crate) fn draw_map_view<'a, T>(
     )?;
 
     // **底部操作面板**：最后贴（原版也是最后贴的），盖住世界下沿
-    draw_hud(canvas, tc, ui, names, dir, net, &m.title)?;
+    draw_hud(canvas, tc, ui, names, ui_texts, dir, net, &m.title)?;
 
     // 悬停结果还给主循环：光标要跟着它换（Crystal 的 Attack 光标）
     Ok(hover)

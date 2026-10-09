@@ -112,6 +112,18 @@ func (s *Server) showLabel(c net.Conn, p *Player, sc *script.Script, l *script.L
 	s.npcSay(c, p, p.dialog.npcID, l.Say, l.Links)
 }
 
+// npcClose 告诉客户端"这段对话结束了"（新协议 `NpcClose`；legacy 没有对应下行，
+// 原版客户端是收到脚本结束标记后自己清的）。
+//
+// ⚠️ 必须**在清 `p.dialog` 之前**调（要用里面的 npc id）。
+func (s *Server) npcClose(c net.Conn, p *Player) {
+	if p == nil || p.protoOut == nil || p.dialog == nil {
+		return
+	}
+	p.protoOut.enqueue(&protocol.Envelope{Body: &protocol.Envelope_NpcClose{
+		NpcClose: &protocol.NpcClose{NpcId: uint64(p.dialog.npcID)}}})
+}
+
 // npcSay 把一段对白发给玩家：**新协议**走结构化 `NpcSay`（正文 + 选项），legacy 走 `sysMsg`。
 //
 // ⚠️ 为什么必须分流：proto 玩家的 legacy 下行是**被丢弃**的（`protoDown`，见 netproto.go
@@ -174,6 +186,10 @@ func (s *Server) dlgSelectIndex(c net.Conn, p *Player, idx int) {
 
 	switch strings.ToLower(lk.Label) {
 	case "exit":
+		// ⚠️ 用户 2026-10-09 报的 bug：点脚本里的「退出」**窗口不关**（按 ESC 能关 ——
+		// 那是客户端本地清的）。根因就在这里：只把服务端状态清了、**没有下行**，
+		// 客户端不知道 ⇒ 面板一直挂着。凡是"对话结束"都要走 `npcClose`。
+		s.npcClose(c, p)
 		p.dialog = nil
 		return
 	case "buy", "sell", "trading":

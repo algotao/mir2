@@ -85,9 +85,19 @@ func TestProtoNpcDialog(t *testing.T) {
 		t.Errorf("推进后的选项 = %+v", say2.GetOptions())
 	}
 
-	// ③ 此刻 [@ask] 只剩一项 = `<知道了/@exit>` ⇒ 选它对话关掉，**不再有** NpcSay
+	// ③ 此刻 [@ask] 只剩一项 = `<知道了/@exit>` ⇒ 对话关掉。
+	//
+	// ⚠️ 服务端必须**主动下行 `NpcClose`**（用户 2026-10-09 报的 bug：点脚本里的「退出」
+	// 窗口不关、按 ESC 才关 —— 那是客户端本地清的）。只清服务端状态、不下行就是那个表现。
 	cl.send(&protocol.Envelope{Body: &protocol.Envelope_NpcSelect{
 		NpcSelect: &protocol.NpcSelect{NpcId: uint64(npc.ID), Index: 1}}})
+	closeEnv := cl.waitFor(ev, "NpcClose", func(e *protocol.Envelope) bool {
+		_, ok := e.Body.(*protocol.Envelope_NpcClose)
+		return ok
+	})
+	if got := closeEnv.Body.(*protocol.Envelope_NpcClose).NpcClose.GetNpcId(); got != uint64(npc.ID) {
+		t.Errorf("NpcClose.npc_id = %d，应为 %d", got, npc.ID)
+	}
 	drainUntilPong(t, cl, ev, "选 @exit 之后不该再有 NpcSay")
 
 	// ④ 再点一次 NPC ⇒ 重新回到 [@main]（对话状态不是一次性用完就废）

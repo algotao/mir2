@@ -177,37 +177,61 @@ pub(crate) fn next_move_step(
 
 // ---------- NPC 对话面板（用户 2026-10-09：点 NPC 要出对话）----------
 
-/// 对话面板的尺寸与落点：**HUD 面板正上方**、水平居中。
+/// 对话窗的**版式常量** —— 照抄官方（用户 2026-10-09 给的截图）。
 ///
-/// ⚠️ 这里**不是**原版的版式：原版把"正文 + `[1] 选项`"当成一条系统消息发到
-/// **聊天区**（`SM_*` + 文本里的 `<文字/@标签>` 可点）。新协议把两者拆开了
-/// （`protocol/npc.proto` 的说明），所以先画一块自己的面板把功能跑通；
-/// 版式对齐原版留到后面（见 `docs/todo.md` 第 1 条）。
+/// 与旧版的区别：旧版是自己造的"居中悬浮半透明黑板" ✗；官方是**一块固定尺寸、
+/// 固定在屏幕左上角**的背板（`Prguse[384]`，416×176 —— 就是图1/图2/图4 那张
+/// "青铜框 + 深色内里"），正文在左上、选项排在正文下面（黄字 + 绿点、**不编号**）。
 ///
-/// 返回 `(x, y, w, h)`（画布坐标）。
-pub(crate) fn dialog_panel(win: (u32, u32), hud_h: f32, text_lines: usize, options: usize) -> (f32, f32, f32, f32) {
-    const W: f32 = 460.0;
-    const PAD: f32 = 8.0;
-    let line = DIALOG_LINE_H;
-    let h = PAD * 2.0 + text_lines as f32 * line + options as f32 * DIALOG_OPT_H;
-    let x = (win.0 as f32 - W) / 2.0;
-    let y = (win.1 as f32 - hud_h - h - 6.0).max(4.0);
-    (x, y, W, h)
+/// 背板是原生像素尺寸，**不缩放**（用户："界面显示文字在 1024×768 下不要缩放" ——
+/// 背板也一样，画成 416×176 正好是官方大小）。
+pub(crate) const DIALOG_BG: u32 = 384;
+
+/// 背板尺寸（`Prguse[384]` 的原生尺寸）。
+pub(crate) const DIALOG_W: f32 = 416.0;
+pub(crate) const DIALOG_H: f32 = 176.0;
+
+/// 落点：**贴屏幕左上角**。官方就是贴角（留 8/4 的缝才不压住窗口边）。
+pub(crate) const DIALOG_X: f32 = 8.0;
+pub(crate) const DIALOG_Y: f32 = 4.0;
+
+/// 正文在背板里的内边距（避开青铜框内沿）。
+pub(crate) const DIALOG_PAD_X: f32 = 24.0;
+pub(crate) const DIALOG_PAD_Y: f32 = 16.0;
+
+/// 正文行高 / 选项行高（14px 字 + 4px 行距，与截图里的疏密一致）。
+pub(crate) const DIALOG_LINE_H: f32 = 18.0;
+pub(crate) const DIALOG_OPT_H: f32 = 18.0;
+
+/// 正文最多画几行。
+///
+/// 背板是**固定高**的（176）⇒ 长了画不下。原版是滚动（`NPCDialog` 有滚动条），
+/// 这里先**截断**（超出部分不画，也不生成选项矩形 —— 画与命中仍然同源）。
+/// 中文脚本一段很少超过 5 行，滚动留到后面（见 `docs/todo.md`）。
+pub(crate) const DIALOG_MAX_LINES: usize = 5;
+
+/// 正文一行最多几个字。背板内宽 ≈ `416 - 2*24 = 368px`，14px 一个字 ⇒ 约 26 个，
+/// 留点余量取 24（`\n` 仍然强制换行）。
+pub(crate) const DIALOG_WRAP_CHARS: usize = 24;
+
+/// 对话面板的矩形 `(x, y, w, h)`（画布坐标）—— 固定尺寸、固定左上角。
+pub(crate) fn dialog_panel() -> (f32, f32, f32, f32) {
+    (DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H)
 }
 
-/// 对话面板里的正文行高 / 选项行高。
-pub(crate) const DIALOG_LINE_H: f32 = 16.0;
-pub(crate) const DIALOG_OPT_H: f32 = 20.0;
-
 /// 某个选项行在面板里的矩形 `(x, y, w, h)`（正文之后按顺序排）。
+///
+/// ⚠️ `text_lines` 会**先截到 [`DIALOG_MAX_LINES`]** —— 画那边也截同一刀
+/// ⇒ "画与命中同源"这条仍然成立（否则选项会画在正文的位置上、点不中）。
 pub(crate) fn dialog_option_rect(
     panel: (f32, f32, f32, f32),
     text_lines: usize,
     i: usize,
 ) -> (f32, f32, f32, f32) {
     let (x, y, w, _) = panel;
-    let oy = y + 8.0 + text_lines as f32 * DIALOG_LINE_H + i as f32 * DIALOG_OPT_H;
-    (x + 8.0, oy, w - 16.0, DIALOG_OPT_H)
+    let lines = text_lines.min(DIALOG_MAX_LINES);
+    let oy = y + DIALOG_PAD_Y + lines as f32 * DIALOG_LINE_H + 6.0 + i as f32 * DIALOG_OPT_H;
+    (x + DIALOG_PAD_X, oy, w - DIALOG_PAD_X * 2.0, DIALOG_OPT_H)
 }
 
 /// 鼠标落在哪个选项上（`None` = 没点中选项）。**纯函数**，与 `dialog_option_rect` 同源。
@@ -218,12 +242,32 @@ pub(crate) fn dialog_option_at(
     mouse: (f32, f32),
 ) -> Option<usize> {
     (0..options).find(|&i| {
+        if !dialog_option_fits(panel, text_lines, i) {
+            return false;
+        }
         let (x, y, w, h) = dialog_option_rect(panel, text_lines, i);
         mouse.0 >= x && mouse.0 <= x + w && mouse.1 >= y && mouse.1 <= y + h
     })
 }
 
+/// 这个选项在背板里**装得下**吗。
+///
+/// 背板固定高 ⇒ 正文太长时后面的选项会排到框外。那种"画不出来"的选项
+/// **既不该画、也不该被点到**（否则会出现"点空白弹对话"）。画那边跳过同一批。
+pub(crate) fn dialog_option_fits(
+    panel: (f32, f32, f32, f32),
+    text_lines: usize,
+    i: usize,
+) -> bool {
+    let (_, y, _, h) = panel;
+    let (_, oy, _, oh) = dialog_option_rect(panel, text_lines, i);
+    oy + oh <= y + h
+}
+
 /// 点是否落在面板里（落在面板里但没点在选项上 ⇒ **别走路**）。
+// 点落在对话窗里吗（窗里但没点在选项上 ⇒ 别走路）。目前只有测试用它，
+// 但它是「点对话窗不算走路」这条规则的判据，留着。
+#[allow(dead_code)]
 pub(crate) fn dialog_hit(panel: (f32, f32, f32, f32), mouse: (f32, f32)) -> bool {
     let (x, y, w, h) = panel;
     mouse.0 >= x && mouse.0 <= x + w && mouse.1 >= y && mouse.1 <= y + h
