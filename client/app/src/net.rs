@@ -424,6 +424,7 @@ impl Net {
                 from: None,
                 action,
                 action_seq,
+                pending_action: None,
                 changed_at: now,
                 action_at: now,
                 // 刚出现/刚进视野：先按"走一格"算，下一步会据实重算
@@ -454,18 +455,38 @@ impl Net {
             // ⚠️ 判据是**动作事件计数**（`action_seq`），不是动作值：普通攻击的值恒为 1，
             // 按值判 ⇒ 第二次以后的每一刀都不重播挥砍（用户 2026-10-09 反复报的那条），
             // 换目标也一样漏。计数每收到一条 `EntityAction` 就 +1，所以每刀都重播。
+            //
+            // ⚠️ 并且**走/跑没走完时不释放攻击动作**（用户同日补充的第 2 条）：那一段
+            // 挥砍先存进 `pending_action`，等这一步走完再补播（连 `action_at` 一起推迟，
+            // 否则走路的 600ms 里挥砍就播完了）。**受击/死亡不推迟** —— 被打/死要立刻表现。
+            let urgent = action.is_some_and(|v| !mir2_core::world::action::is_attack(v));
             if a.action_seq != action_seq {
                 a.action_seq = action_seq;
-                a.action = action;
-                // ⚠️ 只动**动作钟**（见 `action_at` 的说明）：动 `changed_at` 会让补间从头开始
-                a.action_at = now;
-                // 换动作（砍/受击…）就从"走路的相位"里出来了 ⇒ 相位重开
-                a.walk_since = now;
-            } else if a.action != action {
+                if a.moving(now) && !urgent {
+                    a.pending_action = Some((action, action_seq));
+                } else {
+                    a.action = action;
+                    // 立刻表现的那一类（受击/死亡）把压着的挥砍作废 —— 挨打优先
+                    a.pending_action = None;
+                    // ⚠️ 只动**动作钟**（见 `action_at` 的说明）：动 `changed_at` 会让补间从头开始
+                    a.action_at = now;
+                    // 换动作（砍/受击…）就从"走路的相位"里出来了 ⇒ 相位重开
+                    a.walk_since = now;
+                }
+            } else if a.action != action && !a.moving(now) {
                 // 计数没变而值变了（理论上不该发生）：照样认账，免得漏动作。
                 a.action = action;
                 a.action_at = now;
                 a.walk_since = now;
+            }
+            // 这一步走完了 ⇒ 把压着的挥砍补上。之后要不要走/跑，由 main 的追打循环
+            // 重新判（"攻击完后再次判断是不是要走/跑"）。
+            if !a.moving(now) {
+                if let Some((act, _)) = a.pending_action.take() {
+                    a.action = act;
+                    a.action_at = now;
+                    a.walk_since = now;
+                }
             }
         }
         // 视野外的实体不再留着（否则跑一圈地图会攒下几百条死账）

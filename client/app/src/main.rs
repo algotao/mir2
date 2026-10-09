@@ -900,6 +900,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .as_ref()
                     .filter(|n| n.world.in_world())
                     .and_then(|n| n.world.combat_step(id));
+                // 手上的挥砍还没播完？原版 `CanNextAction`（`IsIdle`）——"砍完再迈步"，
+                // 也是用户 2026-10-09 补充的第 2 条后半句（"攻击完后再次判断是不是要走/跑"）。
+                let swing_busy = net
+                    .as_ref()
+                    .and_then(|n| n.anims.get(&n.world.self_id))
+                    .is_some_and(|a| a.attack_busy(started));
                 match step {
                     // 死了 / 消失了（尸体被清）/ 自己掉线了 ⇒ 解除锁定
                     None => {
@@ -926,7 +932,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .and_then(|n| n.world.ability.as_ref().map(|a| a.level))
                             .unwrap_or(1)
                             .max(1);
-                        if can_attack(stepping, attack_at.elapsed(), level) {
+                        if can_attack(stepping || swing_busy, attack_at.elapsed(), level) {
                             if let Some(n) = net.as_ref() {
                                 let _ = n.attack_target(id);
                                 swing_sfx(n, &sound, &sounds);
@@ -935,8 +941,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     // 够不着：复用鼠标走路那条路（步频/节流/"到了就停"都在下面那段里）
+                    //
+                    // ⚠️ 手上的挥砍没播完就先站着（用户第 2 条："即使是在'追打'时，
+                    // 也应在移动结束后再补攻击动作，攻击完后再次判断是不是要走/跑"）。
+                    // 不挡的话就是"边走边砍/同手同脚"。
                     Some(mir2_core::world::CombatStep::Approach { x, y, run }) => {
-                        move_target = Some((x, y, run));
+                        if !swing_busy {
+                            move_target = Some((x, y, run));
+                        }
                     }
                 }
             }

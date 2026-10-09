@@ -46,11 +46,20 @@ func (s *Server) spawnNPCs(mapID string) {
 			log.Printf("WARN: NPC %s（地图 %s）坐标 (%d,%d) 越界，未生成", np.Name, mapID, np.X, np.Y)
 			continue
 		}
+		// NPC 的外观/种族：照原版那两列，客户端要用它们去 `Npc.wzl` 取图
+		//（`TNpcActor`：块起点 `GetNpcOffset(appr)`、动作表 `GetRaceByPM(race, appr)`）。
+		//
+		//   · 商人（merchant.txt）：那一列存的是**外观**（"主要部分"），种族一律 **50**（商人）；
+		//   · `Npcs.txt`：`Race` 是真种族、`Body` 是外观。
+		//
+		// ⚠️ 客户端从 `RaceImg` 字段读**种族**、从 `Appr` 读**外观**（与怪物同一套拆包：
+		// `MakeLong(RaceImg, Appr)`，见 netproto.go 的 monsterFeatureOf）。
+		race, appr := npcRaceAppr(np)
 		// NPC 没有怪物模板，现场合成一个：不会死、不会动、不会攻击
 		info := &data.MonsterInfo{
 			Name:        np.Name,
-			RaceImg:     uint16(np.RaceImg),
-			Appr:        uint16(np.Body),
+			RaceImg:     race,
+			Appr:        appr,
 			Level:       1,
 			HP:          999999,
 			WalkSpeed:   0,
@@ -246,4 +255,18 @@ func (s *Server) spawnGroundItem(p *Player, it *pb.UserItem, x, y int) {
 	s.mu.Unlock()
 
 	s.broadcastGroundItem(gi)
+}
+
+// npcRaceAppr 给出 NPC 在客户端那边的 **(种族, 外观)** —— 客户端拿它去 `Npc.wzl` 取图。
+//
+//	· 商人（merchant.txt）：那一列存的是**外观**（"主要部分"），种族一律 **50**（商人）；
+//	· `Npcs.txt`：`Race` 是真种族、`Body` 是外观。
+//
+// 原版对应 `TNpcActor`：块起点 `GetNpcOffset(appr)`、动作表 `GetRaceByPM(race, appr)`
+// （`Actor.pas:2866-2896/3028-3046`，race 50 还会再按外观分派）。
+func npcRaceAppr(np *data.NPC) (race, appr uint16) {
+	if np.IsMerchant {
+		return 50, uint16(np.RaceImg)
+	}
+	return uint16(np.Race), uint16(np.Body)
 }

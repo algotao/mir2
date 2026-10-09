@@ -206,6 +206,13 @@ pub(crate) struct ActorAnim {
     /// 每来一条新的 `EntityAction` 计数就变 ⇒ 重播一次挥砍；计数没变就绝不动
     /// `action_at`（否则移动、状态刷新之类的每帧调用会把动画一次次摁回第一帧）。
     pub(crate) action_seq: u64,
+    /// **还没播的**动作（`(值, 事件计数)`）：走/跑没结束时收到的挥砍先存这儿，
+    /// 等这一步走完再补播（用户 2026-10-09 补的第 2 条："即使是在'追打'时，
+    /// 也应在移动结束后再补攻击动作"）。
+    ///
+    /// 为什么连 `action_at` 也一起推迟：动作的播放进度是从 `action_at` 起的 ⇒
+    /// 走路那 600ms 里如果先起钟，走到位时挥砍已经播完了，表现就是"没砍"。
+    pub(crate) pending_action: Option<(Option<u32>, u64)>,
     /// **移动**的起始时刻（补间与 `moving()` 用它）。
     pub(crate) changed_at: Instant,
     /// **动作**的起始时刻（挥砍/受击的播放进度用它）。
@@ -247,6 +254,25 @@ impl ActorAnim {
     /// 走路/跑步动画已经播了多久（**连续相位**，不随每格重置）。
     pub(crate) fn walk_ms(&self, now: Instant) -> u32 {
         now.duration_since(self.walk_since).as_millis() as u32
+    }
+
+    /// 手上的**攻击**动画还没播完（`false` = 可以发下一个动作/走下一步）。
+    ///
+    /// 原版这条是 `CanNextAction`（`g_MySelf.IsIdle`，`Actor.pas:1722-1736`：
+    /// `m_nCurrentAction <> 0` 就"不空"、发不出下一个动作）。追打时靠它保证
+    /// **砍完一刀再迈步**（用户 2026-10-09 补的第 2 条后半句）。
+    pub(crate) fn attack_busy(&self, now: Instant) -> bool {
+        let Some(a) = self.action else {
+            return false;
+        };
+        if !mir2_core::world::action::is_attack(a) {
+            return false;
+        }
+        let pose = mir2_core::actor::human_pose(Some(a), false, false);
+        if pose.looping {
+            return false;
+        }
+        self.action_ms(now) < pose.act.act().duration_ms() + ACTION_TAIL_MS
     }
 
     /// 补间后的绘制坐标（格子坐标，浮点）。
@@ -374,6 +400,16 @@ pub(crate) fn body_sprite(
                 A::monster_index(appr, f.race_img as u8, act, dir, frame),
             ))
         }
+        // NPC：容器是 `Npc.wzl`，图号 = 块起点(Appr) + 站立段在本方向的起点。
+        //
+        // 原版 `TNpcActor`（`Actor.pas:2866-2896/3028-3046`）：块起点 `GetNpcOffset(appr)`、
+        // 帧号 `GetRaceByPM(race, appr)` 的 `ActStand` —— NPC 站着不动 ⇒ 段内帧恒 0。
+        // race 与 appr 都由服务端给（商人 race 恒 50、appr 是"主要部分"那一列；
+        // `Npcs.txt` 的 NPC 则是各自的两列，见 `data/npc.go`）。
+        2 => Some((
+            A::NPC_LIB,
+            A::npc_index(f.race_img as u8, f.appr as u16, dir, 0),
+        )),
         _ => None,
     }
 }

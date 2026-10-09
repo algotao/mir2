@@ -147,10 +147,26 @@ fn 怪物走_appr() {
     assert!(weapon_sprite(&ent(1, f), None, Instant::now()).is_none());
 }
 
-/// NPC 没有精灵（`Npc.wzl` 缺失）⇒ 退回标记，而不是画个错的东西。
+/// NPC 现在**有**精灵了（用户 2026-10-09 第 1 条："没有人物，或者是渲染错"）。
+///
+/// ⚠️ 以前这里断言的是"退回标记"，理由是 `Npc.wzl` 缺失 —— 那句是**过时的**：
+/// `$WS/mir2c/data` 里 `npc.wzl … npc4.wzl` 都在。现在走 `Npc.wzl` +
+/// `GetNpcOffset(appr)` + `GetRaceByPM(race, appr)` 的站立段（见 `npc_index`）。
 #[test]
-fn npc_退回标记() {
-    assert!(body_sprite(&ent(2, Default::default()), None, Instant::now()).is_none());
+fn npc_走npc图库() {
+    let f = mir2_protocol::EntityFeature {
+        race_img: 10, // RC_NPC
+        appr: 11,     // 外观（merchant.txt 的"主要部分"那一列）
+        ..Default::default()
+    };
+    let e = ent(2, f);
+    let (lib, idx) = body_sprite(&e, None, Instant::now()).expect("NPC 该有精灵了");
+    assert_eq!(lib, A::NPC_LIB);
+    assert_eq!(idx, A::npc_index(10, 11, A::dir_of(e.dir), 0));
+    // 外观信息缺失（老服务端）才退回标记
+    let mut bare = ent(2, f);
+    bare.feature = None;
+    assert!(body_sprite(&bare, None, Instant::now()).is_none());
 }
 
 /// 没有外观信息（旧服务端 / 快照还没到）⇒ 退回标记。
@@ -169,6 +185,7 @@ fn 移动补间() {
         cell: (5, 5),
         from: Some((4, 5)),
         action: None,
+        pending_action: None,
         action_seq: 0,
         changed_at: now,
         action_at: now,
@@ -608,6 +625,7 @@ fn 走动时地图取的是补间位置() {
         cell: (11, 20),
         from: Some((10, 20)),
         action: None,
+        pending_action: None,
         action_seq: 0,
         changed_at: now,
         action_at: now,
@@ -813,6 +831,7 @@ fn 走路时人物钉在屏幕中间地图往前卷() {
         cell: (11, 10),
         from: Some((10, 10)),
         action: None,
+        pending_action: None,
         action_seq: 0,
         changed_at: now,
         action_at: now,
@@ -947,6 +966,7 @@ fn 移动不重播挥砍() {
         cell: (3, 4),
         from: None,
         action: Some(1),
+        pending_action: None,
         action_seq: 0,
         changed_at: now,
         action_at: now,
@@ -962,9 +982,41 @@ fn 移动不重播挥砍() {
         A::HAct::Walk,
         "挥砍早过期了 ⇒ 走动时该是走路，不能又砍一刀"
     );
-    // 而**新来**一个动作（服务端再发一次挥砍）当然要正常播
+    // ⚠️ 用户 2026-10-09 补充的第 2 条：**走/跑没结束不许释放攻击动作**。
+    // 所以"移动中又新来一个挥砍"仍然播走路（挥砍被 `net::sync_anims` 压进
+    // `pending_action`，等这一步走完再补播）。
     a.action_at = now + Duration::from_millis(750);
-    assert_eq!(hit(&a, now + Duration::from_millis(760)), A::HAct::Hit);
+    assert_eq!(
+        hit(&a, now + Duration::from_millis(760)),
+        A::HAct::Walk,
+        "走没走完：不切挥砍"
+    );
+    // 走完（补间 600ms 在 t0+700 起步 ⇒ t0+1300 结束）⇒ 才轮到挥砍
+    a.action_at = now + Duration::from_millis(1300);
+    assert_eq!(hit(&a, now + Duration::from_millis(1310)), A::HAct::Hit, "停步后才补挥砍");
+}
+
+/// 「手上的挥砍还没播完」的判据（原版 `CanNextAction`/`IsIdle`，用户第 2 条后半句
+/// "攻击完后再次判断是不是要走/跑"）：追打时靠它保证**砍完一刀再迈步**。
+#[test]
+fn 挥砍没播完算忙() {
+    let now = Instant::now();
+    let mk = |action: Option<u32>, at: Instant| ActorAnim {
+        cell: (1, 1),
+        from: None,
+        action,
+        pending_action: None,
+        action_seq: 0,
+        changed_at: at,
+        action_at: at,
+        move_ms: 600,
+        walk_since: at,
+    };
+    assert!(mk(Some(1), now).attack_busy(now), "刚砍：忙");
+    assert!(!mk(Some(1), now).attack_busy(now + Duration::from_secs(5)), "早播完：不忙");
+    assert!(!mk(None, now).attack_busy(now), "没动作：不忙");
+    // 受击/死亡不是"挥砍"，不挡走路
+    assert!(!mk(Some(mir2_core::world::action::HURT), now).attack_busy(now));
 }
 
 /// 球的"液面"裁切：**看得见的永远是下面那一截**（原版 `FState.pas:3784-3795`）。
@@ -1199,4 +1251,28 @@ fn click_walks_exactly_one_step() {
     assert_eq!(input::click_step(&w, (10, 10), (10, 3), false).1, Some((10, 9, false)));
     // 点在自己身上（同一格）⇒ 什么都不做
     assert_eq!(input::click_step(&w, (10, 10), (10, 10), false), (None, None));
+}
+
+/// NPC 进 `Npc.wzl` 的图号（原版 `GetNpcOffset` + `GetRaceByPM(race, appr)` 的站立段）。
+///
+/// 用户 2026-10-09 第 1 条："NPC 角色显示看上去是错的，没有人物" —— 以前 `kind == 2`
+/// 直接返回 `None`（退化成标记），现在走 `Npc.wzl`。
+#[test]
+fn npc_精灵图号() {
+    // 块起点：`GetNpcOffset` 的 0..22 那一支 = appr * 60
+    assert_eq!(A::npc_offset(11), 660);
+    assert_eq!(A::npc_offset(23), 1380);
+    assert_eq!(A::npc_offset(11 + 12), 660 + 12 * 60);
+    // 图号 = 块起点 + 站立段在本方向的起点
+    for (race, appr) in [(10u8, 11u16), (11, 5), (15, 23)] {
+        let stand = A::npc_actions(race, appr)[A::MAct::Stand as usize].first(0);
+        assert_eq!(A::npc_index(race, appr, 0, 0), A::npc_offset(appr) + stand);
+    }
+    // 商人（race 50）按外观再分派：42..47 → MA46、23 → MA36、26 → MA35、其余 → MA35
+    assert_eq!(A::npc_actions(50, 43), A::npc_actions(46, 43));
+    assert_eq!(A::npc_actions(50, 23), A::npc_actions(36, 23));
+    assert_eq!(A::npc_actions(50, 26), A::npc_actions(35, 26));
+    assert_eq!(A::npc_actions(50, 99), A::npc_actions(35, 99));
+    // 非 50 的 race 就是它自己那张表
+    assert_eq!(A::npc_actions(11, 5), A::npc_actions(11, 5));
 }

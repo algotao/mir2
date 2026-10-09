@@ -162,14 +162,11 @@ pub fn human_pose(action_id: Option<u32>, moving: bool, run: bool) -> Pose {
             act: HAct::Die,
             looping: false,
         },
-        Some(a) if action::is_attack(a) => Pose {
-            act: match a {
-                2 => HAct::HeavyHit,
-                3 => HAct::BigHit,
-                _ => HAct::Hit,
-            },
-            looping: false,
-        },
+        // ⚠️ **移动优先于攻击**（用户 2026-10-09 补的第 2 条："不要在奔跑/走动没结束时
+        // 释放攻击动作"）。原来攻击判在前面 ⇒ 走/跑没走完就切进挥砍，看起来就是
+        // "边走边砍、同手同脚"。原版靠 `CanNextAction`/`IsIdle`（`Actor.pas:1722-1736`）
+        // 保证一个动作播完才发下一个 —— 客户端这边就是这条：**走完再砍**。
+        // 受击/死亡仍优先于移动（被打/死要立刻表现，原版也如此）。
         _ if moving => Pose {
             // 走 / 跑是**两段不同的图**：`ActWalk` 起点 64、`ActRun` 起点 128，各 6 帧
             //（帧间隔 90 vs 120 ms，`Actor.pas:77-78`）。原版靠 `CM_RUN`/`SM_RUN` 两条消息
@@ -178,6 +175,14 @@ pub fn human_pose(action_id: Option<u32>, moving: bool, run: bool) -> Pose {
             // 帧数一样、图号差 64 ⇒ 画面上是另一套动作，**不报错**。
             act: if run { HAct::Run } else { HAct::Walk },
             looping: true,
+        },
+        Some(a) if action::is_attack(a) => Pose {
+            act: match a {
+                2 => HAct::HeavyHit,
+                3 => HAct::BigHit,
+                _ => HAct::Hit,
+            },
+            looping: false,
         },
         _ => Pose {
             act: HAct::Stand,
@@ -247,8 +252,9 @@ pub fn monster_pose(race_img: u8, action_id: Option<u32>, moving: bool) -> MPose
     let want = match action_id {
         Some(action::HURT) => MAct::Struck,
         Some(action::DEATH) => MAct::Die,
-        Some(a) if action::is_attack(a) => MAct::Attack,
+        // 同 `human_pose`：**移动优先于攻击**（走完再砍）。
         _ if moving => MAct::Walk,
+        Some(a) if action::is_attack(a) => MAct::Attack,
         _ => MAct::Stand,
     };
     // 该品种这一段没有有效帧 ⇒ 退回站立（原版是"两个动作段 start 相同"来兜，
@@ -272,6 +278,80 @@ pub fn monster_pose(race_img: u8, action_id: Option<u32>, moving: bool) -> MPose
 /// 3. 若目标容器在素材里不存在（如 `Appr >= 800` 的龙/特效），调用方按 `None` 降级。
 pub fn monster_index(appr: u16, race_img: u8, act: MAct, dir: u8, frame: u16) -> u32 {
     mon_offset(appr) + mon_actions(race_img)[act as usize].first(dir) + frame as u32
+}
+
+/// NPC 用的容器（`Npc.wzl`）。
+///
+/// 原版是 `g_WNpcImgImages`（`TNpcActor.LoadSurface`，`Actor.pas:3040-3046`：
+/// `m_BodySurface := g_WNpcImgImages.GetCachedImage(m_nBodyOffset + m_nCurrentFrame, …)`）。
+pub const NPC_LIB: &str = "Npc";
+
+/// NPC 外观在 `Npc.wzl` 里的**块起点** —— 原版 `GetNpcOffset`（`Actor.pas:1156-1200`）。
+///
+/// ⚠️ 原版这个函数里有两套 case：上面一套被 `{ }` 注释掉了，**生效的是下面那套**
+/// （0..22 / 23 / 24,25 / 26…41 / 42,43 / 44..47 / 48..50 / 51 / 52 / 53 / 54..57 /
+/// 58… / 77..80 / 81 / 82 / 83）。这里照**生效的那套**搬。
+pub fn npc_offset(appr: u16) -> u32 {
+    match appr {
+        0..=22 => appr as u32 * 60,
+        23 => 1380,
+        24 | 25 => (appr as u32 - 24) * 60 + 1470,
+        27 | 32 => (appr as u32 - 26) * 60 + 1620 - 30,
+        26 | 28..=31 | 33..=41 => (appr as u32 - 26) * 60 + 1620,
+        42 | 43 => 2580,
+        44..=47 => 2640,
+        48..=50 => (appr as u32 - 48) * 60 + 2700,
+        51 => 2880,
+        52 => 2960,
+        53 => 3020,
+        54..=57 => (appr as u32 - 54) * 60 + 3070,
+        58 => 3270,
+        59 => 3290,
+        60 => 3330,
+        61..=64 => 3350,
+        65 => 3430,
+        66 => 3450,
+        67 => 3500,
+        68 => 3570,
+        69..=74 => (appr as u32 - 69) * 20 + 3610,
+        75 => 3730,
+        76 => 3810,
+        77..=80 => (appr as u32 - 77) * 20 + 3850,
+        81 => 4070,
+        82 => 4110,
+        _ => 4150, // 83 及其后：原版到 83 为止，再大就退回最后一支
+    }
+}
+
+/// NPC 的动作表 —— 原版 `GetRaceByPM(race, Appr)` 里**针对 NPC 那一支**（`Actor.pas:881-912`）。
+///
+/// - `race == 50`（商人）时原版**再按外观**分派：23→MA36、24/25/27/32→MA37、
+///   26/28..31/33/34/51→MA35、35..41 与 48..50/52/53→MA41、42..47→MA46、其余 MA35；
+/// - 其它 race 直接就是那张按 race 编号的动作表（10/11/15 这些 NPC 种族都在里面）。
+///
+/// ⚠️ 我们这张表的键是**race**（服务端在 `RaceImg` 字段里传的就是它）——
+/// 怪物那边同理（见 `mon_actions` 的说明）。
+pub fn npc_actions(race: u8, appr: u16) -> &'static [Act; 7] {
+    if race == 50 {
+        return match appr {
+            23 => mon_actions(36),
+            24 | 25 | 27 | 32 => mon_actions(37),
+            35..=41 | 48..=50 | 52 | 53 => mon_actions(41),
+            42..=47 => mon_actions(46),
+            _ => mon_actions(35),
+        };
+    }
+    mon_actions(race)
+}
+
+/// NPC 在 `Npc.wzl` 里的图号：块起点 + **站立**动作在本方向的起点（原版
+/// `TNpcActor.LoadSurface` 用 `m_nBodyOffset + m_nCurrentFrame`，而
+/// `m_nCurrentFrame` 来自 `GetDefaultFrame` = `ActStand.start + dir * (frame + skip) + cf`）。
+///
+/// `frame` 是站立段内的帧（NPC 站着不动 ⇒ 恒 0；有动画的 NPC 才需要它）。
+pub fn npc_index(race: u8, appr: u16, dir: u8, frame: u16) -> u32 {
+    let stand = npc_actions(race, appr)[MAct::Stand as usize];
+    npc_offset(appr) + stand.first(dir) + frame as u32
 }
 
 /// 怪物用的容器名（不含扩展名）——原版 `aGetMonImg`（`Actor.pas:958-1000`）。
