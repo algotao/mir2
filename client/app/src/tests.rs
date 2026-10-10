@@ -1571,6 +1571,80 @@ fn 关购买窗时包裹跟着收走() {
     //（那条在 core 的 `商品列表挂上货架关对话时一起收走` 里钉着）
 }
 
+/// 捡到/买到东西的音效判据（用户 2026-10-10 第 1/4 条）。
+///
+/// ⚠️ 关键在**第二件**：可堆叠物会**并进背包里已有的那一堆**（同一个实例号）⇒
+/// 只比实例号的话，买第二瓶药就一声不响（"购买音效只响第一下"）。
+#[test]
+fn 背包变多才算捡到东西() {
+    use mir2_core::world::BagItem;
+
+    let it = |idx: u32, mk: i32, count: u32| BagItem {
+        index: idx,
+        name: "药".into(),
+        looks: 1,
+        count,
+        dura: count,
+        dura_max: 10,
+        make_index: mk,
+        std_mode: 0,
+    };
+    let empty: Vec<Option<BagItem>> = vec![None, None];
+    let one = vec![Some(it(1, 100, 1)), None];
+    // ① 从无到有 ⇒ 1 个
+    assert_eq!(crate::net::Net::bag_gained_tests(&empty, &one).len(), 1);
+    // ② 同一堆**数量变多** ⇒ 也要算（并堆的情况）
+    let two = vec![Some(it(1, 100, 3)), None];
+    assert_eq!(
+        crate::net::Net::bag_gained_tests(&one, &two).len(),
+        1,
+        "并进同一堆（实例号不变、数量 1→3）也要响"
+    );
+    // ③ 数量没变 ⇒ 不响（避免背包挪位/被压缩时误响）
+    assert!(crate::net::Net::bag_gained_tests(&one, &one).is_empty());
+    // ④ 拿走东西（总数变少）⇒ 不响
+    assert!(crate::net::Net::bag_gained_tests(&two, &one).is_empty());
+    // ⑤ 换了一格位置但总量不变 ⇒ 不响
+    let moved = vec![None, Some(it(1, 100, 1))];
+    assert!(crate::net::Net::bag_gained_tests(&one, &moved).is_empty());
+}
+
+/// 挖肉：`Alt` + 左键点**死了的动物**（用户 2026-10-10 第 5 条）。
+///
+/// 事件循环不好造 `Event` ⇒ 这里钉住两条纯规则：候选目标怎么挑、动作怎么播。
+#[test]
+fn 挖肉的目标与动作() {
+    use mir2_core::world::{action, Entity};
+
+    let mk = |id: u64, dead: bool| mir2_core::world::Entity {
+        id,
+        kind: 1,
+        name: String::new(),
+        x: 0,
+        y: 0,
+        dir: 0,
+        feature: None,
+        hp: 0,
+        run: false,
+        max_hp: 10,
+        status_bits: 0,
+        dead,
+        action: None,
+        action_seq: 0,
+    };
+    let dead_animal = mk(7, true);
+    let alive_mon = mk(8, false);
+    // 候选：只认"死了的"（是不是动物由服务端 `isAnimal` 判 —— 它才有怪物种族数据）
+    let pick = |e: &Entity| if e.dead { Some(e.id) } else { None };
+    assert_eq!(pick(&dead_animal), Some(7));
+    assert_eq!(pick(&alive_mon), None);
+    // 动作：挖肉播挥砍（原版没有专门的挖肉图）
+    assert_eq!(
+        mir2_core::actor::human_pose(Some(action::BUTCH), false, false).act,
+        mir2_core::actor::HAct::Hit
+    );
+}
+
 /// 小地图**区域标注**（用户 2026-10-09 选的 (a)）：表由 `tools/gen_map_labels.py`
 /// 从原版 `data/MapDesc1.dat`（GBK）生成，键是**地图显示名**（= 服务端的 `map_title`）。
 #[test]

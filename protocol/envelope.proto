@@ -104,6 +104,8 @@ message Envelope {
     UseItem use_item = 0x0805;
     DropItem drop_item = 0x0806;
     PickupItem pickup_item = 0x0807;
+    // 挖肉（原版 `CM_BUTCH`）：`Alt` + 点动物尸体。与攻击（0x0700 段）是两条路。
+    Butch butch = 0x0811;
     GroundItemShow ground_item_show = 0x0808;
     GroundItemHide ground_item_hide = 0x0809;
     EquipItem equip_item = 0x080A;

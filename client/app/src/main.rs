@@ -270,6 +270,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 包裹是**因为打开购买窗**才开起来的吗（是 ⇒ 关购买窗时一起收走；
     // 玩家自己按 F9 开的 ⇒ 别替他关，用户 2026-10-10 第 1 条）
     let mut bag_by_shop = false;
+    // 按住 Alt 吗（挖肉的修饰键；SDL 的鼠标事件不带 keymod ⇒ 从键盘事件自己记）
+    let mut alt_down = false;
     // 待捡的地面物品：点了地上的东西 ⇒ 先走过去，**到了那格**才发拾取
     //（服务端要求"人站在物品那格上"，与原版 `CM_PICKUP` 同一条校验）
     let mut pending_pickup: Option<(u64, (i32, i32))> = None;
@@ -373,257 +375,275 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Event::KeyDown {
                     keycode, keymod, ..
-                } => match keycode {
-                    // ⚠️ **登录/选角里 ESC 先交给场景**（2026-10-09 修）。
-                    //
-                    // 这条 arm 排在所有 mode 分支之前，原来无条件 `break 'main` ⇒
-                    // 那两个界面里按 ESC **直接退客户端**，于是
-                    // `select.rs` 的"ESC 关建角框 / 关弹窗 / 取消待确认"与 `login.rs`
-                    // 的"ESC 退建号面板 / 关报错弹窗"全是**不可达死代码**。
-                    // 现在放它们落到下面的 mode 分支去；场景要退（`Action::Exit` /
-                    // `Action::Quit`）才真退。其余模式（世界/素材浏览器）保持原样。
-                    // 背包窗开着 ⇒ ESC **先关背包**
-                    Some(Keycode::Escape) if mode == 2 && bag_open => bag_open = false,
-                    // 状态窗同理 ⇒ ESC **先关状态窗**（别顺手把客户端退了）
-                    Some(Keycode::Escape) if mode == 2 && status_open => status_open = false,
-                    // NPC 对话开着 ⇒ ESC **先关对话**（原版 `@exit`），别顺手退了客户端
-                    Some(Keycode::Escape)
-                        if mode == 2 && net.as_ref().is_some_and(|n| n.world.dialog.is_some()) =>
-                    {
-                        if let Some(n) = net.as_ref() {
-                            if let Some(d) = n.world.dialog.as_ref() {
-                                n.npc_close(d.npc_id);
-                            }
-                        }
-                        if let Some(n) = net.as_mut() {
-                            n.world.close_dialog();
-                        }
+                } => {
+                    // Alt 是挖肉的修饰键（`Alt` + 左键点动物尸体）
+                    if matches!(keycode, Some(Keycode::LAlt) | Some(Keycode::RAlt)) {
+                        alt_down = true;
                     }
-                    // 商店窗同理 ⇒ ESC **先关商店窗**，并把"因买东西才开的"包裹一起收走
-                    //（用户 2026-10-10 第 1 条：购买窗关闭 ⇒ 物品列表与包裹一起关）
-                    Some(Keycode::Escape) if mode == 2 && shop_open => {
-                        shop_open = false;
-                        shop_sel = None;
-                        if crate::shop::shop_close::should_close_bag(bag_by_shop) {
-                            bag_open = false;
-                            bag_by_shop = false;
-                        }
-                    }
-                    Some(Keycode::Escape) if mode != 1 && mode != 4 => break 'main,
-                    // ⚠️ **开发键让开原版键位**（口径见 `docs/use.md`）：F1~F8 是技能、
-                    // F9~F12 是包裹/属性/技能/内挂、M 是大地图、Tab 是小地图、数字是快捷物品
-                    // ⇒ 这些"开发查看器"入口统统收进 **Ctrl+**，原版键位留给真功能。
-                    // F9 = 背包窗（原版键位，见上面那条注释的口径）
-                    Some(Keycode::F9) if mode == 2 => {
-                        bag_open = !bag_open;
-                        bag_page = 0;
-                        println!("[ui] 背包窗 {}", if bag_open { "打开" } else { "关闭" });
-                    }
-                    // F10 = 状态窗（原版键位：F9 包裹 / F10 属性 / F11 技能 / F12 内挂）。
-                    // ⚠️ macOS 上要 **Fn+F10**（F10 默认是 App Exposé）—— 2026-10-10
-                    // 用户确认 Fn+F10 能用；曾加过的备用键 Ctrl+C 已撤（不再占 C）。
-                    Some(Keycode::F10) if mode == 2 => toggle_status(&mut status_open),
-                    Some(Keycode::F1) if ctrl(keymod) => mode = 1,
-                    Some(Keycode::F2) if ctrl(keymod) => mode = 2,
-                    Some(Keycode::F3) if ctrl(keymod) => mode = 3,
-                    Some(Keycode::M) if ctrl(keymod) => {
-                        music_on = !music_on;
-                        sound.set_music_on(music_on);
-                        // 带上"正在响几路 / 有没有 BGM"：一眼看出混音器是不是活的
-                        let (voices, bgm, ..) = sound.stats();
-                        status = format!(
-                            "MUSIC {}  [sfx {} voices, bgm {}]",
-                            if music_on { "ON" } else { "OFF" },
-                            voices,
-                            if bgm { "ON" } else { "OFF" }
-                        );
-                    }
-                    Some(Keycode::N) if ctrl(keymod) => {
-                        sfx_on = !sfx_on;
-                        sound.set_sfx_on(sfx_on);
-                        let (voices, bgm, ..) = sound.stats();
-                        status = format!(
-                            "SOUND {}  [sfx {} voices, bgm {}]",
-                            if sfx_on { "ON" } else { "OFF" },
-                            voices,
-                            if bgm { "ON" } else { "OFF" }
-                        );
-                    }
-                    // 选角：键盘是**我们的扩展**（原版选角场景只认鼠标）
-                    _ if mode == 4 => {
-                        if let Some(k) = keycode {
-                            let act = match select_scene.as_mut() {
-                                Some(s) => s.on_key(k),
-                                None => select::Action::None,
-                            };
-                            if do_select_action(act, &mut net, &mut select_scene, &sound, &sounds)?
-                            {
-                                break 'main;
-                            }
-                        }
-                    }
-                    // 登录界面：全部交互在 `login` 里（Tab/退格/回车/ESC），这里只把
-                    // 它给出的动作翻译成"接下来干什么"。
-                    _ if mode == 1 => {
-                        if let Some(k) = keycode {
-                            let act = login.on_key(k);
-                            // 按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` ⇒ 103）
-                            if act != login::Action::None {
-                                sfx(&sound, &sounds, mir2_core::sound::idx::NORM_BUTTON_CLICK);
-                            }
-                            match act {
-                                login::Action::Submit => {
-                                    submit_login(&mut login, &mut net, &mut status)
+                    match keycode {
+                        // ⚠️ **登录/选角里 ESC 先交给场景**（2026-10-09 修）。
+                        //
+                        // 这条 arm 排在所有 mode 分支之前，原来无条件 `break 'main` ⇒
+                        // 那两个界面里按 ESC **直接退客户端**，于是
+                        // `select.rs` 的"ESC 关建角框 / 关弹窗 / 取消待确认"与 `login.rs`
+                        // 的"ESC 退建号面板 / 关报错弹窗"全是**不可达死代码**。
+                        // 现在放它们落到下面的 mode 分支去；场景要退（`Action::Exit` /
+                        // `Action::Quit`）才真退。其余模式（世界/素材浏览器）保持原样。
+                        // 背包窗开着 ⇒ ESC **先关背包**
+                        Some(Keycode::Escape) if mode == 2 && bag_open => bag_open = false,
+                        // 状态窗同理 ⇒ ESC **先关状态窗**（别顺手把客户端退了）
+                        Some(Keycode::Escape) if mode == 2 && status_open => status_open = false,
+                        // NPC 对话开着 ⇒ ESC **先关对话**（原版 `@exit`），别顺手退了客户端
+                        Some(Keycode::Escape)
+                            if mode == 2
+                                && net.as_ref().is_some_and(|n| n.world.dialog.is_some()) =>
+                        {
+                            if let Some(n) = net.as_ref() {
+                                if let Some(d) = n.world.dialog.as_ref() {
+                                    n.npc_close(d.npc_id);
                                 }
-                                login::Action::SubmitSignup => {
-                                    submit_signup(&mut login, &mut net, &mut status)
-                                }
-                                login::Action::NewAccount => {
-                                    // 面板切换在 `login` 里已经做完了（`enter_signup`），
-                                    // 这里只给状态栏一句人话（原版是开 `DNewAccount`）。
-                                    status = "NEW ACCOUNT".into();
-                                }
-                                login::Action::CancelSignup => status = String::new(),
-                                login::Action::ChangePassword => {
-                                    status = "CHANGE PASSWORD: NOT WIRED YET".into();
-                                }
-                                login::Action::Quit => break 'main,
-                                login::Action::None | login::Action::Dismiss => {}
+                            }
+                            if let Some(n) = net.as_mut() {
+                                n.world.close_dialog();
                             }
                         }
-                    }
-                    // 素材浏览器（开发用）
-                    _ if mode == 3 => match keycode {
-                        Some(Keycode::LeftBracket) => {
-                            lib_idx = (lib_idx + LIBS.len() - 1) % LIBS.len();
-                            img_idx = 0;
-                        }
-                        Some(Keycode::RightBracket) => {
-                            lib_idx = (lib_idx + 1) % LIBS.len();
-                            img_idx = 0;
-                        }
-                        Some(Keycode::Comma) | Some(Keycode::Left) => {
-                            img_idx = img_idx.saturating_sub(1);
-                        }
-                        Some(Keycode::Period) | Some(Keycode::Right) => img_idx += 1,
-                        _ => {}
-                    },
-                    _ if mode == 2 => match keycode {
-                        // 方向键：**联网且在世界里 ⇒ 走一步**（相机跟着自己）；否则平移镜头。
-                        Some(Keycode::Left) => {
-                            if !walk_if_online(&net, mir2_protocol::Direction::DirLeft) {
-                                cam.0 -= 2.0
+                        // 商店窗同理 ⇒ ESC **先关商店窗**，并把"因买东西才开的"包裹一起收走
+                        //（用户 2026-10-10 第 1 条：购买窗关闭 ⇒ 物品列表与包裹一起关）
+                        Some(Keycode::Escape) if mode == 2 && shop_open => {
+                            shop_open = false;
+                            shop_sel = None;
+                            if crate::shop::shop_close::should_close_bag(bag_by_shop) {
+                                bag_open = false;
+                                bag_by_shop = false;
                             }
                         }
-                        Some(Keycode::Right) => {
-                            if !walk_if_online(&net, mir2_protocol::Direction::DirRight) {
-                                cam.0 += 2.0
-                            }
+                        Some(Keycode::Escape) if mode != 1 && mode != 4 => break 'main,
+                        // ⚠️ **开发键让开原版键位**（口径见 `docs/use.md`）：F1~F8 是技能、
+                        // F9~F12 是包裹/属性/技能/内挂、M 是大地图、Tab 是小地图、数字是快捷物品
+                        // ⇒ 这些"开发查看器"入口统统收进 **Ctrl+**，原版键位留给真功能。
+                        // F9 = 背包窗（原版键位，见上面那条注释的口径）
+                        Some(Keycode::F9) if mode == 2 => {
+                            bag_open = !bag_open;
+                            bag_page = 0;
+                            println!("[ui] 背包窗 {}", if bag_open { "打开" } else { "关闭" });
                         }
-                        Some(Keycode::Up) => {
-                            if !walk_if_online(&net, mir2_protocol::Direction::DirUp) {
-                                cam.1 -= 2.0
-                            }
+                        // F10 = 状态窗（原版键位：F9 包裹 / F10 属性 / F11 技能 / F12 内挂）。
+                        // ⚠️ macOS 上要 **Fn+F10**（F10 默认是 App Exposé）—— 2026-10-10
+                        // 用户确认 Fn+F10 能用；曾加过的备用键 Ctrl+C 已撤（不再占 C）。
+                        Some(Keycode::F10) if mode == 2 => toggle_status(&mut status_open),
+                        Some(Keycode::F1) if ctrl(keymod) => mode = 1,
+                        Some(Keycode::F2) if ctrl(keymod) => mode = 2,
+                        Some(Keycode::F3) if ctrl(keymod) => mode = 3,
+                        Some(Keycode::M) if ctrl(keymod) => {
+                            music_on = !music_on;
+                            sound.set_music_on(music_on);
+                            // 带上"正在响几路 / 有没有 BGM"：一眼看出混音器是不是活的
+                            let (voices, bgm, ..) = sound.stats();
+                            status = format!(
+                                "MUSIC {}  [sfx {} voices, bgm {}]",
+                                if music_on { "ON" } else { "OFF" },
+                                voices,
+                                if bgm { "ON" } else { "OFF" }
+                            );
                         }
-                        Some(Keycode::Down) => {
-                            if !walk_if_online(&net, mir2_protocol::Direction::DirDown) {
-                                cam.1 += 2.0
-                            }
+                        Some(Keycode::N) if ctrl(keymod) => {
+                            sfx_on = !sfx_on;
+                            sound.set_sfx_on(sfx_on);
+                            let (voices, bgm, ..) = sound.stats();
+                            status = format!(
+                                "SOUND {}  [sfx {} voices, bgm {}]",
+                                if sfx_on { "ON" } else { "OFF" },
+                                voices,
+                                if bgm { "ON" } else { "OFF" }
+                            );
                         }
-                        // Tab = **小地图**开关、M = **大地图**开关（原版 1.76 的键位，
-                        // 见 `docs/use.md`；音乐已经挪到 Ctrl+M，不再抢 M）。
-                        Some(Keycode::Tab) => minimap_on = !minimap_on,
-                        Some(Keycode::M) => bigmap_on = !bigmap_on,
-                        // 空格：打一下身边的目标（A′：走 + 砍 = 能玩）。**左键点怪**才是
-                        // 主路（会锁住目标、自动靠近）—— 见下面 `MouseButtonDown` 那段。
-                        Some(Keycode::Space) => {
-                            if let Some(n) = net.as_ref().filter(|n| n.world.in_world()) {
-                                if n.attack_adjacent() {
-                                    swing_sfx(n, &sound, &sounds);
-                                } else {
-                                    println!("[net] 身边没有可打的目标（八格内）");
+                        // 选角：键盘是**我们的扩展**（原版选角场景只认鼠标）
+                        _ if mode == 4 => {
+                            if let Some(k) = keycode {
+                                let act = match select_scene.as_mut() {
+                                    Some(s) => s.on_key(k),
+                                    None => select::Action::None,
+                                };
+                                if do_select_action(
+                                    act,
+                                    &mut net,
+                                    &mut select_scene,
+                                    &sound,
+                                    &sounds,
+                                )? {
+                                    break 'main;
                                 }
                             }
                         }
-                        // C：连接/断开新协议服务端（地址与会话号走环境变量，见 `Net::connect`）。
-                        Some(Keycode::C) => {
-                            if net.is_some() {
-                                println!("[net] 主动断开");
-                                net = None;
-                            } else {
-                                match Net::connect() {
-                                    Ok(n) => {
-                                        println!("[net] {}", n.status);
-                                        net = Some(n);
+                        // 登录界面：全部交互在 `login` 里（Tab/退格/回车/ESC），这里只把
+                        // 它给出的动作翻译成"接下来干什么"。
+                        _ if mode == 1 => {
+                            if let Some(k) = keycode {
+                                let act = login.on_key(k);
+                                // 按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` ⇒ 103）
+                                if act != login::Action::None {
+                                    sfx(&sound, &sounds, mir2_core::sound::idx::NORM_BUTTON_CLICK);
+                                }
+                                match act {
+                                    login::Action::Submit => {
+                                        submit_login(&mut login, &mut net, &mut status)
                                     }
-                                    Err(e) => println!("[net] 连不上：{e}"),
+                                    login::Action::SubmitSignup => {
+                                        submit_signup(&mut login, &mut net, &mut status)
+                                    }
+                                    login::Action::NewAccount => {
+                                        // 面板切换在 `login` 里已经做完了（`enter_signup`），
+                                        // 这里只给状态栏一句人话（原版是开 `DNewAccount`）。
+                                        status = "NEW ACCOUNT".into();
+                                    }
+                                    login::Action::CancelSignup => status = String::new(),
+                                    login::Action::ChangePassword => {
+                                        status = "CHANGE PASSWORD: NOT WIRED YET".into();
+                                    }
+                                    login::Action::Quit => break 'main,
+                                    login::Action::None | login::Action::Dismiss => {}
                                 }
                             }
                         }
-                        Some(Keycode::Home) => cam = (0.0, 0.0),
-                        // ---- 调试叠加层（只在地图模式，避免污染登录输入框）----
-                        // 辅助线/坐标叠加层：默认关闭（见 `DEBUG_OVERLAY`）
-                        Some(Keycode::D) if DEBUG_OVERLAY => {
-                            debug = !debug;
-                            println!(
+                        // 素材浏览器（开发用）
+                        _ if mode == 3 => match keycode {
+                            Some(Keycode::LeftBracket) => {
+                                lib_idx = (lib_idx + LIBS.len() - 1) % LIBS.len();
+                                img_idx = 0;
+                            }
+                            Some(Keycode::RightBracket) => {
+                                lib_idx = (lib_idx + 1) % LIBS.len();
+                                img_idx = 0;
+                            }
+                            Some(Keycode::Comma) | Some(Keycode::Left) => {
+                                img_idx = img_idx.saturating_sub(1);
+                            }
+                            Some(Keycode::Period) | Some(Keycode::Right) => img_idx += 1,
+                            _ => {}
+                        },
+                        _ if mode == 2 => match keycode {
+                            // 方向键：**联网且在世界里 ⇒ 走一步**（相机跟着自己）；否则平移镜头。
+                            Some(Keycode::Left) => {
+                                if !walk_if_online(&net, mir2_protocol::Direction::DirLeft) {
+                                    cam.0 -= 2.0
+                                }
+                            }
+                            Some(Keycode::Right) => {
+                                if !walk_if_online(&net, mir2_protocol::Direction::DirRight) {
+                                    cam.0 += 2.0
+                                }
+                            }
+                            Some(Keycode::Up) => {
+                                if !walk_if_online(&net, mir2_protocol::Direction::DirUp) {
+                                    cam.1 -= 2.0
+                                }
+                            }
+                            Some(Keycode::Down) => {
+                                if !walk_if_online(&net, mir2_protocol::Direction::DirDown) {
+                                    cam.1 += 2.0
+                                }
+                            }
+                            // Tab = **小地图**开关、M = **大地图**开关（原版 1.76 的键位，
+                            // 见 `docs/use.md`；音乐已经挪到 Ctrl+M，不再抢 M）。
+                            Some(Keycode::Tab) => minimap_on = !minimap_on,
+                            Some(Keycode::M) => bigmap_on = !bigmap_on,
+                            // 空格：打一下身边的目标（A′：走 + 砍 = 能玩）。**左键点怪**才是
+                            // 主路（会锁住目标、自动靠近）—— 见下面 `MouseButtonDown` 那段。
+                            Some(Keycode::Space) => {
+                                if let Some(n) = net.as_ref().filter(|n| n.world.in_world()) {
+                                    if n.attack_adjacent() {
+                                        swing_sfx(n, &sound, &sounds);
+                                    } else {
+                                        println!("[net] 身边没有可打的目标（八格内）");
+                                    }
+                                }
+                            }
+                            // C：连接/断开新协议服务端（地址与会话号走环境变量，见 `Net::connect`）。
+                            Some(Keycode::C) => {
+                                if net.is_some() {
+                                    println!("[net] 主动断开");
+                                    net = None;
+                                } else {
+                                    match Net::connect() {
+                                        Ok(n) => {
+                                            println!("[net] {}", n.status);
+                                            net = Some(n);
+                                        }
+                                        Err(e) => println!("[net] 连不上：{e}"),
+                                    }
+                                }
+                            }
+                            Some(Keycode::Home) => cam = (0.0, 0.0),
+                            // ---- 调试叠加层（只在地图模式，避免污染登录输入框）----
+                            // 辅助线/坐标叠加层：默认关闭（见 `DEBUG_OVERLAY`）
+                            Some(Keycode::D) if DEBUG_OVERLAY => {
+                                debug = !debug;
+                                println!(
                                 "[debug] 叠加层 {}（L 或 CTRL+1/2/3 控制图层显隐 / P 打印绘制清单 / 左键点哪读哪）",
                                 if debug { "ON" } else { "OFF" }
                             );
-                        }
-                        // 逐层独立显隐：排查错位时最常用的是"关掉一层看底下那层"
-                        Some(Keycode::_1) | Some(Keycode::_2) | Some(Keycode::_3)
-                            if DEBUG_LAYERS
-                                && (keymod.intersects(Mod::LCTRLMOD)
-                                    || keymod.intersects(Mod::RCTRLMOD)) =>
-                        {
-                            let (bit, name) = match keycode {
-                                Some(Keycode::_1) => (1u8, "地表 Tiles"),
-                                Some(Keycode::_2) => (2u8, "中间 SmTiles"),
-                                _ => (4u8, "前景 Objects"),
-                            };
-                            layers ^= bit;
-                            println!(
-                                "[layer] {} {}   →   当前可见 {}（G=地表 M=中间 F=前景）",
-                                name,
-                                if layers & bit != 0 {
-                                    "显示"
-                                } else {
-                                    "隐藏"
-                                },
-                                layers_desc(layers)
-                            );
-                        }
-                        // `L` 是同一个功能的"循环"绑定 —— 只关 CTRL 那三个键等于
-                        // 留了后门，所以一起跟着 `DEBUG_LAYERS` 走。
-                        Some(Keycode::L) if DEBUG_LAYERS => {
-                            // 循环：全部 → 仅地表 → 仅中间 → 仅前景 → 全部
-                            layers = match layers {
-                                LAYERS_ALL => 1,
-                                1 => 2,
-                                2 => 4,
-                                _ => LAYERS_ALL,
-                            };
-                            println!("[layer] 过滤循环   →   当前可见 {}", layers_desc(layers));
-                        }
-                        Some(Keycode::P) => {
-                            dump_draws(&draws, cam_parts(cam).cell, &tiles, layers);
-                        }
-                        Some(Keycode::LeftBracket) | Some(Keycode::RightBracket) => {
-                            if let Some(a) = &archive {
-                                let step: i64 = if keycode == Some(Keycode::RightBracket) {
-                                    1
-                                } else {
-                                    -1
-                                };
-                                let n = a.len() as i64;
-                                map_i = (((map_i as i64 + step) % n + n) % n) as usize;
-                                load_map(a, map_i, &mut map, &mut map_err, &mut cam);
                             }
-                        }
+                            // 逐层独立显隐：排查错位时最常用的是"关掉一层看底下那层"
+                            Some(Keycode::_1) | Some(Keycode::_2) | Some(Keycode::_3)
+                                if DEBUG_LAYERS
+                                    && (keymod.intersects(Mod::LCTRLMOD)
+                                        || keymod.intersects(Mod::RCTRLMOD)) =>
+                            {
+                                let (bit, name) = match keycode {
+                                    Some(Keycode::_1) => (1u8, "地表 Tiles"),
+                                    Some(Keycode::_2) => (2u8, "中间 SmTiles"),
+                                    _ => (4u8, "前景 Objects"),
+                                };
+                                layers ^= bit;
+                                println!(
+                                    "[layer] {} {}   →   当前可见 {}（G=地表 M=中间 F=前景）",
+                                    name,
+                                    if layers & bit != 0 {
+                                        "显示"
+                                    } else {
+                                        "隐藏"
+                                    },
+                                    layers_desc(layers)
+                                );
+                            }
+                            // `L` 是同一个功能的"循环"绑定 —— 只关 CTRL 那三个键等于
+                            // 留了后门，所以一起跟着 `DEBUG_LAYERS` 走。
+                            Some(Keycode::L) if DEBUG_LAYERS => {
+                                // 循环：全部 → 仅地表 → 仅中间 → 仅前景 → 全部
+                                layers = match layers {
+                                    LAYERS_ALL => 1,
+                                    1 => 2,
+                                    2 => 4,
+                                    _ => LAYERS_ALL,
+                                };
+                                println!("[layer] 过滤循环   →   当前可见 {}", layers_desc(layers));
+                            }
+                            Some(Keycode::P) => {
+                                dump_draws(&draws, cam_parts(cam).cell, &tiles, layers);
+                            }
+                            Some(Keycode::LeftBracket) | Some(Keycode::RightBracket) => {
+                                if let Some(a) = &archive {
+                                    let step: i64 = if keycode == Some(Keycode::RightBracket) {
+                                        1
+                                    } else {
+                                        -1
+                                    };
+                                    let n = a.len() as i64;
+                                    map_i = (((map_i as i64 + step) % n + n) % n) as usize;
+                                    load_map(a, map_i, &mut map, &mut map_err, &mut cam);
+                                }
+                            }
+                            _ => {}
+                        },
                         _ => {}
-                    },
-                    _ => {}
-                },
+                    }
+                }
+                // 松开 Alt ⇒ 挖肉的修饰键失效（SDL 的鼠标事件不带 keymod ⇒ 自己记）
+                Event::KeyUp { keycode, .. } => {
+                    if matches!(keycode, Some(Keycode::LAlt) | Some(Keycode::RAlt)) {
+                        alt_down = false;
+                    }
+                }
                 // 鼠标位置（已在循环头换算成界面的 800×600 空间）
                 Event::MouseMotion { x, y, .. } => mouse = (x, y),
                 // 滚轮：两个**固定高**的窗都靠它翻内容 —— 背包窗翻页、对话窗卷行。
@@ -709,13 +729,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             } else {
                                 press_at = None;
                             }
-                            // 照原版 `_DXDrawMouseDown`（`ClMain.pas:2805-2878`）：
-                            // **先清掉旧目标**，点到**活怪**就锁住它（之后每帧自动靠近/出手，
-                            // 直到它死掉或消失）；点空地 ⇒ 走/跑到那一格。
-                            let (ct, mt) = net
-                                .as_ref()
-                                .map(|n| mouse_intent(&n.world, cell, run))
-                                .unwrap_or((None, None));
+                            // **挖肉**（原版 `CM_BUTCH`，用户第 5 条）：按住 Alt 点**动物尸体**。
+                            // ⚠️ 每点一次发一条 —— 原版就是"按住 Alt 反复点"持续挖
+                            //（皮革度/肉质量一点点削），服务端按转身间隔节流。
+                            let mut did_butch = false;
+                            if mouse_btn == MouseButton::Left && alt_down {
+                                if let Some(n) = net.as_ref() {
+                                    let corpse = n
+                                        .world
+                                        .entities
+                                        .values()
+                                        .find(|e| e.dead && (e.x, e.y) == cell);
+                                    if let Some(e) = corpse {
+                                        // 朝向：协议方向（`dir_to` 直接给的就是它；没有 ⇒ 0 = 未指定）
+                                        let dir = crate::geom::dir_to(n.world.self_pos, cell)
+                                            .map_or(0, |d| d as i32);
+                                        n.butch(e.id, cell.0, cell.1, dir);
+                                        println!("[net] 挖肉 {}", e.name);
+                                        did_butch = true;
+                                        // 挖肉不是"选目标/走路"⇒ 目标清掉（下面 `(ct, mt)`
+                                        // 走 None 那支），也别把这次当"单击走一格"。
+                                        press_at = None;
+                                        pending_pickup = None;
+                                    }
+                                }
+                            }
+                            let (ct, mt) = if did_butch {
+                                (None, None)
+                            } else {
+                                // 照原版 `_DXDrawMouseDown`（`ClMain.pas:2805-2878`）：
+                                // **先清掉旧目标**，点到**活怪**就锁住它（之后每帧自动靠近/出手，
+                                // 直到它死掉或消失）；点空地 ⇒ 走/跑到那一格。
+                                net.as_ref()
+                                    .map(|n| mouse_intent(&n.world, cell, run))
+                                    .unwrap_or((None, None))
+                            };
                             combat_target = ct;
                             move_target = mt;
                             // 点在**地上有东西**的格子 ⇒ 记下"待捡"：走到那格自动捡

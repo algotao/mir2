@@ -145,6 +145,10 @@ func (s *Server) npcClose(c net.Conn, p *Player) {
 // 里 enterWorld 的说明）⇒ 只发 legacy 的话新协议客户端一个字都收不到 ——
 // 用户报的"点击 NPC 无法弹出对话"一半就是这个原因（另一半是客户端没发 NpcClick）。
 func (s *Server) npcSay(c net.Conn, p *Player, npcID uint32, text string, links []script.Link) {
+	// ⚠️ 行尾的 `\` 是脚本的**行继续符**（`[@main]` 一行写不下时换行接着写），
+	// 不是正文 ⇒ 下发前抹掉。不抹的话客户端（对话窗/聊天里）就会多出一个反斜杠
+	//（用户 2026-10-10 第 3 条，反复出现过）。
+	text = stripLineContinuations(text)
 	if p != nil && p.protoOut != nil {
 		opts := make([]*protocol.NpcOption, 0, len(links))
 		for i, lk := range links {
@@ -169,6 +173,18 @@ func (s *Server) npcSay(c net.Conn, p *Player, npcID uint32, text string, links 
 		msg = "……"
 	}
 	s.sysMsg(c, msg)
+}
+
+// stripLineContinuations 去掉每行末尾的 `\`（脚本的行继续符）。
+//
+// 例：`要不要来点肉？\` + `<我要买/@1>\` ⇒ 展示成两行时，第一行末尾那个 `\`
+// 只是"这里还没写完"，不该给玩家看。
+func stripLineContinuations(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(l, "\\")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // handleDlgSelect 处理玩家在对话里选择某项（CM_MERCHANTDLGSELECT=1011）。

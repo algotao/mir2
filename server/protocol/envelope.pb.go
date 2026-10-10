@@ -98,6 +98,7 @@ type Envelope struct {
 	//	*Envelope_UseItem
 	//	*Envelope_DropItem
 	//	*Envelope_PickupItem
+	//	*Envelope_Butch
 	//	*Envelope_GroundItemShow
 	//	*Envelope_GroundItemHide
 	//	*Envelope_EquipItem
@@ -694,6 +695,15 @@ func (x *Envelope) GetPickupItem() *PickupItem {
 	return nil
 }
 
+func (x *Envelope) GetButch() *Butch {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_Butch); ok {
+			return x.Butch
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetGroundItemShow() *GroundItemShow {
 	if x != nil {
 		if x, ok := x.Body.(*Envelope_GroundItemShow); ok {
@@ -1116,6 +1126,11 @@ type Envelope_PickupItem struct {
 	PickupItem *PickupItem `protobuf:"bytes,2055,opt,name=pickup_item,json=pickupItem,proto3,oneof"`
 }
 
+type Envelope_Butch struct {
+	// 挖肉（原版 `CM_BUTCH`）：`Alt` + 点动物尸体。与攻击（0x0700 段）是两条路。
+	Butch *Butch `protobuf:"bytes,2065,opt,name=butch,proto3,oneof"`
+}
+
 type Envelope_GroundItemShow struct {
 	GroundItemShow *GroundItemShow `protobuf:"bytes,2056,opt,name=ground_item_show,json=groundItemShow,proto3,oneof"`
 }
@@ -1315,6 +1330,8 @@ func (*Envelope_DropItem) isEnvelope_Body() {}
 
 func (*Envelope_PickupItem) isEnvelope_Body() {}
 
+func (*Envelope_Butch) isEnvelope_Body() {}
+
 func (*Envelope_GroundItemShow) isEnvelope_Body() {}
 
 func (*Envelope_GroundItemHide) isEnvelope_Body() {}
@@ -1413,7 +1430,7 @@ var File_envelope_proto protoreflect.FileDescriptor
 const file_envelope_proto_rawDesc = "" +
 	"\n" +
 	"\x0eenvelope.proto\x12\x04mir2\x1a\rcontrol.proto\x1a\raccount.proto\x1a\vscene.proto\x1a\fcombat.proto\x1a\n" +
-	"item.proto\x1a\fsocial.proto\x1a\tnpc.proto\"\xac#\n" +
+	"item.proto\x1a\fsocial.proto\x1a\tnpc.proto\"\xd2#\n" +
 	"\bEnvelope\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\rR\x03seq\x12\x17\n" +
 	"\aack_seq\x18\x02 \x01(\rR\x06ackSeq\x12\x1d\n" +
@@ -1498,7 +1515,8 @@ const file_envelope_proto_rawDesc = "" +
 	"\buse_item\x18\x85\x10 \x01(\v2\r.mir2.UseItemH\x00R\auseItem\x12.\n" +
 	"\tdrop_item\x18\x86\x10 \x01(\v2\x0e.mir2.DropItemH\x00R\bdropItem\x124\n" +
 	"\vpickup_item\x18\x87\x10 \x01(\v2\x10.mir2.PickupItemH\x00R\n" +
-	"pickupItem\x12A\n" +
+	"pickupItem\x12$\n" +
+	"\x05butch\x18\x91\x10 \x01(\v2\v.mir2.ButchH\x00R\x05butch\x12A\n" +
 	"\x10ground_item_show\x18\x88\x10 \x01(\v2\x14.mir2.GroundItemShowH\x00R\x0egroundItemShow\x12A\n" +
 	"\x10ground_item_hide\x18\x89\x10 \x01(\v2\x14.mir2.GroundItemHideH\x00R\x0egroundItemHide\x121\n" +
 	"\n" +
@@ -1602,25 +1620,26 @@ var file_envelope_proto_goTypes = []any{
 	(*UseItem)(nil),               // 56: mir2.UseItem
 	(*DropItem)(nil),              // 57: mir2.DropItem
 	(*PickupItem)(nil),            // 58: mir2.PickupItem
-	(*GroundItemShow)(nil),        // 59: mir2.GroundItemShow
-	(*GroundItemHide)(nil),        // 60: mir2.GroundItemHide
-	(*EquipItem)(nil),             // 61: mir2.EquipItem
-	(*UnequipItem)(nil),           // 62: mir2.UnequipItem
-	(*EquippedItems)(nil),         // 63: mir2.EquippedItems
-	(*WeightChanged)(nil),         // 64: mir2.WeightChanged
-	(*GoldChanged)(nil),           // 65: mir2.GoldChanged
-	(*RepairItem)(nil),            // 66: mir2.RepairItem
-	(*RepairCostNotice)(nil),      // 67: mir2.RepairCostNotice
-	(*ChatInput)(nil),             // 68: mir2.ChatInput
-	(*ChatMessage)(nil),           // 69: mir2.ChatMessage
-	(*NpcClick)(nil),              // 70: mir2.NpcClick
-	(*NpcSay)(nil),                // 71: mir2.NpcSay
-	(*NpcSelect)(nil),             // 72: mir2.NpcSelect
-	(*NpcClose)(nil),              // 73: mir2.NpcClose
-	(*ShopList)(nil),              // 74: mir2.ShopList
-	(*ShopBuy)(nil),               // 75: mir2.ShopBuy
-	(*ShopSell)(nil),              // 76: mir2.ShopSell
-	(*ShopResult)(nil),            // 77: mir2.ShopResult
+	(*Butch)(nil),                 // 59: mir2.Butch
+	(*GroundItemShow)(nil),        // 60: mir2.GroundItemShow
+	(*GroundItemHide)(nil),        // 61: mir2.GroundItemHide
+	(*EquipItem)(nil),             // 62: mir2.EquipItem
+	(*UnequipItem)(nil),           // 63: mir2.UnequipItem
+	(*EquippedItems)(nil),         // 64: mir2.EquippedItems
+	(*WeightChanged)(nil),         // 65: mir2.WeightChanged
+	(*GoldChanged)(nil),           // 66: mir2.GoldChanged
+	(*RepairItem)(nil),            // 67: mir2.RepairItem
+	(*RepairCostNotice)(nil),      // 68: mir2.RepairCostNotice
+	(*ChatInput)(nil),             // 69: mir2.ChatInput
+	(*ChatMessage)(nil),           // 70: mir2.ChatMessage
+	(*NpcClick)(nil),              // 71: mir2.NpcClick
+	(*NpcSay)(nil),                // 72: mir2.NpcSay
+	(*NpcSelect)(nil),             // 73: mir2.NpcSelect
+	(*NpcClose)(nil),              // 74: mir2.NpcClose
+	(*ShopList)(nil),              // 75: mir2.ShopList
+	(*ShopBuy)(nil),               // 76: mir2.ShopBuy
+	(*ShopSell)(nil),              // 77: mir2.ShopSell
+	(*ShopResult)(nil),            // 78: mir2.ShopResult
 }
 var file_envelope_proto_depIdxs = []int32{
 	2,  // 0: mir2.Envelope.client_hello:type_name -> mir2.ClientHello
@@ -1680,31 +1699,32 @@ var file_envelope_proto_depIdxs = []int32{
 	56, // 54: mir2.Envelope.use_item:type_name -> mir2.UseItem
 	57, // 55: mir2.Envelope.drop_item:type_name -> mir2.DropItem
 	58, // 56: mir2.Envelope.pickup_item:type_name -> mir2.PickupItem
-	59, // 57: mir2.Envelope.ground_item_show:type_name -> mir2.GroundItemShow
-	60, // 58: mir2.Envelope.ground_item_hide:type_name -> mir2.GroundItemHide
-	61, // 59: mir2.Envelope.equip_item:type_name -> mir2.EquipItem
-	62, // 60: mir2.Envelope.unequip_item:type_name -> mir2.UnequipItem
-	63, // 61: mir2.Envelope.equipped_items:type_name -> mir2.EquippedItems
-	64, // 62: mir2.Envelope.weight_changed:type_name -> mir2.WeightChanged
-	65, // 63: mir2.Envelope.gold_changed:type_name -> mir2.GoldChanged
-	66, // 64: mir2.Envelope.repair_item:type_name -> mir2.RepairItem
-	67, // 65: mir2.Envelope.repair_cost_notice:type_name -> mir2.RepairCostNotice
-	68, // 66: mir2.Envelope.chat_input:type_name -> mir2.ChatInput
-	69, // 67: mir2.Envelope.chat_message:type_name -> mir2.ChatMessage
-	70, // 68: mir2.Envelope.npc_click:type_name -> mir2.NpcClick
-	71, // 69: mir2.Envelope.npc_say:type_name -> mir2.NpcSay
-	72, // 70: mir2.Envelope.npc_select:type_name -> mir2.NpcSelect
-	73, // 71: mir2.Envelope.npc_close:type_name -> mir2.NpcClose
-	74, // 72: mir2.Envelope.shop_list:type_name -> mir2.ShopList
-	75, // 73: mir2.Envelope.shop_buy:type_name -> mir2.ShopBuy
-	76, // 74: mir2.Envelope.shop_sell:type_name -> mir2.ShopSell
-	77, // 75: mir2.Envelope.shop_result:type_name -> mir2.ShopResult
-	1,  // 76: mir2.Envelope.raw:type_name -> mir2.Raw
-	77, // [77:77] is the sub-list for method output_type
-	77, // [77:77] is the sub-list for method input_type
-	77, // [77:77] is the sub-list for extension type_name
-	77, // [77:77] is the sub-list for extension extendee
-	0,  // [0:77] is the sub-list for field type_name
+	59, // 57: mir2.Envelope.butch:type_name -> mir2.Butch
+	60, // 58: mir2.Envelope.ground_item_show:type_name -> mir2.GroundItemShow
+	61, // 59: mir2.Envelope.ground_item_hide:type_name -> mir2.GroundItemHide
+	62, // 60: mir2.Envelope.equip_item:type_name -> mir2.EquipItem
+	63, // 61: mir2.Envelope.unequip_item:type_name -> mir2.UnequipItem
+	64, // 62: mir2.Envelope.equipped_items:type_name -> mir2.EquippedItems
+	65, // 63: mir2.Envelope.weight_changed:type_name -> mir2.WeightChanged
+	66, // 64: mir2.Envelope.gold_changed:type_name -> mir2.GoldChanged
+	67, // 65: mir2.Envelope.repair_item:type_name -> mir2.RepairItem
+	68, // 66: mir2.Envelope.repair_cost_notice:type_name -> mir2.RepairCostNotice
+	69, // 67: mir2.Envelope.chat_input:type_name -> mir2.ChatInput
+	70, // 68: mir2.Envelope.chat_message:type_name -> mir2.ChatMessage
+	71, // 69: mir2.Envelope.npc_click:type_name -> mir2.NpcClick
+	72, // 70: mir2.Envelope.npc_say:type_name -> mir2.NpcSay
+	73, // 71: mir2.Envelope.npc_select:type_name -> mir2.NpcSelect
+	74, // 72: mir2.Envelope.npc_close:type_name -> mir2.NpcClose
+	75, // 73: mir2.Envelope.shop_list:type_name -> mir2.ShopList
+	76, // 74: mir2.Envelope.shop_buy:type_name -> mir2.ShopBuy
+	77, // 75: mir2.Envelope.shop_sell:type_name -> mir2.ShopSell
+	78, // 76: mir2.Envelope.shop_result:type_name -> mir2.ShopResult
+	1,  // 77: mir2.Envelope.raw:type_name -> mir2.Raw
+	78, // [78:78] is the sub-list for method output_type
+	78, // [78:78] is the sub-list for method input_type
+	78, // [78:78] is the sub-list for extension type_name
+	78, // [78:78] is the sub-list for extension extendee
+	0,  // [0:78] is the sub-list for field type_name
 }
 
 func init() { file_envelope_proto_init() }
@@ -1777,6 +1797,7 @@ func file_envelope_proto_init() {
 		(*Envelope_UseItem)(nil),
 		(*Envelope_DropItem)(nil),
 		(*Envelope_PickupItem)(nil),
+		(*Envelope_Butch)(nil),
 		(*Envelope_GroundItemShow)(nil),
 		(*Envelope_GroundItemHide)(nil),
 		(*Envelope_EquipItem)(nil),

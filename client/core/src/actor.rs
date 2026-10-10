@@ -162,6 +162,12 @@ pub fn human_pose(action_id: Option<u32>, moving: bool, run: bool) -> Pose {
             act: HAct::Die,
             looping: false,
         },
+        // 挖肉：原版是 `SM_BUTCH` 触发的一次"挥"动作（没有专门的挖肉图）⇒ 播挥砍
+        //（`ActHit`）。客户端点 Alt+左键自己也会先摆一下，见 `app::main` 的挖肉那段。
+        Some(action::BUTCH) => Pose {
+            act: HAct::Hit,
+            looping: false,
+        },
         // ⚠️ **移动优先于攻击**（用户 2026-10-09 补的第 2 条："不要在奔跑/走动没结束时
         // 释放攻击动作"）。原来攻击判在前面 ⇒ 走/跑没走完就切进挥砍，看起来就是
         // "边走边砍、同手同脚"。原版靠 `CanNextAction`/`IsIdle`（`Actor.pas:1722-1736`）

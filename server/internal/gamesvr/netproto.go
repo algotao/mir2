@@ -481,6 +481,8 @@ func (ps *protoSession) dispatch(env *protocol.Envelope) (keep bool) {
 		return ps.onShopSell(body.ShopSell)
 	case *protocol.Envelope_PickupItem:
 		return ps.onPickupItem(body.PickupItem)
+	case *protocol.Envelope_Butch:
+		return ps.onButch(body.Butch)
 	default:
 		// ClientHello（重复发）也走这里 —— 握手之后它不再有意义，按"不认识"处理。
 		ps.noteUnknown(env)
@@ -1734,6 +1736,25 @@ func (ps *protoSession) onPickupItem(m *protocol.PickupItem) bool {
 		return ps.rejectOutOfOrder("还没进世界")
 	}
 	ps.srv.pickupGroundByID(nil, p, m.GetGroundId())
+	return true
+}
+
+// onButch 挖肉（原版 `CM_BUTCH`）：目标必须是**死了的动物**、且在自己 2 格内。
+//
+// ⚠️ 与攻击分两条消息：攻击的 `AttackInput` 走 `handleAttack`，挖肉走这条
+// （`doButch`）。判定/节流/给东西全在 `doButch` 里 —— 与 legacy 共用一份。
+func (ps *protoSession) onButch(m *protocol.Butch) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	pos := m.GetPosition()
+	// 新协议方向 = 原版 + 1（见 directionOf 的反向换算）
+	dir := uint8(0)
+	if d := int32(m.GetDirection()); d > 0 {
+		dir = uint8(d - 1)
+	}
+	ps.srv.doButch(nil, p, uint32(m.GetTargetId()), int(pos.GetX()), int(pos.GetY()), dir)
 	return true
 }
 

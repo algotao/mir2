@@ -1117,6 +1117,76 @@ func (x *MoveInput) GetRun() bool {
 	return false
 }
 
+// 客户端 → 服务端：**割肉 / 挖肉**（原版 `CM_BUTCH`）。
+//
+// 操作方式（用户 2026-10-10 第 5 条 / 原版）：打死鸡/鹿/狼这类**动物**后，站到尸体
+// 旁边一格，**按住 Alt 反复点左键**点在尸体上；有"皮革度/肉质量"，挖到 0 时
+// 尸体变骷髅、身上的东西归挖肉的人（可能"什么都没找到"）。
+//
+// ⚠️ 与攻击是两条路：攻击带 `AttackInput`，割肉带这个 —— 目标必须是**死了的动物**。
+type Butch struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 尸体（怪物）的实体号。
+	TargetId uint64 `protobuf:"varint,1,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`
+	// 尸体所在格（服务端会核对：必须离自己 ≤ 2 格，且那格上就是它）。
+	Position *Vec2 `protobuf:"bytes,2,opt,name=position,proto3" json:"position,omitempty"`
+	// 挖的时候要不要转身面对它（协议 `Direction`；0 = 未指定）。
+	Direction     Direction `protobuf:"varint,3,opt,name=direction,proto3,enum=mir2.Direction" json:"direction,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Butch) Reset() {
+	*x = Butch{}
+	mi := &file_scene_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Butch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Butch) ProtoMessage() {}
+
+func (x *Butch) ProtoReflect() protoreflect.Message {
+	mi := &file_scene_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Butch.ProtoReflect.Descriptor instead.
+func (*Butch) Descriptor() ([]byte, []int) {
+	return file_scene_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *Butch) GetTargetId() uint64 {
+	if x != nil {
+		return x.TargetId
+	}
+	return 0
+}
+
+func (x *Butch) GetPosition() *Vec2 {
+	if x != nil {
+		return x.Position
+	}
+	return nil
+}
+
+func (x *Butch) GetDirection() Direction {
+	if x != nil {
+		return x.Direction
+	}
+	return Direction_DIRECTION_UNSPECIFIED
+}
+
 // 服务端 → 客户端：移动被拒（越界/超速），回权威位置校正。
 type MoveRejected struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
@@ -1128,7 +1198,7 @@ type MoveRejected struct {
 
 func (x *MoveRejected) Reset() {
 	*x = MoveRejected{}
-	mi := &file_scene_proto_msgTypes[14]
+	mi := &file_scene_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1140,7 +1210,7 @@ func (x *MoveRejected) String() string {
 func (*MoveRejected) ProtoMessage() {}
 
 func (x *MoveRejected) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[14]
+	mi := &file_scene_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1153,7 +1223,7 @@ func (x *MoveRejected) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveRejected.ProtoReflect.Descriptor instead.
 func (*MoveRejected) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{14}
+	return file_scene_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *MoveRejected) GetAuthoritativePosition() *Vec2 {
@@ -1180,7 +1250,7 @@ type EntityFeatureChanged struct {
 
 func (x *EntityFeatureChanged) Reset() {
 	*x = EntityFeatureChanged{}
-	mi := &file_scene_proto_msgTypes[15]
+	mi := &file_scene_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1192,7 +1262,7 @@ func (x *EntityFeatureChanged) String() string {
 func (*EntityFeatureChanged) ProtoMessage() {}
 
 func (x *EntityFeatureChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[15]
+	mi := &file_scene_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1205,7 +1275,7 @@ func (x *EntityFeatureChanged) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityFeatureChanged.ProtoReflect.Descriptor instead.
 func (*EntityFeatureChanged) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{15}
+	return file_scene_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *EntityFeatureChanged) GetEntityId() uint64 {
@@ -1321,7 +1391,12 @@ const file_scene_proto_rawDesc = "" +
 	"\tdirection\x18\x03 \x01(\x0e2\x0f.mir2.DirectionR\tdirection\x12\x1f\n" +
 	"\vclient_tick\x18\x04 \x01(\rR\n" +
 	"clientTick\x12\x10\n" +
-	"\x03run\x18\x05 \x01(\bR\x03run\"i\n" +
+	"\x03run\x18\x05 \x01(\bR\x03run\"{\n" +
+	"\x05Butch\x12\x1b\n" +
+	"\ttarget_id\x18\x01 \x01(\x04R\btargetId\x12&\n" +
+	"\bposition\x18\x02 \x01(\v2\n" +
+	".mir2.Vec2R\bposition\x12-\n" +
+	"\tdirection\x18\x03 \x01(\x0e2\x0f.mir2.DirectionR\tdirection\"i\n" +
 	"\fMoveRejected\x12A\n" +
 	"\x16authoritative_position\x18\x01 \x01(\v2\n" +
 	".mir2.Vec2R\x15authoritativePosition\x12\x16\n" +
@@ -1349,7 +1424,7 @@ func file_scene_proto_rawDescGZIP() []byte {
 }
 
 var file_scene_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_scene_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_scene_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_scene_proto_goTypes = []any{
 	(DisappearReason)(0),         // 0: mir2.DisappearReason
 	(*EntityState)(nil),          // 1: mir2.EntityState
@@ -1366,40 +1441,43 @@ var file_scene_proto_goTypes = []any{
 	(*EntityStatus)(nil),         // 12: mir2.EntityStatus
 	(*AbilityUpdate)(nil),        // 13: mir2.AbilityUpdate
 	(*MoveInput)(nil),            // 14: mir2.MoveInput
-	(*MoveRejected)(nil),         // 15: mir2.MoveRejected
-	(*EntityFeatureChanged)(nil), // 16: mir2.EntityFeatureChanged
-	(*Vec2)(nil),                 // 17: mir2.Vec2
-	(Direction)(0),               // 18: mir2.Direction
-	(*EntityFeature)(nil),        // 19: mir2.EntityFeature
-	(*Ability)(nil),              // 20: mir2.Ability
+	(*Butch)(nil),                // 15: mir2.Butch
+	(*MoveRejected)(nil),         // 16: mir2.MoveRejected
+	(*EntityFeatureChanged)(nil), // 17: mir2.EntityFeatureChanged
+	(*Vec2)(nil),                 // 18: mir2.Vec2
+	(Direction)(0),               // 19: mir2.Direction
+	(*EntityFeature)(nil),        // 20: mir2.EntityFeature
+	(*Ability)(nil),              // 21: mir2.Ability
 }
 var file_scene_proto_depIdxs = []int32{
-	17, // 0: mir2.EntityState.position:type_name -> mir2.Vec2
-	18, // 1: mir2.EntityState.direction:type_name -> mir2.Direction
-	19, // 2: mir2.EntityState.feature:type_name -> mir2.EntityFeature
-	17, // 3: mir2.EnterWorld.position:type_name -> mir2.Vec2
-	18, // 4: mir2.EnterWorld.direction:type_name -> mir2.Direction
+	18, // 0: mir2.EntityState.position:type_name -> mir2.Vec2
+	19, // 1: mir2.EntityState.direction:type_name -> mir2.Direction
+	20, // 2: mir2.EntityState.feature:type_name -> mir2.EntityFeature
+	18, // 3: mir2.EnterWorld.position:type_name -> mir2.Vec2
+	19, // 4: mir2.EnterWorld.direction:type_name -> mir2.Direction
 	1,  // 5: mir2.EnterWorld.entities:type_name -> mir2.EntityState
-	19, // 6: mir2.EnterWorld.self_feature:type_name -> mir2.EntityFeature
-	17, // 7: mir2.ChangeMap.position:type_name -> mir2.Vec2
+	20, // 6: mir2.EnterWorld.self_feature:type_name -> mir2.EntityFeature
+	18, // 7: mir2.ChangeMap.position:type_name -> mir2.Vec2
 	1,  // 8: mir2.ChangeMap.entities:type_name -> mir2.EntityState
-	19, // 9: mir2.ChangeMap.self_feature:type_name -> mir2.EntityFeature
+	20, // 9: mir2.ChangeMap.self_feature:type_name -> mir2.EntityFeature
 	1,  // 10: mir2.EntityAppear.entity:type_name -> mir2.EntityState
 	0,  // 11: mir2.EntityDisappear.reason:type_name -> mir2.DisappearReason
-	17, // 12: mir2.EntityMove.from:type_name -> mir2.Vec2
-	17, // 13: mir2.EntityMove.to:type_name -> mir2.Vec2
-	18, // 14: mir2.EntityMove.direction:type_name -> mir2.Direction
-	20, // 15: mir2.AbilityUpdate.ability:type_name -> mir2.Ability
-	17, // 16: mir2.MoveInput.from:type_name -> mir2.Vec2
-	17, // 17: mir2.MoveInput.to:type_name -> mir2.Vec2
-	18, // 18: mir2.MoveInput.direction:type_name -> mir2.Direction
-	17, // 19: mir2.MoveRejected.authoritative_position:type_name -> mir2.Vec2
-	19, // 20: mir2.EntityFeatureChanged.feature:type_name -> mir2.EntityFeature
-	21, // [21:21] is the sub-list for method output_type
-	21, // [21:21] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	18, // 12: mir2.EntityMove.from:type_name -> mir2.Vec2
+	18, // 13: mir2.EntityMove.to:type_name -> mir2.Vec2
+	19, // 14: mir2.EntityMove.direction:type_name -> mir2.Direction
+	21, // 15: mir2.AbilityUpdate.ability:type_name -> mir2.Ability
+	18, // 16: mir2.MoveInput.from:type_name -> mir2.Vec2
+	18, // 17: mir2.MoveInput.to:type_name -> mir2.Vec2
+	19, // 18: mir2.MoveInput.direction:type_name -> mir2.Direction
+	18, // 19: mir2.Butch.position:type_name -> mir2.Vec2
+	19, // 20: mir2.Butch.direction:type_name -> mir2.Direction
+	18, // 21: mir2.MoveRejected.authoritative_position:type_name -> mir2.Vec2
+	20, // 22: mir2.EntityFeatureChanged.feature:type_name -> mir2.EntityFeature
+	23, // [23:23] is the sub-list for method output_type
+	23, // [23:23] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_scene_proto_init() }
@@ -1414,7 +1492,7 @@ func file_scene_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_scene_proto_rawDesc), len(file_scene_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   16,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

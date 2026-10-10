@@ -128,7 +128,23 @@ func (s *Server) animalInit(m *entity.Monster) {
 //
 // 客户端 `SendButchAnimal(x, y, dir, actorid)`（ClMain.pas:3078-3084）发
 // `MakeDefaultMsg(CM_BUTCH, actorid, x, y, dir)` ⇒ Recog=目标、Param=x、Tag=y、Series=dir。
+// / protoActionButch 新协议里"挖肉"这个动作的编号。
+// /
+// / ⚠️ 编号是**我们自己定的**（协议的动作表里 1..8 是攻击、51 受击、52 死亡，
+// / 原版的挖肉走的是 `SM_BUTCH` 消息而不是动作号）⇒ 客户端 `world::action` 里
+// / 有同名常量，两处必须一致（改一处要改另一处）。
+const protoActionButch uint32 = 53
+
 func (s *Server) handleButch(c net.Conn, p *Player, pkt wire.Packet) {
+	s.doButch(c, p, uint32(pkt.Head.Recog), int(pkt.Head.Param), int(pkt.Head.Tag),
+		proto.LoByte(pkt.Head.Series))
+}
+
+// doButch 挖一次肉（legacy `CM_BUTCH` 与新协议的 `Butch` 共用这一份）。
+//
+// 原版流程见注释里的 `ObjBase.pas:17476` 那几步：转身间隔 → 目标校验（死了、没变骷髅、
+// 是动物、且在自己 2 格内）→ 削皮革度/肉质量 → 皮革度归零就变骷髅并把东西给挖肉的人。
+func (s *Server) doButch(c net.Conn, p *Player, targetID uint32, x, y int, dir uint8) {
 	if p == nil || p.Obj == nil || !p.logonDone {
 		return
 	}
@@ -140,8 +156,7 @@ func (s *Server) handleButch(c net.Conn, p *Player, pkt wire.Packet) {
 	}
 	p.turnAt = now
 
-	target := s.monsterByID(uint32(pkt.Head.Recog))
-	x, y := int(pkt.Head.Param), int(pkt.Head.Tag)
+	target := s.monsterByID(targetID)
 	// ② 目标必须在自己**2 格以内**，且那个格子上就是它
 	if target == nil || target.MapRef() != p.Obj.MapRef() ||
 		absi(x-p.Obj.PosX()) > 2 || absi(y-p.Obj.PosY()) > 2 || target.PosX() != x || target.PosY() != y {
@@ -173,7 +188,7 @@ func (s *Server) handleButch(c net.Conn, p *Player, pkt wire.Packet) {
 	}
 
 	// 朝向属于 s.mu 域（statelock.go 第二节）。
-	s.turnPlayer(p, proto.LoByte(pkt.Head.Series))
+	s.turnPlayer(p, dir)
 	s.broadcastButch(p)
 }
 
@@ -464,6 +479,12 @@ func (s *Server) broadcastButch(p *Player) {
 	body := proto.MessageBodyWL{Param1: p.Obj.FeatureBits(), Param2: p.Obj.StatusBits(), Tag1: proto.MakeFeatureEx(true)}
 	raw := body.Bytes()
 	s.broadcastToViewers(p.Obj.MapRef(), p.Obj.PosX(), p.Obj.PosY(), func(o *Player) {
+		// **新协议**：发一条"挖肉"动作（原版 `SM_BUTCH` 那一路只走 legacy，
+		// 而 proto 玩家的 legacy 下行会被丢 ⇒ 不补这条，别人就看不见挖的动作）。
+		if o.protoOut != nil {
+			o.protoOut.action(p.Obj.ID, protoActionButch)
+			return
+		}
 		s.send(o.conn, proto.SM_BUTCH, int32(p.Obj.ID), uint16(p.Obj.PosX()), uint16(p.Obj.PosY()),
 			uint16(p.Obj.Facing()), string(raw[:]))
 	})

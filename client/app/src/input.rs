@@ -342,6 +342,10 @@ pub(crate) const DIALOG_BULLET_W: f32 = 12.0;
 pub(crate) fn dialog_lines(text: &str, options: &[(u32, String)]) -> Vec<Vec<DialSeg>> {
     let mut lines: Vec<Vec<DialSeg>> = Vec::new();
     let mut any_link = false;
+    // ⚠️ 脚本里的 `\` 是**换行**（`[@main]` 一行写不下就换行接着写），不是正文
+    // —— 服务端发的是"原样行" ⇒ `\` 会原样带到客户端。用户 2026-10-10 第 3 条：
+    // 对话里最后那个反斜杠不该出现 ⇒ 把它当换行吃掉（原版就是换行）。
+    let text = text.replace('\\', "\n");
     for raw in text.split('\n') {
         let mut segs = Vec::new();
         let has = parse_marked_line(raw, &mut segs);

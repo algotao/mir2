@@ -106,6 +106,14 @@ pub enum Cmd {
     },
     /// 捡起地面物品（原版 `CM_PICKUP`；服务端要求**人站在物品那格上**）。
     PickupItem { ground_id: u64 },
+    /// 挖肉（原版 `CM_BUTCH`）：按住 Alt 点动物尸体（死了的、鸡/鹿/狼这类动物）。
+    Butch {
+        target_id: u64,
+        x: i32,
+        y: i32,
+        /// 协议 `Direction`（0 = 未指定），服务端用它转身面对尸体。
+        direction: i32,
+    },
     /// 心跳（`Ping`）。
     Ping,
     /// 主动关闭。
@@ -309,6 +317,16 @@ fn writer_loop(stream: &mut TcpStream, cmds: Receiver<Cmd>) {
             Cmd::PickupItem { ground_id } => Body::PickupItem(proto::PickupItem {
                 ground_id,
                 client_tick: 0,
+            }),
+            Cmd::Butch {
+                target_id,
+                x,
+                y,
+                direction,
+            } => Body::Butch(proto::Butch {
+                target_id,
+                position: Some(proto::Vec2 { x, y }),
+                direction,
             }),
             Cmd::Ping => Body::Ping(proto::Ping { client_time_ms: 0 }),
             Cmd::Close => return,

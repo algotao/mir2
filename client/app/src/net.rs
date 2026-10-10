@@ -246,13 +246,7 @@ impl Net {
                     // 用 `bag_seen` 把第一次标记掉。
                     let was_in_world = self.world.in_world();
                     let gold_before = self.world.ability.map(|a| a.gold);
-                    let bag_before: std::collections::HashSet<i32> = self
-                        .world
-                        .bag
-                        .iter()
-                        .flatten()
-                        .map(|it| it.make_index)
-                        .collect();
+                    let bag_before_slots = self.world.bag.clone();
                     let bag_seen = self.bag_seen;
                     if self.world.apply(&env) == mir2_core::world::Change::World {
                         self.changes += 1;
@@ -269,13 +263,11 @@ impl Net {
                         // 背包里**多了**东西 ⇒ 按类别响（原版 `ItemClickSound`，
                         // `SoundUtil.pas:293-310`；首次全量背包不算"捡到"）
                         if bag_seen {
-                            for it in self.world.bag.iter().flatten() {
-                                if !bag_before.contains(&it.make_index) {
-                                    self.pending_sfx.push(mir2_core::sound::item_click_sound(
-                                        it.std_mode,
-                                        &it.name,
-                                    ));
-                                }
+                            for (std_mode, name) in
+                                Self::bag_gained(&bag_before_slots, &self.world.bag)
+                            {
+                                self.pending_sfx
+                                    .push(mir2_core::sound::item_click_sound(std_mode, &name));
                             }
                         }
                     }
@@ -401,6 +393,63 @@ impl Net {
         }
     }
 
+    /// 背包里**新多出来的东西**：`(StdMode, 名字)` —— 主循环据此挑音效。
+    ///
+    /// 判据（两路都算"多了"）：
+    ///   - 出现了一个**没见过的实例号**（`make_index`）—— 捡到 / 买到一件新的；
+    ///   - 已有的那一堆**数量变多了** —— ⚠️ 少了这条，买第二瓶药就一声不响：可堆叠物
+    ///     会**并进背包里已有的那一堆**（同一个实例号），只比实例号认不出来
+    ///     （用户 2026-10-10 第 4 条：购买音效只响第一下）。
+    ///
+    /// ⚠️ 还要用"总件数变多"兜一层：背包**被压缩/拿走东西**时槽位会挪位，
+    /// 逐槽比会误判成"全都变了" ⇒ 只在真的变多时才认账。
+    fn bag_gained(
+        before: &[Option<mir2_core::world::BagItem>],
+        after: &[Option<mir2_core::world::BagItem>],
+    ) -> Vec<(u32, String)> {
+        let total = |bag: &[Option<mir2_core::world::BagItem>]| -> u32 {
+            bag.iter()
+                .flatten()
+                .filter(|it| it.index != 0)
+                .map(|it| it.count.max(1))
+                .sum()
+        };
+        if total(after) <= total(before) {
+            return Vec::new();
+        }
+        let known: std::collections::HashSet<i32> =
+            before.iter().flatten().map(|it| it.make_index).collect();
+        let mut out = Vec::new();
+        for it in after.iter().flatten() {
+            if it.index == 0 {
+                continue;
+            }
+            if known.contains(&it.make_index) {
+                // 同一堆：比数量（原样那件没变多就不算"多出来"）
+                let was = before
+                    .iter()
+                    .flatten()
+                    .find(|p| p.make_index == it.make_index)
+                    .map_or(0, |p| p.count);
+                if it.count > was {
+                    out.push((it.std_mode, it.name.clone()));
+                }
+            } else {
+                out.push((it.std_mode, it.name.clone()));
+            }
+        }
+        out
+    }
+
+    /// 单测用的入口（`bag_gained` 是 `Net` 的关联函数，测试里造不出 `Net`）。
+    #[cfg(test)]
+    pub(crate) fn bag_gained_tests(
+        before: &[Option<mir2_core::world::BagItem>],
+        after: &[Option<mir2_core::world::BagItem>],
+    ) -> Vec<(u32, String)> {
+        Net::bag_gained(before, after)
+    }
+
     /// 取走"这一帧该响的音效"（世界只记账，设备在主循环里）。
     pub(crate) fn take_sfx(&mut self) -> Vec<u16> {
         std::mem::take(&mut self.pending_sfx)
@@ -506,6 +555,16 @@ impl Net {
     /// 捡起地面物品（服务端要求**人站在物品那格上**才会受理）。
     pub(crate) fn pickup(&self, ground_id: u64) {
         let _ = self.sess.cmds.send(mir2_net::Cmd::PickupItem { ground_id });
+    }
+
+    /// 挖肉（原版 `CM_BUTCH`）：`Alt` + 点动物尸体。服务端按"2 格内 + 是死了的动物"校验。
+    pub(crate) fn butch(&self, target_id: u64, x: i32, y: i32, direction: i32) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::Butch {
+            target_id,
+            x,
+            y,
+            direction,
+        });
     }
 
     /// 把"这一帧看到的"折进各实体的动画状态：移动了就给补间的起止，动作变了就重置计时。

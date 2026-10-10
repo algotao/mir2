@@ -866,6 +866,11 @@ pub mod action {
     pub const HURT: u32 = 51;
     /// 死亡。
     pub const DEATH: u32 = 52;
+    /// **挖肉**（原版 `SM_BUTCH` 那条消息；新协议里我们给它一个动作号）。
+    ///
+    /// ⚠️ 与原版 `53` 无关：协议的动作表里没有挖肉，这个编号是**双方约定**的
+    ///（服务端 `butch.go:protoActionButch` 同值）—— 改一处要改另一处。
+    pub const BUTCH: u32 = 53;
     /// 「这个动作是不是攻击」（1..8 都算）。
     pub fn is_attack(a: u32) -> bool {
         (1..=8).contains(&a)

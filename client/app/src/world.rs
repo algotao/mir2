@@ -10,6 +10,7 @@ use mir2_core::m2pk::Archive;
 use mir2_core::map::{Map, TileDraw, LAYERS_ALL, UNIT_X, UNIT_Y};
 use mir2_core::wzl::Wzl;
 
+use sdl3::pixels::Color;
 use sdl3::rect::Rect;
 use sdl3::render::FRect;
 use sdl3::render::{TextureCreator, WindowCanvas};
@@ -73,6 +74,20 @@ pub(crate) fn load_map(
             *map = None;
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+/// 地面物闪光的两个节奏常数（原版 `PlayScn.pas:1351-1365`）：
+/// 每 5 秒闪一次，一次 10 帧 × 20ms。
+const FLASH_MS: u64 = 200;
+const FLASH_STEP_MS: u64 = 20;
+
+/// 一个单调的毫秒钟（只用来给"闪光"排相位）。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -151,8 +166,17 @@ pub(crate) fn draw_map_view<'a, T>(
     }
     // 地上的东西（掉落物）：画在图块之上、人物之下 —— 走到跟前看得见、点它可捡。
     // 图标 = `Items.wzl[looks]`（与背包图标同一批图），在格子里**水平居中、贴格底**。
+    //
+    // 两件事照原版（`PlayScn.pas:1346-1389`）：
+    //   ① **显示名字**：白字黑边压在物品上方居中（原版是 `BoldTextOut`，
+    //      且只有当该物品"显示名字"或按了显示全部时才画 —— 我们一直画，
+    //      免得"这地上到底是什么"还要猜，用户 2026-10-10 第 2 条）；
+    //   ② **定时闪光**：每 5 秒（`g_dwDropItemFlashTime`）闪一次，一次 10 帧 × 20ms
+    //      ⇒ 原版用 `WMain[410+step]` 那十张闪图叠半透明；本素材集**没有 WMain.wzl**
+    //      ⇒ 用"把图标再画一遍、调成白色"近似（节奏与原版一致）。
     if let Some(n) = net {
         if n.world.in_world() {
+            let ms = now_ms();
             for gi in n.world.ground.values() {
                 let (sx, sy) = crate::geom::cell_to_screen(cam, gi.x, gi.y);
                 if let Some((iw, ih)) = ui.size(dir, "Items", gi.looks) {
@@ -169,6 +193,44 @@ pub(crate) fn draw_map_view<'a, T>(
                         FRect::new(dx, dy, iw, ih),
                         255,
                     );
+                    // 闪光：按 `ground_id` 错开相位（每件的"落地时刻"不同 ⇒ 不会齐闪）
+                    let phase = (ms + gi.ground_id % 5000) % 5000;
+                    if phase < FLASH_MS {
+                        let step = phase / FLASH_STEP_MS; // 0..9
+                        let glow = 120 + step as u8 * 13; // 越来越亮，然后结束
+                        let _ = ui.draw_tint(
+                            canvas,
+                            tc,
+                            dir,
+                            "Items",
+                            gi.looks,
+                            dx,
+                            dy,
+                            (255, 255, 255),
+                        );
+                        // 再压一层白色小方块当"高光"（没有闪图素材时的最小近似）
+                        let _ = fill(
+                            canvas,
+                            dx + iw / 2.0 - 3.0,
+                            dy + ih / 2.0 - 3.0,
+                            6.0,
+                            6.0,
+                            Color::RGBA(255, 255, 255, glow),
+                        );
+                    }
+                    // 名字：白字黑边，压在图标上方居中
+                    if !gi.name.is_empty() {
+                        let t = trunc(&gi.name, 8);
+                        names.draw(
+                            canvas,
+                            tc,
+                            &t,
+                            sx + UNIT_X as f32 / 2.0 - names.width(&t) / 2.0,
+                            dy - names.line_height() - 1.0,
+                            (238, 238, 214),
+                            Some((0, 0, 0)),
+                        )?;
+                    }
                 }
             }
         }
