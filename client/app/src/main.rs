@@ -1001,9 +1001,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             // ②″″ 商店窗：点行=**选中**、点箭头=翻页、点 OK=买选中的
                             //（原版口径，用户 2026-10-10 第 7 条）；点在窗里别走路
+                            // ⚠️ 买/卖是**两个窗**：只有"买"模式才走商品列表窗
+                            //（卖模式下面那个窗出的是放物品的槽）
                             if shop_open {
                                 if let Some(n) = net.as_ref() {
-                                    if let Some(sh) = n.world.shop.as_ref() {
+                                    if let Some(sh) = n.world.shop.as_ref().filter(|s| !s.is_sell())
+                                    {
                                         let (wx, wy, ww, wh) = crate::shop::panel();
                                         if x >= wx && x < wx + ww && y >= wy && y < wy + wh {
                                             let base = shop_page * crate::shop::ROWS;
@@ -1059,7 +1062,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             // ②‴ 卖货窗：点圈 = 放下手上的东西；点 OK = 卖掉圈里那件
                             //（原版拖放式，用户 2026-10-10 第 3 条）；点在窗里别走路。
-                            if shop_open && bag_open {
+                            if shop_open
+                                && bag_open
+                                && net
+                                    .as_ref()
+                                    .and_then(|n| n.world.shop.as_ref())
+                                    .is_some_and(|s| s.is_sell())
+                            {
                                 let (sx, sy, sw, sh) = crate::shop::sell_panel();
                                 if x >= sx && x < sx + sw && y >= sy && y < sy + sh {
                                     match crate::shop::sell_hit((x - sx, y - sy)) {
@@ -1801,8 +1810,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                 }
             }
-            // 商店窗（浮窗，画在背包窗之后）
-            if shop_open {
+            // 商店窗（浮窗，画在背包窗之后）；**"卖"模式不出商品列表**（那时要出的是
+            // 下面那个放物品的槽 —— 原版买/卖是两个不同的窗，共用同一次货架数据）
+            if shop_open
+                && net
+                    .as_ref()
+                    .and_then(|n| n.world.shop.as_ref())
+                    .is_some_and(|s| !s.is_sell())
+            {
                 if let Some(dir) = asset_dir.as_deref() {
                     shop::draw(
                         &mut canvas,
@@ -1838,8 +1853,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    // 卖货窗（拖放式：抓起 → 放进圈 → OK 才卖）
-                    if shop_open && bag_open {
+                    // 卖货窗（拖放式：抓起 → 放进槽 → OK 才卖）；只在"卖"模式画
+                    if shop_open
+                        && bag_open
+                        && net
+                            .as_ref()
+                            .and_then(|n| n.world.shop.as_ref())
+                            .is_some_and(|s| s.is_sell())
+                    {
                         if let Some(dir) = asset_dir.as_deref() {
                             shop::draw_sell(
                                 &mut canvas,

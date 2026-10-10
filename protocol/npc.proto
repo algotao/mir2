@@ -70,6 +70,13 @@ message ShopItem {
 message ShopList {
   uint64 npc_id = 1;
   repeated ShopItem items = 2;
+  // **开的是哪个窗**：1 = 买（商品列表），2 = 卖（放物品的槽）。
+  //
+  // ⚠️ 为什么要有：原版点 NPC 脚本里的 `<我要买/@buy>` 与 `<我要卖/@sell>` 弹的是
+  // **两个不同的窗**（列表窗 / 卖出窗），数据都是同一次 `SM_SENDGOODSLIST` 来的。
+  // 我们少了这一位 ⇒ 点"卖"时只能要么两个窗一起弹、要么都不弹
+  //（用户 2026-10-10："卖售窗口没有出现"）。
+  uint32 mode = 3;
 }
 
 // 客户端 → 服务端：买 `count` 个 `name`（原版 `CM_BUYITEM` 的 `Param=存量 / Tag=名字`）。

@@ -132,8 +132,23 @@ func (s *Server) handleClickNPC(c net.Conn, p *Player, m wire.Packet) {
 	s.castleOfficialMenu(c, p)
 }
 
+// 开商店窗的模式（对应 `ShopList.mode`）。
+const (
+	shopModeBuy  = 1 // 买：商品列表窗
+	shopModeSell = 2 // 卖：放物品的槽
+)
+
 // openShop 打开某个 NPC 的商店。
+
+// openShop 开**买**窗（原版 `SM_SENDGOODSLIST` 那条路）。
+//
+// ⚠️ 卖入口请用 [`openShopMode`]：两个入口弹的是**不同的窗**，只是共用同一份货架数据。
 func (s *Server) openShop(c net.Conn, p *Player, id uint32) {
+	s.openShopMode(c, p, id, shopModeBuy)
+}
+
+// openShopMode 开商店窗：`mode` 决定客户端弹买窗还是卖窗。
+func (s *Server) openShopMode(c net.Conn, p *Player, id uint32, mode uint32) {
 	s.mu.RLock()
 	npc, ok := s.world.monsters[id]
 	s.mu.RUnlock()
@@ -157,7 +172,12 @@ func (s *Server) openShop(c net.Conn, p *Player, id uint32) {
 	if def == nil {
 		def = &data.NPC{Name: npc.Name}
 	}
-	s.sendGoods(c, p, npc, def)
+	s.sendGoodsMode(c, p, npc, def, mode)
+}
+
+// sendGoods 发**买**窗的货架。
+func (s *Server) sendGoods(c net.Conn, p *Player, npc *entity.Monster, def *data.NPC) {
+	s.sendGoodsMode(c, p, npc, def, shopModeBuy)
 }
 
 // shopStock 是商品列表里报给客户端的"货架存量"。
@@ -168,14 +188,16 @@ func (s *Server) openShop(c net.Conn, p *Player, id uint32) {
 // 所以这一栏只是给客户端显示/回发用，服务端不依赖它（买入按名字解析，见 handleBuyItem）。
 const shopStock = 100
 
-// sendGoods 下发商品列表。
+// sendGoodsMode 下发商品列表（带**买/卖**模式）。
 //
 // ⚠️ body 是**文本**（`名称/子菜单/价格/存量/` 重复），不是二进制数组 ——
 // 官方客户端 `ClientGetSendGoodsList`（ClMain.pas:6158-6190）就是这么切的：
 // 用 '/' 切四次拿 name/submenu/price/stock，`gprice`/`gstock` 缺一就 break。
 // `submenu` 是"这件商品要不要弹二级菜单"：可堆叠类（StdMode <= 4 / 31 / 42）为 0，
 // 其余为 1（ObjNpc.pas:1449-1452）。
-func (s *Server) sendGoods(c net.Conn, p *Player, npc *entity.Monster, def *data.NPC) {
+//
+// ⚠️ `mode`（买/卖）只进**新协议**：legacy 客户端自己按入口弹窗，不需要这一位。
+func (s *Server) sendGoodsMode(c net.Conn, p *Player, npc *entity.Monster, def *data.NPC, mode uint32) {
 	goods := s.shopGoods(def)
 	// **新协议**：结构化商品列表（legacy 那条是 '/' 拼的文本，两种都要发 ⇒ 与
 	// `npcSay` 同一条纪律：proto 玩家的 legacy 下行是被丢弃的，只发 legacy 等于没发）。
@@ -191,8 +213,11 @@ func (s *Server) sendGoods(c net.Conn, p *Player, npc *entity.Monster, def *data
 			})
 		}
 		sink.enqueue(&protocol.Envelope{Body: &protocol.Envelope_ShopList{
-			ShopList: &protocol.ShopList{NpcId: uint64(npc.ID), Items: items}}})
-		log.Printf("%s 打开商店 %s（proto，%d 件商品）", p.Char.Name, npc.Name, len(goods))
+			ShopList: &protocol.ShopList{NpcId: uint64(npc.ID), Items: items, Mode: mode}}})
+		log.Printf(
+			"%s 打开商店 %s（proto，%s，%d 件商品）",
+			p.Char.Name, npc.Name, shopModeName(mode), len(goods),
+		)
 		return
 	}
 	var b strings.Builder
@@ -201,6 +226,14 @@ func (s *Server) sendGoods(c net.Conn, p *Player, npc *entity.Monster, def *data
 	}
 	s.send(c, proto.SM_SENDGOODSLIST, int32(npc.ID), uint16(len(goods)), 0, 0, b.String())
 	log.Printf("%s 打开商店 %s（legacy，%d 件商品）", p.Char.Name, npc.Name, len(goods))
+}
+
+// shopModeName 日志里用的名字（买/卖）。
+func shopModeName(mode uint32) string {
+	if mode == shopModeSell {
+		return "卖"
+	}
+	return "买"
 }
 
 // shopSubmenu 是"这件商品要不要弹二级菜单"（原版 `submenu`，`ObjNpc.pas:1449-1452`）：

@@ -368,3 +368,87 @@ func TestNpcDefOfSameName(t *testing.T) {
 		t.Error("坐标对不上时应退回名字匹配，不该返回 nil")
 	}
 }
+
+// TestProtoSellEntryOpensSellWindow 点 **`@sell`** 也要发货架，而且是**卖**模式。
+//
+// ⚠️ 用户 2026-10-10："卖售窗口没有出现，同时卖售时也没有同步打开包裹" ——
+// 根因就在这里：proto 玩家点 `@sell` 时原来**只收到一句指路话、没有货架** ⇒
+// 客户端无从知道要弹窗（`world.shop` 一直为 None ⇒ 卖窗不出、包裹也不会自动开）。
+// 现在 `@sell` 与 `@buy` 一样发 `ShopList`，只是 `mode` 不同（卖 = 2）。
+func TestProtoSellEntryOpensSellWindow(t *testing.T) {
+	s, store, addr := protoContractServer(t)
+	sessionID, charID := seedAccount(t, store)
+
+	npc := newTestMonster(proto.NpcIDBase+1, "屠夫", 999999)
+	npc.IsNPC = true
+	npc.Object.SetPlace(s.world.defaultMap, 2, 1, entity.DirDown)
+	s.world.monsters[npc.ID] = npc
+	s.world.monsterIdx.Add(npc)
+	s.npc.defs = []*data.NPC{{
+		ID: "1Bme", Name: "屠夫", MapID: "0", X: 2, Y: 1, IsMerchant: true, RaceImg: 11,
+	}}
+	sc, err := script.Parse("1Bme-0", strings.NewReader(`
+[@main]
+要买还是要卖？\
+<我要买/@buy>\
+<我要卖/@sell>\
+<算了/@exit>
+`))
+	if err != nil {
+		t.Fatalf("解析测试脚本: %v", err)
+	}
+	s.npc.scripts = map[string]*script.Script{"1Bme-0": sc}
+
+	cl, ev := protoEnterWorld(t, addr, s, sessionID, charID)
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_NpcClick{
+		NpcClick: &protocol.NpcClick{NpcId: uint64(npc.ID)}}})
+	waitNpcSay(t, cl, ev)
+
+	// ② 选第 2 项 = 「我要卖」（@sell）
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_NpcSelect{
+		NpcSelect: &protocol.NpcSelect{NpcId: uint64(npc.ID), Index: 2}}})
+	got := waitShopList(t, cl, ev, true)
+	if got.GetNpcId() != uint64(npc.ID) {
+		t.Errorf("ShopList.npc_id = %d，应为 %d", got.GetNpcId(), npc.ID)
+	}
+	if got.GetMode() != shopModeSell {
+		t.Errorf("ShopList.mode = %d，应为 %d（卖）⇒ 客户端才弹卖窗", got.GetMode(), shopModeSell)
+	}
+}
+
+// TestProtoBuyEntryModeIsBuy 点 `@buy` 发的是**买**模式（mode=1）。
+//
+// 与上一条成对：买/卖是**两个窗**，客户端靠 mode 区分 ⇒ mode 错了窗就弹错。
+func TestProtoBuyEntryModeIsBuy(t *testing.T) {
+	s, store, addr := protoContractServer(t)
+	sessionID, charID := seedAccount(t, store)
+
+	npc := newTestMonster(proto.NpcIDBase+1, "屠夫", 999999)
+	npc.IsNPC = true
+	npc.Object.SetPlace(s.world.defaultMap, 2, 1, entity.DirDown)
+	s.world.monsters[npc.ID] = npc
+	s.world.monsterIdx.Add(npc)
+	s.npc.defs = []*data.NPC{{
+		ID: "1Bme", Name: "屠夫", MapID: "0", X: 2, Y: 1, IsMerchant: true, RaceImg: 11,
+	}}
+	sc, err := script.Parse("1Bme-0", strings.NewReader(`
+[@main]
+<我要买/@buy>\
+<算了/@exit>
+`))
+	if err != nil {
+		t.Fatalf("解析测试脚本: %v", err)
+	}
+	s.npc.scripts = map[string]*script.Script{"1Bme-0": sc}
+
+	cl, ev := protoEnterWorld(t, addr, s, sessionID, charID)
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_NpcClick{
+		NpcClick: &protocol.NpcClick{NpcId: uint64(npc.ID)}}})
+	waitNpcSay(t, cl, ev)
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_NpcSelect{
+		NpcSelect: &protocol.NpcSelect{NpcId: uint64(npc.ID), Index: 1}}})
+	got := waitShopList(t, cl, ev, true)
+	if got.GetMode() != shopModeBuy {
+		t.Errorf("ShopList.mode = %d，应为 %d（买）", got.GetMode(), shopModeBuy)
+	}
+}

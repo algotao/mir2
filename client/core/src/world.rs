@@ -132,11 +132,26 @@ pub struct ShopItem {
     pub dura_max: u32,
 }
 
-/// 正在看的商店：哪个商人、货架上有什么。
+/// 正在看的商店：哪个商人、货架上有什么、**开的是买窗还是卖窗**。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Shop {
     pub npc_id: u64,
     pub items: Vec<ShopItem>,
+    /// 1 = 买（商品列表窗），2 = 卖（放物品的槽）。原版这两个是**不同的窗**，
+    /// 只是共用同一次 `SM_SENDGOODSLIST` 来的数据（见 `npc.proto` 的说明）。
+    pub mode: u32,
+}
+
+/// `Shop::mode`：`ShopList` 里没带 mode（旧服务端）时按"买"算。
+pub const SHOP_MODE_BUY: u32 = 1;
+/// 卖：放物品的槽（拖进去 → OK 才卖）。
+pub const SHOP_MODE_SELL: u32 = 2;
+
+impl Shop {
+    /// 这次开的是**卖**窗吗。
+    pub fn is_sell(&self) -> bool {
+        self.mode == SHOP_MODE_SELL
+    }
 }
 
 /// 地上的一件东西（`GroundItemShow` 下发；捡走/消失时 `GroundItemHide` 划掉）。
@@ -721,6 +736,7 @@ impl World {
                 self.shop_seq += 1;
                 self.shop = Some(Shop {
                     npc_id: l.npc_id,
+                    mode: if l.mode == 0 { SHOP_MODE_BUY } else { l.mode },
                     items: l
                         .items
                         .iter()
@@ -1611,6 +1627,7 @@ mod bag_tests {
                     dura_max: 20,
                 },
             ],
+            mode: SHOP_MODE_BUY,
         })));
         assert_eq!(ch, Change::World);
         let shop = w.shop.as_ref().expect("ShopList 该把货架挂上");
@@ -1622,8 +1639,45 @@ mod bag_tests {
         );
         assert!(shop.items[1].submenu, "不可堆叠的（木剑）该弹\"买几个\"");
 
+        assert!(
+            !w.shop.as_ref().unwrap().is_sell(),
+            "没带 mode 的那个用例走的是买窗"
+        );
+
         // 关对话 ⇒ 货架跟着收走（原版"对话 + 货架"是同一个窗口）
         w.apply(&env(Body::NpcClose(proto::NpcClose { npc_id: 7 })));
         assert!(w.shop.is_none(), "关对话时货架该一起清掉");
+    }
+
+    /// **卖**入口：`ShopList.mode = 2` ⇒ 客户端开的是**卖窗**（放物品的槽），
+    /// 不是商品列表窗。
+    ///
+    /// ⚠️ 用户 2026-10-10："卖售窗口没有出现" —— 根因是点 `@sell` 时服务端根本
+    /// 没发货架（客户端无从知道要弹窗）。这条把"卖模式会被记住"钉住。
+    #[test]
+    fn 卖入口的货架带着卖模式() {
+        let mut w = World::default();
+        w.apply(&env(Body::ShopList(proto::ShopList {
+            npc_id: 9,
+            items: vec![],
+            mode: SHOP_MODE_SELL,
+        })));
+        let shop = w.shop.as_ref().expect("卖入口也该把货架挂上");
+        assert_eq!(shop.mode, SHOP_MODE_SELL);
+        assert!(shop.is_sell(), "mode=2 ⇒ 卖窗（放物品的槽）");
+        assert_eq!(shop.npc_id, 9, "卖东西回 `ShopSell` 要靠这个商人号");
+    }
+
+    /// 旧服务端（没带 mode，字段为 0）⇒ 按**买**算，别把窗开没了。
+    #[test]
+    fn 货架没带模式时按买算() {
+        let mut w = World::default();
+        w.apply(&env(Body::ShopList(proto::ShopList {
+            npc_id: 3,
+            items: vec![],
+            mode: 0,
+        })));
+        assert!(!w.shop.as_ref().unwrap().is_sell());
+        assert_eq!(w.shop.as_ref().unwrap().mode, SHOP_MODE_BUY);
     }
 }

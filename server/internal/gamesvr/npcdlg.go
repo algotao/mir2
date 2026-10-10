@@ -242,14 +242,16 @@ func (s *Server) dlgSelectIndex(c net.Conn, p *Player, idx int) {
 		}
 		return
 	case "sell":
-		// 卖：原版这里开"卖出"窗。我们的卖法是**商店窗开着时点背包里的东西**
-		// ⇒ 给 proto 玩家指个路；legacy 客户端有自己的卖出窗，照旧开商店。
-		if c == nil && p.protoOut != nil {
-			s.npcSay(c, p, p.dialog.npcID,
-				"要卖东西：保持这个商店窗开着，按 F9 打开背包，点背包里的物品就卖了。", nil)
-			return
+		// 卖：原版这里开**卖出窗**（商品列表窗 / 卖出窗是两个不同的窗，只是共用
+		// 同一次 `SM_SENDGOODSLIST` 来的数据）⇒ 我们发 `ShopList{mode=卖}`。
+		//
+		// ⚠️ 原来 proto 玩家在这里**只收到一句指路话、没有货架** ⇒ 客户端无从知道
+		// 弹什么 ⇒ 卖窗不出来、包裹也不会自动开（用户 2026-10-10："卖售窗口没有
+		// 出现，同时卖售时也没有同步打开包裹"）。现在两条协议都开卖窗。
+		s.openShopMode(c, p, p.dialog.npcID, shopModeSell)
+		if p.protoOut != nil {
+			s.notice(p, "要卖东西：点包裹里的物品拿起来，放进下面的槽里，再点 OK。")
 		}
-		s.openShop(c, p, p.dialog.npcID)
 		return
 	case "storage", "getback":
 		// 同上（按序号选择时镜像一份；原版是文本形态）

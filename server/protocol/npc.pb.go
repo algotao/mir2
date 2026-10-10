@@ -382,9 +382,16 @@ func (x *ShopItem) GetDuraMax() uint32 {
 
 // 服务端 → 客户端：这个商人的商品列表（原版 `SM_SENDGOODSLIST`）。
 type ShopList struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	NpcId         uint64                 `protobuf:"varint,1,opt,name=npc_id,json=npcId,proto3" json:"npc_id,omitempty"`
-	Items         []*ShopItem            `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	NpcId uint64                 `protobuf:"varint,1,opt,name=npc_id,json=npcId,proto3" json:"npc_id,omitempty"`
+	Items []*ShopItem            `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"`
+	// **开的是哪个窗**：1 = 买（商品列表），2 = 卖（放物品的槽）。
+	//
+	// ⚠️ 为什么要有：原版点 NPC 脚本里的 `<我要买/@buy>` 与 `<我要卖/@sell>` 弹的是
+	// **两个不同的窗**（列表窗 / 卖出窗），数据都是同一次 `SM_SENDGOODSLIST` 来的。
+	// 我们少了这一位 ⇒ 点"卖"时只能要么两个窗一起弹、要么都不弹
+	//（用户 2026-10-10："卖售窗口没有出现"）。
+	Mode          uint32 `protobuf:"varint,3,opt,name=mode,proto3" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -431,6 +438,13 @@ func (x *ShopList) GetItems() []*ShopItem {
 		return x.Items
 	}
 	return nil
+}
+
+func (x *ShopList) GetMode() uint32 {
+	if x != nil {
+		return x.Mode
+	}
+	return 0
 }
 
 // 客户端 → 服务端：买 `count` 个 `name`（原版 `CM_BUYITEM` 的 `Param=存量 / Tag=名字`）。
@@ -645,10 +659,11 @@ const file_npc_proto_rawDesc = "" +
 	"\x05price\x18\x02 \x01(\x04R\x05price\x12\x14\n" +
 	"\x05stock\x18\x03 \x01(\rR\x05stock\x12\x18\n" +
 	"\asubmenu\x18\x04 \x01(\bR\asubmenu\x12\x19\n" +
-	"\bdura_max\x18\x05 \x01(\rR\aduraMax\"G\n" +
+	"\bdura_max\x18\x05 \x01(\rR\aduraMax\"[\n" +
 	"\bShopList\x12\x15\n" +
 	"\x06npc_id\x18\x01 \x01(\x04R\x05npcId\x12$\n" +
-	"\x05items\x18\x02 \x03(\v2\x0e.mir2.ShopItemR\x05items\"J\n" +
+	"\x05items\x18\x02 \x03(\v2\x0e.mir2.ShopItemR\x05items\x12\x12\n" +
+	"\x04mode\x18\x03 \x01(\rR\x04mode\"J\n" +
 	"\aShopBuy\x12\x15\n" +
 	"\x06npc_id\x18\x01 \x01(\x04R\x05npcId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
