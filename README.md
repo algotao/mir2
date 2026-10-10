@@ -85,6 +85,10 @@ find $WS -not -path '*/.git/*' -printf '%p\n' | tr 'A-Z' 'a-z' | sort | uniq -d
 
 ## 本地跑起来（登录 → 进图）
 
+> **改完服务端只想重启？`script/restart-dev.sh` 一条就够了**（重编译 → 杀旧进程 →
+> 起新的 → 等端口真的在听才返回）。`--game-only` 只动 gamesvr、`--fg` 前台跑看日志、
+> `--status` 看在跑什么、`--stop` 只停。详见脚本头的用法。
+
 四个东西，**共用同一个 `-db`**（账号、会话、角色都在这个 SQLite 里）。
 
 ```bash
