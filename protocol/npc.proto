@@ -46,3 +46,52 @@ message NpcSelect {
 message NpcClose {
   uint64 npc_id = 1;
 }
+
+// ---------- 商店（原版 `SM_SENDGOODSLIST` / `CM_BUYITEM` / `CM_SELLITEM`）----------
+//
+// 原版那条是**文本协议**：把"名称/子菜单/价格/存量/"拼成一整串塞在 body 里
+//（`ObjNpc.pas:1449-1455` 写、`ClMain.pas:6158-6190` 用 `'/'` 切四次读出来），
+// 买入时再把"名字 + 存量"当 `Param/Tag` 回发（`FState.pas:5244`）。
+// 我们照例拆成结构化消息：**服务端不依赖客户端回发的存量**（买入按名字解析，
+// 见 `shop.go` 的 `shopGoodsByName`）。
+message ShopItem {
+  string name = 1;
+  uint64 price = 2;
+  // 货架存量：我们的商品按模板即时生成、永不缺货 ⇒ 这一栏只用于**显示**（见 `shop.go`
+  // 的 `shopStock`）。
+  uint32 stock = 3;
+  // 要不要弹"买几个"的二级菜单（原版 `submenu`：可堆叠类为 0，其余为 1）。
+  bool submenu = 4;
+}
+
+// 服务端 → 客户端：这个商人的商品列表（原版 `SM_SENDGOODSLIST`）。
+message ShopList {
+  uint64 npc_id = 1;
+  repeated ShopItem items = 2;
+}
+
+// 客户端 → 服务端：买 `count` 个 `name`（原版 `CM_BUYITEM` 的 `Param=存量 / Tag=名字`）。
+message ShopBuy {
+  uint64 npc_id = 1;
+  string name = 2;
+  uint32 count = 3;
+}
+
+// 客户端 → 服务端：卖背包里 `make_index` 那一个（原版 `CM_SELLITEM` 用 MakeIndex 认物）。
+message ShopSell {
+  uint64 npc_id = 1;
+  // 物品实例号（`UserItem.make_index`）；`count > 1` 时按可堆叠数量卖。
+  int32 make_index = 2;
+  uint32 count = 3;
+}
+
+// 服务端 → 客户端：买卖的结果（原版是 `SM_BUYITEM_SUCCESS` / `SM_SOLD_FAIL` 那几个号
+// + 随后的金币/背包刷新）。
+//
+// ⚠️ 成功后的**背包与金币**由 `BagItems` / `AbilityUpdate` 照常下发，不挤在这里。
+message ShopResult {
+  uint64 npc_id = 1;
+  bool ok = 2;
+  // 失败原因（金币不够 / 负重超了 / 没有这件…），人能读。
+  string message = 3;
+}

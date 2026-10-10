@@ -993,7 +993,11 @@ fn 移动不重播挥砍() {
     );
     // 走完（补间 600ms 在 t0+700 起步 ⇒ t0+1300 结束）⇒ 才轮到挥砍
     a.action_at = now + Duration::from_millis(1300);
-    assert_eq!(hit(&a, now + Duration::from_millis(1310)), A::HAct::Hit, "停步后才补挥砍");
+    assert_eq!(
+        hit(&a, now + Duration::from_millis(1310)),
+        A::HAct::Hit,
+        "停步后才补挥砍"
+    );
 }
 
 /// 「手上的挥砍还没播完」的判据（原版 `CanNextAction`/`IsIdle`，用户第 2 条后半句
@@ -1013,7 +1017,10 @@ fn 挥砍没播完算忙() {
         walk_since: at,
     };
     assert!(mk(Some(1), now).attack_busy(now), "刚砍：忙");
-    assert!(!mk(Some(1), now).attack_busy(now + Duration::from_secs(5)), "早播完：不忙");
+    assert!(
+        !mk(Some(1), now).attack_busy(now + Duration::from_secs(5)),
+        "早播完：不忙"
+    );
     assert!(!mk(None, now).attack_busy(now), "没动作：不忙");
     // 受击/死亡不是"挥砍"，不挡走路
     assert!(!mk(Some(mir2_core::world::action::HURT), now).attack_busy(now));
@@ -1247,10 +1254,19 @@ fn click_walks_exactly_one_step() {
     assert!(ct.is_none(), "空地上不该锁目标");
     assert_eq!(mt, Some((11, 11, false)), "只迈一格，按符号取方向");
     // 正左/正上这些也要对
-    assert_eq!(input::click_step(&w, (10, 10), (2, 10), true).1, Some((9, 10, true)));
-    assert_eq!(input::click_step(&w, (10, 10), (10, 3), false).1, Some((10, 9, false)));
+    assert_eq!(
+        input::click_step(&w, (10, 10), (2, 10), true).1,
+        Some((9, 10, true))
+    );
+    assert_eq!(
+        input::click_step(&w, (10, 10), (10, 3), false).1,
+        Some((10, 9, false))
+    );
     // 点在自己身上（同一格）⇒ 什么都不做
-    assert_eq!(input::click_step(&w, (10, 10), (10, 10), false), (None, None));
+    assert_eq!(
+        input::click_step(&w, (10, 10), (10, 10), false),
+        (None, None)
+    );
 }
 
 /// NPC 进 `Npc.wzl` 的图号（原版 `GetNpcOffset` + `GetRaceByPM(race, appr)` 的站立段）。
@@ -1300,7 +1316,11 @@ fn 对话正文的行内链接() {
     let lines = input::dialog_lines(text, &[]);
     // 「打开」与「交易市场」必须在**同一行**，且切成了"空白 / 链接 / 文字"
     let third = lines[2].clone();
-    assert_eq!(third.len(), 3, "第 3 行应是 [空白, 链接, 文字]，实得 {third:?}");
+    assert_eq!(
+        third.len(),
+        3,
+        "第 3 行应是 [空白, 链接, 文字]，实得 {third:?}"
+    );
     assert!(
         matches!(&third[1], input::DialSeg::Link { index, text } if *index == 1 && text == "打开")
     );
@@ -1315,17 +1335,23 @@ fn 对话正文的行内链接() {
         .expect("这一行有链接");
     let (lx, ly, lw, lh) = link.rect;
     assert_eq!(
-        input::dialog_link_at(panel, &lines, (lx + 2.0, ly + lh / 2.0), &mut measure),
+        input::dialog_link_at(panel, &lines, (lx + 2.0, ly + lh / 2.0), 0, &mut measure),
         Some(1),
         "点「打开」要选中序号 1"
     );
     assert_eq!(
-        input::dialog_link_at(panel, &lines, (lx + lw + 3.0, ly + lh / 2.0), &mut measure),
+        input::dialog_link_at(
+            panel,
+            &lines,
+            (lx + lw + 3.0, ly + lh / 2.0),
+            0,
+            &mut measure
+        ),
         None,
         "点链接右边的正文不该弹对话"
     );
     assert_eq!(
-        input::dialog_link_at(panel, &lines, (x + 1.0, y + 1.0), &mut measure),
+        input::dialog_link_at(panel, &lines, (x + 1.0, y + 1.0), 0, &mut measure),
         None,
         "点面板空白处不命中"
     );
@@ -1341,18 +1367,18 @@ fn 对话正文的行内链接() {
             }]
         })
         .collect();
-    let beyond_y = y
-        + input::DIALOG_PAD_Y
-        + (input::DIALOG_MAX_LINES as f32 + 1.0) * input::DIALOG_LINE_H;
+    let beyond_y =
+        y + input::DIALOG_PAD_Y + (input::DIALOG_MAX_LINES as f32 + 1.0) * input::DIALOG_LINE_H;
     assert_eq!(
         input::dialog_link_at(
             panel,
             &many,
             (x + input::DIALOG_PAD_X + 2.0, beyond_y),
+            0,
             &mut measure
         ),
         None,
-        "超出上限的链接不该被点到"
+        "超出上限的链接不该被点到（滚上去才点得到，见下面那条）"
     );
 
     // 折行：纯文字行按字数折、`\n` 强制换行
@@ -1366,6 +1392,161 @@ fn 对话正文的行内链接() {
     assert!(matches!(&plain[1][0], input::DialSeg::Link { index, .. } if *index == 1));
 }
 
+/// 对话窗**滚动**：正文超出背板时能滚着看 —— 「退出」常常落在第 9 行以后。
+///
+/// ⚠️ 这条钉的是 2026-10-10 量出来的事实：298 个脚本里 **114 个**折行后超过一屏
+///（`DIALOG_MAX_LINES` = 8 行），最长的 `2Arms_dealer-0103` 有 **46 行**。
+/// 背板是固定高的 ⇒ 换更高的板也装不下（46 行 = 828px > 屏幕高），只能滚。
+/// 滚不动的直接后果：装不下的行**画不出也点不到** ⇒ 「退出」点不动。
+#[test]
+fn 对话正文装不下时要能滚() {
+    let panel = input::dialog_panel();
+    let (x, y, _, _) = panel;
+    let mut measure = |t: &str| t.chars().count() as f32 * 14.0; // 等宽假字体
+
+    // 造一段 12 行的对话：8 行可见 + 4 行要滚
+    let lines: Vec<Vec<input::DialSeg>> = (0..12)
+        .map(|i| {
+            vec![input::DialSeg::Link {
+                index: i as u32 + 1,
+                text: format!("选项{i}"),
+            }]
+        })
+        .collect();
+    assert_eq!(input::DIALOG_MAX_LINES, 8, "一屏 8 行（背板几何算出来的）");
+    assert_eq!(input::dialog_max_scroll(12), 4, "12 行 ⇒ 最多滚 4 行");
+    assert_eq!(input::dialog_max_scroll(5), 0, "装得下就不用滚");
+
+    // 没滚时：第 9 行（index 9）在窗外 ⇒ 点不到
+    let row9_y = y + input::DIALOG_PAD_Y + 8.0 * input::DIALOG_LINE_H + input::DIALOG_LINE_H / 2.0;
+    assert_eq!(
+        input::dialog_link_at(
+            panel,
+            &lines,
+            (x + input::DIALOG_PAD_X + 6.0, row9_y),
+            0,
+            &mut measure
+        ),
+        None,
+        "没滚到第 9 行时，那个位置没有可点的东西"
+    );
+    // 行在第 `i` 行 ⇒ 序号 `i+1`；滚 `s` 行后它排在窗口第 `i-s` 行
+    let mut at_row = |row: f32, s: usize| {
+        let my = y + input::DIALOG_PAD_Y + row * input::DIALOG_LINE_H + input::DIALOG_LINE_H / 2.0;
+        input::dialog_link_at(
+            panel,
+            &lines,
+            (x + input::DIALOG_PAD_X + 6.0, my),
+            s,
+            &mut measure,
+        )
+    };
+    assert_eq!(at_row(0.0, 0), Some(1), "没滚 ⇒ 首行是第 1 行");
+    assert_eq!(
+        at_row(0.0, 4),
+        Some(5),
+        "滚 4 行 ⇒ 窗口首行是第 5 行（序号 5）"
+    );
+    assert_eq!(
+        at_row(4.0, 4),
+        Some(9),
+        "第 9 行现在排在窗口第 5 行 ⇒ 点得到 —— 这就是「退出」点得动的关键"
+    );
+    assert_eq!(at_row(7.0, 4), Some(12), "窗口末行是最后一行（序号 12）");
+
+    // 滚轮：往上滚（y>0）减小、往下滚（y<0）增大，两端都夹住
+    assert_eq!(input::dialog_scroll_step(0, 12, 1.0), 0, "已经在顶了");
+    assert_eq!(input::dialog_scroll_step(0, 12, -1.0), 1, "往下滚一行");
+    assert_eq!(input::dialog_scroll_step(9, 12, -1.0), 4, "滚到底就夹住");
+    assert_eq!(input::dialog_scroll_clamp(99, 12), 4, "越界要夹回");
+    assert_eq!(input::dialog_scroll_clamp(3, 5), 0, "换了段短对话也要夹回");
+
+    // 可见窗口：`(窗口内行号, 行)` —— 行号必须从 0 起，否则会排到窗外
+    let rows: Vec<(usize, String)> = input::dialog_visible_lines(&lines, 4)
+        .map(|(row, segs)| {
+            let t = match &segs[0] {
+                input::DialSeg::Link { text, .. } => text.clone(),
+                input::DialSeg::Text(t) => t.clone(),
+            };
+            (row, t)
+        })
+        .collect();
+    assert_eq!(rows.len(), 8, "一次只排一屏");
+    assert_eq!(
+        rows[0],
+        (0, "选项4".to_string()),
+        "滚 4 行 ⇒ 第 5 行排在最上"
+    );
+    assert_eq!(rows[7], (7, "选项11".to_string()));
+
+    // 滚动条：装得下不画、装不下才画；滑块随滚动位置下移
+    assert_eq!(input::dialog_scroll_thumb(panel, 5, 0), None, "装得下不画");
+    let (_, ty0, _, th) = input::dialog_scroll_thumb(panel, 12, 0).expect("装不下要画");
+    let (_, ty4, _, th4) = input::dialog_scroll_thumb(panel, 12, 4).expect("装不下要画");
+    assert_eq!(th, th4, "滑块高度不随位置变");
+    assert!(ty4 > ty0, "滚下去 ⇒ 滑块往下走");
+    assert!(th >= 12.0, "滑块别缩得看不见（46 行时按比例只有 ~4px）");
+}
+
+/// 商店窗：**几何不压别的窗** + 命中（商品行 / 关闭叉）+ 翻页。
+///
+/// 数据是服务端 `ShopList` 下发的（原版点商人时"对话 + 货架"一起来），
+/// 窗里点一行 = 买一件（`ShopBuy`）；背包开着时点背包格 = 卖（`ShopSell`）。
+#[test]
+fn 商店窗几何与命中() {
+    let (x, y, w, h) = crate::shop::panel();
+    // ① 不与另外三块窗重叠：对话窗在左上、状态窗在右上
+    let (dx, _dy, dw, _dh) = input::dialog_panel();
+    assert!(
+        x >= dx + dw,
+        "商店窗（{x}..{}）该在对话窗（{dx}..{}）右边",
+        x + w,
+        dx + dw
+    );
+    let (sxp, _syp, swp, _shp) = crate::status::panel((232, 325));
+    assert!(
+        x + w <= sxp,
+        "商店窗右缘 {} 不该压到状态窗（{sxp}..{}）",
+        x + w,
+        sxp + swp
+    );
+    assert!(y + h <= 768.0, "整块窗要落在 1024×768 画面内");
+
+    // ② 命中：第 0 行、关闭叉、行之间的空白
+    let (rx, ry, rw, rh) = crate::shop::row_rect(0);
+    assert_eq!(
+        crate::shop::hit((rx + 2.0, ry + 2.0), 3),
+        crate::shop::Hit::Row(0),
+        "点第一行 ⇒ 买第一件"
+    );
+    assert_eq!(
+        crate::shop::hit((rx + rw - 2.0, ry + rh - 1.0), 3),
+        crate::shop::Hit::Row(0),
+        "整行都可点（价格那一侧也算）"
+    );
+    assert_eq!(
+        crate::shop::hit((rx, ry + 2.0 * rh), 1),
+        crate::shop::Hit::None,
+        "只有 1 件商品时，第二行不该点得到"
+    );
+    // 关闭叉（窗口右上角）
+    let (cx, cy, cw, ch) = (306.0, 4.0, 24.0, 20.0);
+    assert_eq!(
+        crate::shop::hit((cx + cw / 2.0, cy + ch / 2.0), 3),
+        crate::shop::Hit::Close
+    );
+
+    // ③ 翻页：一个商人最多 20 件 ⇒ 2 页；到头绕回
+    assert_eq!(crate::shop::pages(1), 1);
+    assert_eq!(crate::shop::pages(10), 1);
+    assert_eq!(crate::shop::pages(11), 2, "第 11 件要翻页");
+    assert_eq!(crate::shop::pages(20), 2);
+    assert_eq!(crate::shop::page_step(0, 1, 20), 1);
+    assert_eq!(crate::shop::page_step(1, 1, 20), 0, "到头绕回");
+    assert_eq!(crate::shop::page_step(0, -1, 20), 1, "往前翻也绕回");
+    assert_eq!(crate::shop::page_step(5, 0, 20), 1, "静止时夹回末页");
+}
+
 /// 小地图**区域标注**（用户 2026-10-09 选的 (a)）：表由 `tools/gen_map_labels.py`
 /// 从原版 `data/MapDesc1.dat`（GBK）生成，键是**地图显示名**（= 服务端的 `map_title`）。
 #[test]
@@ -1373,7 +1554,11 @@ fn 小地图区域标注表() {
     use mir2_core::map_labels::{labels_for, MAP_LABELS};
     assert!(MAP_LABELS.len() > 100, "生成的表不该是空的");
     let bq = labels_for("比奇省");
-    assert!(bq.len() >= 20, "比奇省的标注该有二十来条，实得 {}", bq.len());
+    assert!(
+        bq.len() >= 20,
+        "比奇省的标注该有二十来条，实得 {}",
+        bq.len()
+    );
     // 用户截图里那两个字：银杏山谷 (620,626)、边界村 (294,630) ——
     // 与 `StartPoint.txt` 的 (650,631)/(289,618) 同一片地儿
     let gy = bq.iter().find(|l| l.3 == "银杏山谷").expect("该有银杏山谷");
@@ -1440,7 +1625,11 @@ fn 背包窗的格子命中() {
     // 每格中心都能命中自己，且**只命中自己**
     for i in 0..BAG_PAGE_SLOTS {
         let (x, y, w, h) = bag_cell_rect(i);
-        assert_eq!(bag_slot_at((x + w / 2.0, y + h / 2.0)), Some(i), "第 {i} 格");
+        assert_eq!(
+            bag_slot_at((x + w / 2.0, y + h / 2.0)),
+            Some(i),
+            "第 {i} 格"
+        );
     }
     // 网格外面（比如金币条那儿）不该命中
     assert_eq!(bag_slot_at((BAG_GOLD_X + 4.0, BAG_GOLD_Y + 4.0)), None);
@@ -1448,7 +1637,8 @@ fn 背包窗的格子命中() {
     if let Some(i) = bag_slot_at((BAG_CLOSE_X + 4.0, BAG_CLOSE_Y + 4.0)) {
         let (x, y, w, h) = bag_cell_rect(i);
         assert!(
-            !(BAG_CLOSE_X + 4.0 >= x && BAG_CLOSE_X + 4.0 < x + w
+            !(BAG_CLOSE_X + 4.0 >= x
+                && BAG_CLOSE_X + 4.0 < x + w
                 && BAG_CLOSE_Y + 4.0 >= y
                 && BAG_CLOSE_Y + 4.0 < y + h),
             "X 与格子重叠了（点 X 会误选物品）"
@@ -1477,18 +1667,35 @@ fn 背包窗的格子命中() {
 fn 武器图层的图库与块大小() {
     use mir2_core::actor as A;
     assert_eq!(
-        A::WEAPON_LIB, "Weapon",
+        A::WEAPON_LIB,
+        "Weapon",
         "武器图库 = Weapon.wzl（每把武器占男/女两块）"
     );
     assert_eq!(A::HUMAN_FRAME, 600, "人物块大小（与身体共用）");
     // 木剑 Shape=1：男 ⇒ 块 2（1200）、女 ⇒ 块 3（1800）
-    assert_eq!(A::human_index(2, A::HAct::Stand, 0, 0), 1200, "木剑·男 ⇒ 块 2");
-    assert_eq!(A::human_index(3, A::HAct::Stand, 0, 0), 1800, "木剑·女 ⇒ 块 3");
+    assert_eq!(
+        A::human_index(2, A::HAct::Stand, 0, 0),
+        1200,
+        "木剑·男 ⇒ 块 2"
+    );
+    assert_eq!(
+        A::human_index(3, A::HAct::Stand, 0, 0),
+        1800,
+        "木剑·女 ⇒ 块 3"
+    );
     // 铁剑/青铜剑 Shape=2 ⇒ 块 4/5。与木剑**隔着一整块** ⇒ 公式退回 `Shape`
     // （取块 1，整块是空的）时看到的是"手上什么都没有"，退回 `Weapon2` 时看到的是
     // 那把**细长银剑** —— 用户原话"更像长剑铁剑"。
-    assert_eq!(A::human_index(4, A::HAct::Stand, 0, 0), 2400, "铁剑·男 ⇒ 块 4");
-    assert_eq!(A::human_index(5, A::HAct::Stand, 0, 0), 3000, "铁剑·女 ⇒ 块 5");
+    assert_eq!(
+        A::human_index(4, A::HAct::Stand, 0, 0),
+        2400,
+        "铁剑·男 ⇒ 块 4"
+    );
+    assert_eq!(
+        A::human_index(5, A::HAct::Stand, 0, 0),
+        3000,
+        "铁剑·女 ⇒ 块 5"
+    );
 }
 
 /// 对话行数上限：**陈家铺老板那段必须完整显示**（含最后的「退出」）。

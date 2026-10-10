@@ -214,6 +214,76 @@ pub(crate) const DIALOG_LINE_H: f32 = 18.0;
 pub(crate) const DIALOG_MAX_LINES: usize =
     ((DIALOG_H - 2.0 * DIALOG_PAD_Y) / DIALOG_LINE_H) as usize;
 
+/// 正文装不下时**最多能滚几行**。
+///
+/// ⚠️ 为什么非滚不可：脚本的 `[@main]` 折行之后**远超**一屏 —— 2026-10-10 量过
+/// 298 个脚本，**114 个**超过 8 行，最长的 `2Arms_dealer-0103` 有 **46 行**
+///（而且折行只算纯文字行）。背板是固定高的（`Prguse[384]` 416×176）⇒
+/// 换成更高的板也装不下，只能滚。滚不动的后果是**装不下的行既画不出也点不到** ——
+/// 「退出」常常就落在第 9、10 行（用户 2026-10-10 报的次生问题）。
+pub(crate) fn dialog_max_scroll(lines: usize) -> usize {
+    lines.saturating_sub(DIALOG_MAX_LINES)
+}
+
+/// 把滚动位置夹回合法范围（换了段更短的对话、或滚过头了都要用它）。
+pub(crate) fn dialog_scroll_clamp(scroll: usize, lines: usize) -> usize {
+    scroll.min(dialog_max_scroll(lines))
+}
+
+/// 滚轮一格（`y` 是 SDL 的滚轮量：**> 0 = 往上滚**）。
+///
+/// 抽成纯函数是为了能单测（事件循环里不好造 `Event`）。
+pub(crate) fn dialog_scroll_step(scroll: usize, lines: usize, y: f32) -> usize {
+    let cur = dialog_scroll_clamp(scroll, lines);
+    if y > 0.0 {
+        cur.saturating_sub(1)
+    } else if y < 0.0 {
+        dialog_scroll_clamp(cur + 1, lines)
+    } else {
+        cur
+    }
+}
+
+/// 滚动条的宽度（细条，贴在正文区右侧）。
+pub(crate) const DIALOG_BAR_W: f32 = 4.0;
+
+/// 滚动条与正文右缘的间距。
+const DIALOG_BAR_GAP: f32 = 8.0;
+
+/// 滚动条的**轨道**矩形（一直存在，只是内容装得下时不画）。
+pub(crate) fn dialog_bar_track(panel: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+    let (px, py, pw, _) = panel;
+    (
+        px + pw - DIALOG_BAR_GAP - DIALOG_BAR_W,
+        py + DIALOG_PAD_Y,
+        DIALOG_BAR_W,
+        DIALOG_MAX_LINES as f32 * DIALOG_LINE_H,
+    )
+}
+
+/// 滚动条的**滑块**矩形：`None` = 内容装得下、不用画。
+///
+/// 滑块高度按"可见 / 总数"的比例缩（内容越长滑块越短，与常见滚动条一致），
+/// 最短 12px —— 46 行内容按 8/46 缩出来只有 ~4px，手指看不清。
+pub(crate) fn dialog_scroll_thumb(
+    panel: (f32, f32, f32, f32),
+    lines: usize,
+    scroll: usize,
+) -> Option<(f32, f32, f32, f32)> {
+    if lines <= DIALOG_MAX_LINES {
+        return None;
+    }
+    let (tx, ty, tw, th) = dialog_bar_track(panel);
+    let visible = DIALOG_MAX_LINES as f32;
+    let total = lines as f32;
+    let h = (th * visible / total).max(12.0).min(th);
+    let room = (th - h).max(0.0);
+    let s = dialog_scroll_clamp(scroll, lines) as f32;
+    let max_s = dialog_max_scroll(lines) as f32;
+    let y = ty + if max_s > 0.0 { room * s / max_s } else { 0.0 };
+    Some((tx, y, tw, h))
+}
+
 /// 正文一行最多几个字。背板内宽 ≈ `416 - 2*24 = 368px`，14px 一个字 ⇒ 约 26 个，
 /// 留点余量取 24（`\n` 仍然强制换行）。
 pub(crate) const DIALOG_WRAP_CHARS: usize = 24;
@@ -231,10 +301,8 @@ pub(crate) const DIALOG_CLOSE_H: f32 = 19.0;
 pub(crate) fn dialog_close_hit(panel: (f32, f32, f32, f32), mouse: (f32, f32)) -> bool {
     let (px, py, _, _) = panel;
     let (lx, ly) = (mouse.0 - px, mouse.1 - py);
-    lx >= DIALOG_CLOSE_X
-        && lx < DIALOG_CLOSE_X + DIALOG_CLOSE_W
-        && ly >= DIALOG_CLOSE_Y
-        && ly < DIALOG_CLOSE_Y + DIALOG_CLOSE_H
+    (DIALOG_CLOSE_X..DIALOG_CLOSE_X + DIALOG_CLOSE_W).contains(&lx)
+        && (DIALOG_CLOSE_Y..DIALOG_CLOSE_Y + DIALOG_CLOSE_H).contains(&ly)
 }
 
 /// 对话面板的矩形 `(x, y, w, h)`（画布坐标）—— 固定尺寸、固定左上角。
@@ -251,7 +319,10 @@ pub(crate) enum DialSeg {
     /// 服务端把脚本里的 `<打开/@trading>` 改写成 `<打开/@1>`（见
     /// `server/internal/script/script.go` 的 `Label.Lines`）⇒ 客户端不用猜标签，
     /// 直接拿它回 `NpcSelect{index}`。
-    Link { index: u32, text: String },
+    Link {
+        index: u32,
+        text: String,
+    },
 }
 
 /// 链接前面那个绿方块 + 间距占的宽度（官方样式：方块在文字左侧）。
@@ -303,11 +374,14 @@ fn parse_marked_line(s: &str, out: &mut Vec<DialSeg>) -> bool {
     let mut rest = s;
     let mut has = false;
     while let Some(lt) = rest.find('<') {
-        let Some(gt) = rest[lt..].find('>') else { break };
+        let Some(gt) = rest[lt..].find('>') else {
+            break;
+        };
         let inner = &rest[lt + 1..lt + gt];
-        let Some((text, index)) = inner.split_once("/@").and_then(|(t, n)| {
-            n.trim().parse::<u32>().ok().map(|i| (t.to_string(), i))
-        }) else {
+        let Some((text, index)) = inner
+            .split_once("/@")
+            .and_then(|(t, n)| n.trim().parse::<u32>().ok().map(|i| (t.to_string(), i)))
+        else {
             break; // 不是标记：后面整段当文字
         };
         if lt > 0 {
@@ -378,14 +452,33 @@ pub(crate) fn dialog_line_pieces(
 }
 
 /// 鼠标点在某段**行内链接**上 ⇒ 返回选项序号（1 起）。
+/// 当前**看得见**的行：`(窗口内行号, 该行的片段)`。
+///
+/// **画与命中都走它** —— 滚出窗外的行既画不出来也点不到（与 `dialog_line_pieces`
+/// 里"装不下就返回空"同一条纪律：画不出来的东西不该点得到）。
+pub(crate) fn dialog_visible_lines(
+    lines: &[Vec<DialSeg>],
+    scroll: usize,
+) -> impl Iterator<Item = (usize, &[DialSeg])> {
+    let s = dialog_scroll_clamp(scroll, lines.len());
+    lines
+        .iter()
+        .skip(s)
+        .take(DIALOG_MAX_LINES)
+        .enumerate()
+        .map(|(row, segs)| (row, segs.as_slice()))
+}
+
+/// 鼠标点在哪条链接上（`scroll` = 当前卷动到第几行）。
 pub(crate) fn dialog_link_at(
     panel: (f32, f32, f32, f32),
     lines: &[Vec<DialSeg>],
     mouse: (f32, f32),
+    scroll: usize,
     measure: &mut dyn FnMut(&str) -> f32,
 ) -> Option<u32> {
-    for (i, segs) in lines.iter().enumerate() {
-        for p in dialog_line_pieces(panel, i, segs, measure) {
+    for (row, segs) in dialog_visible_lines(lines, scroll) {
+        for p in dialog_line_pieces(panel, row, segs, measure) {
             let DialSeg::Link { index, .. } = p.seg else {
                 continue;
             };

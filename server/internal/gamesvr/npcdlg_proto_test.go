@@ -136,6 +136,58 @@ func TestProtoNpcDialog(t *testing.T) {
 	drainUntilPong(t, cl, ev, "隔得太远不该开对话")
 }
 
+// TestProtoNpcClickSendsShopList 点 NPC 时**商品列表必须一起下来**。
+//
+// ⚠️ 这是 2026-10-10 补的一个真缺口：`onNpcClick` 原来只发 `NpcSay`、不调
+// `sendGoods` ⇒ 新协议玩家**永远收不到 `ShopList`** ⇒ 客户端无从知道货架上有什么
+// （表现是"点商人没有商店窗"）。legacy 的 `handleClickNPC` 是 `startDialog` +
+// `sendGoods` 连着发的（原版也是 `SM_MERCHANTDLG` + `SM_SENDGOODSLIST` 一起来），
+// 所以这条把"新协议与 legacy 同构"钉住。
+func TestProtoNpcClickSendsShopList(t *testing.T) {
+	s, store, addr := protoContractServer(t)
+	sessionID, charID := seedAccount(t, store)
+
+	// 屠夫（名字带"肉" ⇒ 商品分类能匹配上，见 `shopCategory`）。
+	// 玩家在 (1,1)，NPC 放 (2,1)：距离 1，满足 `onNpcClick` 的 ≤ 8 校验。
+	npc := newTestMonster(proto.NpcIDBase+1, "屠夫", 999999)
+	npc.IsNPC = true
+	npc.Object.SetPlace(s.world.defaultMap, 2, 1, entity.DirDown)
+	s.world.monsters[npc.ID] = npc
+	s.world.monsterIdx.Add(npc)
+	s.npc.defs = []*data.NPC{{
+		ID: "1Bme", Name: "屠夫", MapID: "0", X: 2, Y: 1, IsMerchant: true, RaceImg: 11,
+	}}
+
+	cl, ev := protoEnterWorld(t, addr, s, sessionID, charID)
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_NpcClick{
+		NpcClick: &protocol.NpcClick{NpcId: uint64(npc.ID)}}})
+	// ⚠️ 不能用 `waitFor`：点 NPC 之后背包/能力值这些"自身状态推送"也会跟着来
+	//（`sendBagItems` 是全量口），`waitFor` 会把它们当"无关消息"直接判红。
+	// 所以这里自己转一圈，只挑 `ShopList`。
+	var got *protocol.ShopList
+	for i := 0; i < 200; i++ {
+		e := cl.recv()
+		if l, ok := e.Body.(*protocol.Envelope_ShopList); ok {
+			got = l.ShopList
+			break
+		}
+		if isSelfStatePush(e) {
+			continue
+		}
+		if !ev.note(e) {
+			t.Fatalf("等 ShopList 时收到无关消息 %T", e.Body)
+		}
+	}
+	if got == nil {
+		t.Fatal("等 ShopList 超时：点 NPC 该把商品列表一起发下来")
+	}
+	if got.GetNpcId() != uint64(npc.ID) {
+		t.Errorf("ShopList.npc_id = %d，应为 %d（客户端靠它回 `ShopBuy`）", got.GetNpcId(), npc.ID)
+	}
+	// 件数**不**断言：它取决于这张表里有几条该 StdMode 的商品（测试服可能没有）；
+	// 这里只钉"会发、且带着正确的商人 id"。
+}
+
 // drainUntilPong 发一条 Ping 当"水位线"，并断言在这条 Pong 之前**没有** NpcSay。
 //
 // 为什么要这么绕：协议里没有"这条请求被拒了"的回包（`onNpcClick` 对够不着/点空了
@@ -211,10 +263,15 @@ func waitNpcSay(t *testing.T, cl *protoClient, ev *protoEvents) *protocol.Envelo
 		}
 		// 正常流量（与"顺序错"无关）：能力值随时会推；背包/已穿戴在进图与每次
 		// 拾取/穿戴/买卖后都会整份重发（`sendBagItems` 是全量口）。
+		//
+		// `ShopList` 也是**点 NPC 就该来的**：原版点商人时"对话 + 货架"是一起来的
+		//（`SM_MERCHANTDLG` + `SM_SENDGOODSLIST`），legacy 的 `handleClickNPC`
+		// 就是 `startDialog` + `sendGoods` 连着发 ⇒ 这里按正常流量跳过。
 		switch e.Body.(type) {
 		case *protocol.Envelope_AbilityUpdate,
 			*protocol.Envelope_BagItems,
-			*protocol.Envelope_EquippedItems:
+			*protocol.Envelope_EquippedItems,
+			*protocol.Envelope_ShopList:
 			continue
 		}
 		if !ev.note(e) {

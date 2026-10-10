@@ -77,15 +77,15 @@ pub(crate) fn panel(bg: (u32, u32)) -> (f32, f32, f32, f32) {
 /// 衣服/武器/头盔是**压在人形上的大命中区**（内容画在小人身上，不在槽里）；
 /// 其余 6 个是左右两列的小槽。官方没接 `belt/boots/charm`（命中判定在官方也被注释掉了）。
 pub(crate) const SLOTS: [(usize, f32, f32, f32, f32); 9] = [
-    (0, 96.0, 122.0, 53.0, 112.0),  // 衣服
-    (1, 47.0, 70.0, 47.0, 87.0),    // 武器
-    (4, 115.0, 85.0, 18.0, 18.0),   // 头盔
-    (3, 169.0, 88.0, 34.0, 30.0),   // 项链
-    (2, 169.0, 127.0, 34.0, 30.0),  // 右手（火把/蜡烛）
-    (5, 169.0, 177.0, 34.0, 30.0),  // 左手镯
-    (7, 169.0, 217.0, 34.0, 30.0),  // 左戒指
-    (6, 43.0, 177.0, 34.0, 30.0),   // 右手镯
-    (8, 43.0, 217.0, 34.0, 30.0),   // 右戒指
+    (0, 96.0, 122.0, 53.0, 112.0), // 衣服
+    (1, 47.0, 70.0, 47.0, 87.0),   // 武器
+    (4, 115.0, 85.0, 18.0, 18.0),  // 头盔
+    (3, 169.0, 88.0, 34.0, 30.0),  // 项链
+    (2, 169.0, 127.0, 34.0, 30.0), // 右手（火把/蜡烛）
+    (5, 169.0, 177.0, 34.0, 30.0), // 左手镯
+    (7, 169.0, 217.0, 34.0, 30.0), // 左戒指
+    (6, 43.0, 177.0, 34.0, 30.0),  // 右手镯
+    (8, 43.0, 217.0, 34.0, 30.0),  // 右戒指
 ];
 
 /// 会在槽里**画图标**的那几个（衣服/武器/头盔画在人形上，不重复画）。
@@ -177,7 +177,16 @@ pub(crate) fn draw<'a, T>(
 
     // 三个控件按钮（官方给了显式矩形，不按锚点）
     button(canvas, tc, ui, dir_assets, ARROW_UP, x, y, ARROW_UP_RECT);
-    button(canvas, tc, ui, dir_assets, ARROW_DOWN, x, y, ARROW_DOWN_RECT);
+    button(
+        canvas,
+        tc,
+        ui,
+        dir_assets,
+        ARROW_DOWN,
+        x,
+        y,
+        ARROW_DOWN_RECT,
+    );
     button(canvas, tc, ui, dir_assets, CLOSE_IMG, x, y, CLOSE);
 
     if page == 0 {
@@ -203,7 +212,16 @@ fn draw_figure<'a, T>(
     let (cx, cy) = (x + CONTENT_X, y + CONTENT_Y);
     let (hair, sex) = feature_of(n);
     // 裸体底图（男/女）
-    anchored(canvas, tc, ui, dir_assets, BG_LIB, if sex == 1 { FIG_F } else { FIG_M }, cx, cy);
+    anchored(
+        canvas,
+        tc,
+        ui,
+        dir_assets,
+        BG_LIB,
+        if sex == 1 { FIG_F } else { FIG_M },
+        cx,
+        cy,
+    );
     // 头发（发型 0 = 光头：素材里那块本来就取不到，取不到就跳过）
     anchored(
         canvas,
@@ -307,6 +325,7 @@ fn draw_attrs<'a, T>(
 }
 
 /// 画一张界面图，落点 = `(x, y) + 图自带锚点`（官方合成规则的**唯一**实现）。
+#[allow(clippy::too_many_arguments)]
 fn anchored<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
@@ -336,6 +355,7 @@ fn anchored<'a, T>(
 }
 
 /// 画一个"控件按钮"（关闭 X / 翻页箭头）：官方给的是显式矩形，不按锚点。
+#[allow(clippy::too_many_arguments)]
 fn button<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
@@ -366,7 +386,7 @@ fn button<'a, T>(
 /// 取不到（还没进世界/没特征）⇒ 发型 0、性别 0（男）。
 pub(crate) fn feature_of(n: &Net) -> (u32, u8) {
     match n.world.self_feature.as_ref() {
-        Some(f) => (f.hair as u32, (f.dress & 1) as u8),
+        Some(f) => (f.hair, (f.dress & 1) as u8),
         None => (0, 0),
     }
 }

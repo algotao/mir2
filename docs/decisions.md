@@ -3861,3 +3861,50 @@ D-67 写"`Weapon.wzl` 的 `.wzx` 只有 11403 条记录、大半是空壳 ⇒ �
 官方第 3、4 页（经验负重页 `Prguse[382]`、魔法技能页 `[383]`）没做 —— 需要 `SM_SUBABILITY`
 那组字段（精确度/敏捷/抗性/恢复）与技能系统。另外官方的**物品提示框**（`Prguse[394]`）
 在状态窗里被官方作者**注释掉了**（改成人物下方印 4 行），我们暂时也没做悬停提示。
+
+---
+
+## D-41 对话窗能滚 + 商店（买/卖）接通新协议
+
+**背景（2026-10-10）**：用户"顺序你定" ⇒ 按"小 → 大"做了三件：对话窗滚动、
+商店买/卖接通、clippy 清零。
+
+### ① 对话窗**能滚**（原来装不下的行直接消失）
+
+量出来的事实（不是估计）：脚本 `[@main]` 折行之后 **298 个里 114 个**超过一屏
+（`DIALOG_MAX_LINES = 8`），最长的 `2Arms_dealer-0103` 有 **46 行**。
+背板 `Prguse[384]` 是固定高（416×176）⇒ 换更高的板也装不下（46 行 = 828px > 屏幕高）。
+**必须滚**，否则装不下的行"画不出也点不到" —— 「退出」常常就落在第 9、10 行。
+
+- `input::dialog_max_scroll / dialog_scroll_clamp / dialog_scroll_step / dialog_visible_lines`
+  （纯函数 ⇒ 可单测）；滚轮在窗内卷行（`Event::MouseWheel` 那条 arm 现在**合成一条**，
+  背包窗与对话窗二选一，分开写会被 match 的"不穿透"吃掉另一个）；
+- 画与命中都走 `dialog_visible_lines`（行号从 0 起，否则排到窗外）；滚动条只在装不下时画，
+  滑块最短 12px（46 行按比例只有 ~4px，看不清）；
+- 换了段新对话 ⇒ 滚动归零（`World::dialog_seq` 每来一段 `NpcSay` 就 +1 —— 用版本号
+  判断，免得每帧克隆正文字符串）。
+
+### ② 商店：新协议补齐
+
+| 缺口 | 补法 |
+|---|---|
+| proto 玩家**永远收不到** `ShopList` | `onNpcClick` 补 `sendGoods`（legacy 的 `handleClickNPC` 是 `startDialog` + `sendGoods` 连着发；原版也是 `SM_MERCHANTDLG` + `SM_SENDGOODSLIST` 一起来）|
+| 没有买/卖的上行入口 | `ShopBuy` / `ShopSell` 两个 case；成交判定与 legacy **共用**（`shopGoodsByName` / `spendGold` / `addToBag`），分路的只有回执 |
+| 买/卖的结果没回音 | `ShopResult{ok, message}` —— proto 玩家收不到 `sysMsg`，这是它唯一的回音；客户端推进聊天框 |
+| **卖不掉东西**（客户端认不出是哪一件）| `ItemStack` 加 `make_index`（原版卖/修/用发的是 `MakeIndex`，不是槽位号 —— 背包一压缩槽位号就指到别人身上）|
+| 没有商品窗 | `app/src/shop.rs`：列表 + 价格 + 金币 + 翻页 + 关闭叉（一次一点 = 买/卖 1 个，与 `submenu` 的"买几个"二级菜单还没做）|
+
+**验收**：服务端 `TestShopBuyProto` / `TestShopBuyProtoRejectsWhenPoor`（钱不够 ⇒
+不扣款不发货）/ `TestShopSellProto`（整件卖 + 一堆里只卖 2 个，剩 3）/ `TestProtoNpcClickSendsShopList`
+（真 TCP 上等 `ShopList`）；客户端 `商店窗几何与命中`、`商品列表挂上货架关对话时一起收走`、
+`对话正文装不下时要能滚`；两端 **84 / 143 / 7 / 3 + Go 25 包**全过。
+
+### ③ clippy 清零
+
+18 条（绝大部分是树上既有的）⇒ **0**：`cargo clippy --fix` 处理机械项；
+`dialog_geom` 的返回值抽成 `DialogGeom` 类型别名；`status.rs` 两个函数补
+`#[allow(clippy::too_many_arguments)]`；`wzldump` 的行尾补齐改成 `resize`。
+
+### 还没做
+
+商店窗的**真图号**（现在借用 `Prguse[3]`）、"买几个"二级菜单、修理（`ShopRepair`）。

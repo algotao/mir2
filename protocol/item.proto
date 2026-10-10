@@ -21,6 +21,13 @@ message ItemStack {
   uint32 dura_max = 6;
   uint64 attribute_flags = 7;
   repeated uint32 values = 8; // 属性值（DC/MC/SC/AC/MAC 的 min/max 等，顺序另行约定）
+  // 物品**实例号**（`UserItem.MakeIndex`，全服唯一；0 = 空槽）。
+  //
+  // ⚠️ 为什么必须有：原版认一件东西靠的就是它 —— `CM_USERSELLITEM` /
+  // `CM_USERREPAIRITEM` / 双击使用发的都是 MakeIndex（`ClMain.pas:3711`、
+  // `FState.pas:5452`），不是槽位号（背包一压缩，槽位号就指到别人身上了）。
+  // 我们原来这一栏没下发 ⇒ 客户端**没法卖东西**（"背包槽 5"在两个面板之间会漂）。
+  int32 make_index = 9;
 }
 
 // ---------- 服务端 → 客户端 ----------

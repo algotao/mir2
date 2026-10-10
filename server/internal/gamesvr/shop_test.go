@@ -11,6 +11,7 @@ import (
 	"github.com/algotao/mir2/server/internal/proto"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/internal/wire"
+	"github.com/algotao/mir2/server/protocol"
 )
 
 // shopTestServer 造"脚本头可指定功能的武器店老板 + 站在它旁边、正与它对话的玩家"。
@@ -248,6 +249,136 @@ func TestBuyRejectsUnknownGoods(t *testing.T) {
 	}
 	if !fail {
 		t.Error("没收到 SM_BUYITEM_FAIL")
+	}
+}
+
+// ---------- 新协议（proto）的买 / 卖 ----------
+//
+// ⚠️ 这两条为什么必须存在：proto 玩家的 legacy 下行会被 `protoDown` 丢掉 ⇒
+// `SM_BUYITEM_SUCCESS` / `SM_USERSELLITEM_OK` 那几个号**到不了**客户端，
+// 只测 legacy 那半边，新协议客户端点了买就是"没反应"（这正是用户报的那类问题）。
+
+// protoShopServer 在 `shopTestServer` 之上挂一个新协议的出口（下行全进这个 sink）。
+func protoShopServer(t *testing.T, cmdLine string, items ...*data.StdItem) (*Server, *Player, *entity.Monster, *protoSink) {
+	t.Helper()
+	s, p, npc, _ := shopTestServer(t, cmdLine, items...)
+	sink := &protoSink{ch: make(chan *protocol.Envelope, 64)}
+	p.protoOut = sink
+	return s, p, npc, sink
+}
+
+// lastShopResult 从 sink 里捞**最后**一条 `ShopResult`（没有 ⇒ nil）。
+func lastShopResult(sink *protoSink) *protocol.ShopResult {
+	var out *protocol.ShopResult
+	for {
+		select {
+		case env := <-sink.ch:
+			if r := env.GetShopResult(); r != nil {
+				out = r
+			}
+		default:
+			return out
+		}
+	}
+}
+
+// TestShopBuyProto 新协议买入：扣款、发货、**回一条看得见的 `ShopResult`**。
+func TestShopBuyProto(t *testing.T) {
+	s, p, npc, sink := protoShopServer(t, "@trading @buy @sell", shopItem())
+
+	s.onShopBuy(nil, p, &protocol.ShopBuy{
+		NpcId: uint64(npc.ID), Name: "测试剑", Count: 1,
+	})
+
+	if got := countBagItemNamed(s, p, "测试剑"); got != 1 {
+		t.Fatalf("背包里测试剑 = %d 件，期望 1", got)
+	}
+	if p.Char.Data.Gold != 7000 {
+		t.Fatalf("金币 = %d，期望 7000（10000 - 3000）", p.Char.Data.Gold)
+	}
+	res := lastShopResult(sink)
+	if res == nil {
+		t.Fatal("没有回 `ShopResult`（新协议客户端唯一的回音）")
+	}
+	if !res.GetOk() {
+		t.Errorf("买入该成功，实得 message=%q", res.GetMessage())
+	}
+	if res.GetNpcId() != uint64(npc.ID) {
+		t.Errorf("ShopResult.npc_id = %d，期望 %d", res.GetNpcId(), npc.ID)
+	}
+
+	// 一次买 3 件（不可堆叠 ⇒ 占 3 个格子）：金币 ×3，背包 +3
+	p.Char.Data.Gold = 10000
+	s.onShopBuy(nil, p, &protocol.ShopBuy{
+		NpcId: uint64(npc.ID), Name: "测试剑", Count: 3,
+	})
+	if got := countBagItemNamed(s, p, "测试剑"); got != 4 {
+		t.Errorf("再买 3 件后应有 4 件，实得 %d", got)
+	}
+	if p.Char.Data.Gold != 1000 {
+		t.Errorf("金币 = %d，期望 1000（10000 - 3×3000）", p.Char.Data.Gold)
+	}
+}
+
+// TestShopBuyProtoRejectsWhenPoor 钱不够 ⇒ **不扣款、不发货**，且回 `ok=false`。
+func TestShopBuyProtoRejectsWhenPoor(t *testing.T) {
+	s, p, npc, sink := protoShopServer(t, "@trading @buy @sell", shopItem())
+	p.Char.Data.Gold = 100 // 一把剑 3000
+
+	s.onShopBuy(nil, p, &protocol.ShopBuy{
+		NpcId: uint64(npc.ID), Name: "测试剑", Count: 1,
+	})
+
+	if p.Char.Data.Gold != 100 {
+		t.Errorf("金币 = %d，期望不动（扣款与判定必须是同一次原子操作）", p.Char.Data.Gold)
+	}
+	if got := countBagItemNamed(s, p, "测试剑"); got != 0 {
+		t.Errorf("没付钱就不该发货，背包里却有 %d 件", got)
+	}
+	res := lastShopResult(sink)
+	if res == nil || res.GetOk() {
+		t.Fatalf("该回 ok=false，实得 %+v", res)
+	}
+	if res.GetMessage() == "" {
+		t.Error("失败原因要写人能读的话（proto 玩家收不到 `sysMsg`）")
+	}
+}
+
+// TestShopSellProto 新协议卖出：整件卖掉，以及**只卖一堆里的一部分**。
+func TestShopSellProto(t *testing.T) {
+	// StdMode 0 ⇒ 可堆叠（`data.stackableModes`）；`Dura` 记数量
+	potion := wuItem(2, "测试药", 0, data.MinMax{})
+	potion.Price = 100
+	s, p, npc, sink := protoShopServer(t, "@trading @buy @sell", shopItem(), potion)
+
+	// ① 整件卖（武器，不可堆叠）：半价 1500
+	p.Char.Data.BagItems[3] = &pb.UserItem{Index: 1, MakeIndex: 77, Dura: 10, DuraMax: 10}
+	s.onShopSell(nil, p, &protocol.ShopSell{NpcId: uint64(npc.ID), MakeIndex: 77})
+	if p.Char.Data.Gold != 11500 {
+		t.Fatalf("金币 = %d，期望 11500（10000 + 3000/2）", p.Char.Data.Gold)
+	}
+	if countBagItemNamed(s, p, "测试剑") != 0 {
+		t.Error("卖掉的武器还在背包里")
+	}
+	if res := lastShopResult(sink); res == nil || !res.GetOk() {
+		t.Errorf("卖出该回 ok=true，实得 %+v", res)
+	}
+
+	// ② 一堆药里只卖 2 个（`Dura = 5` ⇒ 卖完还剩 3），半价 50/个
+	p.Char.Data.BagItems[4] = &pb.UserItem{Index: 2, MakeIndex: 78, Dura: 5}
+	before := p.Char.Data.Gold
+	s.onShopSell(nil, p, &protocol.ShopSell{NpcId: uint64(npc.ID), MakeIndex: 78, Count: 2})
+	if want := before + 100; p.Char.Data.Gold != want {
+		t.Errorf("金币 = %d，期望 %d（+%d = 2 个 × 半价 50）", p.Char.Data.Gold, want, 100)
+	}
+	left := -1
+	for _, u := range p.Char.Data.BagItems {
+		if u != nil && u.MakeIndex == 78 {
+			left = int(u.Dura)
+		}
+	}
+	if left != 3 {
+		t.Errorf("堆里该剩 3 个，实得 %d（-1 = 整堆都没了，应该是只卖了一部分）", left)
 	}
 }
 

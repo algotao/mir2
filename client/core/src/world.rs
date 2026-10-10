@@ -119,6 +119,24 @@ impl Entity {
     }
 }
 
+/// 货架上的一件商品（服务端 `ShopList` 下发）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ShopItem {
+    pub name: String,
+    pub price: u64,
+    /// 货架存量：我们的商品按模板即时生成、永不缺货 ⇒ 这一栏只用于**显示**。
+    pub stock: u32,
+    /// 要不要弹"买几个"的二级菜单（原版 `submenu`：可堆叠类为 0）。
+    pub submenu: bool,
+}
+
+/// 正在看的商店：哪个商人、货架上有什么。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Shop {
+    pub npc_id: u64,
+    pub items: Vec<ShopItem>,
+}
+
 /// 背包/装备里的一件物品（`ItemStack` 的客户端形态）。
 ///
 /// 图标怎么取：**`Items.wzl[looks]`** —— 2026-10-09 用 `wzldump` 逐张比对确认过
@@ -135,6 +153,11 @@ pub struct BagItem {
     pub count: u32,
     pub dura: u32,
     pub dura_max: u32,
+    /// **实例号**（服务端 `UserItem.MakeIndex`，全服唯一）。
+    ///
+    /// 卖/修/用都靠它认物（原版发的就是它，不是槽位号）—— 没有它，客户端只能说
+    /// "背包第 5 格"，而背包一压缩那格就指到别的物品上去了（见 `item.proto`）。
+    pub make_index: i32,
 }
 
 impl BagItem {
@@ -146,6 +169,7 @@ impl BagItem {
             count: it.count,
             dura: it.dura,
             dura_max: it.dura_max,
+            make_index: it.make_index,
         }
     }
 
@@ -252,6 +276,18 @@ pub struct World {
     pub map_name: String,
     /// 开着的 NPC 对话（`NpcSay` 带来、`NpcClose`/选到 `@exit` 时清）。
     pub dialog: Option<NpcDialog>,
+    /// 开着的**商店**（`ShopList` 带来；对话关掉 / 换图时清）。
+    ///
+    /// 原版点商人时"对话"与"货架"是**同一个窗口**里来的（`SM_MERCHANTDLG` +
+    /// `SM_SENDGOODSLIST`），所以两个同时挂着才是对的（见服务端 `handleClickNPC`）。
+    pub shop: Option<Shop>,
+
+    /// 对话的**版本号**：每收到一段新 `NpcSay` 就 +1。
+    ///
+    /// 渲染层靠它判断"换了一段新对话吗" ⇒ 该不该把**滚动位置归零**（正文常常超出
+    /// 背板 ⇒ 要能滚；换了一段新对话还停在旧的偏移上就莫名其妙）。
+    /// 直接用正文比对的话每帧都得克隆字符串，而且"同一个 NPC 换了一段话"分不开。
+    pub dialog_seq: u64,
     /// 地图的**显示名**（`EnterWorld`/`ChangeMap` 的 `map_title`，如"比奇省"）。
     ///
     /// 官方客户端左下角那行抬头用它（`g_sMapTitle`，`DrawScrn.pas:513`：
@@ -558,6 +594,8 @@ impl World {
                 Change::World
             }
             Body::NpcSay(say) => {
+                // 换了一段话 ⇒ 版本号 +1（渲染层据此把滚动位置归零）
+                self.dialog_seq += 1;
                 self.dialog = Some(NpcDialog {
                     npc_id: say.npc_id,
                     text: say.text.clone(),
@@ -565,6 +603,41 @@ impl World {
                         .options
                         .iter()
                         .map(|o| (o.index, o.text.clone()))
+                        .collect(),
+                });
+                Change::World
+            }
+            // ⚠️ **关对话必须认服务端这条下行**：点「退出」（脚本里的 `<退出/@exit>`）走的是
+            // 服务端 `dlgSelectIndex` → `npcClose` → 下行 `NpcClose`；客户端本地清不掉，
+            // 因为"哪个 index 是退出"是**脚本语义**（客户端只看到编号 1..N）。
+            // 少了这条分支 ⇒ `NpcClose` 被末尾的 `_ => Change::None` 静默吞掉
+            // ⇒ 点了退出、面板还挂着 —— 用户报的正是这个（2026-10-10）。
+            // （ESC 与右上角 X 有效，是因为它们**在本地**手动调了 `close_dialog()`。）
+            Body::NpcClose(c) => {
+                // 只认"当前这个 NPC"的关闭：别的 NPC 的关闭不该关掉眼前这段
+                if self.dialog.as_ref().is_some_and(|d| d.npc_id == c.npc_id) {
+                    self.dialog = None;
+                    // 货架跟着一起关：原版"对话 + 货架"是同一次点击来的同一个窗口
+                    self.shop = None;
+                    Change::World
+                } else {
+                    Change::None
+                }
+            }
+            // 商品列表（原版 `SM_SENDGOODSLIST`）：把货架挂上，商店窗才有东西可画。
+            // ⚠️ 服务端**点 NPC 时就发**（`onNpcClick` 里与对话一起发），不是等玩家再点一次。
+            Body::ShopList(l) => {
+                self.shop = Some(Shop {
+                    npc_id: l.npc_id,
+                    items: l
+                        .items
+                        .iter()
+                        .map(|i| ShopItem {
+                            name: i.name.clone(),
+                            price: i.price,
+                            stock: i.stock,
+                            submenu: i.submenu,
+                        })
                         .collect(),
                 });
                 Change::World
@@ -617,7 +690,11 @@ impl World {
             Body::UpdateItem(u) => {
                 let slot = u.slot as usize;
                 if slot < self.bag.len() {
-                    self.bag[slot] = u.item.as_ref().filter(|i| i.index != 0).map(BagItem::from_proto);
+                    self.bag[slot] = u
+                        .item
+                        .as_ref()
+                        .filter(|i| i.index != 0)
+                        .map(BagItem::from_proto);
                 }
                 Change::World
             }
@@ -1357,5 +1434,86 @@ mod bag_tests {
 
         w.apply(&env(Body::RemoveItem(proto::RemoveItem { slot: 5 })));
         assert!(w.bag[5].is_none(), "删掉之后该格为空");
+    }
+
+    /// 点「退出」= 服务端下行 `NpcClose` ⇒ 客户端必须清掉面板。
+    ///
+    /// ⚠️ 这条钉的是 2026-10-10 用户报的"点退出没反应"：`World::apply` 原来**没有**
+    /// `NpcClose` 分支 ⇒ 被 `_ => Change::None` 静默吞掉（ESC / 右上角 X 有效，
+    /// 是因为它们**在本地**手动调了 `close_dialog()`，只有"点退出"依赖服务端下行）。
+    #[test]
+    fn 服务端的关对话会真的关掉面板() {
+        // 不用先进图：`dialog` 只是世界状态里的一个字段，与有没有进世界无关
+        let mut w = World::default();
+        // 开一段对话，选项里带一个「退出」
+        w.apply(&env(Body::NpcSay(proto::NpcSay {
+            npc_id: 42,
+            text: "……".into(),
+            options: vec![proto::NpcOption {
+                index: 1,
+                text: "退出".into(),
+            }],
+        })));
+        assert!(w.dialog.is_some(), "NpcSay 该把面板挂上");
+
+        // 别的 NPC 的关闭不该关掉眼前这段
+        w.apply(&env(Body::NpcClose(proto::NpcClose { npc_id: 99 })));
+        assert!(w.dialog.is_some(), "别的 NPC 的关闭不该关掉这段对话");
+
+        // 这个 NPC 的关闭 ⇒ 关掉（且要算"世界变了"，否则客户端不会重画）
+        let ch = w.apply(&env(Body::NpcClose(proto::NpcClose { npc_id: 42 })));
+        assert_eq!(ch, Change::World);
+        assert!(
+            w.dialog.is_none(),
+            "点退出（服务端 NpcClose）之后面板该关掉"
+        );
+    }
+
+    /// 商店：`ShopList` 挂上货架，关对话（`NpcClose`）时**货架一起收走**。
+    ///
+    /// ⚠️ 服务端**点 NPC 时就发**商品列表（原版 `SM_MERCHANTDLG` 与
+    /// `SM_SENDGOODSLIST` 是一起来的），所以"有对话 + 有货架"才是常态 ⇒
+    /// 关对话必须连带关货架，否则窗会挂在屏幕上不走。
+    #[test]
+    fn 商品列表挂上货架关对话时一起收走() {
+        let mut w = World::default();
+        assert!(w.shop.is_none());
+
+        // 点商人 ⇒ 对话 + 货架一起到（顺序无关，两条都记得住）
+        w.apply(&env(Body::NpcSay(proto::NpcSay {
+            npc_id: 7,
+            text: "要点什么？".into(),
+            options: vec![],
+        })));
+        let ch = w.apply(&env(Body::ShopList(proto::ShopList {
+            npc_id: 7,
+            items: vec![
+                proto::ShopItem {
+                    name: "金创药(小量)".into(),
+                    price: 100,
+                    stock: 100,
+                    submenu: false,
+                },
+                proto::ShopItem {
+                    name: "木剑".into(),
+                    price: 500,
+                    stock: 100,
+                    submenu: true,
+                },
+            ],
+        })));
+        assert_eq!(ch, Change::World);
+        let shop = w.shop.as_ref().expect("ShopList 该把货架挂上");
+        assert_eq!(shop.npc_id, 7, "回 `ShopBuy` 要靠这个商人号");
+        assert_eq!(shop.items.len(), 2);
+        assert_eq!(
+            (shop.items[0].name.as_str(), shop.items[0].price),
+            ("金创药(小量)", 100)
+        );
+        assert!(shop.items[1].submenu, "不可堆叠的（木剑）该弹\"买几个\"");
+
+        // 关对话 ⇒ 货架跟着收走（原版"对话 + 货架"是同一个窗口）
+        w.apply(&env(Body::NpcClose(proto::NpcClose { npc_id: 7 })));
+        assert!(w.shop.is_none(), "关对话时货架该一起清掉");
     }
 }

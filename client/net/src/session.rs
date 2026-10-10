@@ -91,6 +91,19 @@ pub enum Cmd {
     NpcSelect { npc_id: u64, index: u32 },
     /// 关掉对话（原版 `@exit`）。
     NpcClose(u64),
+    /// 买入（原版 `CM_USERBUYITEM`）：**按名字**认商品（服务端 `shopGoodsByName`），
+    /// `count` 件（原版一次只买 1 件）。
+    ShopBuy {
+        npc_id: u64,
+        name: String,
+        count: u32,
+    },
+    /// 卖出（原版 `CM_USERSELLITEM`）：按**物品实例号**（`MakeIndex`）认物。
+    ShopSell {
+        npc_id: u64,
+        make_index: i32,
+        count: u32,
+    },
     /// 心跳（`Ping`）。
     Ping,
     /// 主动关闭。
@@ -273,6 +286,24 @@ fn writer_loop(stream: &mut TcpStream, cmds: Receiver<Cmd>) {
             Cmd::NpcClick(npc_id) => Body::NpcClick(proto::NpcClick { npc_id }),
             Cmd::NpcSelect { npc_id, index } => Body::NpcSelect(proto::NpcSelect { npc_id, index }),
             Cmd::NpcClose(npc_id) => Body::NpcClose(proto::NpcClose { npc_id }),
+            Cmd::ShopBuy {
+                npc_id,
+                name,
+                count,
+            } => Body::ShopBuy(proto::ShopBuy {
+                npc_id,
+                name,
+                count,
+            }),
+            Cmd::ShopSell {
+                npc_id,
+                make_index,
+                count,
+            } => Body::ShopSell(proto::ShopSell {
+                npc_id,
+                make_index,
+                count,
+            }),
             Cmd::Ping => Body::Ping(proto::Ping { client_time_ms: 0 }),
             Cmd::Close => return,
         };

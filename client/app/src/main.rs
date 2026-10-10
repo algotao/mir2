@@ -86,6 +86,7 @@ pub(crate) mod actor;
 pub(crate) use actor::*;
 pub(crate) mod hud;
 pub(crate) mod minimap;
+pub(crate) mod shop;
 pub(crate) mod status;
 pub(crate) use minimap::*;
 pub(crate) mod net;
@@ -103,6 +104,12 @@ pub(crate) use world::*;
 // 直接编译不过（这个坑刚踩过）。拆文件时最容易漏的一处。
 #[cfg(test)]
 mod tests;
+
+/// 开关状态窗（F10 与备用键 `Ctrl+C` 都走这里）。
+fn toggle_status(status_open: &mut bool) {
+    *status_open = !*status_open;
+    println!("[ui] 状态窗 {}", if *status_open { "打开" } else { "关闭" });
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdl = sdl3::init()?;
@@ -252,8 +259,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut status_open = false;
     // 状态窗的页码（官方 4 页，我们做 2 页：0 装备 / 1 属性）
     let mut status_page = 0usize;
+    // 商店窗：**点商人就开**（服务端点 NPC 时把"对话 + 货架"一起发下来，
+    // 与 `world.shop` 同在 ⇒ 不用单独记开关，只记"关掉它就别再画"）。
+    let mut shop_open = true;
+    let mut shop_page = 0usize;
+    // 上次开的是哪个商人的货架：换了个商人 ⇒ 页码归零
+    let mut shop_npc_seen: Option<u64> = None;
+    // NPC 对话窗**卷到第几行**（正文常常超出那块固定高的背板 ⇒ 要能滚，
+    // 见 `input::dialog_max_scroll`）：滚轮改它，换了段新对话就归零。
+    let mut dialog_scroll = 0usize;
+    // 上次看到的对话版本号（`World::dialog_seq`）—— 变了就说明是**另一段**对话
+    let mut dialog_seq_seen = 0u64;
     // 怪声音的随机源（`sfx::monster_ambient` 的 1/8 判定；不为这一处引 rand 依赖）
     let mut sfx_rng: u32 = 0x1234_5678;
+    // 上一次**怪声**的时刻（`sfx::monster_ambient` 的全局间隔闸：多只怪时不许连着响）
+    let mut last_monster_sfx = Instant::now();
     // 悬停可攻击目标时把光标换成"准星"（Crystal 是 `MouseCursor.Attack`，
     // `GameScene.cs:432-433`）；只在**状态变了**才设，别每帧调。
     let cursor_arrow = Cursor::from_system(SystemCursor::Arrow)?;
@@ -360,8 +380,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(Keycode::Escape) if mode == 2 && status_open => status_open = false,
                     // NPC 对话开着 ⇒ ESC **先关对话**（原版 `@exit`），别顺手退了客户端
                     Some(Keycode::Escape)
-                        if mode == 2
-                            && net.as_ref().is_some_and(|n| n.world.dialog.is_some()) =>
+                        if mode == 2 && net.as_ref().is_some_and(|n| n.world.dialog.is_some()) =>
                     {
                         if let Some(n) = net.as_ref() {
                             if let Some(d) = n.world.dialog.as_ref() {
@@ -372,6 +391,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             n.world.close_dialog();
                         }
                     }
+                    // 商店窗同理 ⇒ ESC **先关商店窗**
+                    Some(Keycode::Escape) if mode == 2 && shop_open => shop_open = false,
                     Some(Keycode::Escape) if mode != 1 && mode != 4 => break 'main,
                     // ⚠️ **开发键让开原版键位**（口径见 `docs/use.md`）：F1~F8 是技能、
                     // F9~F12 是包裹/属性/技能/内挂、M 是大地图、Tab 是小地图、数字是快捷物品
@@ -383,9 +404,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("[ui] 背包窗 {}", if bag_open { "打开" } else { "关闭" });
                     }
                     // F10 = 状态窗（原版键位：F9 包裹 / F10 属性 / F11 技能 / F12 内挂）
-                    Some(Keycode::F10) if mode == 2 => {
-                        status_open = !status_open;
-                        println!("[ui] 状态窗 {}", if status_open { "打开" } else { "关闭" });
+                    Some(Keycode::F10) if mode == 2 => toggle_status(&mut status_open),
+                    // ⚠️ **备用键 `Ctrl+C`**（C = Character）：macOS 常把 F10 当系统键
+                    //（App Exposé），且没勾「将 F1、F2…用作标准功能键」时按 F10
+                    // **SDL 根本收不到 KeyDown** ⇒ 用户报"按 F10 没反应"（2026-10-10）。
+                    // 代码路径（切换/几何/素材/层序）查过全是对的，所以给它一个不与系统
+                    // 抢的入口；终端里那行 `[ui] 状态窗 …` 是定性依据（没打印 = 键没到）。
+                    Some(Keycode::C) if mode == 2 && ctrl(keymod) => {
+                        toggle_status(&mut status_open)
                     }
                     Some(Keycode::F1) if ctrl(keymod) => mode = 1,
                     Some(Keycode::F2) if ctrl(keymod) => mode = 2,
@@ -590,27 +616,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 // 鼠标位置（已在循环头换算成界面的 800×600 空间）
                 Event::MouseMotion { x, y, .. } => mouse = (x, y),
-                // 背包窗内滚轮翻页（服务端背包 46 格 = 2 页，窗口一次只画 24 格）
-                Event::MouseWheel { y, .. } if bag_open && mode == 2 => {
-                    let (bx, by) = crate::layout::bag_rect();
-                    let inside = mouse.0 >= bx
-                        && mouse.0 < bx + crate::layout::BAG_W
-                        && mouse.1 >= by
-                        && mouse.1 < by + crate::layout::BAG_H;
-                    if inside {
-                        let pages = net
-                            .as_ref()
-                            .map_or(1, |n| {
-                                n.world
-                                    .bag
-                                    .len()
-                                    .div_ceil(crate::layout::BAG_PAGE_SLOTS)
-                            })
-                            .max(1);
-                        if y > 0.0 {
-                            bag_page = (bag_page + 1) % pages;
-                        } else if y < 0.0 {
-                            bag_page = (bag_page + pages - 1) % pages;
+                // 滚轮：两个**固定高**的窗都靠它翻内容 —— 背包窗翻页、对话窗卷行。
+                //
+                // ⚠️ 合成一条分支（原来那条只认背包）：两个窗可能同时开着，
+                // 分开写的话先命中的那条会把另一个的滚轮吃掉（match 不穿透）。
+                Event::MouseWheel { y, .. } if mode == 2 => {
+                    let mut done = false;
+                    // ① 背包窗内滚轮翻页（服务端背包 46 格 = 2 页，窗口一次只画 24 格）
+                    if bag_open {
+                        let (bx, by) = crate::layout::bag_rect();
+                        let inside = mouse.0 >= bx
+                            && mouse.0 < bx + crate::layout::BAG_W
+                            && mouse.1 >= by
+                            && mouse.1 < by + crate::layout::BAG_H;
+                        if inside {
+                            let pages = net
+                                .as_ref()
+                                .map_or(1, |n| {
+                                    n.world.bag.len().div_ceil(crate::layout::BAG_PAGE_SLOTS)
+                                })
+                                .max(1);
+                            if y > 0.0 {
+                                bag_page = (bag_page + 1) % pages;
+                            } else if y < 0.0 {
+                                bag_page = (bag_page + pages - 1) % pages;
+                            }
+                            done = true;
+                        }
+                    }
+                    // ② 对话窗内滚轮卷行（正文折行后常常超出背板：298 个脚本里 114 个超一屏）
+                    if !done && net.is_some() {
+                        if let Some((panel, lines, _)) =
+                            hud::dialog_geom(net.as_ref(), dialog_scroll)
+                        {
+                            if input::dialog_hit(panel, mouse) {
+                                dialog_scroll =
+                                    input::dialog_scroll_step(dialog_scroll, lines.len(), y);
+                                done = true;
+                            }
+                        }
+                    }
+                    // ③ 商店窗内滚轮翻页（一个商人最多 20 件商品 ⇒ 2 页）
+                    if !done && shop_open {
+                        if let Some(n) = net.as_ref() {
+                            if let Some(sh) = n.world.shop.as_ref() {
+                                let (wx, wy, ww, wh) = crate::shop::panel();
+                                if mouse.0 >= wx
+                                    && mouse.0 < wx + ww
+                                    && mouse.1 >= wy
+                                    && mouse.1 < wy + wh
+                                {
+                                    shop_page = crate::shop::page_step(
+                                        shop_page,
+                                        if y > 0.0 { 1 } else { -1 },
+                                        sh.items.len(),
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -675,8 +737,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // ⚠️ 这两条排在"走路/锁怪"那段**之后**，靠"清掉已写好的意图"
                             // 实现（把上面那一大段包进 if 会多一层缩进、更容易漏改）。
                             if let Some(n) = net.as_ref() {
-                                if let Some((panel, lines)) =
-                                    hud::dialog_geom(net.as_ref())
+                                if let Some((panel, lines, scroll)) =
+                                    hud::dialog_geom(net.as_ref(), dialog_scroll)
                                 {
                                     // **行内可点文字**：命中矩形由 `input::dialog_line_pieces`
                                     // 算（与 `draw_dialog` 是同一份 ⇒ 画哪点哪），
@@ -684,7 +746,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     // `<打开/@1>`），直接拿它回包。
                                     let hit = {
                                         let mut measure = |t: &str| ui_texts.width(t);
-                                        input::dialog_link_at(panel, &lines, (x, y), &mut measure)
+                                        // ⚠️ 命中要带上**滚动位置**：画的是卷过之后的那几行，
+                                        // 拿未卷的行号去判就会点空/点到隔壁（画与命中同源）。
+                                        input::dialog_link_at(
+                                            panel,
+                                            &lines,
+                                            (x, y),
+                                            scroll,
+                                            &mut measure,
+                                        )
                                     };
                                     if let Some(idx) = hit {
                                         if let Some(d) = n.world.dialog.as_ref() {
@@ -734,7 +804,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 crate::status::Hit::Arrow(d) => {
                                                     status_page =
                                                         crate::status::page_step(status_page, d);
-                                                    println!("[ui] 状态窗翻到第 {} 页", status_page);
+                                                    println!(
+                                                        "[ui] 状态窗翻到第 {} 页",
+                                                        status_page
+                                                    );
                                                 }
                                                 crate::status::Hit::Slot(slot) => {
                                                     if let Some(n) = net.as_ref() {
@@ -780,15 +853,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     && y < by + crate::layout::BAG_H;
                                 if inside {
                                     let (lx, ly) = (x - bx, y - by);
-                                    let on_close = lx >= crate::layout::BAG_CLOSE_X
-                                        && lx < crate::layout::BAG_CLOSE_X + crate::layout::BAG_CLOSE_W
-                                        && ly >= crate::layout::BAG_CLOSE_Y
-                                        && ly < crate::layout::BAG_CLOSE_Y + crate::layout::BAG_CLOSE_H;
+                                    let on_close = (crate::layout::BAG_CLOSE_X
+                                        ..crate::layout::BAG_CLOSE_X + crate::layout::BAG_CLOSE_W)
+                                        .contains(&lx)
+                                        && (crate::layout::BAG_CLOSE_Y
+                                            ..crate::layout::BAG_CLOSE_Y
+                                                + crate::layout::BAG_CLOSE_H)
+                                            .contains(&ly);
                                     if on_close {
                                         bag_open = false;
                                         println!("[ui] 背包窗关闭（点 X）");
-                                    } else if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
+                                    } else if let Some(slot) = crate::layout::bag_slot_at((lx, ly))
+                                    {
                                         let idx = bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
+                                        // 商店开着 ⇒ 点背包里的东西 = **卖掉它**（原版就是把
+                                        // 东西点到商人窗口上卖）。一次卖 1 个（可堆叠的按 1 算，
+                                        // 想整堆卖就多按几下 —— 与买那边同一个口径）。
+                                        if shop_open {
+                                            if let Some(n) = net.as_ref() {
+                                                let hit_item = n.world.bag.get(idx);
+                                                if let (Some(sh), Some(Some(it))) =
+                                                    (n.world.shop.as_ref(), hit_item)
+                                                {
+                                                    if it.make_index != 0 {
+                                                        n.shop_sell(sh.npc_id, it.make_index, 1);
+                                                        println!("[net] 卖出 {}", it.name);
+                                                    }
+                                                }
+                                            }
+                                        }
                                         if let Some(n) = net.as_ref() {
                                             let msg = match n.world.bag.get(idx) {
                                                 Some(Some(it)) => format!(
@@ -811,6 +904,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     move_target = None;
                                     press_at = None;
                                     held_move = None;
+                                }
+                            }
+                            // ②″″ 商店窗：点一行 = 买一件；点 X = 关窗；点在窗里 = 吞掉（别走路）
+                            if shop_open {
+                                if let Some(n) = net.as_ref() {
+                                    if let Some(sh) = n.world.shop.as_ref() {
+                                        let (wx, wy, ww, wh) = crate::shop::panel();
+                                        if x >= wx && x < wx + ww && y >= wy && y < wy + wh {
+                                            let base = shop_page * crate::shop::ROWS;
+                                            let rows = sh.items.len().saturating_sub(base);
+                                            match crate::shop::hit((x - wx, y - wy), rows) {
+                                                crate::shop::Hit::Row(r) => {
+                                                    if let Some(it) = sh.items.get(base + r) {
+                                                        // 一次买 1 件（原版口径；`submenu` 那种
+                                                        // "买几个"的二级菜单还没做）
+                                                        n.shop_buy(sh.npc_id, &it.name, 1);
+                                                        println!("[net] 买入 {}", it.name);
+                                                    }
+                                                }
+                                                crate::shop::Hit::Close => {
+                                                    shop_open = false;
+                                                    println!("[ui] 商店窗关闭（点 X）");
+                                                }
+                                                crate::shop::Hit::None => {}
+                                            }
+                                            combat_target = None;
+                                            move_target = None;
+                                            press_at = None;
+                                            held_move = None;
+                                        }
+                                    }
                                 }
                             }
                             // ③ 点 NPC ⇒ **说话**，不是往它那格走。
@@ -1322,7 +1446,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 官方规则与我们的近似写法见 `sfx::monster_ambient` 的说明。
         if mode == 2 {
             if let Some(n) = net.as_ref() {
-                monster_ambient(n, &sound, &sounds, Instant::now(), &mut sfx_rng);
+                monster_ambient(
+                    n,
+                    &sound,
+                    &sounds,
+                    Instant::now(),
+                    &mut sfx_rng,
+                    &mut last_monster_sfx,
+                );
             }
         }
         // 脚步：原版在走路动画的**帧 1 / 帧 4** 各响一次（`Actor.pas:2659-2660`），
@@ -1366,6 +1497,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cam.1 = cam.1.clamp(-2.0, max_y);
         }
 
+        // 货架来了 ⇒ 商店窗开（原版点商人时"对话 + 货架"是一起来的）；
+        // 货架没了（对话关了 / 换了图）⇒ 窗跟着关。换了个商人 ⇒ 页码归零。
+        match net.as_ref().and_then(|n| n.world.shop.as_ref()) {
+            Some(sh) => {
+                if shop_npc_seen != Some(sh.npc_id) {
+                    shop_npc_seen = Some(sh.npc_id);
+                    shop_page = 0;
+                    shop_open = true;
+                }
+            }
+            None => {
+                shop_open = false;
+                shop_npc_seen = None;
+            }
+        }
+
+        // 换了段新对话 ⇒ 滚动位置归零（`World::dialog_seq` 每来一段 `NpcSay` 就 +1）。
+        // 不归零的话：在商人 A 那儿滚到第 20 行，再去点商人 B，B 的正文会直接从
+        // 第 20 行开始显示 —— 看着像"这段对话是空的"。
+        if let Some(n) = net.as_ref() {
+            if n.world.dialog_seq != dialog_seq_seen {
+                dialog_seq_seen = n.world.dialog_seq;
+                dialog_scroll = 0;
+            }
+        }
+
         // 前景动画的节拍：官方 `m_nAniCount` **每 50 ms 加一**（`PlayScn.pas:963`，
         // 固定定时器、与帧率无关）。所以这里按**真实时间**算，而不是每帧 +1 ——
         // 否则灯会随机器性能忽快忽慢。
@@ -1398,6 +1555,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ani_count,
                 net.as_ref(),
                 combat_target,
+                dialog_scroll,
             )?;
             // 背包窗画在**世界与 HUD 之上**（它是浮窗；原版也是最后贴）。
             // 素材目录缺失时和 `draw_map_view` 一样什么都不画（那屏已经打了横幅提示）。
@@ -1411,6 +1569,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         dir,
                         net.as_ref(),
                         bag_page,
+                    )?;
+                }
+            }
+            // 商店窗（浮窗，画在背包窗之后）
+            if shop_open {
+                if let Some(dir) = asset_dir.as_deref() {
+                    shop::draw(
+                        &mut canvas,
+                        &tex_creator,
+                        &mut ui,
+                        &mut ui_texts,
+                        dir,
+                        net.as_ref(),
+                        shop_page,
                     )?;
                 }
             }

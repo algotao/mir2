@@ -238,6 +238,15 @@ impl Net {
                     if self.world.apply(&env) == mir2_core::world::Change::World {
                         self.changes += 1;
                     }
+                    // 买卖的结果：**proto 玩家收不到 `sysMsg`**（legacy 下行会被丢），
+                    // `ShopResult` 是它唯一看得见的回音 ⇒ 一定要推进聊天框，
+                    // 否则"买了没反应/钱不够"这两件事都无声。
+                    if let Some(mir2_protocol::envelope::Body::ShopResult(r)) = env.body.as_ref() {
+                        self.chat.push(
+                            r.message.clone(),
+                            if r.ok { C_CHAT_SYS } else { C_CHAT_BAD },
+                        );
+                    }
                     if self.entrance.in_world() && !self.entered_once {
                         self.entered_once = true;
                         self.chat.push(
@@ -430,6 +439,24 @@ impl Net {
     /// 关掉对话（原版 `@exit`）。
     pub(crate) fn npc_close(&self, npc_id: u64) {
         let _ = self.sess.cmds.send(mir2_net::Cmd::NpcClose(npc_id));
+    }
+
+    /// 买入：从 `npc_id` 这个商人处买 `count` 件 `name`（原版 `CM_USERBUYITEM`）。
+    pub(crate) fn shop_buy(&self, npc_id: u64, name: &str, count: u32) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::ShopBuy {
+            npc_id,
+            name: name.to_string(),
+            count,
+        });
+    }
+
+    /// 卖出：把背包里 `make_index` 那件卖给 `npc_id`（原版 `CM_USERSELLITEM`）。
+    pub(crate) fn shop_sell(&self, npc_id: u64, make_index: i32, count: u32) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::ShopSell {
+            npc_id,
+            make_index,
+            count,
+        });
     }
 
     /// 把"这一帧看到的"折进各实体的动画状态：移动了就给补间的起止，动作变了就重置计时。
@@ -704,6 +731,17 @@ pub(crate) fn to_cmd(body: &mir2_protocol::envelope::Body, session: i32) -> Opti
         Body::DeleteCharacter(d) => mir2_net::Cmd::DeleteCharacter {
             character_id: d.character_id,
             proof_hex: d.password_hash.clone(),
+        },
+        // 商店的买 / 卖（原版 `CM_USERBUYITEM` / `CM_USERSELLITEM`）
+        Body::ShopBuy(b) => mir2_net::Cmd::ShopBuy {
+            npc_id: b.npc_id,
+            name: b.name.clone(),
+            count: b.count,
+        },
+        Body::ShopSell(s) => mir2_net::Cmd::ShopSell {
+            npc_id: s.npc_id,
+            make_index: s.make_index,
+            count: s.count,
         },
         // 世界输入不走这里（`Cmd::Move`/`Attack` 由输入那条路直发）；服务端单向消息
         // （实体事件、心跳…）本来就不是命令 ⇒ 到这里是 `None`，由调用方打日志。

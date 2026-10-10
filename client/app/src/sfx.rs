@@ -55,6 +55,17 @@ pub(crate) fn sfx(
     }
 }
 
+// ---------- 怪物"正常声"（鸡叫/鹿鸣…）的三道闸 ----------
+//
+// 原版只有前两条（一轮走步一次 + 1/8 概率），第三条是我们加的：我们一屏常常几十只怪
+// 同时走，按原版判也会变成一锅粥（用户 2026-10-10 报的）。
+/// 代 `frame = 1` 的窗口：只在这一格**刚起步**的这段时间里判定 ⇒ 一轮走步至多一次。
+const AMBIENT_MOVE_WINDOW: u64 = 150;
+/// 只听**身边**多少格内的怪（切比雪夫距离）。
+const AMBIENT_RANGE: i32 = 9;
+/// 两次怪声之间的**全局**最小间隔（毫秒）—— 这才是"极少数发声"的那一道。
+const AMBIENT_GAP_MS: u64 = 900;
+
 /// 切场景 BGM（循环）。资产里没有 ⇒ 静默（同上）。
 ///
 /// 真的换上了一首就打一行 —— 听不见的时候，"有没有音乐"总得有个可观测的东西。
@@ -81,26 +92,57 @@ pub(crate) fn bgm(
 ///    if (frame = 1) and (Random(8) = 1) then PlaySound (m_nNormalSound);
 /// ```
 ///
-/// ⚠️ **与原版的差别**（记在这儿，别当"照原版"）：别的实体的动画帧号我们拿不到
-///（帧号是在精灵采样里算的，音频层看不到），这里用"这只**正在移动** + 1/8 概率"
-/// 近似，每帧调一次、一帧最多响一声。要完全对齐得把帧号从 `actor.rs` 的采样里导出来。
+/// ⚠️ **判定频率**（2026-10-10 改，用户报"多只怪时声音乱套"）：
+///
+/// 原版是 `if (frame = 1) and (Random(8) = 1)` ⇒ **一轮走步只判定一次**（`frame` 是
+/// 走路动画的帧号，一轮 6 帧 × 90 ms ≈ 540 ms），不是每帧判。我们音频层拿不到帧号，
+/// 于是用"**这一格刚刚开始走**"（`anim.changed_at` 距今 ≤ `AMBIENT_MOVE_WINDOW`）来代
+/// `frame = 1` —— 同样是一轮一次。早先写成"每帧判一次"，等于把概率放大了一个数量级
+///（60 fps × 1/8 ≈ 每秒 7 次）⇒ 一屏几十只怪时就是一锅粥。
+///
+/// 另外加了原版没有的**两道闸**（原版通常没那么多怪同时走，而我们有）：
+///   - `AMBIENT_RANGE`：只听**身边**的怪（远处的不响 —— 视野里二十只一起响没有意义）；
+///   - `AMBIENT_GAP_MS`：**全局**最小间隔，两次怪声之间至少隔这么久 ⇒ 实际效果就是
+///     "极少数发声"。
 pub(crate) fn monster_ambient(
     n: &Net,
     sound: &audio::Audio,
     sounds: &Option<mir2_core::sound::SoundAssets>,
     now: std::time::Instant,
     rng: &mut u32,
+    last: &mut std::time::Instant,
 ) {
+    // 全局间隔没到 ⇒ 这一帧谁都不许叫（一屏几十只怪时的总闸）
+    if now.duration_since(*last) < std::time::Duration::from_millis(AMBIENT_GAP_MS) {
+        return;
+    }
+    if !n.world.in_world() {
+        return;
+    }
+    let p = n.world.self_pos;
     for e in n.world.entities.values() {
-        // 只有**怪**（玩家/NPC 没有这套音），且只在这只正在移动时才可能叫
+        // 只有**怪**（玩家/NPC 没有这套音）
         if e.kind != 1 || e.dead {
             continue;
         }
-        let Some(a) = n.anims.get(&e.id) else { continue };
+        let Some(a) = n.anims.get(&e.id) else {
+            continue;
+        };
         if !a.moving(now) {
             continue;
         }
-        let Some(f) = e.feature.as_ref() else { continue };
+        // 代 `frame = 1`：只在这一格**刚起步**的那一小段里判定（一轮一次）
+        if now.duration_since(a.changed_at) > std::time::Duration::from_millis(AMBIENT_MOVE_WINDOW)
+        {
+            continue;
+        }
+        // 只听身边的（切比雪夫距离）
+        if (e.x - p.0).abs().max((e.y - p.1).abs()) > AMBIENT_RANGE {
+            continue;
+        }
+        let Some(f) = e.feature.as_ref() else {
+            continue;
+        };
         // 1/8（原版 `Random(8) = 1`）—— 用个便宜的 LCG，不为这一处引 rand 依赖
         *rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         if *rng >> 29 != 0 {
@@ -111,6 +153,7 @@ pub(crate) fn monster_ambient(
             sounds,
             mir2_core::sound::monster(f.appr as u16, mir2_core::sound::MonsterSound::Normal),
         );
-        return; // 一帧最多叫一声（一屏几十只怪同时叫会炸）
+        *last = now;
+        return; // 一帧最多叫一声
     }
 }

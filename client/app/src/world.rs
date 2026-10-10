@@ -14,20 +14,9 @@ use sdl3::rect::Rect;
 use sdl3::render::{TextureCreator, WindowCanvas};
 
 use crate::actor::{actor_rect, draw_actor, SpriteCache};
-use crate::colors::{C_DIM,
-    C_DMG_DIM,
-    C_DMG_HOT,
-    C_DMG_MID,
-    C_ENT_DEAD,
-    C_ENT_MONSTER,
-    C_ENT_NPC,
-    C_ENT_PLAYER,
-    C_ENT_SELF,
-    C_ENT_TARGET,
-    C_ERR,
-    C_PANEL,
-    C_RED_NAME,
-    C_TITLE,
+use crate::colors::{
+    C_DIM, C_DMG_DIM, C_DMG_HOT, C_DMG_MID, C_ENT_DEAD, C_ENT_MONSTER, C_ENT_NPC, C_ENT_PLAYER,
+    C_ENT_SELF, C_ENT_TARGET, C_ERR, C_PANEL, C_RED_NAME, C_TITLE,
 };
 use crate::debug::{draw_debug_overlay, layers_desc, DEBUG_OVERLAY};
 use crate::geom::{cam_parts, cell_to_screen};
@@ -110,6 +99,8 @@ pub(crate) fn draw_map_view<'a, T>(
     net: Option<&Net>,
     // 锁定中的攻击目标（`None` = 没锁）—— 只用来给它的名字换色，让人看得出在打谁。
     combat_target: Option<u64>,
+    // NPC 对话窗卷到第几行（正文常常超出背板 ⇒ 要能滚，见 `input::dialog_max_scroll`）
+    dialog_scroll: usize,
 ) -> Result<Option<u64>, sdl3::Error> {
     fill(canvas, 0.0, 0.0, WIN_W as f32, BAR_TOP, C_PANEL)?;
 
@@ -374,7 +365,17 @@ pub(crate) fn draw_map_view<'a, T>(
     )?;
 
     // **底部操作面板**：最后贴（原版也是最后贴的），盖住世界下沿
-    draw_hud(canvas, tc, ui, names, ui_texts, dir, net, &m.title)?;
+    draw_hud(
+        canvas,
+        tc,
+        ui,
+        names,
+        ui_texts,
+        dir,
+        net,
+        &m.title,
+        dialog_scroll,
+    )?;
 
     // 悬停结果还给主循环：光标要跟着它换（Crystal 的 Attack 光标）
     Ok(hover)

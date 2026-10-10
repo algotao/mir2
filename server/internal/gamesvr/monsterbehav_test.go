@@ -34,7 +34,7 @@ func putMonster(s *Server, mp *world.Map, mon *entity.Monster, x, y int, race ui
 }
 
 // 动物（鸡/鹿：race 50..79）**不还手，只逃跑** —— 原版 `TChickenDeer.Run`
-//（`ObjMon.pas:542-598`）。这里钉住"玩家在它西边 ⇒ 它往东走"。
+// （`ObjMon.pas:542-598`）。这里钉住"玩家在它西边 ⇒ 它往东走"。
 func TestAnimalFleesFromPlayer(t *testing.T) {
 	s, _, mp := monsterBehavServer(t, 5, 5)
 	mon := newTestMonster(2000, "鸡", 5)
@@ -52,7 +52,7 @@ func TestAnimalFleesFromPlayer(t *testing.T) {
 //
 // 原版 `StickMonster.AttackTarget` 走基类 `GetAttackDir`（只认八邻域），
 // `AttackRange = 4` 是"目标跑出 4 格就缩回地下"的阈值，**不是攻击距离**
-//（`ObjMon2.pas:174-198/276-281`）。我们原来按 `< 4 格` 判，等于给它装了门 4 格炮。
+// （`ObjMon2.pas:174-198/276-281`）。我们原来按 `< 4 格` 判，等于给它装了门 4 格炮。
 func TestStickBitesOnlyAdjacent(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

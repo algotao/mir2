@@ -380,7 +380,11 @@ func TestProtoContractEnterWorld(t *testing.T) {
 	// ⚠️ 用户 2026-10-09 报"看不到人物穿衣服/持武器"就是这里错了两次：
 	//   ① 进图这条路上从来没调 `updateFeature`（只在穿脱装备/复活时调）⇒ 光身空手；
 	//   ② 算的时候用了 `Looks`（背包图标图号）而不是 `Shape`（外观块号）。
-	// 断言用**具体数字**：布衣(男) Shape=1 ⇒ 1*2+0 = 2；木剑 Shape=1 ⇒ 1。
+	// 断言用**具体数字**：布衣(男) Shape=1 ⇒ 1*2+0 = 2；木剑 Shape=1 ⇒ **1*2+0 = 2**。
+	//
+	// ⚠️ 武器那一栏是 **`Shape*2 + 性别`**（`docs/authority.md` §2.1 的 `WEAPONfeature`，
+	// 官方 `MirClient/Grobal2.pas:2670`）—— 不是裸 Shape。D-71 定下这个口径之后
+	// （`Weapon.wzl` 块号 = `2*Shape + 性别`），这里原来写的 `weapon == 1` 就过期了。
 	// 自校验：上面 `seedAccount` 里写死的两个物品索引要与**当前数据表**对得上
 	//（索引错了这条会先红，而不是让外观断言指着一个莫名其妙的数字）。
 	if it := s.data.tables.Items.Get(4); it == nil || it.Name != "布衣(男)" || it.Shape != 1 {
@@ -389,8 +393,9 @@ func TestProtoContractEnterWorld(t *testing.T) {
 	if it := s.data.tables.Items.Get(6); it == nil || it.Name != "木剑" || it.Shape != 1 {
 		t.Fatalf("物品表第 7 条应为 木剑（Shape=1），实得 %+v", it)
 	}
-	if f := enter.GetSelfFeature(); f.GetDress() != 2 || f.GetWeapon() != 1 {
-		t.Errorf("自己的外观 = dress %d / weapon %d，应为 2 / 1（布衣(男)/木剑 的 Shape 算法）",
+	if f := enter.GetSelfFeature(); f.GetDress() != 2 || f.GetWeapon() != 2 {
+		t.Errorf(
+			"自己的外观 = dress %d / weapon %d，应为 2 / 2（布衣(男) 与木剑都是 Shape*2+性别，性别=0）",
 			f.GetDress(), f.GetWeapon())
 	}
 	// 视野内那只怪必须在初始快照里（否则客户端进图看不见旁边的怪）

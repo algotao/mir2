@@ -189,7 +189,13 @@ fn main() {
             "{i:04}_{}x{}_ax{}_ay{}.bmp",
             raw.width, raw.height, raw.anchor_x, raw.anchor_y
         );
-        write_bmp(&out.join(name), raw.width as u32, raw.height as u32, &raw.rgba).expect("写 BMP");
+        write_bmp(
+            &out.join(name),
+            raw.width as u32,
+            raw.height as u32,
+            &raw.rgba,
+        )
+        .expect("写 BMP");
         wrote += 1;
     }
     println!("导出 {wrote} 张 → {}", out.display());
@@ -222,15 +228,18 @@ fn write_bmp(path: &PathBuf, w: u32, h: u32, rgba: &[u8]) -> std::io::Result<()>
             let o = (y * w as usize + x) * 4;
             let (r, g, b, a) = (rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3]);
             // 棋盘：8px 一格，浅灰/白
-            let chk = if ((x / 8) + (y / 8)) % 2 == 0 { 200u8 } else { 235u8 };
-            let mix = |c: u8, bg: u8| ((c as u32 * a as u32 + bg as u32 * (255 - a as u32)) / 255) as u8;
+            let chk = if ((x / 8) + (y / 8)) % 2 == 0 {
+                200u8
+            } else {
+                235u8
+            };
+            let mix =
+                |c: u8, bg: u8| ((c as u32 * a as u32 + bg as u32 * (255 - a as u32)) / 255) as u8;
             out.push(mix(b, chk));
             out.push(mix(g, chk));
             out.push(mix(r, chk));
         }
-        for _ in 0..row_pad {
-            out.push(0);
-        }
+        out.resize(out.len() + row_pad, 0); // BMP 的行尾补齐（每行按 4 字节对齐）
     }
     fs::write(path, out)
 }
@@ -257,7 +266,7 @@ fn write_sheet(w: &Wzl, start: usize, end: usize, path: &PathBuf, per_row: usize
     }
     let cw = cells.iter().map(|c| c.1.width as u32).max().unwrap() + 8;
     let ch = cells.iter().map(|c| c.1.height as u32).max().unwrap() + 8;
-    let rows = (cells.len() + per_row - 1) / per_row;
+    let rows = cells.len().div_ceil(per_row);
     let (sw, sh) = (cw * per_row as u32, ch * rows as u32);
     // 合成在深灰底上（UI 素材多为浅色/半透明边，深底看得清）
     let mut buf = vec![0u8; (sw as usize) * (sh as usize) * 4];

@@ -2261,7 +2261,8 @@ mod tests {
         // ⇒ 块 2（图号 1200）才是那把棕木剑。之前公式写成 `Shape` ⇒ 取块 1，而块 1
         // **整块是空的** ⇒ 看起来"拿武器的人手上什么都没有"，于是误判成"素材坏了"、
         // 换去 `Weapon2`（`Shape=1` 落到那把**细长银剑**，用户原话"更像长剑铁剑"）。
-        let wp = Wzl::open(dir.join(WEAPON_LIB)).unwrap_or_else(|e| panic!("{WEAPON_LIB}.wzl: {e}"));
+        let wp =
+            Wzl::open(dir.join(WEAPON_LIB)).unwrap_or_else(|e| panic!("{WEAPON_LIB}.wzl: {e}"));
         assert!(
             wp.len() >= 76 * HUMAN_FRAME as usize,
             "{WEAPON_LIB} 只有 {} 张（应 ≥ 76 块 × 600）",
@@ -2277,14 +2278,17 @@ mod tests {
                     wp.decode(human_index(part, stand, d, 0) as usize)
                         .is_some_and(|s| !s.is_empty())
                 });
-                assert!(ok, "武器 Shape={shape} 性别={sex}（块 {part}）：八个方向都没有图");
+                assert!(
+                    ok,
+                    "武器 Shape={shape} 性别={sex}（块 {part}）：八个方向都没有图"
+                );
             }
         }
         // 块 1（= `Shape 0` 那格）必须是空的 —— 它空着本身就是"字节从 2 起"的证据，
         // 也是上一版误判的现场。它哪天有图了，说明口径要重查。
         assert!(
             wp.decode(human_index(1, stand, 4, 0) as usize)
-                .map_or(true, |s| s.is_empty()),
+                .is_none_or(|s| s.is_empty()),
             "块 1 竟然有图 ⇒ `2*Shape+性别` 这条口径要重新查"
         );
         // 木剑（`Shape=1`、男 ⇒ 块 2）画出来必须是**木头色**：给对了块的像素级证据
@@ -2293,7 +2297,9 @@ mod tests {
         let mut steel = (0u64, 0u64, 0u64, 0u64);
         for (part, acc) in [(2u8, &mut brown), (4u8, &mut steel)] {
             for d in 0..8u8 {
-                let Some(s) = wp.decode(human_index(part, stand, d, 0) as usize) else { continue };
+                let Some(s) = wp.decode(human_index(part, stand, d, 0) as usize) else {
+                    continue;
+                };
                 for px in s.rgba.chunks(4) {
                     if px[3] > 128 {
                         acc.0 += px[0] as u64;
@@ -2327,8 +2333,7 @@ mod tests {
         // `hair2` = 21600 张 = **36 块 = 18 种发型 × 2 性别**，与 `Actor.pas:1904` 那句
         // `haircount := ImageCount div HUMANFRAME div 2` 完全吻合 ⇒ 它就是要的头发库，
         // 公式 `600*(发型*2+性别)` 也对得上（见 `hair_index`）。
-        let hair =
-            Wzl::open(dir.join(HAIR_LIB)).unwrap_or_else(|e| panic!("{HAIR_LIB}.wzl: {e}"));
+        let hair = Wzl::open(dir.join(HAIR_LIB)).unwrap_or_else(|e| panic!("{HAIR_LIB}.wzl: {e}"));
         assert_eq!(
             hair.len(),
             36 * HUMAN_FRAME as usize,
@@ -2336,7 +2341,7 @@ mod tests {
         );
         // 发型 1（深蓝发）：男 ⇒ 块 2、女 ⇒ 块 3，两块都要有图
         for sex in 0..2u8 {
-            let part = 1u8 * 2 + sex;
+            let part = 2 + sex;
             assert!(
                 (0..8u8).any(|d| hair
                     .decode(human_index(part, stand, d, 0) as usize)
@@ -2347,7 +2352,7 @@ mod tests {
         // 发型 0、男（块 0）**是空的** —— 那是"默认光头"，不是素材坏了。
         assert!(
             hair.decode(human_index(0, stand, 4, 0) as usize)
-                .map_or(true, |s| s.is_empty()),
+                .is_none_or(|s| s.is_empty()),
             "hair2 块 0 有图了 ⇒ 发型 0「不画」这条要重新想"
         );
 
@@ -2372,7 +2377,10 @@ mod tests {
         if let Ok(hair_ck) = Wzl::open(dir.join("hair_ck")) {
             for i in 0..hair_ck.len().min(8) {
                 if let Some(s) = hair_ck.decode(i) {
-                    assert!(s.is_empty(), "hair_ck 第 {i} 张取出了真图 ⇒ 素材变了，要重查");
+                    assert!(
+                        s.is_empty(),
+                        "hair_ck 第 {i} 张取出了真图 ⇒ 素材变了，要重查"
+                    );
                 }
             }
         }

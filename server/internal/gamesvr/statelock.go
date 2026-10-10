@@ -466,7 +466,7 @@ func (s *Server) movePlayer(p *Player, dir uint8) (x, y int, d uint8, moved bool
 // 其它对象"（`MoveToMovingObject:287-340`）。我们原来只判前者 ⇒ 两人/一人一怪能站同一格。
 //
 // `selfID` = 发起者的 ActorId（自己那格不算被占）。**尸体不算障碍**
-//（原版尸骨在图上，但不挡下一个对象生成 —— 这也是我们 `cellFreeLocked` 原来漏掉的）。
+// （原版尸骨在图上，但不挡下一个对象生成 —— 这也是我们 `cellFreeLocked` 原来漏掉的）。
 //
 // **调用方持 `s.mu`**（空间索引本身无锁）。
 func (s *Server) cellOccupiedLocked(m *world.Map, x, y int, selfID uint32) bool {

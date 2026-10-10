@@ -113,6 +113,10 @@ type Envelope struct {
 	//	*Envelope_NpcSay
 	//	*Envelope_NpcSelect
 	//	*Envelope_NpcClose
+	//	*Envelope_ShopList
+	//	*Envelope_ShopBuy
+	//	*Envelope_ShopSell
+	//	*Envelope_ShopResult
 	//	*Envelope_Raw
 	Body          isEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
@@ -825,6 +829,42 @@ func (x *Envelope) GetNpcClose() *NpcClose {
 	return nil
 }
 
+func (x *Envelope) GetShopList() *ShopList {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_ShopList); ok {
+			return x.ShopList
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetShopBuy() *ShopBuy {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_ShopBuy); ok {
+			return x.ShopBuy
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetShopSell() *ShopSell {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_ShopSell); ok {
+			return x.ShopSell
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetShopResult() *ShopResult {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_ShopResult); ok {
+			return x.ShopResult
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetRaw() *Raw {
 	if x != nil {
 		if x, ok := x.Body.(*Envelope_Raw); ok {
@@ -1138,6 +1178,23 @@ type Envelope_NpcClose struct {
 	NpcClose *NpcClose `protobuf:"bytes,2564,opt,name=npc_close,json=npcClose,proto3,oneof"`
 }
 
+type Envelope_ShopList struct {
+	// 商店（原版 SM_SENDGOODSLIST / CM_BUYITEM / CM_SELLITEM）
+	ShopList *ShopList `protobuf:"bytes,2565,opt,name=shop_list,json=shopList,proto3,oneof"`
+}
+
+type Envelope_ShopBuy struct {
+	ShopBuy *ShopBuy `protobuf:"bytes,2566,opt,name=shop_buy,json=shopBuy,proto3,oneof"`
+}
+
+type Envelope_ShopSell struct {
+	ShopSell *ShopSell `protobuf:"bytes,2567,opt,name=shop_sell,json=shopSell,proto3,oneof"`
+}
+
+type Envelope_ShopResult struct {
+	ShopResult *ShopResult `protobuf:"bytes,2568,opt,name=shop_result,json=shopResult,proto3,oneof"`
+}
+
 type Envelope_Raw struct {
 	// ---------- 逃生舱（protocol.md §4.1）----------
 	// 仅供 GM 工具 / 调试 / 插件注入；oneof 无法从外部扩展，这是唯一硬限制的出口。
@@ -1288,6 +1345,14 @@ func (*Envelope_NpcSelect) isEnvelope_Body() {}
 
 func (*Envelope_NpcClose) isEnvelope_Body() {}
 
+func (*Envelope_ShopList) isEnvelope_Body() {}
+
+func (*Envelope_ShopBuy) isEnvelope_Body() {}
+
+func (*Envelope_ShopSell) isEnvelope_Body() {}
+
+func (*Envelope_ShopResult) isEnvelope_Body() {}
+
 func (*Envelope_Raw) isEnvelope_Body() {}
 
 // 逃生舱载荷：绕过 oneof 的直通消息。
@@ -1348,7 +1413,7 @@ var File_envelope_proto protoreflect.FileDescriptor
 const file_envelope_proto_rawDesc = "" +
 	"\n" +
 	"\x0eenvelope.proto\x12\x04mir2\x1a\rcontrol.proto\x1a\raccount.proto\x1a\vscene.proto\x1a\fcombat.proto\x1a\n" +
-	"item.proto\x1a\fsocial.proto\x1a\tnpc.proto\"\xe9!\n" +
+	"item.proto\x1a\fsocial.proto\x1a\tnpc.proto\"\xac#\n" +
 	"\bEnvelope\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\rR\x03seq\x12\x17\n" +
 	"\aack_seq\x18\x02 \x01(\rR\x06ackSeq\x12\x1d\n" +
@@ -1452,7 +1517,12 @@ const file_envelope_proto_rawDesc = "" +
 	"\anpc_say\x18\x82\x14 \x01(\v2\f.mir2.NpcSayH\x00R\x06npcSay\x121\n" +
 	"\n" +
 	"npc_select\x18\x83\x14 \x01(\v2\x0f.mir2.NpcSelectH\x00R\tnpcSelect\x12.\n" +
-	"\tnpc_close\x18\x84\x14 \x01(\v2\x0e.mir2.NpcCloseH\x00R\bnpcClose\x12\x1e\n" +
+	"\tnpc_close\x18\x84\x14 \x01(\v2\x0e.mir2.NpcCloseH\x00R\bnpcClose\x12.\n" +
+	"\tshop_list\x18\x85\x14 \x01(\v2\x0e.mir2.ShopListH\x00R\bshopList\x12+\n" +
+	"\bshop_buy\x18\x86\x14 \x01(\v2\r.mir2.ShopBuyH\x00R\ashopBuy\x12.\n" +
+	"\tshop_sell\x18\x87\x14 \x01(\v2\x0e.mir2.ShopSellH\x00R\bshopSell\x124\n" +
+	"\vshop_result\x18\x88\x14 \x01(\v2\x10.mir2.ShopResultH\x00R\n" +
+	"shopResult\x12\x1e\n" +
 	"\x03raw\x18\xff\x1f \x01(\v2\t.mir2.RawH\x00R\x03rawB\x06\n" +
 	"\x04body\"0\n" +
 	"\x03Raw\x12\x15\n" +
@@ -1547,6 +1617,10 @@ var file_envelope_proto_goTypes = []any{
 	(*NpcSay)(nil),                // 71: mir2.NpcSay
 	(*NpcSelect)(nil),             // 72: mir2.NpcSelect
 	(*NpcClose)(nil),              // 73: mir2.NpcClose
+	(*ShopList)(nil),              // 74: mir2.ShopList
+	(*ShopBuy)(nil),               // 75: mir2.ShopBuy
+	(*ShopSell)(nil),              // 76: mir2.ShopSell
+	(*ShopResult)(nil),            // 77: mir2.ShopResult
 }
 var file_envelope_proto_depIdxs = []int32{
 	2,  // 0: mir2.Envelope.client_hello:type_name -> mir2.ClientHello
@@ -1621,12 +1695,16 @@ var file_envelope_proto_depIdxs = []int32{
 	71, // 69: mir2.Envelope.npc_say:type_name -> mir2.NpcSay
 	72, // 70: mir2.Envelope.npc_select:type_name -> mir2.NpcSelect
 	73, // 71: mir2.Envelope.npc_close:type_name -> mir2.NpcClose
-	1,  // 72: mir2.Envelope.raw:type_name -> mir2.Raw
-	73, // [73:73] is the sub-list for method output_type
-	73, // [73:73] is the sub-list for method input_type
-	73, // [73:73] is the sub-list for extension type_name
-	73, // [73:73] is the sub-list for extension extendee
-	0,  // [0:73] is the sub-list for field type_name
+	74, // 72: mir2.Envelope.shop_list:type_name -> mir2.ShopList
+	75, // 73: mir2.Envelope.shop_buy:type_name -> mir2.ShopBuy
+	76, // 74: mir2.Envelope.shop_sell:type_name -> mir2.ShopSell
+	77, // 75: mir2.Envelope.shop_result:type_name -> mir2.ShopResult
+	1,  // 76: mir2.Envelope.raw:type_name -> mir2.Raw
+	77, // [77:77] is the sub-list for method output_type
+	77, // [77:77] is the sub-list for method input_type
+	77, // [77:77] is the sub-list for extension type_name
+	77, // [77:77] is the sub-list for extension extendee
+	0,  // [0:77] is the sub-list for field type_name
 }
 
 func init() { file_envelope_proto_init() }
@@ -1714,6 +1792,10 @@ func file_envelope_proto_init() {
 		(*Envelope_NpcSay)(nil),
 		(*Envelope_NpcSelect)(nil),
 		(*Envelope_NpcClose)(nil),
+		(*Envelope_ShopList)(nil),
+		(*Envelope_ShopBuy)(nil),
+		(*Envelope_ShopSell)(nil),
+		(*Envelope_ShopResult)(nil),
 		(*Envelope_Raw)(nil),
 	}
 	type x struct{}

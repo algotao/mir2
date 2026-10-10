@@ -475,6 +475,10 @@ func (ps *protoSession) dispatch(env *protocol.Envelope) (keep bool) {
 		return ps.onNpcClose(body.NpcClose)
 	case *protocol.Envelope_AttackInput:
 		return ps.onAttackInput(body.AttackInput)
+	case *protocol.Envelope_ShopBuy:
+		return ps.onShopBuy(body.ShopBuy)
+	case *protocol.Envelope_ShopSell:
+		return ps.onShopSell(body.ShopSell)
 	default:
 		// ClientHello（重复发）也走这里 —— 握手之后它不再有意义，按"不认识"处理。
 		ps.noteUnknown(env)
@@ -1662,10 +1666,17 @@ func (ps *protoSession) onNpcClick(n *protocol.NpcClick) bool {
 	}
 	sc := ps.srv.npcScript(def.ID, p.Obj.MapRef().Name)
 	if sc == nil {
-		ps.srv.npcSay(nil, p, id, "（这个 NPC 没有脚本）", nil)
+		// 没有脚本 ⇒ 当**商人**开（legacy 的 `handleClickNPC` 同一条分支：`openShop`）
+		ps.srv.openShop(nil, p, id)
+		log.Printf("%s 点了没有脚本的 NPC %s（新协议，按商人开）", p.Char.Name, npc.Name)
 		return true
 	}
 	ps.srv.startDialog(nil, p, sc, id)
+	// ⚠️ **商品列表也要发**：原版点商人时 `SM_MERCHANTDLG` 与 `SM_SENDGOODSLIST`
+	// 是一起来的（对话与货架本来就是同一个窗口），legacy 的 `handleClickNPC` 也是
+	// `startDialog` + `sendGoods` 连着发。新协议原来漏了这一句 ⇒ proto 玩家
+	// **永远收不到 `ShopList`** ⇒ 商店窗开不起来（客户端无从知道货架上有什么）。
+	ps.srv.sendGoods(nil, p, npc, def)
 	log.Printf("%s 与 %s 开始对话（脚本 %s，新协议）", p.Char.Name, npc.Name, sc.Name)
 	return true
 }
@@ -1677,6 +1688,29 @@ func (ps *protoSession) onNpcSelect(n *protocol.NpcSelect) bool {
 		return true
 	}
 	ps.srv.dlgSelectIndex(nil, p, int(n.GetIndex())-1)
+	return true
+}
+
+// onShopBuy 买入（原版 `CM_USERBUYITEM`）。
+//
+// ⚠️ 连接传 `nil`：新协议玩家的 legacy 下行会被 `protoDown` 丢掉，回执走 `ShopResult`
+// （与 `onNpcSelect` 同一条写法）。
+func (ps *protoSession) onShopBuy(m *protocol.ShopBuy) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	ps.srv.onShopBuy(nil, p, m)
+	return true
+}
+
+// onShopSell 卖出（原版 `CM_USERSELLITEM`），同上。
+func (ps *protoSession) onShopSell(m *protocol.ShopSell) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	ps.srv.onShopSell(nil, p, m)
 	return true
 }
 

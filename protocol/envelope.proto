@@ -123,6 +123,11 @@ message Envelope {
     NpcSay npc_say = 0x0A02;
     NpcSelect npc_select = 0x0A03;
     NpcClose npc_close = 0x0A04;
+    // 商店（原版 SM_SENDGOODSLIST / CM_BUYITEM / CM_SELLITEM）
+    ShopList shop_list = 0x0A05;
+    ShopBuy shop_buy = 0x0A06;
+    ShopSell shop_sell = 0x0A07;
+    ShopResult shop_result = 0x0A08;
 
     // ---------- 逃生舱（protocol.md §4.1）----------
     // 仅供 GM 工具 / 调试 / 插件注入；oneof 无法从外部扩展，这是唯一硬限制的出口。

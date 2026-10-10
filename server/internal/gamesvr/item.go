@@ -521,6 +521,8 @@ func (s *Server) itemStack(u *pb.UserItem) (*protocol.ItemStack, bool) {
 		Count:   count,
 		Dura:    uint32(u.Dura),
 		DuraMax: uint32(u.DuraMax),
+		// 实例号：卖/修/用都靠它认物（见 `item.proto` 的说明）
+		MakeIndex: u.MakeIndex,
 	}, true
 }
 

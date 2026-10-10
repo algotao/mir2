@@ -11,6 +11,7 @@ import (
 	"github.com/algotao/mir2/server/internal/proto"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/internal/wire"
+	"github.com/algotao/mir2/server/protocol"
 )
 
 // 商店：点击 NPC 开商品列表、买入、卖出、修理。
@@ -176,16 +177,43 @@ const shopStock = 100
 // 其余为 1（ObjNpc.pas:1449-1452）。
 func (s *Server) sendGoods(c net.Conn, p *Player, npc *entity.Monster, def *data.NPC) {
 	goods := s.shopGoods(def)
+	// **新协议**：结构化商品列表（legacy 那条是 '/' 拼的文本，两种都要发 ⇒ 与
+	// `npcSay` 同一条纪律：proto 玩家的 legacy 下行是被丢弃的，只发 legacy 等于没发）。
+	if sink := p.protoOut; sink != nil {
+		items := make([]*protocol.ShopItem, 0, len(goods))
+		for _, it := range goods {
+			items = append(items, &protocol.ShopItem{
+				Name:    it.Name,
+				Price:   uint64(it.Price),
+				Stock:   shopStock,
+				Submenu: shopSubmenu(it) != 0, // legacy 是 1/0，新协议是 bool
+			})
+		}
+		sink.enqueue(&protocol.Envelope{Body: &protocol.Envelope_ShopList{
+			ShopList: &protocol.ShopList{NpcId: uint64(npc.ID), Items: items}}})
+		log.Printf("%s 打开商店 %s（proto，%d 件商品）", p.Char.Name, npc.Name, len(goods))
+		return
+	}
 	var b strings.Builder
 	for _, it := range goods {
-		sub := 1
-		if it.StackLimit() > 0 || it.StdMode <= 4 || it.StdMode == 31 || it.StdMode == 42 {
-			sub = 0
-		}
-		fmt.Fprintf(&b, "%s/%d/%d/%d/", it.Name, sub, it.Price, shopStock)
+		fmt.Fprintf(&b, "%s/%d/%d/%d/", it.Name, shopSubmenu(it), it.Price, shopStock)
 	}
 	s.send(c, proto.SM_SENDGOODSLIST, int32(npc.ID), uint16(len(goods)), 0, 0, b.String())
-	log.Printf("%s 打开商店 %s（%d 件商品）", p.Char.Name, npc.Name, len(goods))
+	log.Printf("%s 打开商店 %s（legacy，%d 件商品）", p.Char.Name, npc.Name, len(goods))
+}
+
+// shopSubmenu 是"这件商品要不要弹二级菜单"（原版 `submenu`，`ObjNpc.pas:1449-1452`）：
+// 可堆叠类（有 StackLimit / StdMode <= 4 / 31 / 42）为 0，其余为 1。
+//
+// ⚠️ legacy 是 int（1/0），新协议是 bool —— 两条路共用这一个判据，免得哪天只改一边。
+func shopSubmenu(it *data.StdItem) int {
+	if it == nil {
+		return 0
+	}
+	if it.StackLimit() > 0 || it.StdMode <= 4 || it.StdMode == 31 || it.StdMode == 42 {
+		return 0
+	}
+	return 1
 }
 
 // shopGoodsByName 在商人的商品表里按**名字**找商品（原版就是这么匹配的：
@@ -507,6 +535,203 @@ func (s *Server) itemByMakeIndex(p *Player, makeIdx int32, name string, allowEqu
 		}
 	}
 	return -1, nil, false
+}
+
+// ---------- 新协议的买 / 卖（原版是 `CM_USERBUYITEM` / `CM_USERSELLITEM`）----------
+//
+// ⚠️ 为什么不能只留 legacy 那两条：proto 玩家的 legacy 下行会被 `protoDown` 丢掉
+//（见 netproto.go 那条注释）⇒ `SM_BUYITEM_SUCCESS` / `SM_USERSELLITEM_OK` 那几个号
+// **到不了**新协议客户端，点了买就是"没反应"。
+// 成交的判定与 legacy **共用同一份**（`shopGoodsByName` / `spendGold` / `addToBag`），
+// 分路的只有"回执"这一层 —— 与 `sendGoods` 同一条纪律（D-65）。
+
+// shopResult 回一条买卖结果（新协议）。
+//
+// legacy 那半边没有对应消息：他们靠 `SM_BUYITEM_SUCCESS` + 随后的金币/背包刷新 +
+// `sysMsg`。proto 玩家收不到 `sysMsg`（`s.send` 被丢）⇒ **`ShopResult.message`
+// 就是它唯一看得见的回音**，失败原因必须写人能读的话。
+func (s *Server) shopResult(p *Player, npcID uint64, ok bool, msg string) {
+	if p == nil || p.protoOut == nil {
+		return
+	}
+	p.protoOut.enqueue(&protocol.Envelope{Body: &protocol.Envelope_ShopResult{
+		ShopResult: &protocol.ShopResult{NpcId: npcID, Ok: ok, Message: msg}}})
+}
+
+// shopPushState 买卖之后把**金币与背包**刷给玩家（两条协议各取所需）。
+//
+// ⚠️ 少发一边就等于"钱变了、界面没变"：proto 的金币只在 `Ability` 里
+// （`protoSink.ability` 带 gold），legacy 走 `SM_GOLDCHANGED`。
+func (s *Server) shopPushState(c net.Conn, p *Player) {
+	if p == nil {
+		return
+	}
+	s.sendBagItems(c, p)
+	if p.protoOut != nil {
+		if p.Char != nil && p.Char.Data != nil {
+			p.protoOut.ability(p.Char.Data.Abil, p.Char.Data.Gold)
+		}
+		return
+	}
+	s.send(c, proto.SM_GOLDCHANGED, int32(p.gold()), 0, 0, 0, "")
+}
+
+// whoStr 取个能打进日志的名字（`p.Char` 可能在异常路径上是 nil）。
+func whoStr(p *Player) string {
+	if p == nil || p.Char == nil {
+		return "(未知玩家)"
+	}
+	return p.Char.Name
+}
+
+// onShopBuy 处理新协议的买入。
+//
+// 与原版的两个不同（都是**我们这边**的取舍，写在 `ShopBuy` 的注释里）：
+//   - 一次可以买 `count` 件（原版一次点击只买 1 件：存量那栏被当成数量会买走 100 件）；
+//   - 可堆叠的一次最多买**一堆**（`StackLimit`），不可堆叠的受**背包空位**限制。
+//
+// ⚠️ 扣款与发货的顺序与 legacy 那条一样：**先原子扣款**，发货失败再退钱
+// （分开做会被并发的收支插进来 ⇒ 白送东西，见 `handleBuyItem`）。
+func (s *Server) onShopBuy(c net.Conn, p *Player, m *protocol.ShopBuy) {
+	npc, def, ok := s.dialogMerchant(p, uint32(m.GetNpcId()))
+	if !ok {
+		log.Printf("买入被拒：玩家 %s 的 npc_id=%d 不是当前在谈的商人/不在 %d 格内",
+			whoStr(p), m.GetNpcId(), storageNpcRange)
+		s.shopResult(p, m.GetNpcId(), false, "不在商人旁边（或这段对话已经关了）")
+		return
+	}
+	if !s.merchantScriptAllows(p, def, "@buy") {
+		log.Printf("%s 想从 %s 买东西，但该脚本头没声明 @buy", whoStr(p), npc.Name)
+		s.shopResult(p, m.GetNpcId(), false, "这个商人不做买卖")
+		return
+	}
+	it := s.shopGoodsByName(def, m.GetName())
+	if it == nil || it.Price == 0 {
+		s.shopResult(p, m.GetNpcId(), false, "没有这件商品")
+		return
+	}
+	// 这一单能买几件
+	want := int(m.GetCount())
+	if want <= 0 {
+		want = 1
+	}
+	n := want
+	if lim := int(it.StackLimit()); lim > 0 {
+		if n > lim {
+			n = lim // 可堆叠：一次最多一堆
+		}
+	} else if free := entity.MaxBagSize - countBag(p); n > free {
+		n = free // 不可堆叠：一件一个格子
+	}
+	if n <= 0 {
+		s.shopResult(p, m.GetNpcId(), false, "背包已满")
+		return
+	}
+	price := int64(it.Price)
+	total := price * int64(n)
+	if !p.spendGold(total) {
+		s.shopResult(p, m.GetNpcId(), false, fmt.Sprintf("金币不足（需要 %d）", total))
+		return
+	}
+	gave := 0
+	if lim := it.StackLimit(); lim > 0 {
+		// 可堆叠：一个实例，`Dura` 记数量（`addToBagLocked` 的约定）
+		ui := &pb.UserItem{
+			MakeIndex: int32(s.itemSeq.Add(1)),
+			Index:     uint32(it.Index),
+			Dura:      uint32(n),
+			DuraMax:   it.DuraMax,
+		}
+		if s.addToBag(p, ui) >= 0 {
+			gave = n
+		}
+	} else {
+		for i := 0; i < n; i++ {
+			ui := &pb.UserItem{
+				MakeIndex: int32(s.itemSeq.Add(1)),
+				Index:     uint32(it.Index),
+				Dura:      initialDura(it),
+				DuraMax:   it.DuraMax,
+			}
+			if s.addToBag(p, ui) < 0 {
+				break
+			}
+			gave++
+		}
+	}
+	if gave == 0 {
+		p.addGold(total) // 钱已付、货没发 ⇒ 退钱
+		s.shopResult(p, m.GetNpcId(), false, "背包已满")
+		return
+	}
+	if gave < n {
+		p.addGold(price * int64(n-gave)) // 部分成交 ⇒ 退差价
+	}
+	s.castleTax(p, price*int64(gave))
+	s.shopPushState(c, p)
+	s.shopResult(p, m.GetNpcId(), true,
+		fmt.Sprintf("买入 %s x%d，花费 %d 金币", it.Name, gave, price*int64(gave)))
+	log.Printf("%s 从 %s 买入 %s x%d（-%d 金币，余 %d）[新协议]",
+		whoStr(p), npc.Name, it.Name, gave, price*int64(gave), p.gold())
+}
+
+// onShopSell 处理新协议的卖出。
+//
+// 与原版一样按 **MakeIndex** 认物（名字只是二次确认，见 `itemByMakeIndex`），
+// 卖价取原价的**一半**（`handleSellItem`：商人赚差价，也顺手堵住"买来再卖"刷金币）。
+//
+// 比原版多的一档：`count` —— 可堆叠的可以只卖堆里的一部分（原版是整堆一起卖）。
+func (s *Server) onShopSell(c net.Conn, p *Player, m *protocol.ShopSell) {
+	npc, def, ok := s.dialogMerchant(p, uint32(m.GetNpcId()))
+	if !ok {
+		log.Printf("卖出被拒：玩家 %s 的 npc_id=%d 不是当前在谈的商人/不在 %d 格内",
+			whoStr(p), m.GetNpcId(), storageNpcRange)
+		s.shopResult(p, m.GetNpcId(), false, "不在商人旁边（或这段对话已经关了）")
+		return
+	}
+	if !s.merchantScriptAllows(p, def, "@sell") {
+		log.Printf("%s 想卖给 %s 东西，但该脚本头没声明 @sell", whoStr(p), npc.Name)
+		s.shopResult(p, m.GetNpcId(), false, "这个商人不收货")
+		return
+	}
+	slot, ui, inBag := s.itemByMakeIndex(p, m.GetMakeIndex(), "", false)
+	if ui == nil || ui.Index == 0 || !inBag {
+		s.shopResult(p, m.GetNpcId(), false, "背包里没有这件东西")
+		return
+	}
+	it := s.data.tables.Items.Get(int(ui.Index) - 1)
+	if it == nil || it.Price == 0 {
+		s.shopResult(p, m.GetNpcId(), false, "这件东西卖不掉")
+		return
+	}
+	// 卖几件：可堆叠的按堆里的数量（最多 `count`），不可堆叠的就是这一件
+	n := 1
+	if lim := it.StackLimit(); lim > 0 {
+		n = int(ui.Dura)
+		if n <= 0 {
+			n = 1
+		}
+		if c := int(m.GetCount()); c > 0 && c < n {
+			n = c
+		}
+	}
+	price := int64(it.Price) / 2
+	if price <= 0 {
+		price = 1
+	}
+	gain := price * int64(n)
+	p.addGold(gain)
+	s.castleTax(p, gain)
+	// 整堆卖光 ⇒ 清掉这个槽；只卖一部分 ⇒ 堆里减掉（`Dura` 记数量）
+	if n >= int(ui.Dura) || it.StackLimit() == 0 {
+		s.takeBagItem(p, slot)
+	} else {
+		ui.Dura -= uint32(n)
+	}
+	s.shopPushState(c, p)
+	s.shopResult(p, m.GetNpcId(), true, fmt.Sprintf("卖出 %s x%d，获得 %d 金币", it.Name, n, gain))
+	log.Printf("%s 卖给 %s %s x%d（+%d 金币，共 %d）[新协议]",
+		whoStr(p), npc.Name, it.Name, n, gain, p.gold())
 }
 
 // itemNameMatches 用玩家发来的名字核对这件物品（名字为空 ⇒ 不核对）。

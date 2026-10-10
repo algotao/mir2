@@ -293,6 +293,325 @@ func (x *NpcClose) GetNpcId() uint64 {
 	return 0
 }
 
+// ---------- 商店（原版 `SM_SENDGOODSLIST` / `CM_BUYITEM` / `CM_SELLITEM`）----------
+//
+// 原版那条是**文本协议**：把"名称/子菜单/价格/存量/"拼成一整串塞在 body 里
+// （`ObjNpc.pas:1449-1455` 写、`ClMain.pas:6158-6190` 用 `'/'` 切四次读出来），
+// 买入时再把"名字 + 存量"当 `Param/Tag` 回发（`FState.pas:5244`）。
+// 我们照例拆成结构化消息：**服务端不依赖客户端回发的存量**（买入按名字解析，
+// 见 `shop.go` 的 `shopGoodsByName`）。
+type ShopItem struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Price uint64                 `protobuf:"varint,2,opt,name=price,proto3" json:"price,omitempty"`
+	// 货架存量：我们的商品按模板即时生成、永不缺货 ⇒ 这一栏只用于**显示**（见 `shop.go`
+	// 的 `shopStock`）。
+	Stock uint32 `protobuf:"varint,3,opt,name=stock,proto3" json:"stock,omitempty"`
+	// 要不要弹"买几个"的二级菜单（原版 `submenu`：可堆叠类为 0，其余为 1）。
+	Submenu       bool `protobuf:"varint,4,opt,name=submenu,proto3" json:"submenu,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ShopItem) Reset() {
+	*x = ShopItem{}
+	mi := &file_npc_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShopItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShopItem) ProtoMessage() {}
+
+func (x *ShopItem) ProtoReflect() protoreflect.Message {
+	mi := &file_npc_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShopItem.ProtoReflect.Descriptor instead.
+func (*ShopItem) Descriptor() ([]byte, []int) {
+	return file_npc_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ShopItem) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ShopItem) GetPrice() uint64 {
+	if x != nil {
+		return x.Price
+	}
+	return 0
+}
+
+func (x *ShopItem) GetStock() uint32 {
+	if x != nil {
+		return x.Stock
+	}
+	return 0
+}
+
+func (x *ShopItem) GetSubmenu() bool {
+	if x != nil {
+		return x.Submenu
+	}
+	return false
+}
+
+// 服务端 → 客户端：这个商人的商品列表（原版 `SM_SENDGOODSLIST`）。
+type ShopList struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NpcId         uint64                 `protobuf:"varint,1,opt,name=npc_id,json=npcId,proto3" json:"npc_id,omitempty"`
+	Items         []*ShopItem            `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ShopList) Reset() {
+	*x = ShopList{}
+	mi := &file_npc_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShopList) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShopList) ProtoMessage() {}
+
+func (x *ShopList) ProtoReflect() protoreflect.Message {
+	mi := &file_npc_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShopList.ProtoReflect.Descriptor instead.
+func (*ShopList) Descriptor() ([]byte, []int) {
+	return file_npc_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ShopList) GetNpcId() uint64 {
+	if x != nil {
+		return x.NpcId
+	}
+	return 0
+}
+
+func (x *ShopList) GetItems() []*ShopItem {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+// 客户端 → 服务端：买 `count` 个 `name`（原版 `CM_BUYITEM` 的 `Param=存量 / Tag=名字`）。
+type ShopBuy struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NpcId         uint64                 `protobuf:"varint,1,opt,name=npc_id,json=npcId,proto3" json:"npc_id,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Count         uint32                 `protobuf:"varint,3,opt,name=count,proto3" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ShopBuy) Reset() {
+	*x = ShopBuy{}
+	mi := &file_npc_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShopBuy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShopBuy) ProtoMessage() {}
+
+func (x *ShopBuy) ProtoReflect() protoreflect.Message {
+	mi := &file_npc_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShopBuy.ProtoReflect.Descriptor instead.
+func (*ShopBuy) Descriptor() ([]byte, []int) {
+	return file_npc_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ShopBuy) GetNpcId() uint64 {
+	if x != nil {
+		return x.NpcId
+	}
+	return 0
+}
+
+func (x *ShopBuy) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ShopBuy) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+// 客户端 → 服务端：卖背包里 `make_index` 那一个（原版 `CM_SELLITEM` 用 MakeIndex 认物）。
+type ShopSell struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	NpcId uint64                 `protobuf:"varint,1,opt,name=npc_id,json=npcId,proto3" json:"npc_id,omitempty"`
+	// 物品实例号（`UserItem.make_index`）；`count > 1` 时按可堆叠数量卖。
+	MakeIndex     int32  `protobuf:"varint,2,opt,name=make_index,json=makeIndex,proto3" json:"make_index,omitempty"`
+	Count         uint32 `protobuf:"varint,3,opt,name=count,proto3" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ShopSell) Reset() {
+	*x = ShopSell{}
+	mi := &file_npc_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShopSell) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShopSell) ProtoMessage() {}
+
+func (x *ShopSell) ProtoReflect() protoreflect.Message {
+	mi := &file_npc_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShopSell.ProtoReflect.Descriptor instead.
+func (*ShopSell) Descriptor() ([]byte, []int) {
+	return file_npc_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ShopSell) GetNpcId() uint64 {
+	if x != nil {
+		return x.NpcId
+	}
+	return 0
+}
+
+func (x *ShopSell) GetMakeIndex() int32 {
+	if x != nil {
+		return x.MakeIndex
+	}
+	return 0
+}
+
+func (x *ShopSell) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+// 服务端 → 客户端：买卖的结果（原版是 `SM_BUYITEM_SUCCESS` / `SM_SOLD_FAIL` 那几个号
+// + 随后的金币/背包刷新）。
+//
+// ⚠️ 成功后的**背包与金币**由 `BagItems` / `AbilityUpdate` 照常下发，不挤在这里。
+type ShopResult struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	NpcId uint64                 `protobuf:"varint,1,opt,name=npc_id,json=npcId,proto3" json:"npc_id,omitempty"`
+	Ok    bool                   `protobuf:"varint,2,opt,name=ok,proto3" json:"ok,omitempty"`
+	// 失败原因（金币不够 / 负重超了 / 没有这件…），人能读。
+	Message       string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ShopResult) Reset() {
+	*x = ShopResult{}
+	mi := &file_npc_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShopResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShopResult) ProtoMessage() {}
+
+func (x *ShopResult) ProtoReflect() protoreflect.Message {
+	mi := &file_npc_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShopResult.ProtoReflect.Descriptor instead.
+func (*ShopResult) Descriptor() ([]byte, []int) {
+	return file_npc_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ShopResult) GetNpcId() uint64 {
+	if x != nil {
+		return x.NpcId
+	}
+	return 0
+}
+
+func (x *ShopResult) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
+func (x *ShopResult) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 var File_npc_proto protoreflect.FileDescriptor
 
 const file_npc_proto_rawDesc = "" +
@@ -311,7 +630,29 @@ const file_npc_proto_rawDesc = "" +
 	"\x06npc_id\x18\x01 \x01(\x04R\x05npcId\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\rR\x05index\"!\n" +
 	"\bNpcClose\x12\x15\n" +
-	"\x06npc_id\x18\x01 \x01(\x04R\x05npcIdB2Z0github.com/algotao/mir2/server/protocol;protocolb\x06proto3"
+	"\x06npc_id\x18\x01 \x01(\x04R\x05npcId\"d\n" +
+	"\bShopItem\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05price\x18\x02 \x01(\x04R\x05price\x12\x14\n" +
+	"\x05stock\x18\x03 \x01(\rR\x05stock\x12\x18\n" +
+	"\asubmenu\x18\x04 \x01(\bR\asubmenu\"G\n" +
+	"\bShopList\x12\x15\n" +
+	"\x06npc_id\x18\x01 \x01(\x04R\x05npcId\x12$\n" +
+	"\x05items\x18\x02 \x03(\v2\x0e.mir2.ShopItemR\x05items\"J\n" +
+	"\aShopBuy\x12\x15\n" +
+	"\x06npc_id\x18\x01 \x01(\x04R\x05npcId\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
+	"\x05count\x18\x03 \x01(\rR\x05count\"V\n" +
+	"\bShopSell\x12\x15\n" +
+	"\x06npc_id\x18\x01 \x01(\x04R\x05npcId\x12\x1d\n" +
+	"\n" +
+	"make_index\x18\x02 \x01(\x05R\tmakeIndex\x12\x14\n" +
+	"\x05count\x18\x03 \x01(\rR\x05count\"M\n" +
+	"\n" +
+	"ShopResult\x12\x15\n" +
+	"\x06npc_id\x18\x01 \x01(\x04R\x05npcId\x12\x0e\n" +
+	"\x02ok\x18\x02 \x01(\bR\x02ok\x12\x18\n" +
+	"\amessage\x18\x03 \x01(\tR\amessageB2Z0github.com/algotao/mir2/server/protocol;protocolb\x06proto3"
 
 var (
 	file_npc_proto_rawDescOnce sync.Once
@@ -325,21 +666,27 @@ func file_npc_proto_rawDescGZIP() []byte {
 	return file_npc_proto_rawDescData
 }
 
-var file_npc_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_npc_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_npc_proto_goTypes = []any{
-	(*NpcClick)(nil),  // 0: mir2.NpcClick
-	(*NpcOption)(nil), // 1: mir2.NpcOption
-	(*NpcSay)(nil),    // 2: mir2.NpcSay
-	(*NpcSelect)(nil), // 3: mir2.NpcSelect
-	(*NpcClose)(nil),  // 4: mir2.NpcClose
+	(*NpcClick)(nil),   // 0: mir2.NpcClick
+	(*NpcOption)(nil),  // 1: mir2.NpcOption
+	(*NpcSay)(nil),     // 2: mir2.NpcSay
+	(*NpcSelect)(nil),  // 3: mir2.NpcSelect
+	(*NpcClose)(nil),   // 4: mir2.NpcClose
+	(*ShopItem)(nil),   // 5: mir2.ShopItem
+	(*ShopList)(nil),   // 6: mir2.ShopList
+	(*ShopBuy)(nil),    // 7: mir2.ShopBuy
+	(*ShopSell)(nil),   // 8: mir2.ShopSell
+	(*ShopResult)(nil), // 9: mir2.ShopResult
 }
 var file_npc_proto_depIdxs = []int32{
 	1, // 0: mir2.NpcSay.options:type_name -> mir2.NpcOption
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	5, // 1: mir2.ShopList.items:type_name -> mir2.ShopItem
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_npc_proto_init() }
@@ -353,7 +700,7 @@ func file_npc_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_npc_proto_rawDesc), len(file_npc_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

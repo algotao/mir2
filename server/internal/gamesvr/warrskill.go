@@ -461,10 +461,10 @@ func maxInt(a, b int) int {
 //
 // ⚠️ 返回 0 表示"这一刀没破防"，调用方**必须**当成一次打空处理：
 // 原版 `_Attack` 在 `GetHitStruckDamage` 之后还有第二道 `if nPower > 0 then`
-//（`ObjBase.pas:22253-22261`）—— 不破防就**不发 RM_STRUCK、不扣血**。
+// （`ObjBase.pas:22253-22261`）—— 不破防就**不发 RM_STRUCK、不扣血**。
 //
 // 我们原来在这里**保底 1** ⇒ 高防目标"永远掉 1 点血"，与官方手感不符
-//（用户 2026-10-09 第 3 条"普通攻击的正确性"）。
+// （用户 2026-10-09 第 3 条"普通攻击的正确性"）。
 func applyArmor(power int, ac uint32) uint32 {
 	acLo, acHi := uint32(proto.UnpackLo(ac)), uint32(proto.UnpackHi(ac))
 	if acHi < acLo {

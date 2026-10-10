@@ -565,7 +565,7 @@ func (m *Monster) MarkAttacked(now time.Time) { m.lastAttack = now }
 //	(GetTickCount - m_dwTargetFocusTick) > 30000   或   |dx| > 15 或 |dy| > 15
 //
 // ⚠️ 我们原来是"出 `ViewRange`（默认 10）就丢目标"，比原版健忘得多
-//（怪追两步就放弃；用户 2026-10-09 第 2 条"遇到怪物的行为问题"）。
+// （怪追两步就放弃；用户 2026-10-09 第 2 条"遇到怪物的行为问题"）。
 const (
 	TargetDropWindow = 30 * time.Second
 	TargetDropRange  = 15
@@ -620,7 +620,7 @@ func (m *Monster) LastHiter(now time.Time) uint32 {
 // StepDir 朝指定方向走一格（`Wonder`/`StepToward` 的公共出口）。
 //
 // ⚠️ 服务端在 moverun/statelock 那条路上给玩家加了"目标格被占"的校验
-//（`Server.cellOccupiedLocked`）；怪物这条同样需要 —— 调用方自己判完再调它。
+// （`Server.cellOccupiedLocked`）；怪物这条同样需要 —— 调用方自己判完再调它。
 func (m *Monster) StepDir(dir uint8) bool {
 	if m == nil {
 		return false
@@ -714,7 +714,7 @@ func (m *Monster) StepToward(tx, ty int) bool { return m.StepTowardChecked(tx, t
 // DirTo 取"从自己指向 (tx,ty)"的八方向（与 [`Monster.StepToward`] 同一套取法）。
 //
 // 单独抽出来是为了让调用方**先判目标格能不能落**再决定走不走
-//（`StepTowardChecked` 的 `free` 回调就是这么用的）。
+// （`StepTowardChecked` 的 `free` 回调就是这么用的）。
 func (m *Monster) DirTo(tx, ty int) uint8 {
 	mx, my := m.Pos()
 	dx, dy := tx-mx, ty-my

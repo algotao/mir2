@@ -138,7 +138,11 @@ pub(crate) fn draw_minimaps<'a, T>(
                 text,
                 dx + (px - sx),
                 dy + (py - sy),
-                (((rgb >> 16) & 0xFF) as u8, ((rgb >> 8) & 0xFF) as u8, (rgb & 0xFF) as u8),
+                (
+                    ((rgb >> 16) & 0xFF) as u8,
+                    ((rgb >> 8) & 0xFF) as u8,
+                    (rgb & 0xFF) as u8,
+                ),
                 Some((0, 0, 0)),
             )?;
         }

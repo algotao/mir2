@@ -38,8 +38,15 @@ type ItemStack struct {
 	DuraMax        uint32                 `protobuf:"varint,6,opt,name=dura_max,json=duraMax,proto3" json:"dura_max,omitempty"`
 	AttributeFlags uint64                 `protobuf:"varint,7,opt,name=attribute_flags,json=attributeFlags,proto3" json:"attribute_flags,omitempty"`
 	Values         []uint32               `protobuf:"varint,8,rep,packed,name=values,proto3" json:"values,omitempty"` // 属性值（DC/MC/SC/AC/MAC 的 min/max 等，顺序另行约定）
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// 物品**实例号**（`UserItem.MakeIndex`，全服唯一；0 = 空槽）。
+	//
+	// ⚠️ 为什么必须有：原版认一件东西靠的就是它 —— `CM_USERSELLITEM` /
+	// `CM_USERREPAIRITEM` / 双击使用发的都是 MakeIndex（`ClMain.pas:3711`、
+	// `FState.pas:5452`），不是槽位号（背包一压缩，槽位号就指到别人身上了）。
+	// 我们原来这一栏没下发 ⇒ 客户端**没法卖东西**（"背包槽 5"在两个面板之间会漂）。
+	MakeIndex     int32 `protobuf:"varint,9,opt,name=make_index,json=makeIndex,proto3" json:"make_index,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ItemStack) Reset() {
@@ -126,6 +133,13 @@ func (x *ItemStack) GetValues() []uint32 {
 		return x.Values
 	}
 	return nil
+}
+
+func (x *ItemStack) GetMakeIndex() int32 {
+	if x != nil {
+		return x.MakeIndex
+	}
+	return 0
 }
 
 // 全量背包（按槽位顺序；空槽为 index=0）。
@@ -976,7 +990,7 @@ var File_item_proto protoreflect.FileDescriptor
 const file_item_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"item.proto\x12\x04mir2\x1a\fcommon.proto\"\xd1\x01\n" +
+	"item.proto\x12\x04mir2\x1a\fcommon.proto\"\xf0\x01\n" +
 	"\tItemStack\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\rR\x05index\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
@@ -985,7 +999,9 @@ const file_item_proto_rawDesc = "" +
 	"\x04dura\x18\x05 \x01(\rR\x04dura\x12\x19\n" +
 	"\bdura_max\x18\x06 \x01(\rR\aduraMax\x12'\n" +
 	"\x0fattribute_flags\x18\a \x01(\x04R\x0eattributeFlags\x12\x16\n" +
-	"\x06values\x18\b \x03(\rR\x06values\"1\n" +
+	"\x06values\x18\b \x03(\rR\x06values\x12\x1d\n" +
+	"\n" +
+	"make_index\x18\t \x01(\x05R\tmakeIndex\"1\n" +
 	"\bBagItems\x12%\n" +
 	"\x05items\x18\x01 \x03(\v2\x0f.mir2.ItemStackR\x05items\"B\n" +
 	"\aAddItem\x12\x12\n" +
