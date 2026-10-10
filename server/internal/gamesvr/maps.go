@@ -17,6 +17,7 @@ import (
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/internal/wire"
 	"github.com/algotao/mir2/server/internal/world"
+	"github.com/algotao/mir2/server/protocol"
 )
 
 // 地图切换与 GM 命令。
@@ -609,6 +610,24 @@ func (s *Server) gmGive(c net.Conn, p *Player, args []string) {
 // sysMsg 发一条系统消息（SM_SYSMESSAGE=100）。
 func (s *Server) sysMsg(c net.Conn, msg string) {
 	s.send(c, proto.SM_SYSMESSAGE, 0, 0, 0, 0, msg)
+}
+
+// notice 给玩家一条**系统提示**（原版 `sysMsg` 那一类）。
+//
+// ⚠️ 与 `sysMsg` 的差别：proto 玩家的 legacy 下行会被丢 ⇒ `SM_SYSMESSAGE`
+// 到不了新协议客户端。挖肉的「肉被发现」「什么都没找到」这类关键反馈原来
+// 全都无声（用户 2026-10-10："挖肉挖出不来"，其实出了、只是没话说）⇒
+// proto 走 `SystemNotice`，legacy 照旧 `sysMsg`。新代码一律用这条。
+func (s *Server) notice(p *Player, msg string) {
+	if p == nil {
+		return
+	}
+	if sink := p.protoOut; sink != nil {
+		sink.enqueue(&protocol.Envelope{Body: &protocol.Envelope_SystemNotice{
+			SystemNotice: &protocol.SystemNotice{Text: msg}}})
+		return
+	}
+	s.sysMsg(p.conn, msg)
 }
 
 // resolveMapDir 在给定地图目录**不存在**时，按"客户端资产那套"的老规矩再找一遍。

@@ -260,6 +260,150 @@ fn fill_tri(
 /// 三角每一列的宽度（`fill_tri` 用）。
 const TRI_W: f32 = 1.5;
 
+// ---------- 卖货窗（原版拖放式，用户 2026-10-10 第 3 条） ----------
+//
+// 流程照原版截图：点背包里的物品**抓到手上** → 移到这个窗的**大圆圈**里点一下放下
+// → 物品显示在圆心、"卖:"后面显示能卖多少钱 → 点 **OK** 才真卖。
+//
+// 窗的位置：**购买列表窗的正下方**（对话窗左上、列表窗中、卖货窗下，一列排开）。
+
+/// 卖货窗的落点与尺寸。
+pub(crate) fn sell_panel() -> (f32, f32, f32, f32) {
+    let (_, ly, _, lh) = panel();
+    (8.0, ly + lh + 8.0, 260.0, 210.0)
+}
+
+/// 大圆圈的圆心与半径（窗口内坐标）。
+pub(crate) const SELL_CIRCLE: (f32, f32, f32) = (130.0, 128.0, 54.0);
+/// OK 按钮（窗口内矩形）。
+pub(crate) const SELL_OK: (f32, f32, f32, f32) = (168.0, 172.0, 72.0, 28.0);
+/// "卖:"标题的位置。
+pub(crate) const SELL_TITLE: (f32, f32) = (12.0, 10.0);
+
+/// 卖货窗里点中了什么。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SellHit {
+    /// 大圆圈（把手上的东西放进来）。
+    Circle,
+    Ok,
+    None,
+}
+
+/// 窗口内的一点落在哪里。
+pub(crate) fn sell_hit(local: (f32, f32)) -> SellHit {
+    let (lx, ly) = local;
+    let (cx, cy, r) = SELL_CIRCLE;
+    let dx = lx - cx;
+    let dy = ly - cy;
+    if dx * dx + dy * dy <= r * r {
+        return SellHit::Circle;
+    }
+    let (ox, oy, ow, oh) = SELL_OK;
+    if lx >= ox && lx < ox + ow && ly >= oy && ly < oy + oh {
+        return SellHit::Ok;
+    }
+    SellHit::None
+}
+
+/// 画卖货窗：标题条（"卖:" + 金额）+ 大圆圈（圈里的物品图标居中）+ OK。
+///
+/// 板子同样是自绘深底（原版那块小窗的图号没比对出来），版式照参考截图。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_sell<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    ui: &mut ui::UiCache<'a>,
+    texts: &mut crate::font::TextCache<'a>,
+    dir: &Path,
+    net: Option<&Net>,
+    placed: Option<usize>,
+) -> Result<(), sdl3::Error> {
+    let Some(n) = net else { return Ok(()) };
+    if !n.world.in_world() || n.world.shop.is_none() {
+        return Ok(()); // 没有货架（没在跟商人谈）⇒ 卖货窗也不出
+    }
+    let (x, y, w, h) = sell_panel();
+    canvas.set_blend_mode(BlendMode::Blend);
+    canvas.set_draw_color(Color::RGBA(10, 8, 6, 225));
+    canvas.fill_rect(FRect::new(x, y, w, h))?;
+    canvas.set_draw_color(Color::RGB(190, 170, 120));
+    canvas.draw_rect(FRect::new(x, y, w, h))?;
+    canvas.set_blend_mode(BlendMode::None);
+
+    // 标题条："卖:" + 金额（放进圈里的那件能卖多少钱）
+    texts.draw(
+        canvas,
+        tc,
+        "卖:",
+        x + SELL_TITLE.0,
+        y + SELL_TITLE.1,
+        C_HEAD,
+        None,
+    )?;
+    let amount = placed
+        .and_then(|i| n.world.bag.get(i))
+        .and_then(|it| it.as_ref())
+        .map_or(0, |it| it.sell_price * it.count.max(1));
+    texts.draw(
+        canvas,
+        tc,
+        &amount.to_string(),
+        x + SELL_TITLE.0 + 34.0,
+        y + SELL_TITLE.1,
+        C_SEL,
+        None,
+    )?;
+
+    // 大圆圈：暗底 + 金属色描边
+    let (cx, cy, r) = SELL_CIRCLE;
+    let (ccx, ccy) = (x + cx, y + cy);
+    canvas.set_draw_color(Color::RGBA(12, 10, 8, 235));
+    let _ = canvas.fill_rect(FRect::new(ccx - r, ccy - r, r * 2.0, r * 2.0));
+    // 圆用逐行收窄的实心条拼（项目里自绘控件都是 fill_rect 拼的，保持同一套路）
+    canvas.set_draw_color(Color::RGB(150, 135, 100));
+    let mut step = 0.0f32;
+    while step <= r {
+        let half = (r * r - step * step).sqrt();
+        let _ = canvas.fill_rect(FRect::new(ccx - half, ccy - step - 0.5, half * 2.0, 1.0));
+        let _ = canvas.fill_rect(FRect::new(ccx - half, ccy + step - 0.5, half * 2.0, 1.0));
+        step += 1.0;
+    }
+
+    // 圈里的物品（居中；不放缩 —— 官方也是原样贴）
+    if let Some(idx) = placed {
+        if let Some(Some(it)) = n.world.bag.get(idx) {
+            if let Some((iw, ih)) = ui.size(dir, "Items", it.looks) {
+                let (iw, ih) = (iw as f32, ih as f32);
+                let _ = ui.draw_src(
+                    canvas,
+                    tc,
+                    dir,
+                    "Items",
+                    it.looks,
+                    FRect::new(0.0, 0.0, iw, ih),
+                    FRect::new(ccx - iw / 2.0, ccy - ih / 2.0, iw, ih),
+                    255,
+                );
+            }
+        }
+    }
+
+    // OK（与购买窗同款蓝底白字）
+    let (ox, oy, ow, oh) = SELL_OK;
+    canvas.set_draw_color(Color::RGB(60, 70, 150));
+    let _ = canvas.fill_rect(FRect::new(x + ox, y + oy, ow, oh));
+    texts.draw(
+        canvas,
+        tc,
+        "OK",
+        x + ox + ow / 2.0 - 9.0,
+        y + oy + oh / 2.0 - 8.0,
+        (240, 240, 255),
+        None,
+    )?;
+    Ok(())
+}
+
 /// **关掉购买窗**那一下的纯规则（抽出来是为了能单测；事件循环里不好造 `Event`）。
 pub(crate) mod shop_close {
     /// 关购买窗时，**包裹要不要一起关**。

@@ -176,6 +176,8 @@ pub struct BagItem {
     /// 物品**类别**（`StdMode`）—— 挑点/捡的音效用（原版 `ItemClickSound`，
     /// `SoundUtil.pas:293-310`：药 108 / 武器 111 / 盔甲 112 / …）。
     pub std_mode: u32,
+    /// **卖价**（原版 = 原价一半）：卖货窗"卖:"后面显示的就是它。
+    pub sell_price: u32,
 }
 
 impl BagItem {
@@ -189,6 +191,7 @@ impl BagItem {
             dura_max: it.dura_max,
             make_index: it.make_index,
             std_mode: it.std_mode,
+            sell_price: it.sell_price,
         }
     }
 

@@ -21,6 +21,9 @@ message ItemStack {
   uint32 dura_max = 6;
   uint64 attribute_flags = 7;
   repeated uint32 values = 8; // 属性值（DC/MC/SC/AC/MAC 的 min/max 等，顺序另行约定）
+  // **卖价**（原版卖东西 = 原价一半，`handleSellItem`）：客户端"卖:"后面
+  // 显示的就是它 —— 拖进卖货圈、点 OK 之前就要看到能卖多少钱。
+  uint32 sell_price = 11;
   // 物品**实例号**（`UserItem.MakeIndex`，全服唯一；0 = 空槽）。
   //
   // ⚠️ 为什么必须有：原版认一件东西靠的就是它 —— `CM_USERSELLITEM` /
@@ -120,4 +123,12 @@ message RepairItem {
   uint32 slot = 1;
   bool special = 2; // 特修（原版 @s_repair）
   uint32 client_tick = 3;
+}
+
+// 服务端 → 客户端：一条系统提示（原版 `sysMsg` 的对应物）。
+//
+// 挖肉的「肉被发现」「什么都没找到」、负重提醒……这些原本走 legacy 的
+// `SM_SYSMESSAGE`，proto 玩家收不到 ⇒ 全都无声。客户端收到后推进聊天框。
+message SystemNotice {
+  string text = 1;
 }

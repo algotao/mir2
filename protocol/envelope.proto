@@ -115,6 +115,12 @@ message Envelope {
     GoldChanged gold_changed = 0x080E;
     RepairItem repair_item = 0x080F;
     RepairCostNotice repair_cost_notice = 0x0810;
+    // 系统提示（原版 `sysMsg` 那一类：挖肉的"肉被发现"、任务提示……）。
+    //
+    // ⚠️ 为什么必须有：proto 玩家的 legacy 下行会被丢 ⇒ `s.sysMsg` 发的
+    // `SM_SYSMESSAGE` **到不了**新协议客户端 —— 挖肉的"肉被发现 / 什么都没找到"
+    // 这类关键反馈全都无声（用户 2026-10-10："挖肉挖出不来"，其实出了、只是没话说）。
+    SystemNotice system_notice = 0x0812;
 
     // ---------- 0x09xx 聊天 ----------
     ChatInput chat_input = 0x0901;

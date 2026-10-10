@@ -529,6 +529,15 @@ func (s *Server) buildClientItem(u *pb.UserItem) (*proto.ClientItem, bool) {
 // 与 [`Server.buildClientItem`] **同源**（同一份模板查表）：那边产出定长二进制的
 // `ClientItem`，这边产出结构化字段。两处都得维护 ⇒ 以后加字段**记得两边都加**
 // （这正是 `Ability::from_proto` 那条"两个地方各写一遍必然漏一个"的教训）。
+// sellPriceOf 物品的**卖价**（原版卖东西 = 原价一半，最低 1；见 `onShopSell`）。
+// 客户端"卖:"后面显示的就是它 —— 拖进卖货圈、点 OK 之前就要看到能卖多少钱。
+func sellPriceOf(tmpl *data.StdItem) uint32 {
+	if tmpl == nil || tmpl.Price <= 1 {
+		return 1
+	}
+	return uint32(tmpl.Price / 2)
+}
+
 func (s *Server) itemStack(u *pb.UserItem) (*protocol.ItemStack, bool) {
 	if u == nil || u.Index == 0 {
 		return nil, false

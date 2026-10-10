@@ -158,14 +158,14 @@ pub(crate) const BAG_PAGE_SLOTS: usize = BAG_COLS * BAG_ROWS;
 
 /// 关闭按钮（`X`）在窗口内的位置 —— 素材右下角那个红叉。
 ///
-/// ⚠️ 坐标是**拿 `wzldump` 导出 `Prguse[3]` 逐像素量出来的**（2026-10-10）：红色
-/// X 的像素落在 x 264..294 / y 184..196 ⇒ 命中区 (262,180,36,20)。原来写的
-/// (306,174,24,20) 偏右上了一大截 —— 那儿是背板边框，点它当然没反应
-///（用户 2026-10-10 第 3 条：背包的关闭按钮不生效）。
-pub(crate) const BAG_CLOSE_X: f32 = 262.0;
-pub(crate) const BAG_CLOSE_Y: f32 = 180.0;
-pub(crate) const BAG_CLOSE_W: f32 = 36.0;
-pub(crate) const BAG_CLOSE_H: f32 = 20.0;
+/// ⚠️ 坐标是**拿 `wzldump` 导出 `Prguse[3]` 逐像素量出来的**（2026-10-10 第二次量，
+/// 这次是**全图**扫红色像素）：整块板子上只有一处红区 **x 311..321 / y 206..221**。
+/// 上一轮量错了 —— 当时只扫了局部、把 x264..294 那块**装饰**当成了关闭叉
+///（用户再报"包裹窗口的关闭按钮不能点"就是这个原因）。
+pub(crate) const BAG_CLOSE_X: f32 = 308.0;
+pub(crate) const BAG_CLOSE_Y: f32 = 203.0;
+pub(crate) const BAG_CLOSE_W: f32 = 20.0;
+pub(crate) const BAG_CLOSE_H: f32 = 24.0;
 
 /// 金币文字在窗口内的落点（下方那条宽横条里）。
 ///

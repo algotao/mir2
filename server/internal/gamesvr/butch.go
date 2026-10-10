@@ -182,7 +182,9 @@ func (s *Server) doButch(c net.Conn, p *Player, targetID uint32, x, y int, dir u
 			s.broadcastSkeleton(target)
 		}
 		if !s.butchTakeItems(p, target) {
-			s.sysMsg(c, sYouFoundNothing)
+			s.notice(p, sYouFoundNothing)
+		} else {
+			s.notice(p, "肉被发现")
 		}
 		target.Leathery = leatheryReset
 	}
@@ -230,7 +232,7 @@ func (s *Server) butchTakeItems(p *Player, m *entity.Monster) bool {
 			ui.Dura = 1
 		}
 		if s.addToBag(p, ui) < 0 {
-			s.sysMsg(p.conn, sBagFullNoItems)
+			s.notice(p, sBagFullNoItems)
 			return took > 0
 		}
 		s.sendAddItem(p, ui)

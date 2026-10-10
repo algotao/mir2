@@ -283,6 +283,12 @@ impl Net {
                             if r.ok { C_CHAT_SYS } else { C_CHAT_BAD },
                         );
                     }
+                    // 系统提示（原版 `sysMsg`：挖肉的「肉被发现」「什么都没找到」这类）
+                    // ⇒ 进聊天框。proto 玩家原来收不到 `sysMsg`，这类反馈全都无声。
+                    if let Some(mir2_protocol::envelope::Body::SystemNotice(n)) = env.body.as_ref()
+                    {
+                        self.chat.push(n.text.clone(), C_CHAT_SYS);
+                    }
                     if self.entrance.in_world() && !self.entered_once {
                         self.entered_once = true;
                         self.chat.push(

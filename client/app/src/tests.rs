@@ -1588,6 +1588,7 @@ fn 背包变多才算捡到东西() {
         dura_max: 10,
         make_index: mk,
         std_mode: 0,
+        sell_price: 50,
     };
     let empty: Vec<Option<BagItem>> = vec![None, None];
     let one = vec![Some(it(1, 100, 1)), None];

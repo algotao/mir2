@@ -59,7 +59,7 @@ mod select;
 mod ui;
 // 注：`WindowContext` 在 sdl3 里是私有类型、不可具名，
 // 故凡是需要纹理创建器的地方一律对类型参数 `T` 泛化。
-use sdl3::render::Texture;
+use sdl3::render::{FRect, Texture};
 use sdl3::EventPump;
 
 // ---------- 拆分出来的模块（2026-10-09）----------
@@ -272,6 +272,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut bag_by_shop = false;
     // 按住 Alt 吗（挖肉的修饰键；SDL 的鼠标事件不带 keymod ⇒ 从键盘事件自己记）
     let mut alt_down = false;
+    // **挖肉状态**：按住 Alt 点中一具尸体 ⇒ 锁定为"正在挖它"，**按住不放就持续挖**
+    //（用户 2026-10-10 第 1 条：不是反复点左键）。值 = 目标实体号；
+    // Alt 松开 / 目标没了 / 人走远 ⇒ 清。
+    let mut butch_target: Option<u64> = None;
+    let mut butch_next = Instant::now();
+    // 卖货窗（原版拖放式，用户第 3 条）：抓在手上 / 放进圈里的**背包槽位**。
+    let mut sell_held: Option<usize> = None;
+    let mut sell_placed: Option<usize> = None;
     // 待捡的地面物品：点了地上的东西 ⇒ 先走过去，**到了那格**才发拾取
     //（服务端要求"人站在物品那格上"，与原版 `CM_PICKUP` 同一条校验）
     let mut pending_pickup: Option<(u64, (i32, i32))> = None;
@@ -642,6 +650,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Event::KeyUp { keycode, .. } => {
                     if matches!(keycode, Some(Keycode::LAlt) | Some(Keycode::RAlt)) {
                         alt_down = false;
+                        butch_target = None; // 按住才持续挖；松手就停
                     }
                 }
                 // 鼠标位置（已在循环头换算成界面的 800×600 空间）
@@ -729,9 +738,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             } else {
                                 press_at = None;
                             }
-                            // **挖肉**（原版 `CM_BUTCH`，用户第 5 条）：按住 Alt 点**动物尸体**。
-                            // ⚠️ 每点一次发一条 —— 原版就是"按住 Alt 反复点"持续挖
-                            //（皮革度/肉质量一点点削），服务端按转身间隔节流。
+                            // **挖肉锁定**（原版 `CM_BUTCH`，用户第 1 条）：**按住 Alt 点一下**
+                            // 动物尸体 ⇒ 锁定为"正在挖它"，**按住不放就持续挖**（不是反复点）。
+                            // 皮革度要挖好几刀才归零（鸡 50，一刀 -5..20）⇒ 一次点击出不了肉。
                             let mut did_butch = false;
                             if mouse_btn == MouseButton::Left && alt_down {
                                 if let Some(n) = net.as_ref() {
@@ -741,16 +750,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .values()
                                         .find(|e| e.dead && (e.x, e.y) == cell);
                                     if let Some(e) = corpse {
-                                        // 朝向：协议方向（`dir_to` 直接给的就是它；没有 ⇒ 0 = 未指定）
-                                        let dir = crate::geom::dir_to(n.world.self_pos, cell)
-                                            .map_or(0, |d| d as i32);
-                                        n.butch(e.id, cell.0, cell.1, dir);
-                                        println!("[net] 挖肉 {}", e.name);
+                                        butch_target = Some(e.id);
+                                        butch_next = Instant::now(); // 立刻挖第一刀
+                                        println!("[net] 挖肉锁定 {}", e.name);
                                         did_butch = true;
                                         // 挖肉不是"选目标/走路"⇒ 目标清掉（下面 `(ct, mt)`
                                         // 走 None 那支），也别把这次当"单击走一格"。
                                         press_at = None;
                                         pending_pickup = None;
+                                    }
+                                }
+                            }
+                            // 卖货：商店开着 ⇒ 点背包格 = **抓起**（原版拖放式：抓到手上、
+                            // 移到卖货圈、点一下放下、点 OK 才卖 —— 用户第 3 条）。
+                            if mouse_btn == MouseButton::Left && shop_open && bag_open {
+                                if let Some(n) = net.as_ref() {
+                                    let (bx, by) = crate::layout::bag_pos(shop_open);
+                                    let lx = x - bx;
+                                    let ly = y - by;
+                                    if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
+                                        let idx = bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
+                                        if let Some(Some(it)) = n.world.bag.get(idx) {
+                                            if it.make_index != 0 {
+                                                sell_held = Some(idx);
+                                                println!("[ui] 抓起 {}", it.name);
+                                                // 目标/走路清掉：下面 `(ct, mt)` 统一走
+                                                //（抓起时 did_butch=false 但商店窗命中段
+                                                // 会把这次点击吞掉 ⇒ 不会走/选）
+                                                press_at = None;
+                                                pending_pickup = None;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -941,22 +971,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     } else if let Some(slot) = crate::layout::bag_slot_at((lx, ly))
                                     {
                                         let idx = bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
-                                        // 商店开着 ⇒ 点背包里的东西 = **卖掉它**（原版就是把
-                                        // 东西点到商人窗口上卖）。一次卖 1 个（可堆叠的按 1 算，
-                                        // 想整堆卖就多按几下 —— 与买那边同一个口径）。
-                                        if shop_open {
-                                            if let Some(n) = net.as_ref() {
-                                                let hit_item = n.world.bag.get(idx);
-                                                if let (Some(sh), Some(Some(it))) =
-                                                    (n.world.shop.as_ref(), hit_item)
-                                                {
-                                                    if it.make_index != 0 {
-                                                        n.shop_sell(sh.npc_id, it.make_index, 1);
-                                                        println!("[net] 卖出 {}", it.name);
-                                                    }
-                                                }
-                                            }
-                                        }
+                                        // （商店开着时的"抓起"在上面挖肉那段做完了 —— 那里
+                                        // 顺序更靠前，这里只剩"报格子"这条反馈。）
                                         if let Some(n) = net.as_ref() {
                                             let msg = match n.world.bag.get(idx) {
                                                 Some(Some(it)) => format!(
@@ -1037,6 +1053,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             held_move = None;
                                         }
                                     }
+                                }
+                            }
+                            // ②‴ 卖货窗：点圈 = 放下手上的东西；点 OK = 卖掉圈里那件
+                            //（原版拖放式，用户 2026-10-10 第 3 条）；点在窗里别走路。
+                            if shop_open && bag_open {
+                                let (sx, sy, sw, sh) = crate::shop::sell_panel();
+                                if x >= sx && x < sx + sw && y >= sy && y < sy + sh {
+                                    match crate::shop::sell_hit((x - sx, y - sy)) {
+                                        crate::shop::SellHit::Circle => {
+                                            if let Some(held) = sell_held.take() {
+                                                sell_placed = Some(held);
+                                            }
+                                        }
+                                        crate::shop::SellHit::Ok => {
+                                            if let Some(idx) = sell_placed.take() {
+                                                if let Some(n) = net.as_ref() {
+                                                    if let Some(sh) = n.world.shop.as_ref() {
+                                                        if let Some(Some(it)) = n.world.bag.get(idx)
+                                                        {
+                                                            if it.make_index != 0 {
+                                                                // 整堆一起卖（非堆叠 count=1）
+                                                                let count = it.count.max(1);
+                                                                n.shop_sell(
+                                                                    sh.npc_id,
+                                                                    it.make_index,
+                                                                    count,
+                                                                );
+                                                                println!(
+                                                                    "[net] 卖出 {} x{count}",
+                                                                    it.name
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        crate::shop::SellHit::None => {}
+                                    }
+                                    combat_target = None;
+                                    move_target = None;
+                                    press_at = None;
+                                    held_move = None;
                                 }
                             }
                             // ③ 点 NPC ⇒ **说话**，不是往它那格走。
@@ -1625,9 +1684,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if net.as_ref().is_none_or(|n| n.world.shop.is_none()) && shop_open {
             shop_open = false;
             shop_sel = None;
+            sell_held = None;
+            sell_placed = None;
             if bag_by_shop {
                 bag_open = false;
                 bag_by_shop = false;
+            }
+        }
+
+        // **按住 Alt 持续挖**（用户 2026-10-10 第 1 条）：锁定了尸体且 Alt 没松 ⇒
+        // 到点就发一刀（服务端还有转身间隔节流兜底）。皮革度要挖好几刀才归零
+        //（鸡 50，一刀 -5..20），一次点击出不了肉 —— 原版就是"按住不放持续挖"。
+        if let Some(tid) = butch_target {
+            let Some(n) = net.as_ref() else {
+                butch_target = None;
+                continue;
+            };
+            if butch_target.is_some() {
+                match n.world.entities.get(&tid) {
+                    // 尸体还在（实体消失 = 挖完收走）且人在 2 格内 ⇒ 继续挖
+                    Some(e) if e.dead && n.world.in_world() => {
+                        let (px, py) = n.world.self_pos;
+                        if (e.x - px).abs() <= 2
+                            && (e.y - py).abs() <= 2
+                            && butch_next <= Instant::now()
+                        {
+                            let dir =
+                                crate::geom::dir_to((px, py), (e.x, e.y)).map_or(0, |d| d as i32);
+                            n.butch(tid, e.x, e.y, dir);
+                            butch_next = Instant::now() + Duration::from_millis(450);
+                        }
+                    }
+                    _ => butch_target = None,
+                }
             }
         }
 
@@ -1716,6 +1805,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         shop_page,
                         shop_sel,
                     )?;
+                    // 抓在手上的物品：跟着鼠标走（原版就是把东西"拿在手里"）
+                    if let Some(held) = sell_held {
+                        if let (Some(n), Some(dir)) = (net.as_ref(), asset_dir.as_deref()) {
+                            if let Some(Some(it)) = n.world.bag.get(held) {
+                                if let Some((iw, ih)) = ui.size(dir, "Items", it.looks) {
+                                    let _ = ui.draw_src(
+                                        &mut canvas,
+                                        &tex_creator,
+                                        dir,
+                                        "Items",
+                                        it.looks,
+                                        FRect::new(0.0, 0.0, iw as f32, ih as f32),
+                                        FRect::new(
+                                            mouse.0 - 4.0,
+                                            mouse.1 - 4.0,
+                                            iw as f32,
+                                            ih as f32,
+                                        ),
+                                        255,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    // 卖货窗（拖放式：抓起 → 放进圈 → OK 才卖）
+                    if shop_open && bag_open {
+                        if let Some(dir) = asset_dir.as_deref() {
+                            shop::draw_sell(
+                                &mut canvas,
+                                &tex_creator,
+                                &mut ui,
+                                &mut ui_texts,
+                                dir,
+                                net.as_ref(),
+                                sell_placed,
+                            )?;
+                        }
+                    }
                 }
             }
             // 光标跟着悬停状态走：悬停的是**怪**才换准星（原版悬停谁都不换光标，

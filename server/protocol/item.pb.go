@@ -38,6 +38,9 @@ type ItemStack struct {
 	DuraMax        uint32                 `protobuf:"varint,6,opt,name=dura_max,json=duraMax,proto3" json:"dura_max,omitempty"`
 	AttributeFlags uint64                 `protobuf:"varint,7,opt,name=attribute_flags,json=attributeFlags,proto3" json:"attribute_flags,omitempty"`
 	Values         []uint32               `protobuf:"varint,8,rep,packed,name=values,proto3" json:"values,omitempty"` // 属性值（DC/MC/SC/AC/MAC 的 min/max 等，顺序另行约定）
+	// **卖价**（原版卖东西 = 原价一半，`handleSellItem`）：客户端"卖:"后面
+	// 显示的就是它 —— 拖进卖货圈、点 OK 之前就要看到能卖多少钱。
+	SellPrice uint32 `protobuf:"varint,11,opt,name=sell_price,json=sellPrice,proto3" json:"sell_price,omitempty"`
 	// 物品**实例号**（`UserItem.MakeIndex`，全服唯一；0 = 空槽）。
 	//
 	// ⚠️ 为什么必须有：原版认一件东西靠的就是它 —— `CM_USERSELLITEM` /
@@ -137,6 +140,13 @@ func (x *ItemStack) GetValues() []uint32 {
 		return x.Values
 	}
 	return nil
+}
+
+func (x *ItemStack) GetSellPrice() uint32 {
+	if x != nil {
+		return x.SellPrice
+	}
+	return 0
 }
 
 func (x *ItemStack) GetMakeIndex() int32 {
@@ -996,12 +1006,60 @@ func (x *RepairItem) GetClientTick() uint32 {
 	return 0
 }
 
+// 服务端 → 客户端：一条系统提示（原版 `sysMsg` 的对应物）。
+//
+// 挖肉的「肉被发现」「什么都没找到」、负重提醒……这些原本走 legacy 的
+// `SM_SYSMESSAGE`，proto 玩家收不到 ⇒ 全都无声。客户端收到后推进聊天框。
+type SystemNotice struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Text          string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SystemNotice) Reset() {
+	*x = SystemNotice{}
+	mi := &file_item_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SystemNotice) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SystemNotice) ProtoMessage() {}
+
+func (x *SystemNotice) ProtoReflect() protoreflect.Message {
+	mi := &file_item_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SystemNotice.ProtoReflect.Descriptor instead.
+func (*SystemNotice) Descriptor() ([]byte, []int) {
+	return file_item_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *SystemNotice) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
 var File_item_proto protoreflect.FileDescriptor
 
 const file_item_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"item.proto\x12\x04mir2\x1a\fcommon.proto\"\x8b\x02\n" +
+	"item.proto\x12\x04mir2\x1a\fcommon.proto\"\xaa\x02\n" +
 	"\tItemStack\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\rR\x05index\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
@@ -1011,6 +1069,8 @@ const file_item_proto_rawDesc = "" +
 	"\bdura_max\x18\x06 \x01(\rR\aduraMax\x12'\n" +
 	"\x0fattribute_flags\x18\a \x01(\x04R\x0eattributeFlags\x12\x16\n" +
 	"\x06values\x18\b \x03(\rR\x06values\x12\x1d\n" +
+	"\n" +
+	"sell_price\x18\v \x01(\rR\tsellPrice\x12\x1d\n" +
 	"\n" +
 	"make_index\x18\t \x01(\x05R\tmakeIndex\x12\x19\n" +
 	"\bstd_mode\x18\n" +
@@ -1077,7 +1137,9 @@ const file_item_proto_rawDesc = "" +
 	"\x04slot\x18\x01 \x01(\rR\x04slot\x12\x18\n" +
 	"\aspecial\x18\x02 \x01(\bR\aspecial\x12\x1f\n" +
 	"\vclient_tick\x18\x03 \x01(\rR\n" +
-	"clientTickB2Z0github.com/algotao/mir2/server/protocol;protocolb\x06proto3"
+	"clientTick\"\"\n" +
+	"\fSystemNotice\x12\x12\n" +
+	"\x04text\x18\x01 \x01(\tR\x04textB2Z0github.com/algotao/mir2/server/protocol;protocolb\x06proto3"
 
 var (
 	file_item_proto_rawDescOnce sync.Once
@@ -1091,7 +1153,7 @@ func file_item_proto_rawDescGZIP() []byte {
 	return file_item_proto_rawDescData
 }
 
-var file_item_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_item_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_item_proto_goTypes = []any{
 	(*ItemStack)(nil),        // 0: mir2.ItemStack
 	(*BagItems)(nil),         // 1: mir2.BagItems
@@ -1110,13 +1172,14 @@ var file_item_proto_goTypes = []any{
 	(*EquipItem)(nil),        // 14: mir2.EquipItem
 	(*UnequipItem)(nil),      // 15: mir2.UnequipItem
 	(*RepairItem)(nil),       // 16: mir2.RepairItem
-	(*Vec2)(nil),             // 17: mir2.Vec2
+	(*SystemNotice)(nil),     // 17: mir2.SystemNotice
+	(*Vec2)(nil),             // 18: mir2.Vec2
 }
 var file_item_proto_depIdxs = []int32{
 	0,  // 0: mir2.BagItems.items:type_name -> mir2.ItemStack
 	0,  // 1: mir2.AddItem.item:type_name -> mir2.ItemStack
 	0,  // 2: mir2.UpdateItem.item:type_name -> mir2.ItemStack
-	17, // 3: mir2.GroundItemShow.position:type_name -> mir2.Vec2
+	18, // 3: mir2.GroundItemShow.position:type_name -> mir2.Vec2
 	0,  // 4: mir2.GroundItemShow.item:type_name -> mir2.ItemStack
 	0,  // 5: mir2.EquippedItems.items:type_name -> mir2.ItemStack
 	6,  // [6:6] is the sub-list for method output_type
@@ -1138,7 +1201,7 @@ func file_item_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_item_proto_rawDesc), len(file_item_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
