@@ -1063,7 +1063,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let (sx, sy, sw, sh) = crate::shop::sell_panel();
                                 if x >= sx && x < sx + sw && y >= sy && y < sy + sh {
                                     match crate::shop::sell_hit((x - sx, y - sy)) {
-                                        crate::shop::SellHit::Circle => {
+                                        crate::shop::SellHit::Slot => {
                                             if let Some(held) = sell_held.take() {
                                                 sell_placed = Some(held);
                                             }
