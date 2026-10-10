@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 # app = SDL3 GUI；e2e = 无头 CLI（**禁依赖 sdl3**，见 plan §4.2 / C-8）；core 两者共用
-members = ["app", "core", "e2e", "protocol", "net"]
+members = ["app", "core", "e2e", "protocol", "net", "tools/assetview"]
 
 [workspace.package]
 version = "0.1.0"

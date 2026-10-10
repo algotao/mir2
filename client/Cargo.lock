@@ -308,6 +308,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mir2-assetview"
+version = "0.1.0"
+dependencies = [
+ "mir2-core",
+ "sdl3",
+]
+
+[[package]]
 name = "mir2-core"
 version = "0.1.0"
 dependencies = [

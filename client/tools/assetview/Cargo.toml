@@ -1,0 +1,13 @@
+[package]
+name = "mir2-assetview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "assetview"
+path = "src/main.rs"
+
+[dependencies]
+sdl3.workspace = true
+mir2-core = { path = "../../core" }
