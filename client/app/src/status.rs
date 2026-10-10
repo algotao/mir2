@@ -211,17 +211,16 @@ fn draw_figure<'a, T>(
 ) {
     let (cx, cy) = (x + CONTENT_X, y + CONTENT_Y);
     let (hair, sex) = feature_of(n);
+    // ⚠️ 原点 = "锚点补偿后的落点"：这组图（裸体/头发/衣服/武器）各带自己的 WZL 锚点，
+    // 必须**同一起点**画才互相咬合。但我们想要的不是"起点"，是**人形图落在 (cx,cy)** ——
+    // 人形图 [376] 自带锚点 (7, -44)，直接拿 (cx,cy) 当起点 ⇒ 整组被抬高 44px
+    //（用户 2026-10-10 第 9 条：形象偏上了很多）。所以起点 = 期望落点 − 人形的锚点，
+    // 其余层用各自锚点照常叠加，相对位置不变、整体落到该在的地方。
+    let fig = if sex == 1 { FIG_F } else { FIG_M };
+    let (ax, ay) = ui.anchor(dir_assets, BG_LIB, fig).unwrap_or((0, 0));
+    let (ox, oy) = (cx - ax as f32, cy - ay as f32);
     // 裸体底图（男/女）
-    anchored(
-        canvas,
-        tc,
-        ui,
-        dir_assets,
-        BG_LIB,
-        if sex == 1 { FIG_F } else { FIG_M },
-        cx,
-        cy,
-    );
+    anchored(canvas, tc, ui, dir_assets, BG_LIB, fig, ox, oy);
     // 头发（发型 0 = 光头：素材里那块本来就取不到，取不到就跳过）
     anchored(
         canvas,
@@ -230,8 +229,8 @@ fn draw_figure<'a, T>(
         dir_assets,
         BG_LIB,
         HAIR_BASE + hair * 2 + sex as u32,
-        cx,
-        cy,
+        ox,
+        oy,
     );
     // 衣服 / 武器 / 头盔（官方顺序，都是 `StateItem.wil[Looks]` 的大图）
     for slot in [0usize, 1, 4] {
@@ -239,10 +238,13 @@ fn draw_figure<'a, T>(
             continue;
         };
         if item.looks != 0 {
-            anchored(canvas, tc, ui, dir_assets, ITEM_LIB, item.looks, cx, cy);
+            anchored(canvas, tc, ui, dir_assets, ITEM_LIB, item.looks, ox, oy);
         }
     }
-    // 6 个小槽里的图标：居中放进槽框（官方不缩放，我们也照原样贴）
+    // 6 个小槽里的图标：居中放进槽框（官方不缩放，我们也照原样贴）。
+    // ⚠️ SLOTS 是按**原来那组图的落点**量的 ⇒ 人形组挪了多少，图标也要跟着挪多少
+    //（Δ = 新原点 − 旧原点），否则槽框（烤在 [376] 里，跟着图走）和图标分家。
+    let (dx, dy) = (ox - (x + CONTENT_X), oy - (y + CONTENT_Y));
     for &slot in SMALL_SLOTS.iter() {
         let Some(Some(item)) = n.world.equip.get(slot) else {
             continue;
@@ -262,7 +264,12 @@ fn draw_figure<'a, T>(
                 ITEM_LIB,
                 item.looks,
                 FRect::new(0.0, 0.0, iw, ih),
-                FRect::new(x + sx + (sw - iw) / 2.0, y + sy + (sh - ih) / 2.0, iw, ih),
+                FRect::new(
+                    x + sx + dx + (sw - iw) / 2.0,
+                    y + sy + dy + (sh - ih) / 2.0,
+                    iw,
+                    ih,
+                ),
                 255,
             );
         }

@@ -1488,74 +1488,67 @@ fn 对话正文装不下时要能滚() {
     assert!(th >= 12.0, "滑块别缩得看不见（46 行时按比例只有 ~4px）");
 }
 
-/// 商店窗：**几何不压对话/背包窗** + 命中（商品行 / 关闭叉）+ 翻页。
+/// 商店窗：**版式照原版截图**（三列 + 左右翻页 + 选中后 OK 才买）+ 命中 + 翻页。
 ///
-/// 背板 = 对话窗那张 `Prguse[384]`（2026-10-10 用户报"列表与窗口错位、不该加背景"
-/// ⇒ 换官方板 + 复用对话那套内边距/行高/关闭钮几何，行底色不画）。
+/// 2026-10-10 用户给的原版截图：`物品列表 | 价格 | 持久` 三列，底下左右箭头翻页、
+/// 点一行**选中**、点 OK 才买；买的时候包裹在右边开着（`layout::bag_pos`）。
 #[test]
 fn 商店窗几何与命中() {
     let (x, y, w, h) = crate::shop::panel();
-    // ① 对话窗在左上（8..424）⇒ 商店窗整块在它右边；背包窗（8..344）也在下面一排
-    let (dx, _dy, dw, _dh) = input::dialog_panel();
-    assert!(
-        x >= dx + dw,
-        "商店窗（{x}..{}）该在对话窗（{dx}..{}）右边",
-        x + w,
-        dx + dw
-    );
+    // ① 位置：**对话窗正下面**（对话窗占上排 8..424；商店开着时背包让位到右边 ⇒
+    // 这个位置正好空出来给商品列表）
+    let (dx, dy, _dw, dh) = input::dialog_panel();
+    assert_eq!(x, dx, "左缘与对话窗对齐");
+    assert_eq!(y, dy + dh + 8.0, "接在对话窗下面（留 8px 缝）");
     assert!(y + h <= 768.0, "整块窗要落在 1024×768 画面内");
-    // 版式来自对话背板 ⇒ 尺寸必须与它一致（不然就是又借错板了）
-    assert_eq!((w, h), (input::DIALOG_W, input::DIALOG_H));
-    assert_eq!(
-        crate::shop::ROWS,
-        input::DIALOG_MAX_LINES - 1,
-        "顶部一行留给标题（商店/金币），其余才是商品"
-    );
+    assert!(x + w <= 1024.0);
 
-    // ② 命中：第 0 行、关闭叉（与对话窗同一个，背板自带）、行间空白
+    // ② 命中：行选中、翻页箭头、OK、行间空白
     let (rx, ry, rw, rh) = crate::shop::row_rect(0);
     assert_eq!(
         crate::shop::hit((rx + 2.0, ry + 2.0), 3),
         crate::shop::Hit::Row(0),
-        "点第一行 ⇒ 买第一件"
+        "点第一行 ⇒ 选中第一件"
     );
     assert_eq!(
         crate::shop::hit((rx + rw - 2.0, ry + rh - 1.0), 3),
         crate::shop::Hit::Row(0),
-        "整行都可点（价格那一侧也算）"
+        "整行都可点（价格/持久那一侧也算）"
     );
     assert_eq!(
         crate::shop::hit((rx, ry + 2.0 * rh), 1),
         crate::shop::Hit::None,
         "只有 1 件商品时，第二行不该点得到"
     );
-    // 关闭叉 = 对话窗那颗（背板右上角自带的）
     assert_eq!(
         crate::shop::hit(
-            (
-                input::DIALOG_CLOSE_X + input::DIALOG_CLOSE_W / 2.0,
-                input::DIALOG_CLOSE_Y + input::DIALOG_CLOSE_H / 2.0
-            ),
+            (crate::shop::panel().2 - 30.0, crate::shop::panel().3 - 20.0),
             3
         ),
-        crate::shop::Hit::Close
-    );
-    // 标题行**不是**商品行（点它不该买）
-    assert_eq!(
-        crate::shop::hit((input::DIALOG_PAD_X + 4.0, input::DIALOG_PAD_Y + 4.0), 3),
-        crate::shop::Hit::None,
-        "标题行（商店/金币）不可点"
+        crate::shop::Hit::Ok,
+        "点 OK ⇒ 买选中的"
     );
 
-    // ③ 翻页：一页 7 行；20 件 ⇒ 3 页；到头绕回
+    // ③ 翻页：一页 6 行；20 件 ⇒ 4 页；到头绕回
     assert_eq!(crate::shop::pages(1), 1);
-    assert_eq!(crate::shop::pages(7), 1);
-    assert_eq!(crate::shop::pages(8), 2, "第 8 件要翻页");
-    assert_eq!(crate::shop::pages(20), 3);
+    assert_eq!(crate::shop::pages(6), 1);
+    assert_eq!(crate::shop::pages(7), 2, "第 7 件要翻页");
+    assert_eq!(crate::shop::pages(20), 4);
     assert_eq!(crate::shop::page_step(0, 1, 20), 1);
-    assert_eq!(crate::shop::page_step(2, 1, 20), 0, "到头绕回");
-    assert_eq!(crate::shop::page_step(0, -1, 20), 2, "往前翻也绕回");
-    assert_eq!(crate::shop::page_step(5, 0, 20), 2, "静止时夹回末页");
+    assert_eq!(crate::shop::page_step(3, 1, 20), 0, "到头绕回");
+    assert_eq!(crate::shop::page_step(0, -1, 20), 3, "往前翻也绕回");
+    assert_eq!(crate::shop::page_step(5, 0, 20), 3, "静止时夹回末页");
+}
+
+/// 背包窗落点：平时在对话窗下面，**商店开着时让位到右边**（原版买东西时包裹
+/// 就在旁边开着，用户 2026-10-10 第 7 条）。
+#[test]
+fn 背包窗在商店开着时让位到右边() {
+    let (nx, ny) = crate::layout::bag_pos(false);
+    let (sx, sy) = crate::layout::bag_pos(true);
+    assert_eq!((nx, ny), (8.0, 4.0 + input::DIALOG_H + 8.0));
+    assert!(sx > 500.0, "商店开着时包裹该在右边（实得 x={sx}）");
+    assert_eq!(sy, 52.0, "顶上那排（原版截图里包裹就在那个高度）");
 }
 
 /// 小地图**区域标注**（用户 2026-10-09 选的 (a)）：表由 `tools/gen_map_labels.py`

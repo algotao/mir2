@@ -60,6 +60,8 @@ pub(crate) struct Net {
     pub(crate) chat: Chat,
     /// 已经为自己死放过一次声（`self_dead` 会一直为真，不能每帧放）。
     pub(crate) died_once: bool,
+    /// 已经见过**全量背包**没有（进图后第一次 `BagItems` 不算"捡到了东西"⇒ 不响）。
+    pub(crate) bag_seen: bool,
     /// 刚死 ⇒ 主循环切 game over 音乐（原版 `Actor.pas:2373-2374`）。
     pub(crate) gameover: bool,
 }
@@ -117,6 +119,7 @@ impl Net {
             anims: HashMap::new(),
             pending_sfx: Vec::new(),
             died_once: false,
+            bag_seen: false,
             gameover: false,
         })
     }
@@ -157,6 +160,7 @@ impl Net {
             anims: HashMap::new(),
             pending_sfx: Vec::new(),
             died_once: false,
+            bag_seen: false,
             gameover: false,
         })
     }
@@ -197,6 +201,7 @@ impl Net {
             anims: HashMap::new(),
             pending_sfx: Vec::new(),
             died_once: false,
+            bag_seen: false,
             gameover: false,
         })
     }
@@ -235,8 +240,47 @@ impl Net {
                     if let Some(b) = self.entrance.on(&env) {
                         self.send(&b);
                     }
+                    // 捡东西的音效（用户 2026-10-10 第 2 条）—— 判据要在 apply **之前**
+                    // 取好：金币用旧值对比，背包用"已有的实例号集合"对差集。
+                    // ⚠️ 首次收到全量背包（进图那一次）**不响**：那不是"捡到了"，
+                    // 用 `bag_seen` 把第一次标记掉。
+                    let was_in_world = self.world.in_world();
+                    let gold_before = self.world.ability.map(|a| a.gold);
+                    let bag_before: std::collections::HashSet<i32> = self
+                        .world
+                        .bag
+                        .iter()
+                        .flatten()
+                        .map(|it| it.make_index)
+                        .collect();
+                    let bag_seen = self.bag_seen;
                     if self.world.apply(&env) == mir2_core::world::Change::World {
                         self.changes += 1;
+                    }
+                    // 金币变多 ⇒ 钱声（原版 `SM_GOLDCHANGED` ⇒ `PlaySound(s_money)`，
+                    // `ClMain.pas:4478-4481`——捡金币走的就是这条路）
+                    let gold_now = self.world.ability.map(|a| a.gold);
+                    if was_in_world {
+                        if let (Some(before), Some(after)) = (gold_before, gold_now) {
+                            if after > before {
+                                self.pending_sfx.push(mir2_core::sound::idx::MONEY);
+                            }
+                        }
+                        // 背包里**多了**东西 ⇒ 按类别响（原版 `ItemClickSound`，
+                        // `SoundUtil.pas:293-310`；首次全量背包不算"捡到"）
+                        if bag_seen {
+                            for it in self.world.bag.iter().flatten() {
+                                if !bag_before.contains(&it.make_index) {
+                                    self.pending_sfx.push(mir2_core::sound::item_click_sound(
+                                        it.std_mode,
+                                        &it.name,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    if self.world.bag.iter().any(|it| it.is_some()) {
+                        self.bag_seen = true;
                     }
                     // 买卖的结果：**proto 玩家收不到 `sysMsg`**（legacy 下行会被丢），
                     // `ShopResult` 是它唯一看得见的回音 ⇒ 一定要推进聊天框，

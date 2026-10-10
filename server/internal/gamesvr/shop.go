@@ -187,6 +187,7 @@ func (s *Server) sendGoods(c net.Conn, p *Player, npc *entity.Monster, def *data
 				Price:   uint64(it.Price),
 				Stock:   shopStock,
 				Submenu: shopSubmenu(it) != 0, // legacy 是 1/0，新协议是 bool
+				DuraMax: uint32(it.DuraMax),   // 第三栏"持久"（原版买窗的列）
 			})
 		}
 		sink.enqueue(&protocol.Envelope{Body: &protocol.Envelope_ShopList{

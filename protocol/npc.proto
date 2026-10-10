@@ -62,6 +62,8 @@ message ShopItem {
   uint32 stock = 3;
   // 要不要弹"买几个"的二级菜单（原版 `submenu`：可堆叠类为 0，其余为 1）。
   bool submenu = 4;
+  // 最大持久（原版商品列表第三栏"持久"显示的就是它，`FState.pas` 的买窗）。
+  uint32 dura_max = 5;
 }
 
 // 服务端 → 客户端：这个商人的商品列表（原版 `SM_SENDGOODSLIST`）。

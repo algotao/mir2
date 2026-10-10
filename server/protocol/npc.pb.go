@@ -308,7 +308,9 @@ type ShopItem struct {
 	// 的 `shopStock`）。
 	Stock uint32 `protobuf:"varint,3,opt,name=stock,proto3" json:"stock,omitempty"`
 	// 要不要弹"买几个"的二级菜单（原版 `submenu`：可堆叠类为 0，其余为 1）。
-	Submenu       bool `protobuf:"varint,4,opt,name=submenu,proto3" json:"submenu,omitempty"`
+	Submenu bool `protobuf:"varint,4,opt,name=submenu,proto3" json:"submenu,omitempty"`
+	// 最大持久（原版商品列表第三栏"持久"显示的就是它，`FState.pas` 的买窗）。
+	DuraMax       uint32 `protobuf:"varint,5,opt,name=dura_max,json=duraMax,proto3" json:"dura_max,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -369,6 +371,13 @@ func (x *ShopItem) GetSubmenu() bool {
 		return x.Submenu
 	}
 	return false
+}
+
+func (x *ShopItem) GetDuraMax() uint32 {
+	if x != nil {
+		return x.DuraMax
+	}
+	return 0
 }
 
 // 服务端 → 客户端：这个商人的商品列表（原版 `SM_SENDGOODSLIST`）。
@@ -630,12 +639,13 @@ const file_npc_proto_rawDesc = "" +
 	"\x06npc_id\x18\x01 \x01(\x04R\x05npcId\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\rR\x05index\"!\n" +
 	"\bNpcClose\x12\x15\n" +
-	"\x06npc_id\x18\x01 \x01(\x04R\x05npcId\"d\n" +
+	"\x06npc_id\x18\x01 \x01(\x04R\x05npcId\"\x7f\n" +
 	"\bShopItem\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05price\x18\x02 \x01(\x04R\x05price\x12\x14\n" +
 	"\x05stock\x18\x03 \x01(\rR\x05stock\x12\x18\n" +
-	"\asubmenu\x18\x04 \x01(\bR\asubmenu\"G\n" +
+	"\asubmenu\x18\x04 \x01(\bR\asubmenu\x12\x19\n" +
+	"\bdura_max\x18\x05 \x01(\rR\aduraMax\"G\n" +
 	"\bShopList\x12\x15\n" +
 	"\x06npc_id\x18\x01 \x01(\x04R\x05npcId\x12$\n" +
 	"\x05items\x18\x02 \x03(\v2\x0e.mir2.ShopItemR\x05items\"J\n" +

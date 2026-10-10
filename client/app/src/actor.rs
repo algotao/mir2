@@ -119,6 +119,8 @@ pub(crate) struct SpriteTex<'a> {
     /// 图自带锚点（原版 `m_nPx/m_nPy`）。
     pub(crate) anchor_x: i16,
     pub(crate) anchor_y: i16,
+    /// **不透明内容框** `(x, y, w, h)`（图内坐标）—— 悬停命中用（见 `actor_rect`）。
+    pub(crate) bbox: Option<mir2_core::wzl::BBox>,
 }
 
 /// 玩家/怪物精灵的纹理缓存（与图块缓存分开：键是容器名、混合一律普通 alpha）。
@@ -169,12 +171,18 @@ impl<'a> SpriteCache<'a> {
         t.set_blend_mode(BlendMode::Blend);
         t.set_scale_mode(ScaleMode::Nearest);
         t.update(None::<Rect>, &s.rgba, s.width as usize * 4).ok()?;
+        // 不透明包围盒（解码时顺手算一次）：**悬停命中**要用 —— 人物/怪图的透明边
+        // 各不一样，按整图判"指着没有"会把一大圈空气也算进去（用户 2026-10-10
+        // 第 4 条：怪有透明像素 ⇒ 鼠标很难选中）。原版按**画面上的像素**判
+        //（`GetAttackFocusCharacter`）⇒ 我们用同一份解码数据算出内容框。
+        let bbox = s.alpha_bbox();
         self.texs.insert(
             (lib, idx),
             SpriteTex {
                 tex: t,
                 anchor_x: s.anchor_x,
                 anchor_y: s.anchor_y,
+                bbox,
             },
         );
         Some(())
@@ -452,13 +460,26 @@ pub(crate) fn actor_rect<'a, T>(
         let Some(t) = sprites.texs.get(&(lib, idx)) else {
             continue;
         };
-        let q = t.tex.query();
-        let r = FRect::new(
-            px + t.anchor_x as f32,
-            py + t.anchor_y as f32,
-            q.width as f32,
-            q.height as f32,
-        );
+        // ⚠️ 命中框用**不透明内容框**（`bbox`），不是整图：人物/怪图四周的透明边
+        // 少则几像素、多则半张图，按整图判就是"明明指着身体却没反应"
+        //（用户 2026-10-10 第 4 条）。取不到 bbox（全透明？）⇒ 退回整图。
+        let r = match t.bbox {
+            Some((bx, by, bw, bh)) => FRect::new(
+                px + t.anchor_x as f32 + bx as f32,
+                py + t.anchor_y as f32 + by as f32,
+                bw as f32,
+                bh as f32,
+            ),
+            None => {
+                let q = t.tex.query();
+                FRect::new(
+                    px + t.anchor_x as f32,
+                    py + t.anchor_y as f32,
+                    q.width as f32,
+                    q.height as f32,
+                )
+            }
+        };
         hit = Some(match hit {
             Some(h) => FRect::new(
                 h.x.min(r.x),

@@ -212,6 +212,11 @@ func (s *Server) dlgSelectIndex(c net.Conn, p *Player, idx int) {
 		// 「商店图应在"打开 交易市场"时弹出，而不是开启对话就出」）。
 		// 点 NPC 只开对话；`openShop` 内部会建对话上下文 + 发商品列表（两条协议都发）。
 		s.openShop(c, p, p.dialog.npcID)
+		// 原版点"买"之后对话**换成**这句（用户给的截图：正文"你想买什么?" + 「返回」
+		// 链接），货架列表是另一个窗。给 proto 玩家补上这段（legacy 客户端自己画）。
+		if c == nil && p.protoOut != nil {
+			s.npcSay(c, p, p.dialog.npcID, "你想买什么？\\\n<返回/@main>", nil)
+		}
 		return
 	case "sell":
 		// 卖：原版这里开"卖出"窗。我们的卖法是**商店窗开着时点背包里的东西**

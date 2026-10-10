@@ -291,6 +291,29 @@ pub fn scream(sex: u8) -> u16 {
     }
 }
 
+/// 点/捡一件物品的声音（原版 `ItemClickSound`，`SoundUtil.pas:293-310`）。
+///
+/// 按 **StdMode** 分类；24/26（手镯/手套）原版还看名字里有没有"手镯/手套"⇒
+/// 照抄（用户 2026-10-10 第 2 条：捡东西没声音，不同东西声音还不一样）。
+pub fn item_click_sound(std_mode: u32, name: &str) -> u16 {
+    match std_mode {
+        0 | 31 => idx::CLICK_DRUG,
+        5 | 6 => idx::CLICK_WEAPON,
+        10 | 11 => idx::CLICK_ARMOR,
+        22 | 23 => idx::CLICK_RING,
+        24 | 26 => {
+            if name.contains("手镯") || name.contains("手套") {
+                idx::CLICK_GROBES
+            } else {
+                idx::CLICK_ARMRING
+            }
+        }
+        19..=21 => idx::CLICK_NECKLACE,
+        15 => idx::CLICK_HELMET,
+        _ => idx::ITMCLICK,
+    }
+}
+
 /// 死亡声（`Actor.pas:2243-2247`）。
 pub fn die(sex: u8) -> u16 {
     if sex == 0 {

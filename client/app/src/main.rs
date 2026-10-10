@@ -259,12 +259,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut status_open = false;
     // 状态窗的页码（官方 4 页，我们做 2 页：0 装备 / 1 属性）
     let mut status_page = 0usize;
-    // 商店窗：**点商人就开**（服务端点 NPC 时把"对话 + 货架"一起发下来，
-    // 与 `world.shop` 同在 ⇒ 不用单独记开关，只记"关掉它就别再画"）。
-    let mut shop_open = true;
+    // 商店窗：**收到货架（`shop_seq` 变了）就开**。
+    // ⚠️ 不能按 npc_id 判"开过没有"——同一个商人第二次点"购买"，窗口也得重开
+    //（用户 2026-10-10 第 5 条：对话结束后再到"购买"，购买窗口无法打开）。
+    let mut shop_seen_seq: u64 = 0;
+    let mut shop_open = false;
     let mut shop_page = 0usize;
-    // 上次开的是哪个商人的货架：换了个商人 ⇒ 页码归零
-    let mut shop_npc_seen: Option<u64> = None;
+    // 选中的商品（**绝对下标**，跨页有效）：点行选中、点 OK 才买（原版口径）
+    let mut shop_sel: Option<usize> = None;
     // 待捡的地面物品：点了地上的东西 ⇒ 先走过去，**到了那格**才发拾取
     //（服务端要求"人站在物品那格上"，与原版 `CM_PICKUP` 同一条校验）
     let mut pending_pickup: Option<(u64, (i32, i32))> = None;
@@ -621,7 +623,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let mut done = false;
                     // ① 背包窗内滚轮翻页（服务端背包 46 格 = 2 页，窗口一次只画 24 格）
                     if bag_open {
-                        let (bx, by) = crate::layout::bag_rect();
+                        let (bx, by) = crate::layout::bag_pos(shop_open);
                         let inside = mouse.0 >= bx
                             && mouse.0 < bx + crate::layout::BAG_W
                             && mouse.1 >= by
@@ -857,7 +859,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             //（`UseItem` 还没接新协议，见 `docs/todo.md`）；点关闭 X = 关窗；
                             // 点在窗里别处 = 吞掉这次点击，**别走路**。
                             if bag_open {
-                                let (bx, by) = crate::layout::bag_rect();
+                                let (bx, by) = crate::layout::bag_pos(shop_open);
                                 let inside = x >= bx
                                     && x < bx + crate::layout::BAG_W
                                     && y >= by
@@ -917,7 +919,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     held_move = None;
                                 }
                             }
-                            // ②″″ 商店窗：点一行 = 买一件；点 X = 关窗；点在窗里 = 吞掉（别走路）
+                            // ②″″ 商店窗：点行=**选中**、点箭头=翻页、点 OK=买选中的
+                            //（原版口径，用户 2026-10-10 第 7 条）；点在窗里别走路
                             if shop_open {
                                 if let Some(n) = net.as_ref() {
                                     if let Some(sh) = n.world.shop.as_ref() {
@@ -927,16 +930,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let rows = sh.items.len().saturating_sub(base);
                                             match crate::shop::hit((x - wx, y - wy), rows) {
                                                 crate::shop::Hit::Row(r) => {
-                                                    if let Some(it) = sh.items.get(base + r) {
-                                                        // 一次买 1 件（原版口径；`submenu` 那种
-                                                        // "买几个"的二级菜单还没做）
-                                                        n.shop_buy(sh.npc_id, &it.name, 1);
-                                                        println!("[net] 买入 {}", it.name);
-                                                    }
+                                                    shop_sel = Some(base + r);
                                                 }
-                                                crate::shop::Hit::Close => {
-                                                    shop_open = false;
-                                                    println!("[ui] 商店窗关闭（点 X）");
+                                                crate::shop::Hit::Prev => {
+                                                    shop_page = crate::shop::page_step(
+                                                        shop_page,
+                                                        -1,
+                                                        sh.items.len(),
+                                                    );
+                                                }
+                                                crate::shop::Hit::Next => {
+                                                    shop_page = crate::shop::page_step(
+                                                        shop_page,
+                                                        1,
+                                                        sh.items.len(),
+                                                    );
+                                                }
+                                                crate::shop::Hit::Ok => {
+                                                    let picked =
+                                                        shop_sel.and_then(|s| sh.items.get(s));
+                                                    match picked {
+                                                        // 一次买 1 件（原版口径；"买几个"
+                                                        // 二级菜单还没做）
+                                                        Some(it) => {
+                                                            n.shop_buy(sh.npc_id, &it.name, 1);
+                                                            println!("[net] 买入 {}", it.name);
+                                                        }
+                                                        None => {
+                                                            if let Some(n) = net.as_mut() {
+                                                                n.chat.push(
+                                                                    "先点一件商品再点 OK"
+                                                                        .to_string(),
+                                                                    C_CHAT_SYS,
+                                                                );
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                                 crate::shop::Hit::None => {}
                                             }
@@ -1319,7 +1348,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // 也应在移动结束后再补攻击动作，攻击完后再次判断是不是要走/跑"）。
                     // 不挡的话就是"边走边砍/同手同脚"。
                     Some(mir2_core::world::CombatStep::Approach { x, y, run }) => {
-                        if !swing_busy {
+                        // ⚠️ 绕障排队期间**别覆写**：`detour` 排好的那步侧移还没走，
+                        // 这儿每帧重算会把它冲掉 ⇒ 表现就是"顶着怪一遍遍推"
+                        //（用户 2026-10-10 第 6 条的另一半）。
+                        if !swing_busy && detour.is_none() {
                             move_target = Some((x, y, run));
                         }
                     }
@@ -1351,8 +1383,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             } else {
                 // 越界(2)/超速(1)，或绕障两次都不行 ⇒ 照原版 `ActionFailed`：
-                // 清走法目标 + 锁 [`MOVE_FAIL_LOCK_MS`]（"就近停下"）
+                // 清走法目标 + 锁 [`MOVE_FAIL_LOCK_MS`]（"就近停下"）。
+                // ⚠️ **追打目标也要一起放**（用户 2026-10-10 第 6 条）：追打那块
+                // 每帧都会把 move_target 重算回去 —— 只清 move_target 的话，
+                // 下一帧又凑近、又被拒、锁完接着顶，永远停不下来。
+                // 目标格被怪占着凑不近 ⇒ 就近停下，等玩家重新点。
                 move_target = None;
+                combat_target = None;
                 detour = None;
                 move_block_until = Instant::now() + Duration::from_millis(MOVE_FAIL_LOCK_MS);
                 println!(
@@ -1508,20 +1545,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cam.1 = cam.1.clamp(-2.0, max_y);
         }
 
-        // 货架来了 ⇒ 商店窗开（原版点商人时"对话 + 货架"是一起来的）；
-        // 货架没了（对话关了 / 换了图）⇒ 窗跟着关。换了个商人 ⇒ 页码归零。
-        match net.as_ref().and_then(|n| n.world.shop.as_ref()) {
-            Some(sh) => {
-                if shop_npc_seen != Some(sh.npc_id) {
-                    shop_npc_seen = Some(sh.npc_id);
-                    shop_page = 0;
-                    shop_open = true;
-                }
+        // 货架**新到了一份**（seq 变了）⇒ 开窗、翻回第一页、清选中；
+        // 顺手把**包裹也打开**（原版买东西时包裹就在旁边开着，用户第 7 条）。
+        let shop_seq_now = net.as_ref().map_or(0, |n| n.world.shop_seq);
+        if shop_seq_now != shop_seen_seq {
+            shop_seen_seq = shop_seq_now;
+            shop_page = 0;
+            shop_sel = None;
+            shop_open = shop_seq_now > 0;
+            if shop_open {
+                bag_open = true;
             }
-            None => {
-                shop_open = false;
-                shop_npc_seen = None;
-            }
+        }
+        // 货架被收走（对话关了 / 换图）⇒ 窗跟着关
+        if net.as_ref().is_none_or(|n| n.world.shop.is_none()) {
+            shop_open = false;
+            shop_sel = None;
         }
 
         // 待捡的地面物品：到了那格就捡；东西没了（别人捡走）就作废。
@@ -1592,6 +1631,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         dir,
                         net.as_ref(),
                         bag_page,
+                        shop_open,
                     )?;
                 }
             }
@@ -1606,6 +1646,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         dir,
                         net.as_ref(),
                         shop_page,
+                        shop_sel,
                     )?;
                 }
             }

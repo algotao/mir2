@@ -351,9 +351,14 @@ fn draw_prop_bar<'a, T>(
 
 /// 画面上的背包窗几何 `(窗口矩形, 当前页码)`（页码从 0 起）。
 ///
-/// **画与点命中都用它**（与对话窗同一条纪律）。
-pub(crate) fn bag_geom(bag_len: usize, page: usize) -> ((f32, f32, f32, f32), usize) {
-    let (x, y) = crate::layout::bag_rect();
+/// **画与点命中都用它**（与对话窗同一条纪律）。`shop_open`：商店开着时包裹
+/// 让位到右边（见 `layout::bag_pos`）。
+pub(crate) fn bag_geom(
+    bag_len: usize,
+    page: usize,
+    shop_open: bool,
+) -> ((f32, f32, f32, f32), usize) {
+    let (x, y) = crate::layout::bag_pos(shop_open);
     let pages = bag_len.div_ceil(crate::layout::BAG_PAGE_SLOTS).max(1);
     let page = page.min(pages - 1);
     ((x, y, crate::layout::BAG_W, crate::layout::BAG_H), page)
@@ -372,12 +377,13 @@ pub(crate) fn draw_bag<'a, T>(
     dir: &Path,
     net: Option<&Net>,
     page: usize,
+    shop_open: bool,
 ) -> Result<(), sdl3::Error> {
     let Some(n) = net else { return Ok(()) };
     if !n.world.in_world() {
         return Ok(());
     }
-    let (rect, page) = bag_geom(n.world.bag.len(), page);
+    let (rect, page) = bag_geom(n.world.bag.len(), page, shop_open);
     let (x, y, w, h) = rect;
     canvas.set_blend_mode(BlendMode::Blend);
     if ui.size(dir, "Prguse", crate::layout::BAG_BG).is_some() {
@@ -437,12 +443,13 @@ pub(crate) fn draw_bag<'a, T>(
         }
     }
 
-    // 金币（服务端 `Ability.gold`）
+    // 金币（服务端 `Ability.gold`）—— **只画数字**（原版横条左端自带金币图标；
+    // 用户 2026-10-10 第 8 条：不要"金币"字样，数字也别贴着横条下沿）
     if let Some(ab) = n.world.ability {
         texts.draw(
             canvas,
             tc,
-            &format!("金币 {}", ab.gold),
+            &ab.gold.to_string(),
             x + crate::layout::BAG_GOLD_X,
             y + crate::layout::BAG_GOLD_Y,
             (255, 230, 130),

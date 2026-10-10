@@ -553,6 +553,8 @@ func (s *Server) itemStack(u *pb.UserItem) (*protocol.ItemStack, bool) {
 		DuraMax: uint32(u.DuraMax),
 		// 实例号：卖/修/用都靠它认物（见 `item.proto` 的说明）
 		MakeIndex: u.MakeIndex,
+		// 类别：客户端按它挑点/捡的音效（原版 `ItemClickSound`）
+		StdMode: uint32(tmpl.StdMode),
 	}, true
 }
 

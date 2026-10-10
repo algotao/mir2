@@ -230,7 +230,9 @@ pub(crate) fn draw_map_view<'a, T>(
                 // ⚠️ NPC **不画血条/数值**（用户 2026-10-09 第 1 条：截图里"夏家店老板 7/35"
                 // 就是给它画了血条）。原版只给可打的对象画血条，NPC 只显示名字 ——
                 // 传 0/0 给 `draw_name_bar` 就不会铺那条血条（它按 max_hp > 0 判）。
-                let npc = e.kind == 2;
+                // **尸体也不画**（用户 2026-10-10 第 1 条）：死了血条还挂在尸体上很怪，
+                // 原版 `IsValidActor` 把死的排除在"可看血"之外。
+                let npc = e.kind == 2 || e.dead;
                 draw_actor(
                     canvas,
                     tc,

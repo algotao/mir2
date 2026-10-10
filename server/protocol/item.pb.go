@@ -44,7 +44,11 @@ type ItemStack struct {
 	// `CM_USERREPAIRITEM` / 双击使用发的都是 MakeIndex（`ClMain.pas:3711`、
 	// `FState.pas:5452`），不是槽位号（背包一压缩，槽位号就指到别人身上了）。
 	// 我们原来这一栏没下发 ⇒ 客户端**没法卖东西**（"背包槽 5"在两个面板之间会漂）。
-	MakeIndex     int32 `protobuf:"varint,9,opt,name=make_index,json=makeIndex,proto3" json:"make_index,omitempty"`
+	MakeIndex int32 `protobuf:"varint,9,opt,name=make_index,json=makeIndex,proto3" json:"make_index,omitempty"`
+	// 物品**类别**（`StdMode`，原版客户端挑声音用的就是它：`ItemClickSound`，
+	// `SoundUtil.pas:293-310` —— 药 108 / 武器 111 / 盔甲 112 / 戒指 113 / 手镯 117 /
+	// 项链 115 / 头盔 116 / 其他 118）。少了它客户端只能全体一个声。
+	StdMode       uint32 `protobuf:"varint,10,opt,name=std_mode,json=stdMode,proto3" json:"std_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -138,6 +142,13 @@ func (x *ItemStack) GetValues() []uint32 {
 func (x *ItemStack) GetMakeIndex() int32 {
 	if x != nil {
 		return x.MakeIndex
+	}
+	return 0
+}
+
+func (x *ItemStack) GetStdMode() uint32 {
+	if x != nil {
+		return x.StdMode
 	}
 	return 0
 }
@@ -990,7 +1001,7 @@ var File_item_proto protoreflect.FileDescriptor
 const file_item_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"item.proto\x12\x04mir2\x1a\fcommon.proto\"\xf0\x01\n" +
+	"item.proto\x12\x04mir2\x1a\fcommon.proto\"\x8b\x02\n" +
 	"\tItemStack\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\rR\x05index\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
@@ -1001,7 +1012,9 @@ const file_item_proto_rawDesc = "" +
 	"\x0fattribute_flags\x18\a \x01(\x04R\x0eattributeFlags\x12\x16\n" +
 	"\x06values\x18\b \x03(\rR\x06values\x12\x1d\n" +
 	"\n" +
-	"make_index\x18\t \x01(\x05R\tmakeIndex\"1\n" +
+	"make_index\x18\t \x01(\x05R\tmakeIndex\x12\x19\n" +
+	"\bstd_mode\x18\n" +
+	" \x01(\rR\astdMode\"1\n" +
 	"\bBagItems\x12%\n" +
 	"\x05items\x18\x01 \x03(\v2\x0f.mir2.ItemStackR\x05items\"B\n" +
 	"\aAddItem\x12\x12\n" +

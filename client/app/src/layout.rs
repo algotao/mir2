@@ -157,21 +157,35 @@ pub(crate) const BAG_GRID_Y: f32 = 8.0;
 pub(crate) const BAG_PAGE_SLOTS: usize = BAG_COLS * BAG_ROWS;
 
 /// 关闭按钮（`X`）在窗口内的位置 —— 素材右下角那个红叉。
-pub(crate) const BAG_CLOSE_X: f32 = 306.0;
-pub(crate) const BAG_CLOSE_Y: f32 = 174.0;
-pub(crate) const BAG_CLOSE_W: f32 = 24.0;
+///
+/// ⚠️ 坐标是**拿 `wzldump` 导出 `Prguse[3]` 逐像素量出来的**（2026-10-10）：红色
+/// X 的像素落在 x 264..294 / y 184..196 ⇒ 命中区 (262,180,36,20)。原来写的
+/// (306,174,24,20) 偏右上了一大截 —— 那儿是背板边框，点它当然没反应
+///（用户 2026-10-10 第 3 条：背包的关闭按钮不生效）。
+pub(crate) const BAG_CLOSE_X: f32 = 262.0;
+pub(crate) const BAG_CLOSE_Y: f32 = 180.0;
+pub(crate) const BAG_CLOSE_W: f32 = 36.0;
 pub(crate) const BAG_CLOSE_H: f32 = 20.0;
 
 /// 金币文字在窗口内的落点（下方那条宽横条里）。
-pub(crate) const BAG_GOLD_X: f32 = 56.0;
-pub(crate) const BAG_GOLD_Y: f32 = 186.0;
-
-/// 背包窗落点：**左侧、对话窗下面**（`(8, 188)`）。
 ///
-/// 原版背包是可拖动的，默认在右上；右上在我们这儿被**小地图**占着，
-/// 左上被**对话窗**占着 ⇒ 放"左上但要避开对话窗"的位置，一眼就能看到。
-pub(crate) fn bag_rect() -> (f32, f32) {
-    (8.0, 4.0 + crate::input::DIALOG_H + 8.0)
+/// ⚠️ 只画**数字**不画"金币"两个字（用户 2026-10-10 第 8 条：原版横条左侧是
+/// 一枚金币图标 + 数字；我们的板子上图标已自带，再写"金币"就重复了）。
+/// y 取 184：横条本体在 y≈181..200，原来写 186 加上"金币 "前缀后视觉偏下。
+pub(crate) const BAG_GOLD_X: f32 = 56.0;
+pub(crate) const BAG_GOLD_Y: f32 = 184.0;
+
+/// 背包窗落点。
+///
+/// 平时：**左侧、对话窗下面**（`(8, 188)`）—— 右上被小地图占着、左上被对话窗占着。
+/// **商店开着时挪到右边**（用户 2026-10-10 第 7 条：原版买东西时包裹就在右侧，
+/// 左边的位置让给商品列表）。
+pub(crate) fn bag_pos(shop_open: bool) -> (f32, f32) {
+    if shop_open {
+        (WIN_W as f32 - BAG_W - 8.0, 52.0)
+    } else {
+        (8.0, 4.0 + crate::input::DIALOG_H + 8.0)
+    }
 }
 
 /// 第 `slot` 格（**页内下标**）在窗口内的矩形 `(x, y, w, h)`。

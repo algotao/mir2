@@ -128,6 +128,8 @@ pub struct ShopItem {
     pub stock: u32,
     /// 要不要弹"买几个"的二级菜单（原版 `submenu`：可堆叠类为 0）。
     pub submenu: bool,
+    /// 最大持久（商品列表第三栏"持久"，原版买窗的列）。
+    pub dura_max: u32,
 }
 
 /// 正在看的商店：哪个商人、货架上有什么。
@@ -171,6 +173,9 @@ pub struct BagItem {
     /// 卖/修/用都靠它认物（原版发的就是它，不是槽位号）—— 没有它，客户端只能说
     /// "背包第 5 格"，而背包一压缩那格就指到别的物品上去了（见 `item.proto`）。
     pub make_index: i32,
+    /// 物品**类别**（`StdMode`）—— 挑点/捡的音效用（原版 `ItemClickSound`，
+    /// `SoundUtil.pas:293-310`：药 108 / 武器 111 / 盔甲 112 / …）。
+    pub std_mode: u32,
 }
 
 impl BagItem {
@@ -183,6 +188,7 @@ impl BagItem {
             dura: it.dura,
             dura_max: it.dura_max,
             make_index: it.make_index,
+            std_mode: it.std_mode,
         }
     }
 
@@ -294,6 +300,10 @@ pub struct World {
     /// 原版点商人时"对话"与"货架"是**同一个窗口**里来的（`SM_MERCHANTDLG` +
     /// `SM_SENDGOODSLIST`），所以两个同时挂着才是对的（见服务端 `handleClickNPC`）。
     pub shop: Option<Shop>,
+
+    /// 货架**版本号**：每收到一条 `ShopList` 就 +1（客户端"该不该开窗"看它 ——
+    /// 看 npc_id 的话，同一个商人第二次点"购买"就不会重开了）。
+    pub shop_seq: u64,
 
     /// 视野内的**地面物品**（掉落/捡拾都在这条账上；换图清空）。
     ///
@@ -677,6 +687,10 @@ impl World {
                 }
             }
             Body::ShopList(l) => {
+                // ⚠️ `shop_seq` 每次**收到货架**都 +1：客户端开不开窗跟着它走 ——
+                // 只对比 npc_id 的话，同一个商人第二次点"购买"（用户 2026-10-10
+                // 第 5 条：对话结束后再到"购买"，购买窗口无法打开）就不会重开了。
+                self.shop_seq += 1;
                 self.shop = Some(Shop {
                     npc_id: l.npc_id,
                     items: l
@@ -687,6 +701,7 @@ impl World {
                             price: i.price,
                             stock: i.stock,
                             submenu: i.submenu,
+                            dura_max: i.dura_max,
                         })
                         .collect(),
                 });
@@ -1543,12 +1558,14 @@ mod bag_tests {
                     price: 100,
                     stock: 100,
                     submenu: false,
+                    dura_max: 0,
                 },
                 proto::ShopItem {
                     name: "木剑".into(),
                     price: 500,
                     stock: 100,
                     submenu: true,
+                    dura_max: 20,
                 },
             ],
         })));
