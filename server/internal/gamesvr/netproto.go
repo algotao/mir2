@@ -485,6 +485,8 @@ func (ps *protoSession) dispatch(env *protocol.Envelope) (keep bool) {
 		return ps.onMoveItem(body.MoveItem)
 	case *protocol.Envelope_UseItem:
 		return ps.onUseItem(body.UseItem)
+	case *protocol.Envelope_RepairItem:
+		return ps.onRepairItem(body.RepairItem)
 	case *protocol.Envelope_Butch:
 		return ps.onButch(body.Butch)
 	default:
@@ -1762,6 +1764,32 @@ func (ps *protoSession) onUseItem(m *protocol.UseItem) bool {
 		return ps.rejectOutOfOrder("还没进世界")
 	}
 	ps.srv.doEat(nil, p, int(m.GetSlot()))
+	return true
+}
+
+// onRepairItem 修 `slot` 那件（原版 `CM_USERREPAIRITEM`）。
+//
+// 档位由消息里的 `special` 定（特修）；脚本头没声明 `@s_repair` 的商人会被
+// [`Server.doRepairSlot`] 挡掉。修之前必须先走过 `@repair`/`@s_repair` 那个对话
+// 入口（服务端会发 `RepairCostNotice` ⇒ 客户端才知道该进入"点物品修理"模式），
+// 与 legacy 的 `SM_SENDUSERREPAIR` 打开修理窗是同一条次序。
+func (ps *protoSession) onRepairItem(m *protocol.RepairItem) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	if p.dialog == nil {
+		ps.srv.notice(p, "先找修理的商人对话（点 @repair / @s_repair）")
+		return true
+	}
+	npc, _, ok := ps.srv.dialogMerchant(p, p.dialog.npcID)
+	if !ok {
+		ps.srv.notice(p, "不在修理的商人旁边（或这段对话已经关了）")
+		return true
+	}
+	slot := int(m.GetSlot())
+	ui := p.bagAt(slot)
+	ps.srv.doRepairSlot(nil, p, npc, slot, ui, true, m.GetSpecial())
 	return true
 }
 

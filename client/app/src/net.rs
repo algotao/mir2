@@ -573,6 +573,14 @@ impl Net {
         let _ = self.sess.cmds.send(mir2_net::Cmd::UseItem { slot });
     }
 
+    /// 修理背包物品（`special` = 特修；要先走过 `@repair`/`@s_repair` 那个对话入口）。
+    pub(crate) fn bag_repair(&self, slot: u32, special: bool) {
+        let _ = self
+            .sess
+            .cmds
+            .send(mir2_net::Cmd::RepairItem { slot, special });
+    }
+
     /// 挖肉（原版 `CM_BUTCH`）：`Alt` + 点动物尸体。服务端按"2 格内 + 是死了的动物"校验。
     pub(crate) fn butch(&self, target_id: u64, x: i32, y: i32, direction: i32) {
         let _ = self.sess.cmds.send(mir2_net::Cmd::Butch {

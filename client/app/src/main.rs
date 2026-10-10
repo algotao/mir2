@@ -733,6 +733,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // 那段）⇒ 按下这一刻就得把位置记上（光等 `MouseMotion` 会漏掉
                             // "按下后一动不动"的那种按住）。
                             mouse = (x, y);
+                            // ⚠️ **本次点击是否被某个浮窗消费**（todo 第 7 条）：
+                            // 浮窗是画在世界**之上**的，点在窗里就不该再穿透到世界
+                            //（原来各窗只清一次移动目标，后面那步"点 NPC"照跑 ⇒
+                            //  隔着窗点一下照样跟 NPC 说话）。窗命中时置 true，
+                            // 下面的"世界"分支（移动/挖肉/点 NPC）统一跳过。
+                            let mut ui_consumed = false;
                             // 左键才判"单击"（用户第 3 条说的是左键）；右键仍是按住=跑
                             if mouse_btn == MouseButton::Left {
                                 press_at = Some(Instant::now());
@@ -818,6 +824,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     }
                                                 }
                                                 println!("[net] 包裹 {} → {}", held, idx);
+                                            }
+                                        } else if let Some(special) = n.world.repair {
+                                            // 修理模式（`@repair`/`@s_repair` 那个对话入口打开）
+                                            // ⇒ 点物品 = **修它**（原版是拖进修理窗）
+                                            if let Some(Some(it)) = n.world.bag.get(idx) {
+                                                if it.make_index != 0 {
+                                                    n.bag_repair(idx as u32, special);
+                                                    println!(
+                                                        "[net] 修理 {}（{}）",
+                                                        it.name,
+                                                        if special { "特修" } else { "普修" }
+                                                    );
+                                                }
                                             }
                                         } else if let Some(Some(it)) = n.world.bag.get(idx) {
                                             // 1. 左键单击 = 拾取
@@ -948,6 +967,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         move_target = None;
                                         press_at = None;
                                         held_move = None;
+                                        ui_consumed = true;
                                     }
                                 }
                             }
@@ -960,6 +980,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     {
                                         let (wx, wy, ww, wh) = crate::status::panel(bg);
                                         if x >= wx && x < wx + ww && y >= wy && y < wy + wh {
+                                            ui_consumed = true;
                                             match crate::status::hit((x - wx, y - wy)) {
                                                 crate::status::Hit::Close => {
                                                     status_open = false;
@@ -1016,6 +1037,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     && y >= by
                                     && y < by + crate::layout::BAG_H;
                                 if inside {
+                                    ui_consumed = true;
                                     let (lx, ly) = (x - bx, y - by);
                                     let on_close = (crate::layout::BAG_CLOSE_X
                                         ..crate::layout::BAG_CLOSE_X + crate::layout::BAG_CLOSE_W)
@@ -1066,6 +1088,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     {
                                         let (wx, wy, ww, wh) = crate::shop::panel();
                                         if x >= wx && x < wx + ww && y >= wy && y < wy + wh {
+                                            ui_consumed = true;
                                             let base = shop_page * crate::shop::ROWS;
                                             let rows = sh.items.len().saturating_sub(base);
                                             match crate::shop::hit((x - wx, y - wy), rows) {
@@ -1128,6 +1151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             {
                                 let (sx, sy, sw, sh) = crate::shop::sell_panel();
                                 if x >= sx && x < sx + sw && y >= sy && y < sy + sh {
+                                    ui_consumed = true;
                                     match crate::shop::sell_hit((x - sx, y - sy)) {
                                         // 右上角的**红色关闭叉**（素材自带）⇒ 关卖窗
                                         crate::shop::SellHit::Close => {
@@ -1190,17 +1214,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             //      NPC 的精灵比格子高，点它的头/肩时格子是**上面那一格**，
                             //      只看格子就是"点了没反应、人还往那边走"；
                             //   2. 兜底再用格子（光标正好压在它脚下那格时，`hover` 可能为空）。
-                            if let Some(n) = net.as_ref() {
-                                let hit = hover
-                                    .filter(|id| n.world.npc_kind(*id))
-                                    .or_else(|| n.world.npc_at(cell.0, cell.1));
-                                if let Some(id) = hit {
-                                    n.npc_click(id);
-                                    combat_target = None;
-                                    move_target = None;
-                                    press_at = None; // 松开时别再改判成"走一格"
-                                    held_move = None;
-                                    println!("[net] 点 NPC ActorId={id}（等 NpcSay）");
+                            if !ui_consumed {
+                                if let Some(n) = net.as_ref() {
+                                    let hit = hover
+                                        .filter(|id| n.world.npc_kind(*id))
+                                        .or_else(|| n.world.npc_at(cell.0, cell.1));
+                                    if let Some(id) = hit {
+                                        n.npc_click(id);
+                                        combat_target = None;
+                                        move_target = None;
+                                        press_at = None; // 松开时别再改判成"走一格"
+                                        held_move = None;
+                                        println!("[net] 点 NPC ActorId={id}（等 NpcSay）");
+                                    }
                                 }
                             }
                         }
@@ -1927,7 +1953,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         sell_placed,
                     )?;
                 }
-                // ③ 抓在手上的物品：跟着鼠标走（原版就是把东西"拿在手里"）。
+                // ③ 物品悬停提示：鼠标压在包裹格上 ⇒ 显示名字/类别/耐久/卖价
+                if bag_open {
+                    if let Some(n) = net.as_ref() {
+                        let (bx, by) = crate::layout::bag_pos(shop_open);
+                        let lx = mouse.0 - bx;
+                        let ly = mouse.1 - by;
+                        if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
+                            let idx = bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
+                            if let Some(Some(it)) = n.world.bag.get(idx) {
+                                if it.make_index != 0 && sell_held.is_none() {
+                                    hud::draw_item_tip(
+                                        &mut canvas,
+                                        &tex_creator,
+                                        &mut ui_texts,
+                                        mouse,
+                                        it,
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                }
+                // ④ 抓在手上的物品：跟着鼠标走（原版就是把东西"拿在手里"）。
                 //
                 // ⚠️ 必须画在卖窗**之后**（最上层）：原来夹在买窗与卖窗之间 ⇒
                 // 物品移到卖窗上时被卖窗遮住（用户 2026-10-10）。

@@ -4123,3 +4123,33 @@ Go 25 包 + 客户端 86/143/7/3 全过，clippy 0。真库迁移后 `algo` 的�
 
 **验收**：Go 25 包 + 客户端 92/145/7/3，clippy 0。
 新增：`TestStackCarriesSellPrice`、`TestDoMoveItemSwapAndMove`。
+
+---
+
+## D-52 客户端体验三件：浮窗挡点击 / 物品悬停提示 / 修理与特修
+
+**① 浮窗挡点击**（todo 第 7 条，一直挂着）
+按下时先算"这次点击落在哪个浮窗里" ⇒ `ui_consumed = true`（对话 / 背包 / 状态 /
+商店 / 卖窗五处），后面的**世界**分支（移动意图 / 挖肉 / **点 NPC**）统一跳过。
+原来是各窗只清一次 `move_target`，后面那步"点 NPC"照跑 ⇒ 隔着窗点一下照样跟
+NPC 说话（浮窗画在世界之上，本来就该吃掉这些点击）。
+
+**② 物品悬停提示**
+鼠标压在包裹格上 ⇒ 光标右下出提示：名字 / 类别（`StdMode`）/ 数量 / 耐久 / **卖价**；
+越界翻到另一侧。底板自绘（官方那块 `Prguse[394]` 被官方作者在状态窗里注释掉了）。
+手上抓着东西时不弹（那时图标跟着鼠标走）。
+
+**③ 修理 / 特修**
+协议里的 `RepairItem`(0x080F) / `RepairCostNotice`(0x0810) **两端都没接线** ⇒
+点脚本里的 `@repair` 对新协议玩家毫无反应（legacy 只发 `SM_SENDUSERREPAIR`，
+会被 `protoDown` 丢掉）。补齐：
+
+- 服务端：`handleRepairItem` 抽成 `doRepairSlot`（legacy 与新协议共用）；
+  `@repair`/`@s_repair` 对 proto 发 `RepairCostNotice`（进入"点物品就修"的模式）；
+  `Envelope_RepairItem` 新 case。失败/成功回执都走 `notice`（proto 收不到 `sysMsg`）
+- 客户端：`world.repair`（`Some(特修?)`），关对话时收走；点包裹物品 = 修它
+
+档位照原版：`@s_repair` 特修（价 ×3、不磨损上限）／其余普修（`DuraMax -= 缺损/30`），
+且都要脚本头声明过对应标签。
+
+**验收**：Go 25 包 + 客户端 92/146/7/3，clippy 0；新增 `修理模式随对话开合`。

@@ -314,6 +314,20 @@ func (s *Server) handleDlgSelectText(c net.Conn, p *Player, body string) {
 		// 两者都要脚本头声明了对应标签才开（原版查 `m_boS_repair`/`m_boRepair`）。
 		if s.dialogAllows(p, strings.ToLower(tag)) {
 			if npc := s.dialogNPC(p); npc != nil {
+				// ⚠️ 新协议：上面那条 legacy 包会被 `protoDown` 丢掉 ⇒ proto 玩家
+				// **永远打不开修理**（点了 @repair 没反应）。发 `RepairCostNotice`
+				// 告诉客户端"进入点物品修理模式 + 是哪一档"（费用还没定 ——
+				// 原版也是打开修理窗之后才按选中的物品算钱，见 `doRepairSlot`）。
+				if sink := p.protoOut; sink != nil {
+					sink.enqueue(&protocol.Envelope{Body: &protocol.Envelope_RepairCostNotice{
+						RepairCostNotice: &protocol.RepairCostNotice{
+							Slot:    0,
+							Cost:    0,
+							Special: strings.ToLower(tag) == "@s_repair",
+						}}})
+					s.notice(p, "点包裹里要修的物品（右键/点选）→ 修好后耐久会刷新")
+					return
+				}
 				s.send(c, proto.SM_SENDUSERREPAIR, 0, uint16(npc.ID), 0, 0, "")
 			}
 		}

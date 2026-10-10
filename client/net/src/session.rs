@@ -111,6 +111,8 @@ pub enum Cmd {
     MoveItem { from: u32, to: u32 },
     /// 使用背包物品（原版 `CM_EAT`；包裹中双击物品 = 使用）。
     UseItem { slot: u32 },
+    /// 修理背包物品（原版 `CM_USERREPAIRITEM`；`special` = 特修，价格 ×3 但不磨损上限）。
+    RepairItem { slot: u32, special: bool },
     /// 挖肉（原版 `CM_BUTCH`）：按住 Alt 点动物尸体（死了的、鸡/鹿/狼这类动物）。
     Butch {
         target_id: u64,
@@ -326,6 +328,11 @@ fn writer_loop(stream: &mut TcpStream, cmds: Receiver<Cmd>) {
             Cmd::MoveItem { from, to } => Body::MoveItem(proto::MoveItem { from, to }),
             Cmd::UseItem { slot } => Body::UseItem(proto::UseItem {
                 slot,
+                client_tick: 0,
+            }),
+            Cmd::RepairItem { slot, special } => Body::RepairItem(proto::RepairItem {
+                slot,
+                special,
                 client_tick: 0,
             }),
             Cmd::Butch {

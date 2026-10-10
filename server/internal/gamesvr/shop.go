@@ -387,6 +387,29 @@ func (s *Server) handleRepairItem(c net.Conn, p *Player, m wire.Packet) {
 	}
 	makeIdx := int32(proto.MakeLong(m.Head.Param, m.Head.Tag))
 	slot, ui, inBag := s.itemByMakeIndex(p, makeIdx, m.Body, true)
+	// 档位判定（原版比的是玩家当前标签，**不区分大小写**）
+	super := p.dialog != nil && p.dialog.label == "@s_repair"
+	s.doRepairSlot(c, p, npc, slot, ui, inBag, super)
+}
+
+// doRepairSlot 修理 `slot` 那件（legacy `CM_USERREPAIRITEM` 与新协议 `RepairItem` 共用）。
+//
+// `inBag` = 这件在背包里（false = 已穿戴）。档位由调用方定：
+//
+//	普修：脚本头要声明 `@repair`，修满但**永久磨损上限**（`DuraMax -= 缺损/30`）；
+//	特修：脚本头要声明 `@s_repair`，价格 ×3，修满且**不**磨损上限。
+//
+// ⚠️ 失败/成功都对 proto 玩家走 `notice`（新协议客户端收不到 legacy 的
+// `SM_USERREPAIRITEM_FAIL`/`sysMsg`），不然"点了没反应"。
+func (s *Server) doRepairSlot(
+	c net.Conn,
+	p *Player,
+	npc *entity.Monster,
+	slot int,
+	ui *pb.UserItem,
+	inBag bool,
+	super bool,
+) {
 	if ui == nil || ui.Index == 0 || ui.DuraMax == 0 {
 		s.repairFail(c, p, "该物品不在身上（或没有耐久）")
 		return
@@ -395,8 +418,6 @@ func (s *Server) handleRepairItem(c net.Conn, p *Player, m wire.Packet) {
 	if it == nil {
 		return
 	}
-	// 档位判定（原版比的是玩家当前标签，**不区分大小写**）
-	super := p.dialog != nil && p.dialog.label == "@s_repair"
 	if super {
 		if !s.dialogAllows(p, "@s_repair") {
 			s.repairFail(c, p, "这个商人不会特修")
@@ -460,7 +481,7 @@ func (s *Server) handleRepairItem(c net.Conn, p *Player, m wire.Packet) {
 	if !inBag {
 		where = fmt.Sprintf("装备槽%d", slot)
 	}
-	s.sysMsg(c, fmt.Sprintf("%s完成（%s），花费 %d 金币，耐久 %d/%d",
+	s.notice(p, fmt.Sprintf("%s完成（%s），花费 %d 金币，耐久 %d/%d",
 		tier, it.Name, cost, ui.Dura, ui.DuraMax))
 	log.Printf("%s 在 %s 处 %s%s %s（-%d 金币，余 %d，耐久 %d/%d）",
 		p.Char.Name, npc.Name, tier, where, it.Name, cost, p.gold(), ui.Dura, ui.DuraMax)
@@ -469,7 +490,8 @@ func (s *Server) handleRepairItem(c net.Conn, p *Player, m wire.Packet) {
 // repairFail 回执失败（原版 `RM_USERREPAIRITEM_FAIL` ⇒ `SM_USERREPAIRITEM_FAIL`）。
 func (s *Server) repairFail(c net.Conn, p *Player, why string) {
 	s.send(c, proto.SM_USERREPAIRITEM_FAIL, 0, 0, 0, 0, "")
-	s.sysMsg(c, why)
+	// ⚠️ proto 玩家收不到 `sysMsg` ⇒ 走 `notice`（对 legacy 是同一句，只是换个出口）
+	s.notice(p, why)
 }
 
 // handleSellItem 处理卖出（CM_USERSELLITEM = 1013）。

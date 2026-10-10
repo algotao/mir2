@@ -313,6 +313,10 @@ pub struct World {
     pub map_name: String,
     /// 开着的 NPC 对话（`NpcSay` 带来、`NpcClose`/选到 `@exit` 时清）。
     pub dialog: Option<NpcDialog>,
+    /// **修理模式**：`Some(特修?)` —— 走过 `@repair`/`@s_repair` 那个对话入口后
+    /// 服务端发 `RepairCostNotice` ⇒ 客户端进入"点物品就修"的模式；对话关掉即清。
+    pub repair: Option<bool>,
+
     /// 开着的**商店**（`ShopList` 带来；对话关掉 / 换图时清）。
     ///
     /// 原版点商人时"对话"与"货架"是**同一个窗口**里来的（`SM_MERCHANTDLG` +
@@ -673,11 +677,19 @@ impl World {
             // 少了这条分支 ⇒ `NpcClose` 被末尾的 `_ => Change::None` 静默吞掉
             // ⇒ 点了退出、面板还挂着 —— 用户报的正是这个（2026-10-10）。
             // （ESC 与右上角 X 有效，是因为它们**在本地**手动调了 `close_dialog()`。）
+            // 修理模式（`@repair` / `@s_repair` 那个对话入口打开）
+            Body::RepairCostNotice(r) => {
+                self.repair = Some(r.special);
+                Change::None
+            }
             Body::NpcClose(c) => {
+                // 关对话 ⇒ 修理模式收走（模式是"这段对话"的一部分）
+                self.repair = None;
                 // 只认"当前这个 NPC"的关闭：别的 NPC 的关闭不该关掉眼前这段
                 if self.dialog.as_ref().is_some_and(|d| d.npc_id == c.npc_id) {
                     self.dialog = None;
-                    // 货架跟着一起关：原版"对话 + 货架"是同一次点击来的同一个窗口
+                    self.repair = None; // 修理模式也跟着收
+                                        // 货架跟着一起关：原版"对话 + 货架"是同一次点击来的同一个窗口
                     self.shop = None;
                     Change::World
                 } else {
@@ -1666,6 +1678,31 @@ mod bag_tests {
         assert_eq!(shop.mode, SHOP_MODE_SELL);
         assert!(shop.is_sell(), "mode=2 ⇒ 卖窗（放物品的槽）");
         assert_eq!(shop.npc_id, 9, "卖东西回 `ShopSell` 要靠这个商人号");
+    }
+
+    /// **修理模式**：`@repair`/`@s_repair` 那个对话入口 ⇒ 服务端发 `RepairCostNotice`；
+    /// 关掉对话（`NpcClose`）时模式要一起收走（不然之后点包裹会被当成"修它"）。
+    #[test]
+    fn 修理模式随对话开合() {
+        let mut w = World::default();
+        assert!(w.repair.is_none(), "默认不在修理模式");
+
+        w.apply(&env(Body::RepairCostNotice(proto::RepairCostNotice {
+            slot: 0,
+            cost: 0,
+            special: false,
+        })));
+        assert_eq!(w.repair, Some(false), "`@repair` ⇒ 普修");
+
+        w.apply(&env(Body::RepairCostNotice(proto::RepairCostNotice {
+            slot: 0,
+            cost: 0,
+            special: true,
+        })));
+        assert_eq!(w.repair, Some(true), "`@s_repair` ⇒ 特修");
+
+        w.apply(&env(Body::NpcClose(proto::NpcClose { npc_id: 7 })));
+        assert!(w.repair.is_none(), "对话关了 ⇒ 修理模式收走");
     }
 
     /// 旧服务端（没带 mode，字段为 0）⇒ 按**买**算，别把窗开没了。
