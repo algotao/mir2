@@ -250,6 +250,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 状态窗（F10）—— 同样是**纯客户端窗口状态**：数据全在 `world.ability` / `world.equip` 里
     //（服务端一直在下发，见 `status.rs` 的说明），开关不跟服务端同步。
     let mut status_open = false;
+    // 状态窗的页码（官方 4 页，我们做 2 页：0 装备 / 1 属性）
+    let mut status_page = 0usize;
     // 怪声音的随机源（`sfx::monster_ambient` 的 1/8 判定；不为这一处引 rand 依赖）
     let mut sfx_rng: u32 = 0x1234_5678;
     // 悬停可攻击目标时把光标换成"准星"（Crystal 是 `MouseCursor.Attack`，
@@ -715,38 +717,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
-                            // ②″ F10 状态窗：点 X = 关窗；点装备槽 = 报一下那件；点窗里别处 = 吞掉
-                            //（与背包窗同一套处理；两个窗一右一左，不会叠）
+                            // ②″ F10 状态窗：点 X = 关窗、点箭头 = 翻页、点槽 = 报一下那件；
+                            // 点在窗里别处 = 吞掉（与背包窗同一套）
                             if status_open {
-                                let (wx, wy, _, _) = crate::status::panel((crate::window::WIN_W, crate::window::WIN_H));
-                                let inside = x >= wx
-                                    && x < wx + crate::status::W
-                                    && y >= wy
-                                    && y < wy + crate::status::H;
-                                if inside {
-                                    let (lx, ly) = (x - wx, y - wy);
-                                    if crate::status::on_close((lx, ly)) {
-                                        status_open = false;
-                                        println!("[ui] 状态窗关闭（点 X）");
-                                    } else if let Some(slot) = crate::status::equip_slot_at((lx, ly)) {
-                                        if let Some(n) = net.as_ref() {
-                                            let msg = match n.world.equip.get(slot) {
-                                                Some(Some(it)) => {
-                                                    format!("装备槽 {}：{}", slot + 1, it.name)
+                                if let Some(dir) = asset_dir.as_deref() {
+                                    if let Some(bg) =
+                                        ui.size(dir, crate::status::BG_LIB, crate::status::BG)
+                                    {
+                                        let (wx, wy, ww, wh) = crate::status::panel(bg);
+                                        if x >= wx && x < wx + ww && y >= wy && y < wy + wh {
+                                            match crate::status::hit((x - wx, y - wy)) {
+                                                crate::status::Hit::Close => {
+                                                    status_open = false;
+                                                    println!("[ui] 状态窗关闭（点 X）");
                                                 }
-                                                _ => format!("装备槽 {} 是空的", slot + 1),
-                                            };
-                                            println!("[ui] {msg}");
-                                            let shown = trunc(&msg, 30);
-                                            if let Some(n) = net.as_mut() {
-                                                n.chat.push(shown, C_CHAT_SYS);
+                                                crate::status::Hit::Arrow(d) => {
+                                                    status_page =
+                                                        crate::status::page_step(status_page, d);
+                                                    println!("[ui] 状态窗翻到第 {} 页", status_page);
+                                                }
+                                                crate::status::Hit::Slot(slot) => {
+                                                    if let Some(n) = net.as_ref() {
+                                                        let name = crate::status::slot_name(slot);
+                                                        let msg = match n.world.equip.get(slot) {
+                                                            Some(Some(it)) => format!(
+                                                                "装备槽 {}（{}）：{}",
+                                                                slot + 1,
+                                                                name,
+                                                                it.name
+                                                            ),
+                                                            _ => format!(
+                                                                "装备槽 {}（{}）是空的",
+                                                                slot + 1,
+                                                                name
+                                                            ),
+                                                        };
+                                                        println!("[ui] {msg}");
+                                                        let shown = trunc(&msg, 30);
+                                                        if let Some(n) = net.as_mut() {
+                                                            n.chat.push(shown, C_CHAT_SYS);
+                                                        }
+                                                    }
+                                                }
+                                                crate::status::Hit::None => {}
                                             }
+                                            combat_target = None;
+                                            move_target = None;
+                                            press_at = None;
+                                            held_move = None;
                                         }
                                     }
-                                    combat_target = None;
-                                    move_target = None;
-                                    press_at = None;
-                                    held_move = None;
                                 }
                             }
                             // ②′ 背包窗开着：点格子 = 把"看到的是哪件"反馈到聊天区
@@ -1379,21 +1399,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 net.as_ref(),
                 combat_target,
             )?;
-            // 状态窗（F10）：与背包窗同一层（世界与 HUD 之上）
-            if status_open {
-                if let Some(dir) = asset_dir.as_deref() {
-                    status::draw(
-                        &mut canvas,
-                        &tex_creator,
-                        &mut ui,
-                        &mut ui_texts,
-                        &mut sprites,
-                        dir,
-                        net.as_ref(),
-                        Instant::now(),
-                    )?;
-                }
-            }
             // 背包窗画在**世界与 HUD 之上**（它是浮窗；原版也是最后贴）。
             // 素材目录缺失时和 `draw_map_view` 一样什么都不画（那屏已经打了横幅提示）。
             if bag_open {
@@ -1449,6 +1454,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 bigmap_on,
                 (WIN_W, WIN_H),
             )?;
+            // 状态窗（F10）画在**小地图之后**：两者都在右上（官方也是贴右缘），
+            // 窗口该压在小地图上面，否则标题栏与关闭 X 会被盖住（命中与视觉就不一致了）。
+            if status_open {
+                if let Some(dir) = asset_dir.as_deref() {
+                    status::draw(
+                        &mut canvas,
+                        &tex_creator,
+                        &mut ui,
+                        &mut ui_texts,
+                        dir,
+                        net.as_ref(),
+                        status_page,
+                    )?;
+                }
+            }
         } else if mode == 4 {
             if let Some(scene) = select_scene.as_mut() {
                 scene.draw(

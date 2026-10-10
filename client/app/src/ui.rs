@@ -123,6 +123,18 @@ impl<'a> UiCache<'a> {
         Some((r.width as u32, r.height as u32))
     }
 
+    /// 某张界面图的**锚点** `(px, py)`（只读容器记录，不解压）。取不到返回 `None`。
+    ///
+    /// 状态窗的版式靠它：官方把"裸体底图 + 头发 + 衣服/武器/头盔"**全部画在
+    /// 「内容原点 + 各自锚点」**上（`FState.pas:2918-2969`）—— 锚点是素材作者
+    /// 按身体对齐**烤进图里**的，所以不能自己猜偏移（2026-10-10 用离线合成验证过：
+    /// 换成"相对底图"就错位，裤子穿不到腿上）。
+    pub fn anchor(&mut self, dir: &Path, lib: &'static str, idx: u32) -> Option<(i16, i16)> {
+        let w = self.lib(dir, lib)?;
+        let r = w.record(idx as usize)?;
+        Some((r.anchor_x, r.anchor_y))
+    }
+
     /// 一张界面图的**不透明包围盒**（图内坐标）。取不到/全透明 ⇒ `None`。
     ///
     /// 选角界面靠它把小人的**不透明部分**对齐到凹槽上（见 `Sprite::alpha_bbox`）。

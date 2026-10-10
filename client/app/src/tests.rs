@@ -1567,49 +1567,61 @@ fn 挥刀声按武器形状取() {
     assert_eq!(sound::swing(0), 57, "形状 0（赤手）是拳头那一档");
 }
 
-/// F10 状态窗的版式：13 个装备槽都要装在背板里、互不重叠、**画与命中同源**。
+/// F10 状态窗版式：**照官方**（`Prguse[370]` 232×325、槽位是围着人形一圈的固定坐标）。
 ///
-/// 用户 2026-10-10「把 F10 补齐」—— 以前按 F10 什么都不会发生（数据其实早就在客户端里：
-/// `AbilityUpdate` 带着 dc/mc/sc/ac、`EquippedItems` 带着 13 个槽位，只是没窗口画）。
-/// 这条测试把"槽位都装得下"钉住：**换背板素材（`Prguse3[4]`）时必须重算版式**。
+/// 用户 2026-10-10「把 F10 补齐」。⚠️ 第一版是自己设计的版式（`Prguse3[4]` + 2×7 网格槽 +
+/// 拿世界实体画小人），被两条事实推翻：① `world.entities` 里**没有自己** ⇒ 小人永远空白；
+/// ② 官方用的是 `Prguse[370]` 窗框（属性标签**烤在图里**）+ `Prguse[376/377]` 裸体底图 +
+/// `StateItem.wil[Looks]` 大图，槽位是**固定坐标**。现在全部照官方（见 `status.rs` 模块头）。
 #[test]
 fn 状态窗版式() {
-    let (x, y, w, h) = crate::status::panel((1024, 768));
+    let (x, y, w, h) = crate::status::panel((232, 325));
     assert_eq!(
         (w, h),
-        (crate::status::W, crate::status::H),
-        "背板尺寸 = Prguse3[4] 的原生尺寸"
+        (232.0, 325.0),
+        "窗框尺寸 = Prguse[370] 的原始像素（不缩放）"
     );
-    assert_eq!(crate::status::BG, 4, "背板图号");
-    assert!(x + w <= 1024.0 && y + h <= 768.0, "窗口要装得下");
-    // 13 个槽：都在背板里、互不重叠、中心点必须命中回自己
+    assert_eq!(y, crate::status::TOP, "官方落点：距顶 52");
+    assert_eq!(x, 1024.0 - 232.0, "官方落点：贴屏幕右缘");
+    assert_eq!(crate::status::BG, 370, "窗框图号");
+    // 9 个槽：都在窗框里、互不重叠、中心点必须命中回自己（画与命中同源）
     let mut seen: Vec<(f32, f32)> = Vec::new();
-    for i in 0..crate::status::EQUIP_SLOTS {
-        let (sx, sy, sw, sh) = crate::status::equip_slot_rect(i);
+    for &(slot, sx, sy, sw, sh) in crate::status::SLOTS.iter() {
         assert!(
             sx >= 0.0 && sy >= 0.0 && sx + sw <= w && sy + sh <= h,
-            "第 {i} 槽（{sx},{sy},{sw},{sh}）越出背板 {w}x{h}"
+            "槽 {slot}（{sx},{sy},{sw},{sh}）越出窗框 {w}x{h}"
         );
-        assert!(!seen.contains(&(sx, sy)), "第 {i} 槽与前面的重叠");
+        assert!(!seen.contains(&(sx, sy)), "槽 {slot} 与前面的重叠");
         seen.push((sx, sy));
         assert_eq!(
-            crate::status::equip_slot_at((sx + sw / 2.0, sy + sh / 2.0)),
-            Some(i),
-            "第 {i} 槽中心应命中它自己（画与命中同源）"
+            crate::status::hit((sx + sw / 2.0, sy + sh / 2.0)),
+            crate::status::Hit::Slot(slot),
+            "槽 {slot} 中心应命中它自己"
         );
     }
-    // 槽位不许压到下面的属性文本（改版式时最容易撞的地方）
-    let (_, last_y, _, last_h) = crate::status::equip_slot_rect(crate::status::EQUIP_SLOTS - 1);
-    assert!(
-        last_y + last_h <= crate::status::TEXT_Y,
-        "最后一排槽（底 {}）压到属性文本（顶 {}）了",
-        last_y + last_h,
-        crate::status::TEXT_Y
+    // 关闭 X / 翻页箭头：命中判定落在官方坐标上
+    let c = crate::status::CLOSE;
+    assert_eq!(
+        crate::status::hit((c.0 + 1.0, c.1 + 1.0)),
+        crate::status::Hit::Close
     );
-    // 关闭按钮在右上角，且小坐标不算命中
-    assert!(crate::status::on_close((
-        crate::status::CLOSE_X + 2.0,
-        crate::status::CLOSE_Y + 2.0
-    )));
-    assert!(!crate::status::on_close((0.0, 0.0)));
+    let u = crate::status::ARROW_UP_RECT;
+    assert_eq!(
+        crate::status::hit((u.0 + 1.0, u.1 + 1.0)),
+        crate::status::Hit::Arrow(-1)
+    );
+    let d = crate::status::ARROW_DOWN_RECT;
+    assert_eq!(
+        crate::status::hit((d.0 + 1.0, d.1 + 1.0)),
+        crate::status::Hit::Arrow(1)
+    );
+    assert_eq!(crate::status::hit((0.0, 0.0)), crate::status::Hit::None);
+    // 翻页**循环**（官方 4 页，我们做 2 页）
+    assert_eq!(crate::status::page_step(0, 1), 1);
+    assert_eq!(crate::status::page_step(1, 1), 0);
+    assert_eq!(crate::status::page_step(0, -1), crate::status::PAGES - 1);
+    // 槽位中文名（只用于聊天反馈，但别把下标写错）
+    assert_eq!(crate::status::slot_name(0), "衣服");
+    assert_eq!(crate::status::slot_name(1), "武器");
+    assert_eq!(crate::status::slot_name(4), "头盔");
 }

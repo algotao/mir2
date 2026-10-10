@@ -108,7 +108,8 @@ else                Result := MakeWord(0, m_btDressEffType);
 | `Weight` / `DuraMax` / `AC..SC` / `Need*` / `Price` / `Stock` | **纯数值** | 负重、持久、攻防、需求、价格库存 | `ItmUnit.pas:696-698` 等 |
 | `btValue[]`（**运行时**，不在 DB） | 特效 | `[3]`幸运 `[4]`诅咒 `[5]`命中·准确 `[6]`速度 `[7]`神圣 `[10]`升级标记 | `ItmUnit.pas:117-132`、`ObjBase.pas:2396/23641-23658`（**语义为交叉推断**，无集中注释表） |
 
-**一句话记牢**：`Shape` = 画出来的样子，`Looks` = 背包里的图标，`Appr` = 怪/NPC 外表号，
+**一句话记牢**：`Shape` = 画出来的样子，`Looks` = 背包/大图库里的**图号**（`Items.wil` 是背包小图、
+`StateItem.wil` 是**状态窗/人物身上的大图**，同一件物品两套尺寸），`Appr` = 怪/NPC 外表号，
 `RaceImg` = 种族（我们 Go 里把 merchant.txt 的"主要部分"也叫 `RaceImg`，**那是 Appr**，
 见 §6.3 术语对照 —— 这个词最容易读错）。
 
@@ -369,7 +370,7 @@ if StdItem.AniCount > 0        then m_btDressEffType := StdItem.AniCount;
 | 身体层 `Hum.wzl` | ✅ | `client/app/src/actor.rs:375` |
 | 武器层 `Weapon.wzl` | ✅ | `client/app/src/actor.rs:472` |
 | 头发层 `hair2.wzl` | ✅ 2026-10-10 | `client/app/src/actor.rs` 的 `hair_sprite`、`core::actor::hair_index` |
-| **F10 状态窗**（小人 + 13 装备槽 + 属性） | ✅ 2026-10-10 | `client/app/src/status.rs`（背板 `Prguse3[4]`） |
+| **F10 状态窗**（官方版式：`Prguse[370]` 窗框 + `[376/377]` 人形 + `StateItem` 大图 + 固定槽位） | ✅ 2026-10-10 | `client/app/src/status.rs`（口径见 D-74） |
 | 怪物 `Mon%d` / NPC `Npc.wzl` | ✅ | `client/core/src/actor.rs:280/352` |
 | 图标 `Items.wzl[Looks]` | ✅ | 背包窗口 |
 | 技能/地图/HUD/小地图 | ✅ | 各自模块 |
