@@ -11,6 +11,7 @@ use mir2_core::map::{Map, TileDraw, LAYERS_ALL, UNIT_X, UNIT_Y};
 use mir2_core::wzl::Wzl;
 
 use sdl3::rect::Rect;
+use sdl3::render::FRect;
 use sdl3::render::{TextureCreator, WindowCanvas};
 
 use crate::actor::{actor_rect, draw_actor, SpriteCache};
@@ -147,6 +148,30 @@ pub(crate) fn draw_map_view<'a, T>(
             continue;
         }
         draw_tile(canvas, tc, libs, tiles, dir, d, BAR_TOP, cp.sub)?;
+    }
+    // 地上的东西（掉落物）：画在图块之上、人物之下 —— 走到跟前看得见、点它可捡。
+    // 图标 = `Items.wzl[looks]`（与背包图标同一批图），在格子里**水平居中、贴格底**。
+    if let Some(n) = net {
+        if n.world.in_world() {
+            for gi in n.world.ground.values() {
+                let (sx, sy) = crate::geom::cell_to_screen(cam, gi.x, gi.y);
+                if let Some((iw, ih)) = ui.size(dir, "Items", gi.looks) {
+                    let (iw, ih) = (iw as f32, ih as f32);
+                    let dx = sx + (UNIT_X as f32 - iw) / 2.0;
+                    let dy = sy + UNIT_Y as f32 - ih - 2.0;
+                    let _ = ui.draw_src(
+                        canvas,
+                        tc,
+                        dir,
+                        "Items",
+                        gi.looks,
+                        FRect::new(0.0, 0.0, iw, ih),
+                        FRect::new(dx, dy, iw, ih),
+                        255,
+                    );
+                }
+            }
+        }
     }
     canvas.set_clip_rect(None::<Rect>);
 

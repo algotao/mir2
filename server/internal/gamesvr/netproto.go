@@ -479,6 +479,8 @@ func (ps *protoSession) dispatch(env *protocol.Envelope) (keep bool) {
 		return ps.onShopBuy(body.ShopBuy)
 	case *protocol.Envelope_ShopSell:
 		return ps.onShopSell(body.ShopSell)
+	case *protocol.Envelope_PickupItem:
+		return ps.onPickupItem(body.PickupItem)
 	default:
 		// ClientHello（重复发）也走这里 —— 握手之后它不再有意义，按"不认识"处理。
 		ps.noteUnknown(env)
@@ -1141,6 +1143,8 @@ func (ps *protoSession) enterWorld(chr *storage.Character) bool {
 	// 让 legacy 那半边也知道他来了（别人看他那条腿要发 SM_TURN）：
 	// 发给**他自己**的那些 legacy 包会被 protoDown 丢掉（正是它存在的理由）。
 	s.updateVision(p)
+	// 视野内的**地面物品**（掉在地上的东西进图就该看见，不然杀完怪还得走两步才"突然出现"）
+	s.sendGroundInView(p)
 	log.Printf("%s: %s 进图（新协议 ActorId=%d 地图=%s 坐标=(%d,%d) 视野实体=%d）",
 		ps.clientIP, p.Char.Name, p.Obj.ID, env.GetEnterWorld().MapName,
 		p.Obj.PosX(), p.Obj.PosY(), len(states))
@@ -1218,6 +1222,8 @@ func (ps *protoSession) onMoveInput(m *protocol.MoveInput) bool {
 
 	// 换格之后视野差集要重算：新进来的（EntityAppear）/ 走出去的（EntityDisappear）。
 	ps.srv.updateVision(p)
+	// 走进新格 ⇒ 视野里可能有还没发过的地面物品（发过的有账本，不会重发）
+	ps.srv.sendGroundInView(p)
 	// 火墙的第二条伤害路径：踩上去立刻结算一次（ObjBase.pas:20190 Walk）。
 	ps.srv.wallBurnAtCell(p.Obj.MapRef(), newX, newY)
 	return true
@@ -1361,6 +1367,8 @@ func (s *Server) sendMapSnapshotTo(p *Player, mapID string) {
 	// ⚠️ 快照就是"出现"：先填视野账本，否则随后的 updateVision 会把同一批实体
 	// 再当"新进入视野"推一遍（与 enterWorld 同一个坑，见那里的注释）。
 	p.visible.Update(inView)
+	// 换图 = 另一批地面物品："发过"的账本要清掉重来
+	p.groundSent = nil
 	p.protoOut.enqueue(&protocol.Envelope{Body: &protocol.Envelope_ChangeMap{
 		ChangeMap: &protocol.ChangeMap{
 			MapId:       0, // ⚠️ 语义未定（v0 恒 0，以 map_name 为准），见 protocol.md §11
@@ -1376,6 +1384,8 @@ func (s *Server) sendMapSnapshotTo(p *Player, mapID string) {
 	if p.Char != nil && p.Char.Data != nil {
 		p.protoOut.ability(p.Char.Data.Abil, p.Char.Data.Gold)
 	}
+	// 换图后视野内的地面物品（同 enterWorld）
+	s.sendGroundInView(p)
 }
 
 // tickProtoVision 是**只发给新协议玩家**的周期性视野同步。
@@ -1672,11 +1682,10 @@ func (ps *protoSession) onNpcClick(n *protocol.NpcClick) bool {
 		return true
 	}
 	ps.srv.startDialog(nil, p, sc, id)
-	// ⚠️ **商品列表也要发**：原版点商人时 `SM_MERCHANTDLG` 与 `SM_SENDGOODSLIST`
-	// 是一起来的（对话与货架本来就是同一个窗口），legacy 的 `handleClickNPC` 也是
-	// `startDialog` + `sendGoods` 连着发。新协议原来漏了这一句 ⇒ proto 玩家
-	// **永远收不到 `ShopList`** ⇒ 商店窗开不起来（客户端无从知道货架上有什么）。
-	ps.srv.sendGoods(nil, p, npc, def)
+	// ⚠️ **货架不在这里发**（用户 2026-10-10：「商店图应在"打开 交易市场"时弹出，
+	// 而不是开启对话就出」）—— 商品列表等玩家点了脚本里的 @buy/@trading 入口
+	//（`dlgSelectIndex` 的 case "buy"）才发。原版虽然点商人就发 `SM_SENDGOODSLIST`，
+	// 但商店**窗口**是点入口才弹的 ⇒ 我们把"发数据"也推迟到同一时刻。
 	log.Printf("%s 与 %s 开始对话（脚本 %s，新协议）", p.Char.Name, npc.Name, sc.Name)
 	return true
 }
@@ -1711,6 +1720,16 @@ func (ps *protoSession) onShopSell(m *protocol.ShopSell) bool {
 		return ps.rejectOutOfOrder("还没进世界")
 	}
 	ps.srv.onShopSell(nil, p, m)
+	return true
+}
+
+// onPickupItem 捡起地面物品（原版 `CM_PICKUP`，按格子认物；这里按 **ground_id**）。
+func (ps *protoSession) onPickupItem(m *protocol.PickupItem) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	ps.srv.pickupGroundByID(nil, p, m.GetGroundId())
 	return true
 }
 

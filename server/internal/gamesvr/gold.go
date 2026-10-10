@@ -9,6 +9,7 @@ import (
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/proto"
 	"github.com/algotao/mir2/server/internal/world"
+	"github.com/algotao/mir2/server/protocol"
 )
 
 // 金币的"掉落—拾取—丢弃"链路。
@@ -81,6 +82,32 @@ func (s *Server) sendGroundItem(pl *Player, gi *GroundItem) {
 	if pl == nil || gi == nil {
 		return
 	}
+	// **新协议**：结构化的 `GroundItemShow`（proto 玩家的 legacy 下行会被丢弃，
+	// 只发 `SM_ADDITEM` 等于没发 —— 与 `sendGoods`/`npcSay` 同一条纪律）。
+	if sink := pl.protoOut; sink != nil {
+		var stack *protocol.ItemStack
+		if gi.Gold > 0 {
+			stack = &protocol.ItemStack{
+				Index: 1, // 金币在物品表里的占位索引（客户端只用 name/looks/count）
+				Name:  goldName,
+				Looks: uint32(gi.Looks),
+				Count: uint32(gi.Gold),
+			}
+		} else {
+			built, ok := s.itemStack(gi.Item)
+			if !ok {
+				return
+			}
+			stack = built
+		}
+		sink.enqueue(&protocol.Envelope{Body: &protocol.Envelope_GroundItemShow{
+			GroundItemShow: &protocol.GroundItemShow{
+				GroundId: uint64(gi.ID),
+				Position: &protocol.Vec2{X: int32(gi.X), Y: int32(gi.Y)},
+				Item:     stack,
+			}}})
+		return
+	}
 	var ci *proto.ClientItem
 	if gi.Gold > 0 {
 		ci = &proto.ClientItem{}
@@ -103,6 +130,63 @@ func (s *Server) broadcastGroundItem(gi *GroundItem) {
 		return
 	}
 	s.broadcastToViewers(gi.Map, gi.X, gi.Y, func(pl *Player) { s.sendGroundItem(pl, gi) })
+}
+
+// sendGroundInView 把**视野内还没发过**的地面物品发给 p。
+//
+// ⚠️ 为什么要有"发过"的账本：掉落那一刻 `broadcastGroundItem` 已经发过一次，
+// 进图/走动再全量重发的话，客户端会看到同一件东西反复"落下来"。
+// 账本在换图时清空（`ChangeMap` 那条路），物品消失时由 `broadcastGroundHide` 划掉。
+func (s *Server) sendGroundInView(p *Player) {
+	if p == nil || p.Obj == nil {
+		return
+	}
+	m := p.Obj.MapRef()
+	px, py := p.Obj.PosX(), p.Obj.PosY()
+	r := s.cfg.viewRange
+	s.mu.RLock()
+	var inView []*GroundItem
+	for _, gi := range s.world.ground {
+		if gi.Map != m {
+			continue
+		}
+		if dx, dy := gi.X-px, gi.Y-py; dx < -r || dx > r || dy < -r || dy > r {
+			continue
+		}
+		if !p.groundSent[gi.ID] {
+			inView = append(inView, gi)
+		}
+	}
+	s.mu.RUnlock()
+	for _, gi := range inView {
+		if p.groundSent == nil {
+			p.groundSent = make(map[uint32]bool)
+		}
+		p.groundSent[gi.ID] = true
+		s.sendGroundItem(p, gi)
+	}
+	if len(inView) > 0 {
+		log.Printf("%s 视野内下发 %d 件地面物品", p.Char.Name, len(inView))
+	}
+}
+
+// broadcastGroundHide 一件地面物品消失了（被捡走）⇒ 视野内的人都要划掉它。
+//
+// legacy 是 `SM_ITEMHIDE`；新协议是 `GroundItemHide`，顺手把"发过"的账划掉 ——
+// 不划的话它再落回同格（放回地面的那几条路径）就不会重发了。
+func (s *Server) broadcastGroundHide(gi *GroundItem) {
+	if gi == nil {
+		return
+	}
+	s.broadcastToViewers(gi.Map, gi.X, gi.Y, func(pl *Player) {
+		if sink := pl.protoOut; sink != nil {
+			sink.enqueue(&protocol.Envelope{Body: &protocol.Envelope_GroundItemHide{
+				GroundItemHide: &protocol.GroundItemHide{GroundId: uint64(gi.ID)}}})
+			delete(pl.groundSent, gi.ID)
+			return
+		}
+		s.send(pl.conn, proto.SM_ITEMHIDE, int32(gi.ID), uint16(gi.X), uint16(gi.Y), 0, "")
+	})
 }
 
 // spawnGroundGold 在 (x,y) 放一堆金币，**同格已有金币就并进去**（原版 `AddToMap` 的语义）。
@@ -299,8 +383,6 @@ func (s *Server) pickupGold(c net.Conn, p *Player, gi *GroundItem) {
 		return
 	}
 	s.send(c, proto.SM_GOLDCHANGED, int32(nowGold), 0, 0, 0, "")
-	s.broadcastToViewers(gi.Map, gi.X, gi.Y, func(other *Player) {
-		s.send(other.conn, proto.SM_ITEMHIDE, int32(gi.ID), uint16(gi.X), uint16(gi.Y), 0, "")
-	})
+	s.broadcastGroundHide(gi)
 	log.Printf("%s 捡起金币 %d 于 (%d,%d)（共 %d）", p.Char.Name, gi.Gold, gi.X, gi.Y, nowGold)
 }

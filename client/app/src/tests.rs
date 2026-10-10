@@ -1488,14 +1488,14 @@ fn 对话正文装不下时要能滚() {
     assert!(th >= 12.0, "滑块别缩得看不见（46 行时按比例只有 ~4px）");
 }
 
-/// 商店窗：**几何不压别的窗** + 命中（商品行 / 关闭叉）+ 翻页。
+/// 商店窗：**几何不压对话/背包窗** + 命中（商品行 / 关闭叉）+ 翻页。
 ///
-/// 数据是服务端 `ShopList` 下发的（原版点商人时"对话 + 货架"一起来），
-/// 窗里点一行 = 买一件（`ShopBuy`）；背包开着时点背包格 = 卖（`ShopSell`）。
+/// 背板 = 对话窗那张 `Prguse[384]`（2026-10-10 用户报"列表与窗口错位、不该加背景"
+/// ⇒ 换官方板 + 复用对话那套内边距/行高/关闭钮几何，行底色不画）。
 #[test]
 fn 商店窗几何与命中() {
     let (x, y, w, h) = crate::shop::panel();
-    // ① 不与另外三块窗重叠：对话窗在左上、状态窗在右上
+    // ① 对话窗在左上（8..424）⇒ 商店窗整块在它右边；背包窗（8..344）也在下面一排
     let (dx, _dy, dw, _dh) = input::dialog_panel();
     assert!(
         x >= dx + dw,
@@ -1503,16 +1503,16 @@ fn 商店窗几何与命中() {
         x + w,
         dx + dw
     );
-    let (sxp, _syp, swp, _shp) = crate::status::panel((232, 325));
-    assert!(
-        x + w <= sxp,
-        "商店窗右缘 {} 不该压到状态窗（{sxp}..{}）",
-        x + w,
-        sxp + swp
-    );
     assert!(y + h <= 768.0, "整块窗要落在 1024×768 画面内");
+    // 版式来自对话背板 ⇒ 尺寸必须与它一致（不然就是又借错板了）
+    assert_eq!((w, h), (input::DIALOG_W, input::DIALOG_H));
+    assert_eq!(
+        crate::shop::ROWS,
+        input::DIALOG_MAX_LINES - 1,
+        "顶部一行留给标题（商店/金币），其余才是商品"
+    );
 
-    // ② 命中：第 0 行、关闭叉、行之间的空白
+    // ② 命中：第 0 行、关闭叉（与对话窗同一个，背板自带）、行间空白
     let (rx, ry, rw, rh) = crate::shop::row_rect(0);
     assert_eq!(
         crate::shop::hit((rx + 2.0, ry + 2.0), 3),
@@ -1529,22 +1529,33 @@ fn 商店窗几何与命中() {
         crate::shop::Hit::None,
         "只有 1 件商品时，第二行不该点得到"
     );
-    // 关闭叉（窗口右上角）
-    let (cx, cy, cw, ch) = (306.0, 4.0, 24.0, 20.0);
+    // 关闭叉 = 对话窗那颗（背板右上角自带的）
     assert_eq!(
-        crate::shop::hit((cx + cw / 2.0, cy + ch / 2.0), 3),
+        crate::shop::hit(
+            (
+                input::DIALOG_CLOSE_X + input::DIALOG_CLOSE_W / 2.0,
+                input::DIALOG_CLOSE_Y + input::DIALOG_CLOSE_H / 2.0
+            ),
+            3
+        ),
         crate::shop::Hit::Close
     );
+    // 标题行**不是**商品行（点它不该买）
+    assert_eq!(
+        crate::shop::hit((input::DIALOG_PAD_X + 4.0, input::DIALOG_PAD_Y + 4.0), 3),
+        crate::shop::Hit::None,
+        "标题行（商店/金币）不可点"
+    );
 
-    // ③ 翻页：一个商人最多 20 件 ⇒ 2 页；到头绕回
+    // ③ 翻页：一页 7 行；20 件 ⇒ 3 页；到头绕回
     assert_eq!(crate::shop::pages(1), 1);
-    assert_eq!(crate::shop::pages(10), 1);
-    assert_eq!(crate::shop::pages(11), 2, "第 11 件要翻页");
-    assert_eq!(crate::shop::pages(20), 2);
+    assert_eq!(crate::shop::pages(7), 1);
+    assert_eq!(crate::shop::pages(8), 2, "第 8 件要翻页");
+    assert_eq!(crate::shop::pages(20), 3);
     assert_eq!(crate::shop::page_step(0, 1, 20), 1);
-    assert_eq!(crate::shop::page_step(1, 1, 20), 0, "到头绕回");
-    assert_eq!(crate::shop::page_step(0, -1, 20), 1, "往前翻也绕回");
-    assert_eq!(crate::shop::page_step(5, 0, 20), 1, "静止时夹回末页");
+    assert_eq!(crate::shop::page_step(2, 1, 20), 0, "到头绕回");
+    assert_eq!(crate::shop::page_step(0, -1, 20), 2, "往前翻也绕回");
+    assert_eq!(crate::shop::page_step(5, 0, 20), 2, "静止时夹回末页");
 }
 
 /// 小地图**区域标注**（用户 2026-10-09 选的 (a)）：表由 `tools/gen_map_labels.py`

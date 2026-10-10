@@ -72,6 +72,11 @@ type Player struct {
 	// ⚠️ 只在**注册进 world.players 之前**赋值一次，之后只读（见 handleConn）。
 	snapReq chan chan *storage.Character
 
+	// groundSent 记"哪些地面物品已经发给这名玩家了"（`sendGroundInView` 的账本）：
+	// 进图/换图时清空重发（`ChangeMap` 那条路），捡走/消失时由 `broadcastGroundHide` 划掉。
+	// ⚠️ 只在持有 s.mu 或单玩家 goroutine 上动（与 visible 一个纪律）。
+	groundSent map[uint32]bool
+
 	// protoOut 非 nil ⇒ 这名玩家走**新协议**（见 netproto.go）：
 	// 实体事件（出现/消失/移动）从它出去，而不再走 legacy 的 `s.send`。
 	//

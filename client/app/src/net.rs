@@ -459,6 +459,11 @@ impl Net {
         });
     }
 
+    /// 捡起地面物品（服务端要求**人站在物品那格上**才会受理）。
+    pub(crate) fn pickup(&self, ground_id: u64) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::PickupItem { ground_id });
+    }
+
     /// 把"这一帧看到的"折进各实体的动画状态：移动了就给补间的起止，动作变了就重置计时。
     ///
     /// ⚠️ 只在**变化时**刷新 `changed_at`：`EntityMove`/`EntityAction` 不是每帧都来，
@@ -525,6 +530,22 @@ impl Net {
             // 否则走路的 600ms 里挥砍就播完了）。**受击/死亡不推迟** —— 被打/死要立刻表现。
             let urgent = action.is_some_and(|v| !mir2_core::world::action::is_attack(v));
             if a.action_seq != action_seq {
+                // 怪**倒下**那一刻 ⇒ 播它的死亡声（原版 `SM_NOWDEATH` →
+                // `PlaySound(m_nDieSound)`，`Actor.pas:2368-2375`；
+                // 编号 = `200 + appr*10 + 5`，`Actor.pas:2330`）。用户 2026-10-10：
+                // 「怪物死亡时的音效没有」——原来只接了受击的尖叫，死亡这条漏了。
+                if action == Some(mir2_core::world::action::DEATH) {
+                    if let Some(e) = self.world.entities.get(&id) {
+                        if e.kind == 1 {
+                            if let Some(f) = e.feature.as_ref() {
+                                self.pending_sfx.push(mir2_core::sound::monster(
+                                    f.appr as u16,
+                                    mir2_core::sound::MonsterSound::Die,
+                                ));
+                            }
+                        }
+                    }
+                }
                 a.action_seq = action_seq;
                 if a.moving(now) && !urgent {
                     a.pending_action = Some((action, action_seq));
@@ -742,6 +763,9 @@ pub(crate) fn to_cmd(body: &mir2_protocol::envelope::Body, session: i32) -> Opti
             npc_id: s.npc_id,
             make_index: s.make_index,
             count: s.count,
+        },
+        Body::PickupItem(p) => mir2_net::Cmd::PickupItem {
+            ground_id: p.ground_id,
         },
         // 世界输入不走这里（`Cmd::Move`/`Attack` 由输入那条路直发）；服务端单向消息
         // （实体事件、心跳…）本来就不是命令 ⇒ 到这里是 `None`，由调用方打日志。

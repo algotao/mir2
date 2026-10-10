@@ -274,56 +274,86 @@ func (s *Server) handlePickup(c net.Conn, p *Player, m wire.Packet) {
 			break
 		}
 	}
-	if found != nil {
-		delete(s.world.ground, found.ID)
-	}
 	s.mu.Unlock()
 
 	if found == nil {
 		return
 	}
+	s.pickupGroundItem(c, p, found, x, y)
+}
 
-	// ⚠️ 掉落归属（原版 ClientPickUpItem，ObjBase.pas:1699-1707）：怪物掉的东西
-	// 2 分钟内只有**击杀者本人与队友**能捡，过了才谁都能捡（见 canPickUpGround）。
-	// 不通过时把物品放回地面，别凭空吞掉。
-	if !s.canPickUpGround(p, found) {
+// pickupGroundByID 新协议的捡起（`PickupItem.ground_id`）。
+//
+// 与 legacy 的差别只在"怎么找到那件东西"：这里按 **id** 找，但**同样的位置校验**
+// 一格都不能少 —— id 由客户端发来，不加"人必须站在那格上"的话，照样能隔空取物。
+func (s *Server) pickupGroundByID(c net.Conn, p *Player, groundID uint64) {
+	if s.dealingBlocks(p, "捡东西") {
+		return
+	}
+	s.mu.RLock()
+	gi := s.world.ground[uint32(groundID)]
+	s.mu.RUnlock()
+	if gi == nil || gi.Map != p.Obj.MapRef() {
+		return
+	}
+	// 与 legacy 的 CM_PICKUP 同一条校验：**人站在物品那格上**才能捡
+	if p.Obj.PosX() != gi.X || p.Obj.PosY() != gi.Y {
+		return
+	}
+	s.pickupGroundItem(c, p, gi, gi.X, gi.Y)
+}
+
+// pickupGroundItem 捡起 `found`（legacy 与新协议共用的后半段）。
+//
+// 归属 / 超重 / 背包满任何一条不过都把物品**放回地面**，不能凭空吞掉；
+// 金币走另一条路（原版金币分支在物品分支之前，ObjBase.pas:1708-1730）。
+// `x, y` 只用于日志。
+func (s *Server) pickupGroundItem(c net.Conn, p *Player, found *GroundItem, x, y int) {
+	// ⚠️ **先原子地拿走**：并发捡同一件时只有一个能拿到，其余走"放回"路径
+	//（原版也是先从地图删再判，`ClientPickUpItem` 同一结构）。
+	s.mu.Lock()
+	if cur, ok := s.world.ground[found.ID]; !ok || cur != found {
+		s.mu.Unlock()
+		return // 已经被别人捡走了
+	}
+	delete(s.world.ground, found.ID)
+	s.mu.Unlock()
+	putBack := func() {
 		s.mu.Lock()
 		s.world.ground[found.ID] = found
 		s.mu.Unlock()
+	}
+
+	// ⚠️ 掉落归属（原版 ClientPickUpItem，ObjBase.pas:1699-1707）：怪物掉的东西
+	// 2 分钟内只有**击杀者本人与队友**能捡，过了才谁都能捡（见 canPickUpGround）。
+	if !s.canPickUpGround(p, found) {
+		putBack()
 		s.sysMsg(c, sCanotPickUpItem)
 		return
 	}
 
-	// 金币堆走另一条路（原版金币分支在物品分支**之前**，见 ObjBase.pas:1708-1730）：
-	// 直接进钱袋，不过背包/负重。
+	// 金币堆走另一条路：直接进钱袋，不过背包/负重
+	//（溢出时 `pickupGold` 自己会把金币放回地面）。
 	if found.Gold > 0 {
 		s.pickupGold(c, p, found)
 		return
 	}
 
-	// ⚠️ 超重不许捡（原版 IsAddWeightAvailable，ObjBase.pas:2085-2091）；
-	// 与"背包满"一样把物品**放回地面**，不能凭空吞掉。
+	// ⚠️ 超重不许捡（原版 IsAddWeightAvailable，ObjBase.pas:2085-2091）。
 	if s.pickBlockedByWeight(p, found.Item.Index) {
-		s.mu.Lock()
-		s.world.ground[found.ID] = found
-		s.mu.Unlock()
+		putBack()
 		return
 	}
 
 	// 背包满则放回地面，不能凭空吞掉物品
 	if s.addToBag(p, found.Item) < 0 {
-		s.mu.Lock()
-		s.world.ground[found.ID] = found
-		s.mu.Unlock()
+		putBack()
 		s.send(c, proto.SM_EAT_FAIL, 0, 0, 0, 0, "")
 		return
 	}
 
-	// 地面物品消失
-	s.broadcastToViewers(found.Map, found.X, found.Y, func(other *Player) {
-		s.send(other.conn, proto.SM_ITEMHIDE, int32(found.ID),
-			uint16(found.X), uint16(found.Y), 0, "")
-	})
+	// 地面物品消失（legacy SM_ITEMHIDE / 新协议 GroundItemHide）
+	s.broadcastGroundHide(found)
 	// 背包全量刷新
 	s.sendBagItems(c, p)
 	// 捡进来了 ⇒ 背包负重变了，重算（客户端负重条要跟着动）

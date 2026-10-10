@@ -1,66 +1,60 @@
-//! NPC 商店窗：点商人后跟着对话一起开（原版"对话 + 货架"是同一次点击来的）。
+//! NPC 商店窗：点对话里的「打开 交易市场」（`@buy`）才弹出 —— **不是**点 NPC 就出
+//!（用户 2026-10-10：「商店图应在"打开 交易市场"时弹出，而不是开启对话就出」）。
 //!
 //! 数据来自服务端下发的 `ShopList`（`world.shop`），买/卖发 `ShopBuy` / `ShopSell`
 //! —— 原版是 `CM_USERBUYITEM` / `CM_USERSELLITEM`，两条都按**名字 / 实例号**认物。
 //!
 //! ⚠️ 窗里点一下 = 买/卖 **1 个**（原版就是一次一件：货架存量那一栏不是数量，
-//! 见服务端 `shop.go` 的 `handleBuyItem`）。
+//! 见服务端 `shop.go` 的 `handleBuyItem`）。卖 = 商店窗开着时**点背包里的东西**。
+//!
+//! 版式：用**对话窗同一块官方背板**（`Prguse[384]`，416×176，青铜框内沿、行高、
+//! 关闭叉的几何都是现成的）—— 用户 2026-10-10 报过「商品列表与窗口错位了，且不应
+//! 增加背景」：早先借用背包板（`Prguse[3]`）自己排行还画了行底色，两边都对不上。
+//! 换成对话板之后：行高/内边距/关闭钮**全部复用 `input::DIALOG_*` 那一套常量**，
+//! 背板一变它们自己跟着变；行底色不再画（官方的列表就是白字直接排在板面上）。
 
 use sdl3::pixels::Color;
 use sdl3::render::{BlendMode, FRect, TextureCreator, WindowCanvas};
 
 use std::path::Path;
 
-use crate::gfx::fill;
 use crate::net::Net;
 use crate::ui;
 
-/// 背板：先用**背包窗那张**（`Prguse[3]`，336×270，已确认是一块窗）。
-///
-/// ⚠️ 原版的"商店窗"是独立的一张，本仓还没比对出它对应的图号 ⇒ 先用一块
-/// **确认长得像窗**的板，版式（列表 + 价格）照原版。找到真图号后改这一个常量即可，
-/// 几何与命中都不用动。
-const BG_LIB: &str = "Prguse";
-const BG: u32 = 3;
+use crate::input::{
+    DIALOG_BG, DIALOG_CLOSE_H, DIALOG_CLOSE_W, DIALOG_CLOSE_X, DIALOG_CLOSE_Y, DIALOG_H,
+    DIALOG_LINE_H, DIALOG_MAX_LINES, DIALOG_PAD_X, DIALOG_PAD_Y, DIALOG_W,
+};
 
-/// 背板的原生尺寸。
-const W: f32 = 336.0;
-const H: f32 = 270.0;
-
-/// 一页几行（行高 20，留出顶部标题与底部金币条）。
-pub(crate) const ROWS: usize = 10;
-const ROW_H: f32 = 20.0;
-
-/// 列表左上角（窗口内坐标）。
-const LIST_X: f32 = 12.0;
-const LIST_Y: f32 = 28.0;
-
-/// 价格右对齐的 x（窗口内坐标）。
-const PRICE_X: f32 = 232.0;
-
-/// 标题与金币的落点（窗口内坐标）。
-const TITLE_AT: (f32, f32) = (12.0, 6.0);
-const GOLD_AT: (f32, f32) = (12.0, 246.0);
-
-/// 关闭按钮（右上角那个红叉；**自己画**，不依赖背板上的图案）。
-const CLOSE: (f32, f32, f32, f32) = (306.0, 4.0, 24.0, 20.0);
+/// 一页几行：**顶部一行是"商店 + 金币"的标题行**，剩下才是商品
+///（`(176-32)/18 = 8` 行 ⇒ 商品 7 行）。
+pub(crate) const ROWS: usize = DIALOG_MAX_LINES - 1;
 
 /// 文字颜色（与对话窗同一套：正文近白、价格/标题黄）。
 const C_TEXT: (u8, u8, u8) = (238, 238, 214);
 const C_PRICE: (u8, u8, u8) = (232, 220, 96);
 
-/// 窗的落点：**对话窗右边**（对话窗占 `8..424` ⇒ 这里从 432 起；不与背包窗
-/// （`8..344`）、状态窗（`792..1024`）重叠）。
+/// 窗的落点：**对话窗右边**（对话窗占 `8..424` ⇒ 这里从 432 起，同一行排开）。
+///
+/// 背包窗（`8..344`）也在下面一排，互不相压。状态窗（792 起）开着时会叠上来 ——
+/// 浮窗叠浮窗原版也常见（它俩本来都可关），不做互斥。
 pub(crate) fn panel() -> (f32, f32, f32, f32) {
-    (8.0 + crate::input::DIALOG_W + 8.0, 4.0, W, H)
+    (8.0 + DIALOG_W + 8.0, 4.0, DIALOG_W, DIALOG_H)
 }
 
 /// 第 `row` 行（**页内下标**）在窗口内的矩形。画与命中同源。
+///
+/// ⚠️ `y` 起点是**标题行下面**：`DIALOG_PAD_Y + 行高`。
 pub(crate) fn row_rect(row: usize) -> (f32, f32, f32, f32) {
-    (LIST_X, LIST_Y + row as f32 * ROW_H, W - LIST_X * 2.0, ROW_H)
+    (
+        DIALOG_PAD_X,
+        DIALOG_PAD_Y + DIALOG_LINE_H + row as f32 * DIALOG_LINE_H,
+        DIALOG_W - 2.0 * DIALOG_PAD_X,
+        DIALOG_LINE_H,
+    )
 }
 
-/// 一共几页（服务端一个商人最多 20 件 ⇒ 2 页）。
+/// 一共几页（服务端一个商人最多 20 件 ⇒ 3 页）。
 pub(crate) fn pages(items: usize) -> usize {
     items.div_ceil(ROWS).max(1)
 }
@@ -74,15 +68,17 @@ pub(crate) enum Hit {
     None,
 }
 
-/// 窗口内的一点落在哪里。与 [`row_rect`] 同源。
+/// 窗口内的一点落在哪里。与 [`row_rect`]、对话窗的关闭钮**同一套几何**。
 pub(crate) fn hit(local: (f32, f32), rows: usize) -> Hit {
-    let (cx, cy, cw, ch) = CLOSE;
-    if local.0 >= cx && local.0 < cx + cw && local.1 >= cy && local.1 < cy + ch {
+    let (lx, ly) = local;
+    if (DIALOG_CLOSE_X..DIALOG_CLOSE_X + DIALOG_CLOSE_W).contains(&lx)
+        && (DIALOG_CLOSE_Y..DIALOG_CLOSE_Y + DIALOG_CLOSE_H).contains(&ly)
+    {
         return Hit::Close;
     }
     for i in 0..rows.min(ROWS) {
         let (x, y, w, h) = row_rect(i);
-        if local.0 >= x && local.0 < x + w && local.1 >= y && local.1 < y + h {
+        if lx >= x && lx < x + w && ly >= y && ly < y + h {
             return Hit::Row(i);
         }
     }
@@ -101,7 +97,10 @@ pub(crate) fn page_step(page: usize, dir: i8, items: usize) -> usize {
     }
 }
 
-/// 画商店窗：背板 + 商品名/价格列表 + 金币 + 页码 + 关闭叉。
+/// 画商店窗：官方对话背板 + 标题行（商店/金币）+ 商品名/价格 + 页码。
+///
+/// ⚠️ **不画行底色**（用户 2026-10-10：不该增加背景）——白字直接排在板面上，
+/// 与对话窗的正文一个画法。关闭叉是**背板自带的**（对话窗那个），不用自己画。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw<'a, T>(
     canvas: &mut WindowCanvas,
@@ -117,17 +116,17 @@ pub(crate) fn draw<'a, T>(
         return Ok(());
     }
     let Some(shop) = n.world.shop.as_ref() else {
-        return Ok(()); // 没有货架（没点过商人 / 对话关了）⇒ 不画
+        return Ok(()); // 没有货架（没点过"交易市场" / 对话关了）⇒ 不画
     };
     let (x, y, w, h) = panel();
     canvas.set_blend_mode(BlendMode::Blend);
-    if ui.size(dir, BG_LIB, BG).is_some() {
+    if ui.size(dir, "Prguse", DIALOG_BG).is_some() {
         let _ = ui.draw_src(
             canvas,
             tc,
             dir,
-            BG_LIB,
-            BG,
+            "Prguse",
+            DIALOG_BG,
             FRect::new(0.0, 0.0, w, h),
             FRect::new(x, y, w, h),
             255,
@@ -143,63 +142,43 @@ pub(crate) fn draw<'a, T>(
 
     let page = page.min(pages(shop.items.len()) - 1);
     let base = page * ROWS;
+
+    // 标题行：左"商 店"、右"金币 N"（金币来自 `Ability.gold`，与背包窗同一来源）
     texts.draw(
         canvas,
         tc,
         "商 店",
-        x + TITLE_AT.0,
-        y + TITLE_AT.1,
+        x + DIALOG_PAD_X,
+        y + DIALOG_PAD_Y,
         C_PRICE,
         None,
     )?;
+    let gold = n.world.ability.map_or(0, |ab| ab.gold);
+    let gold_text = format!("金币 {gold}");
+    let gx = x + DIALOG_W - DIALOG_PAD_X - gold_text.chars().count() as f32 * 7.0;
+    texts.draw(canvas, tc, &gold_text, gx, y + DIALOG_PAD_Y, C_PRICE, None)?;
+
+    // 商品行：名字靠左、价格**右对齐**（14px 字号 ⇒ 每字 ~7px，`text` 只给落点）
     for i in 0..ROWS {
         let Some(it) = shop.items.get(base + i) else {
             break;
         };
-        let (rx, ry, rw, rh) = row_rect(i);
-        // 每行一条暗底：让人看出"这是一行能点的"
-        fill(
-            canvas,
-            x + rx,
-            y + ry,
-            rw,
-            rh - 1.0,
-            Color::RGBA(60, 52, 36, 110),
-        )?;
+        let (rx, ry, _, _) = row_rect(i);
         texts.draw(canvas, tc, &it.name, x + rx, y + ry + 2.0, C_TEXT, None)?;
-        // 价格**右对齐**（文字缓存只给落点 ⇒ 按 14px 字号估宽）
         let price = it.price.to_string();
-        let px = x + PRICE_X - price.chars().count() as f32 * 7.0;
+        let px = x + rx + (DIALOG_W - 2.0 * DIALOG_PAD_X) - price.chars().count() as f32 * 7.0;
         texts.draw(canvas, tc, &price, px, y + ry + 2.0, C_PRICE, None)?;
     }
-    // 金币（下方那条横条；`Ability.gold`，与背包窗同一个来源）与页码
-    let gold = n.world.ability.map_or(0, |ab| ab.gold);
+    // 页码：右下角（正文区外的那一圈板边上）
+    let page_text = format!("{}/{}", page + 1, pages(shop.items.len()));
     texts.draw(
         canvas,
         tc,
-        &format!("金币 {gold}"),
-        x + GOLD_AT.0,
-        y + GOLD_AT.1,
-        C_TEXT,
-        None,
-    )?;
-    texts.draw(
-        canvas,
-        tc,
-        &format!("{}/{}", page + 1, pages(shop.items.len())),
-        x + PRICE_X,
-        y + GOLD_AT.1,
+        &page_text,
+        x + DIALOG_W - DIALOG_PAD_X - page_text.chars().count() as f32 * 7.0,
+        y + DIALOG_H - DIALOG_PAD_Y,
         (190, 170, 120),
         None,
     )?;
-    // 关闭叉：两条斜线，自己画（不依赖背板上的图案）
-    let (cx, cy, cw, _) = CLOSE;
-    let (cx, cy) = (x + cx, y + cy);
-    canvas.set_draw_color(Color::RGB(220, 60, 50));
-    for i in 0..6 {
-        let f = i as f32;
-        canvas.fill_rect(FRect::new(cx + 6.0 + f, cy + 4.0 + f, 2.0, 2.0))?;
-        canvas.fill_rect(FRect::new(cx + cw - 8.0 - f, cy + 4.0 + f, 2.0, 2.0))?;
-    }
     Ok(())
 }

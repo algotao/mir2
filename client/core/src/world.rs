@@ -137,6 +137,19 @@ pub struct Shop {
     pub items: Vec<ShopItem>,
 }
 
+/// 地上的一件东西（`GroundItemShow` 下发；捡走/消失时 `GroundItemHide` 划掉）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroundItem {
+    pub ground_id: u64,
+    pub x: i32,
+    pub y: i32,
+    pub name: String,
+    /// `Items.wzl` 的图号（金币也有自己的外观号，服务端按堆的大小给）。
+    pub looks: u32,
+    /// 数量：金币 = 堆里的钱；物品 = 可堆叠物的堆数（多半是 1）。
+    pub count: u32,
+}
+
 /// 背包/装备里的一件物品（`ItemStack` 的客户端形态）。
 ///
 /// 图标怎么取：**`Items.wzl[looks]`** —— 2026-10-09 用 `wzldump` 逐张比对确认过
@@ -281,6 +294,13 @@ pub struct World {
     /// 原版点商人时"对话"与"货架"是**同一个窗口**里来的（`SM_MERCHANTDLG` +
     /// `SM_SENDGOODSLIST`），所以两个同时挂着才是对的（见服务端 `handleClickNPC`）。
     pub shop: Option<Shop>,
+
+    /// 视野内的**地面物品**（掉落/捡拾都在这条账上；换图清空）。
+    ///
+    /// ⚠️ 原来服务端只在"掉落那一刻"广播，而且只发 legacy ⇒ 新协议客户端
+    /// **从来看不到掉落**（用户 2026-10-10：「击杀怪物后没有掉落」）——
+    /// 现在进图/走动/掉落三条路都会发 `GroundItemShow`，捡走发 `GroundItemHide`。
+    pub ground: BTreeMap<u64, GroundItem>,
 
     /// 对话的**版本号**：每收到一段新 `NpcSay` 就 +1。
     ///
@@ -431,6 +451,8 @@ impl World {
                 self.self_pos = (pos.x, pos.y);
                 self.self_dir = ew.direction;
                 self.server_tick = ew.server_tick;
+                // 新的一张图：地面物品账本清空（随后服务端会发这图视野内的）
+                self.ground.clear();
                 // 自己的外观（服务端单独给，不在 entities 里 —— 见字段说明）
                 self.self_feature = ew.self_feature;
                 // 初始快照：整份替换（换图/重进都走这里）。
@@ -458,6 +480,8 @@ impl World {
                 let pos = cm.position.unwrap_or_default();
                 self.self_pos = (pos.x, pos.y);
                 self.entities.clear();
+                // 换图 = 另一批地面物品（服务端会随后重发这图的）
+                self.ground.clear();
                 for s in &cm.entities {
                     if s.entity_id == self.self_id {
                         continue;
@@ -626,6 +650,32 @@ impl World {
             }
             // 商品列表（原版 `SM_SENDGOODSLIST`）：把货架挂上，商店窗才有东西可画。
             // ⚠️ 服务端**点 NPC 时就发**（`onNpcClick` 里与对话一起发），不是等玩家再点一次。
+            // 地面物品：出现 / 消失（捡走）。同 id 重发就覆盖（服务端有"发过"账本，
+            // 正常不会重发；覆盖是兜底）。
+            Body::GroundItemShow(g) => {
+                let it = g.item.clone().unwrap_or_default();
+                let pos = g.position.unwrap_or_default();
+                self.ground.insert(
+                    g.ground_id,
+                    GroundItem {
+                        ground_id: g.ground_id,
+                        x: pos.x,
+                        y: pos.y,
+                        name: it.name,
+                        looks: it.looks,
+                        count: it.count,
+                    },
+                );
+                Change::World
+            }
+            Body::GroundItemHide(h) => {
+                let gone = self.ground.remove(&h.ground_id).is_some();
+                if gone {
+                    Change::World
+                } else {
+                    Change::None
+                }
+            }
             Body::ShopList(l) => {
                 self.shop = Some(Shop {
                     npc_id: l.npc_id,

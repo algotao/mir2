@@ -3908,3 +3908,38 @@ D-67 写"`Weapon.wzl` 的 `.wzx` 只有 11403 条记录、大半是空壳 ⇒ �
 ### 还没做
 
 商店窗的**真图号**（现在借用 `Prguse[3]`）、"买几个"二级菜单、修理（`ShopRepair`）。
+
+---
+
+## D-42 用户 2026-10-10 六条：商店时机 / 窗版式 / F10 / 怪声 / 穿衣 / 掉落
+
+1. **商店在"打开 交易市场"时才弹**（回退 D-41 里"点 NPC 就发 ShopList"）：
+   点 NPC 只开对话；`dlgSelectIndex` 的 `@buy`/`@trading` 那一下才 `openShop`（发货架）。
+   `@sell` 给 proto 玩家指路（"商店窗开着时点背包里的东西"）。
+   原版虽然点商人就发 `SM_SENDGOODSLIST`，但**窗口**是点入口才弹的 ⇒ 数据跟窗口同时机。
+2. **商店窗版式**：改用**对话窗同一块官方背板**（`Prguse[384]`，416×176），
+   内边距/行高/关闭叉全部复用 `input::DIALOG_*` 常量；**不画行底色**
+   （用户：「不应增加背景」）。早先借背包板（`Prguse[3]`）+ 自排几何 + 行底色，全错位。
+3. **F10 备用键撤掉**：macOS 上 `Fn+F10` 能用（用户确认）⇒ Ctrl+C 不再占。
+4. **怪声**：核实了原版 —— `RunActSound`（`Actor.pas:2463-2470`）里怪的走路声是
+   `if (frame = 1) and (Random(8) = 1)` ⇒ **每轮走步 1/8 概率**，不是每步都叫。
+   我们的 `monster_ambient` 已经是这个判定（外加视野 9 格与 900ms 全局闸这两道
+   原版没有的闸）。**补了死亡声**：怪倒下那一刻播 `200+appr*10+5`
+  （`SM_NOWDEATH` → `PlaySound(m_nDieSound)`，`Actor.pas:2330/2368-2375`）。
+5. **"角色没穿衣服"**：查库核实 —— D-40（随机村+初始布衣）**之前**建的角色
+   （勇士/银杏一号/小法）确实没有布衣（当时只发木剑），衣服位是空的；
+   D-40 之后建的（银杏二号）`dress=2`（布衣男）✓。不是 bug，是老角色的真实数据。
+   要给老角色补发布衣说一声（一次性脚本）。
+6. **掉落**：掉落引擎一直在跑（`dropItems`/`scatterKillGold`，动物不掉是原版规矩），
+   缺的是**下行**——`sendGroundItem` 只发 legacy `SM_ADDITEM`，proto 玩家永远看不见。
+   补齐：`GroundItemShow`/`GroundItemHide` 双向 + 进图/走动/换图下发视野内的
+   （`sendGroundInView` + `groundSent` 账本）+ 新协议 `PickupItem` 上行
+   （`pickupGroundByID`，**人必须站在物品那格上**，与 legacy 同一条校验）+
+   客户端渲染（`Items.wzl[looks]` 贴格底）与点击拾取（点了先走过去，到了自动捡）。
+   顺带把拾取后半段抽成 `pickupGroundItem`（legacy/新协议共用），金币与物品同一条
+   归属/超重/背包满判定；失败路径都把东西**放回地面**。
+
+**验证**：两端 84 / 143 / 7 / 3 + Go 25 包全过，clippy 0。
+新增：`TestProtoShopOpensFromDialogEntry`（点 NPC **没有** ShopList、选 @buy 才有）、
+`商店窗几何与命中`（新板式/标题行不可点/7 行翻页）、地面物 show/hide。
+⚠️ 肉眼项：商店窗新板式的样子、地面物图标落点，要看用户的眼睛。

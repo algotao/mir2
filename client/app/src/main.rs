@@ -265,6 +265,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut shop_page = 0usize;
     // 上次开的是哪个商人的货架：换了个商人 ⇒ 页码归零
     let mut shop_npc_seen: Option<u64> = None;
+    // 待捡的地面物品：点了地上的东西 ⇒ 先走过去，**到了那格**才发拾取
+    //（服务端要求"人站在物品那格上"，与原版 `CM_PICKUP` 同一条校验）
+    let mut pending_pickup: Option<(u64, (i32, i32))> = None;
     // NPC 对话窗**卷到第几行**（正文常常超出那块固定高的背板 ⇒ 要能滚，
     // 见 `input::dialog_max_scroll`）：滚轮改它，换了段新对话就归零。
     let mut dialog_scroll = 0usize;
@@ -403,16 +406,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         bag_page = 0;
                         println!("[ui] 背包窗 {}", if bag_open { "打开" } else { "关闭" });
                     }
-                    // F10 = 状态窗（原版键位：F9 包裹 / F10 属性 / F11 技能 / F12 内挂）
+                    // F10 = 状态窗（原版键位：F9 包裹 / F10 属性 / F11 技能 / F12 内挂）。
+                    // ⚠️ macOS 上要 **Fn+F10**（F10 默认是 App Exposé）—— 2026-10-10
+                    // 用户确认 Fn+F10 能用；曾加过的备用键 Ctrl+C 已撤（不再占 C）。
                     Some(Keycode::F10) if mode == 2 => toggle_status(&mut status_open),
-                    // ⚠️ **备用键 `Ctrl+C`**（C = Character）：macOS 常把 F10 当系统键
-                    //（App Exposé），且没勾「将 F1、F2…用作标准功能键」时按 F10
-                    // **SDL 根本收不到 KeyDown** ⇒ 用户报"按 F10 没反应"（2026-10-10）。
-                    // 代码路径（切换/几何/素材/层序）查过全是对的，所以给它一个不与系统
-                    // 抢的入口；终端里那行 `[ui] 状态窗 …` 是定性依据（没打印 = 键没到）。
-                    Some(Keycode::C) if mode == 2 && ctrl(keymod) => {
-                        toggle_status(&mut status_open)
-                    }
                     Some(Keycode::F1) if ctrl(keymod) => mode = 1,
                     Some(Keycode::F2) if ctrl(keymod) => mode = 2,
                     Some(Keycode::F3) if ctrl(keymod) => mode = 3,
@@ -708,6 +705,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .unwrap_or((None, None));
                             combat_target = ct;
                             move_target = mt;
+                            // 点在**地上有东西**的格子 ⇒ 记下"待捡"：走到那格自动捡
+                            //（原版点物品也是先走过去；到了就发，见帧循环里那段）。
+                            if mouse_btn == MouseButton::Left {
+                                if let Some(n) = net.as_ref() {
+                                    match n.world.ground.values().find(|g| (g.x, g.y) == cell) {
+                                        Some(gi) if n.world.self_pos == cell => {
+                                            n.pickup(gi.ground_id);
+                                            pending_pickup = None;
+                                        }
+                                        Some(gi) => pending_pickup = Some((gi.ground_id, cell)),
+                                        None => pending_pickup = None,
+                                    }
+                                }
+                            }
                             attack_at = Instant::now(); // 立刻判"该出手还是该靠近"
                                                         // ⚠️ `move_at` **不清零**：原版的客户端是"停等"的
                                                         //（发一条动作后 `ActionLock := TRUE`，等服务端
@@ -1510,6 +1521,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None => {
                 shop_open = false;
                 shop_npc_seen = None;
+            }
+        }
+
+        // 待捡的地面物品：到了那格就捡；东西没了（别人捡走）就作废。
+        if let Some(n) = net.as_ref() {
+            match pending_pickup {
+                Some((gid, cell)) if n.world.self_pos == cell => {
+                    n.pickup(gid);
+                    pending_pickup = None;
+                }
+                Some((gid, _)) if !n.world.ground.contains_key(&gid) => pending_pickup = None,
+                _ => {}
             }
         }
 

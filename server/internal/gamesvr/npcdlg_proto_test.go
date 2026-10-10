@@ -113,12 +113,12 @@ func TestProtoNpcDialog(t *testing.T) {
 		t.Errorf("重开后应回到 [@main]，实得 %q", say4.GetText())
 	}
 
-	// ⑤ 这时第 1 项才是 @buy ⇒ 明说"商店还没接新协议"（不是没事发生，也不是 legacy 黑洞）
+	// ⑤ 这时第 1 项才是 @buy ⇒ **货架现在才发**（点 NPC 那一下没有，见
+	// TestProtoShopOpensFromDialogEntry：窗口时机跟着"打开 交易市场"走）
 	cl.send(&protocol.Envelope{Body: &protocol.Envelope_NpcSelect{
 		NpcSelect: &protocol.NpcSelect{NpcId: uint64(npc.ID), Index: 1}}})
-	say5 := waitNpcSay(t, cl, ev).GetNpcSay()
-	if !strings.Contains(say5.GetText(), "商店") {
-		t.Errorf("点商店入口该有一条说明，实得 %q", say5.GetText())
+	if got := waitShopList(t, cl, ev, true); got.GetNpcId() != uint64(npc.ID) {
+		t.Errorf("点商店入口该发货架，npc_id = %d，应为 %d", got.GetNpcId(), npc.ID)
 	}
 
 	// ⑥ 距离校验：够不着就不给对话（把 NPC 挪到 9 格外再点）
@@ -136,18 +136,16 @@ func TestProtoNpcDialog(t *testing.T) {
 	drainUntilPong(t, cl, ev, "隔得太远不该开对话")
 }
 
-// TestProtoNpcClickSendsShopList 点 NPC 时**商品列表必须一起下来**。
+// TestProtoShopOpensFromDialogEntry 商店入口：**点 NPC 只开对话，点"买"入口才发货架**。
 //
-// ⚠️ 这是 2026-10-10 补的一个真缺口：`onNpcClick` 原来只发 `NpcSay`、不调
-// `sendGoods` ⇒ 新协议玩家**永远收不到 `ShopList`** ⇒ 客户端无从知道货架上有什么
-// （表现是"点商人没有商店窗"）。legacy 的 `handleClickNPC` 是 `startDialog` +
-// `sendGoods` 连着发的（原版也是 `SM_MERCHANTDLG` + `SM_SENDGOODSLIST` 一起来），
-// 所以这条把"新协议与 legacy 同构"钉住。
-func TestProtoNpcClickSendsShopList(t *testing.T) {
+// ⚠️ 这条钉的是用户 2026-10-10 的口径：「商店图应在"打开 交易市场"时弹出，
+// 而不是开启对话就出」—— 所以点 NPC **不许**带 `ShopList`，选了 `@buy` 那一项才有。
+// （此前一度改成"点 NPC 就发"，与原版的窗口时机不符，已回退。）
+func TestProtoShopOpensFromDialogEntry(t *testing.T) {
 	s, store, addr := protoContractServer(t)
 	sessionID, charID := seedAccount(t, store)
 
-	// 屠夫（名字带"肉" ⇒ 商品分类能匹配上，见 `shopCategory`）。
+	// 屠夫（名字带"肉" ⇒ 商品分类能匹配上，见 `shopCategory`）+ 带 @buy 入口的脚本。
 	// 玩家在 (1,1)，NPC 放 (2,1)：距离 1，满足 `onNpcClick` 的 ≤ 8 校验。
 	npc := newTestMonster(proto.NpcIDBase+1, "屠夫", 999999)
 	npc.IsNPC = true
@@ -157,19 +155,68 @@ func TestProtoNpcClickSendsShopList(t *testing.T) {
 	s.npc.defs = []*data.NPC{{
 		ID: "1Bme", Name: "屠夫", MapID: "0", X: 2, Y: 1, IsMerchant: true, RaceImg: 11,
 	}}
+	sc, err := script.Parse("1Bme-0", strings.NewReader(`
+[@main]
+要不要来点肉？\
+<我要买/@buy>\
+<算了/@exit>
+`))
+	if err != nil {
+		t.Fatalf("解析测试脚本: %v", err)
+	}
+	s.npc.scripts = map[string]*script.Script{"1Bme-0": sc}
 
 	cl, ev := protoEnterWorld(t, addr, s, sessionID, charID)
+
+	// ① 点 NPC ⇒ 只有 NpcSay，**没有** ShopList
 	cl.send(&protocol.Envelope{Body: &protocol.Envelope_NpcClick{
 		NpcClick: &protocol.NpcClick{NpcId: uint64(npc.ID)}}})
-	// ⚠️ 不能用 `waitFor`：点 NPC 之后背包/能力值这些"自身状态推送"也会跟着来
-	//（`sendBagItems` 是全量口），`waitFor` 会把它们当"无关消息"直接判红。
-	// 所以这里自己转一圈，只挑 `ShopList`。
-	var got *protocol.ShopList
+	waitNpcSay(t, cl, ev)
+	if got := waitShopList(t, cl, ev, false); got != nil {
+		t.Fatalf("点 NPC 不该发货架，却收到了 npc_id=%d", got.GetNpcId())
+	}
+
+	// ② 选「我要买」（@buy，序号 1）⇒ 现在才发 ShopList
+	cl.send(&protocol.Envelope{Body: &protocol.Envelope_NpcSelect{
+		NpcSelect: &protocol.NpcSelect{NpcId: uint64(npc.ID), Index: 1}}})
+	got := waitShopList(t, cl, ev, true)
+	if got.GetNpcId() != uint64(npc.ID) {
+		t.Errorf("ShopList.npc_id = %d，应为 %d（客户端靠它回 `ShopBuy`）", got.GetNpcId(), npc.ID)
+	}
+	// 件数**不**断言：它取决于这张表里有几条该 StdMode 的商品（测试服可能没有）；
+	// 这里只钉"会发、且带着正确的商人 id"。
+}
+
+// waitShopList 等（或不等，`want=false` 时用于反证）一条 `ShopList`。
+//
+// ⚠️ 不能用 `waitFor`：点 NPC / 买卖之后背包/能力值这些"自身状态推送"也会跟着来
+// （`sendBagItems` 是全量口），`waitFor` 会把它们当"无关消息"直接判红。
+// 对话推进时还会有新的 `NpcSay`（@sell 那条指路），也按流量跳过。
+func waitShopList(t *testing.T, cl *protoClient, ev *protoEvents, want bool) *protocol.ShopList {
+	t.Helper()
+	if !want {
+		// 反证：发一条 Ping 当水位线，Pong 之前不许有 ShopList（同 `drainUntilPong`）
+		cl.send(&protocol.Envelope{Body: &protocol.Envelope_Ping{Ping: &protocol.Ping{ClientTimeMs: 1}}})
+		for i := 0; i < 200; i++ {
+			e := cl.recv()
+			if isPong(e) {
+				return nil
+			}
+			if _, ok := e.Body.(*protocol.Envelope_ShopList); ok {
+				t.Fatal("不该发货架，却收到了")
+			}
+			ev.note(e)
+		}
+		t.Fatal("等 Pong 超时")
+	}
 	for i := 0; i < 200; i++ {
 		e := cl.recv()
 		if l, ok := e.Body.(*protocol.Envelope_ShopList); ok {
-			got = l.ShopList
-			break
+			return l.ShopList
+		}
+		switch e.Body.(type) {
+		case *protocol.Envelope_NpcSay:
+			continue
 		}
 		if isSelfStatePush(e) {
 			continue
@@ -178,14 +225,8 @@ func TestProtoNpcClickSendsShopList(t *testing.T) {
 			t.Fatalf("等 ShopList 时收到无关消息 %T", e.Body)
 		}
 	}
-	if got == nil {
-		t.Fatal("等 ShopList 超时：点 NPC 该把商品列表一起发下来")
-	}
-	if got.GetNpcId() != uint64(npc.ID) {
-		t.Errorf("ShopList.npc_id = %d，应为 %d（客户端靠它回 `ShopBuy`）", got.GetNpcId(), npc.ID)
-	}
-	// 件数**不**断言：它取决于这张表里有几条该 StdMode 的商品（测试服可能没有）；
-	// 这里只钉"会发、且带着正确的商人 id"。
+	t.Fatal("等 ShopList 超时（收了 200 条还没到）")
+	return nil
 }
 
 // drainUntilPong 发一条 Ping 当"水位线"，并断言在这条 Pong 之前**没有** NpcSay。

@@ -207,12 +207,18 @@ func (s *Server) dlgSelectIndex(c net.Conn, p *Player, idx int) {
 		s.npcClose(c, p)
 		p.dialog = nil
 		return
-	case "buy", "sell", "trading":
-		// 脚本里的商店入口
-		// ⚠️ 商店消息还没接新协议（`openShop`/`sendGoods` 只发 legacy，proto 玩家收不到）
-		// ⇒ 先在对话里明说一句，别让玩家以为"点了没反应"。见 docs/todo.md 第 1 条。
+	case "buy", "trading":
+		// 脚本里的商店入口 —— **这一下才把货架发过去**（用户 2026-10-10：
+		// 「商店图应在"打开 交易市场"时弹出，而不是开启对话就出」）。
+		// 点 NPC 只开对话；`openShop` 内部会建对话上下文 + 发商品列表（两条协议都发）。
+		s.openShop(c, p, p.dialog.npcID)
+		return
+	case "sell":
+		// 卖：原版这里开"卖出"窗。我们的卖法是**商店窗开着时点背包里的东西**
+		// ⇒ 给 proto 玩家指个路；legacy 客户端有自己的卖出窗，照旧开商店。
 		if c == nil && p.protoOut != nil {
-			s.npcSay(c, p, p.dialog.npcID, "（商店买卖还没接新协议，见 docs/todo.md）", nil)
+			s.npcSay(c, p, p.dialog.npcID,
+				"要卖东西：保持这个商店窗开着，按 F9 打开背包，点背包里的物品就卖了。", nil)
 			return
 		}
 		s.openShop(c, p, p.dialog.npcID)

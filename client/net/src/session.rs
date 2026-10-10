@@ -104,6 +104,8 @@ pub enum Cmd {
         make_index: i32,
         count: u32,
     },
+    /// 捡起地面物品（原版 `CM_PICKUP`；服务端要求**人站在物品那格上**）。
+    PickupItem { ground_id: u64 },
     /// 心跳（`Ping`）。
     Ping,
     /// 主动关闭。
@@ -303,6 +305,10 @@ fn writer_loop(stream: &mut TcpStream, cmds: Receiver<Cmd>) {
                 npc_id,
                 make_index,
                 count,
+            }),
+            Cmd::PickupItem { ground_id } => Body::PickupItem(proto::PickupItem {
+                ground_id,
+                client_tick: 0,
             }),
             Cmd::Ping => Body::Ping(proto::Ping { client_time_ms: 0 }),
             Cmd::Close => return,

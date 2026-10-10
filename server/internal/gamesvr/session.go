@@ -412,6 +412,9 @@ func (s *Server) sendEnterWorld(c net.Conn, p *Player) {
 	s.applyEquipHpMp(p)
 	// 负重同理（上限是等级/职业的纯函数，重算是幂等的）。
 	s.applyWeights(p)
+	// 视野内的地面物品：掉在地上的东西进图就该看见
+	//（legacy 原来也缺这条 —— 只有"掉落那一刻"的广播，进图的人什么都没收到）
+	s.sendGroundInView(p)
 
 	s.sendUseItems(c, p)
 	// 从存档恢复两个"行为开关"（原版 HumData 字段，ObjBase.pas:24920-24937）。
