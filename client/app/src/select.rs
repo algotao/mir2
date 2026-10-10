@@ -52,6 +52,11 @@ pub struct CharEntry {
     pub class: i32,
     /// 原版的 `Sex`（0 男 / 1 女）—— 挑小人图要用。
     pub sex: u8,
+    /// **选角槽位**（服务端按"含已删除的创建次序"编号，删人后不重排）。
+    ///
+    /// ⚠️ 槽位**不等于** `chars` 里的下标：删掉 1 号之后 2 号还待在 2 号位，
+    /// 中间那个位置空着（用户 2026-10-10 第 1 条：删了角色1，角色2 不该左移）。
+    pub slot: u32,
 }
 
 impl CharEntry {
@@ -66,6 +71,7 @@ impl CharEntry {
                 Ok(proto::Gender::Female) => 1,
                 _ => 0,
             },
+            slot: c.slot,
         }
     }
 
@@ -154,9 +160,14 @@ impl Select {
         // ⚠️ 原版进场景时两个都站着（`OpenScene` 只开窗口放 BGM），于是看不出
         // 当前选的是谁 —— 那时点[开始]还会被拒（两边 `Selected` 都是 FALSE）。
         // 我们有意改成"默认选中第一个"，一眼能看出当前是哪个。
+        let first_slot = chars.iter().map(|c| c.slot as usize).min().unwrap_or(0);
         let anims = std::array::from_fn(|i| {
-            let (job, sex) = chars.get(i).map_or((0, 0), |c| (c.job(), c.sex));
-            if i == 0 {
+            // ⚠️ 按**槽位**取，不是按下标：删过人之后两者不再一致
+            let (job, sex) = chars
+                .iter()
+                .find(|c| c.slot as usize == i)
+                .map_or((0, 0), |c| (c.job(), c.sex));
+            if i == first_slot {
                 su::SlotAnim::new(job, sex)
             } else {
                 su::SlotAnim::new_frozen(job, sex)
@@ -167,7 +178,7 @@ impl Select {
         let last_phase = std::array::from_fn(|i| anims[i].phase());
         Self {
             chars,
-            picked: 0,
+            picked: first_slot,
             anims,
             menu_cursor: 0,
             msg: None,
@@ -181,9 +192,20 @@ impl Select {
         }
     }
 
-    /// 当前选中的角色（空槽 ⇒ `None`）。
+    /// 当前选中的角色（空槽 ⇒ `None`）。**按槽位找**（见 `CharEntry::slot`）。
     pub fn picked_char(&self) -> Option<&CharEntry> {
-        self.chars.get(self.picked)
+        self.char_at_slot(self.picked)
+    }
+
+    /// 某个**槽位**上的角色（没有 ⇒ 空位）。
+    fn char_at_slot(&self, slot: usize) -> Option<&CharEntry> {
+        self.chars.iter().find(|c| c.slot as usize == slot)
+    }
+
+    /// 槽位 → `chars` 下标（选中/取数据那些老代码还在用下标）。
+    #[allow(dead_code)] // 留着：`pick_slot` 之外的调用点将来要用（见 `char_at_slot`）
+    fn idx_of_slot(&self, slot: usize) -> Option<usize> {
+        self.chars.iter().position(|c| c.slot as usize == slot)
     }
 
     /// 取走这一帧该响的音效（原版编号，交给主循环去播）。
@@ -250,7 +272,7 @@ impl Select {
 
     /// 「删除角色」：得先选中一个角色，再弹确认（措辞照抄原版 `IntroScn.pas:1217-1231`）。
     fn ask_delete(&mut self) -> Action {
-        let Some(c) = self.chars.get(self.picked) else {
+        let Some(c) = self.char_at_slot(self.picked) else {
             self.say("先选中一个角色，再删。");
             return Action::None;
         };
@@ -358,8 +380,9 @@ impl Select {
 
     /// 按角色 id 预选（`MIR2_CHAR` 指的那个）。找不到就什么都不做。
     pub fn pick_id(&mut self, id: u64) {
-        if let Some(i) = self.chars.iter().position(|c| c.id == id) {
-            self.pick_slot(i);
+        if let Some(c) = self.chars.iter().find(|c| c.id == id) {
+            let slot = c.slot as usize;
+            self.pick_slot(slot);
         }
     }
 
@@ -514,15 +537,16 @@ impl Select {
         }
         for step in 1..=su::Art::SLOTS as i32 {
             let i = (self.picked as i32 + dir * step).rem_euclid(su::Art::SLOTS as i32) as usize;
-            if i < self.chars.len() {
+            if self.char_at_slot(i).is_some() {
                 self.pick_slot(i);
                 return;
             }
         }
     }
 
+    /// 选中**槽位** `i`（不是 `chars` 下标 —— 见 `CharEntry::slot`）。
     fn pick_slot(&mut self, i: usize) {
-        if i >= self.chars.len() {
+        if self.char_at_slot(i).is_none() {
             return; // 空槽：点了没反应（见文件头第 3 条）
         }
         if self.picked == i && self.anims[i].phase() != su::SlotPhase::Freeze {
@@ -629,8 +653,8 @@ impl Select {
         self.last = now;
 
         for slot in 0..su::Art::SLOTS {
-            let Some(c) = self.chars.get(slot).cloned() else {
-                continue; // 空槽：什么都不画
+            let Some(c) = self.char_at_slot(slot).cloned() else {
+                continue; // 空槽：什么都不画（删掉的那个位置就留空）
             };
             let f = self.anims[slot].tick(dt, slot == self.picked);
             let anchor = su::slot_anchor(slot, l.bg);
@@ -1036,13 +1060,27 @@ fn wrap(s: &str, cols: usize) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// ⚠️ 槽位**单独给**（默认取 id 当槽位）：真实下发里它是服务端按"含已删除的
+    /// 创建次序"编的号，跟 id 无关 —— 单测要能造出"删掉 1 号、2 号还待在 2 号位"
+    /// 这种列表（见 `删掉前面的角色后面的人不左移`）。
     fn summary(id: u64, name: &str, class: i32, gender: proto::Gender) -> proto::CharacterSummary {
+        summary_slot(id, name, class, gender, id as u32)
+    }
+
+    fn summary_slot(
+        id: u64,
+        name: &str,
+        class: i32,
+        gender: proto::Gender,
+        slot: u32,
+    ) -> proto::CharacterSummary {
         proto::CharacterSummary {
             character_id: id,
             name: name.into(),
             class,
             gender: gender as i32,
             level: 7,
+            slot,
             ..Default::default()
         }
     }
@@ -1064,8 +1102,9 @@ mod tests {
     fn 键盘走位() {
         let two = || {
             vec![
-                CharEntry::from_summary(&summary(11, "甲", 1, proto::Gender::Male)),
-                CharEntry::from_summary(&summary(22, "乙", 2, proto::Gender::Female)),
+                // 槽位 0 / 1（真实下发里槽位由服务端编，跟 id 无关 ⇒ 这里显式给）
+                c_slot(11, "甲", 0),
+                c_slot(22, "乙", 1),
             ]
         };
         let mut s = Select::new(two());
@@ -1084,12 +1123,7 @@ mod tests {
         assert_eq!(s.menu_cursor, su::MENU.len() - 1);
 
         // 只有一个角色时，左右都停在它身上（空槽跳过）
-        let mut s = Select::new(vec![CharEntry::from_summary(&summary(
-            11,
-            "甲",
-            1,
-            proto::Gender::Male,
-        ))]);
+        let mut s = Select::new(vec![c_slot(11, "甲", 0)]);
         s.on_key(Keycode::Right);
         assert_eq!(s.picked_char().map(|c| c.id), Some(11));
     }
@@ -1097,12 +1131,7 @@ mod tests {
     /// 菜单项：开始 ⇒ `Enter`；其余是**诚实的占位**（说清楚现状与替代做法）。
     #[test]
     fn 菜单项行为() {
-        let mut s = Select::new(vec![CharEntry::from_summary(&summary(
-            11,
-            "甲",
-            1,
-            proto::Gender::Male,
-        ))]);
+        let mut s = Select::new(vec![c_slot(11, "甲", 0)]);
         // 第 0 项 = 开始
         assert_eq!(s.on_key(Keycode::Return), Action::Enter(11));
 
@@ -1145,12 +1174,7 @@ mod tests {
     /// 弹窗是**模态**的：开着时点击先关它，不会连带把那一颗按下。
     #[test]
     fn 弹窗模态() {
-        let mut s = Select::new(vec![CharEntry::from_summary(&summary(
-            11,
-            "甲",
-            1,
-            proto::Gender::Male,
-        ))]);
+        let mut s = Select::new(vec![c_slot(11, "甲", 0)]);
         s.say("先看这个");
         let r = su::Rect {
             x: 10.0,
@@ -1256,12 +1280,17 @@ mod tests {
     }
 
     fn c(id: u64, name: &str) -> CharEntry {
+        c_slot(id, name, id as u32) // 测试里默认"槽位 = id"，方便对位
+    }
+
+    fn c_slot(id: u64, name: &str, slot: u32) -> CharEntry {
         CharEntry {
             id,
             name: name.into(),
             level: 1,
             class: 1,
             sex: 0,
+            slot,
         }
     }
 

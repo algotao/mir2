@@ -994,17 +994,21 @@ func (ps *protoSession) onListCharacters() bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), protoStoreTimeout)
 	defer cancel()
-	chars, err := ps.srv.store.Characters().ListByAccount(ctx, ps.rec.Account)
+	// ⚠️ 用**带槽位**的那份（`ListByAccountWithSlots`）：槽位按"含已删除的创建次序"
+	// 编号 ⇒ 删掉一个角色后其余人留在原位（用户 2026-10-10 第 1 条）。
+	slots, err := ps.srv.store.Characters().ListByAccountWithSlots(ctx, ps.rec.Account)
 	if err != nil {
 		log.Printf("%s: 列角色失败: %v", ps.clientIP, err)
 		return ps.sendServerError(protoErrInternal, "读取角色列表失败") == nil
 	}
 	out := &protocol.CharacterList{}
-	for _, ch := range chars {
-		if ch.Deleted {
+	for _, cs := range slots {
+		if cs.Char == nil {
 			continue
 		}
-		out.Characters = append(out.Characters, characterSummary(ch))
+		sum := characterSummary(cs.Char)
+		sum.Slot = uint32(cs.Slot)
+		out.Characters = append(out.Characters, sum)
 	}
 	log.Printf("%s: 新协议列角色 → %d 个", ps.clientIP, len(out.Characters))
 	return ps.send(&protocol.Envelope{Body: &protocol.Envelope_CharacterList{

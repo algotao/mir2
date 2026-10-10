@@ -422,6 +422,12 @@ pub(crate) fn body_sprite(
     }
 }
 
+/// 命中框在**内容框**外再留的手抖余量（细高个的怪，比如稻草人，内容框只有十来像素宽）。
+const HIT_PAD: f32 = 6.0;
+/// 命中框的**最小**宽 / 高：再瘦的怪也得有个能点中的靶子。
+const HIT_MIN_W: f32 = 26.0;
+const HIT_MIN_H: f32 = 34.0;
+
 /// 一个实体**画出来**的那个框（身体 + 武器的并集）—— **悬停命中**用它。
 ///
 /// # 为什么不能按"它在哪一格"判（用户 2026-10-09 报的"没有高亮"）
@@ -463,13 +469,27 @@ pub(crate) fn actor_rect<'a, T>(
         // ⚠️ 命中框用**不透明内容框**（`bbox`），不是整图：人物/怪图四周的透明边
         // 少则几像素、多则半张图，按整图判就是"明明指着身体却没反应"
         //（用户 2026-10-10 第 4 条）。取不到 bbox（全透明？）⇒ 退回整图。
+        //
+        // ⚠️ 再**外扩一圈 + 保底宽高**（同一条第 4 条的第二半：稻草人那类细高个
+        // 内容框只有十几像素宽，鼠标要像素级对准才点得到）。原版是按"够得着的
+        // 那一格 + 精灵"判的（`GetAttackFocusCharacter` 的矩形比身体宽），
+        // 这里给一个固定的手抖余量 [`HIT_PAD`] 与最小尺寸 [`HIT_MIN_W`]。
         let r = match t.bbox {
-            Some((bx, by, bw, bh)) => FRect::new(
-                px + t.anchor_x as f32 + bx as f32,
-                py + t.anchor_y as f32 + by as f32,
-                bw as f32,
-                bh as f32,
-            ),
+            Some((bx, by, bw, bh)) => {
+                let mut w = bw as f32 + 2.0 * HIT_PAD;
+                let mut h = bh as f32 + 2.0 * HIT_PAD;
+                let mut x = px + t.anchor_x as f32 + bx as f32 - HIT_PAD;
+                let mut y = py + t.anchor_y as f32 + by as f32 - HIT_PAD;
+                if w < HIT_MIN_W {
+                    x -= (HIT_MIN_W - w) / 2.0;
+                    w = HIT_MIN_W;
+                }
+                if h < HIT_MIN_H {
+                    y -= (HIT_MIN_H - h) / 2.0;
+                    h = HIT_MIN_H;
+                }
+                FRect::new(x, y, w, h)
+            }
             None => {
                 let q = t.tex.query();
                 FRect::new(

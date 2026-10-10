@@ -426,6 +426,7 @@ fn 列表没变就不重建选角场景() {
         level: 1,
         class: 1,
         sex: 0,
+        slot: 0,
     }];
     let scene = select::Select::new(a.clone());
     assert!(!list_changed(Some(&scene), &a), "同一个列表不该重建");
@@ -437,6 +438,7 @@ fn 列表没变就不重建选角场景() {
         level: 2,
         class: 2,
         sex: 1,
+        slot: 1,
     });
     assert!(list_changed(Some(&scene), &b), "列表变了要重建");
 }

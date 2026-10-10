@@ -623,13 +623,17 @@ func (x *CreateAccountResult) GetResult() *ActionResult {
 
 // 角色摘要（选角列表用；不含完整存档）。
 type CharacterSummary struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CharacterId   uint64                 `protobuf:"varint,1,opt,name=character_id,json=characterId,proto3" json:"character_id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Class         CharClass              `protobuf:"varint,3,opt,name=class,proto3,enum=mir2.CharClass" json:"class,omitempty"`
-	Gender        Gender                 `protobuf:"varint,4,opt,name=gender,proto3,enum=mir2.Gender" json:"gender,omitempty"`
-	Level         uint32                 `protobuf:"varint,5,opt,name=level,proto3" json:"level,omitempty"`
-	GenderHair    uint32                 `protobuf:"varint,6,opt,name=gender_hair,json=genderHair,proto3" json:"gender_hair,omitempty"` // 发型外观
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	CharacterId uint64                 `protobuf:"varint,1,opt,name=character_id,json=characterId,proto3" json:"character_id,omitempty"`
+	Name        string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Class       CharClass              `protobuf:"varint,3,opt,name=class,proto3,enum=mir2.CharClass" json:"class,omitempty"`
+	Gender      Gender                 `protobuf:"varint,4,opt,name=gender,proto3,enum=mir2.Gender" json:"gender,omitempty"`
+	Level       uint32                 `protobuf:"varint,5,opt,name=level,proto3" json:"level,omitempty"`
+	GenderHair  uint32                 `protobuf:"varint,6,opt,name=gender_hair,json=genderHair,proto3" json:"gender_hair,omitempty"` // 发型外观
+	// **选角槽位**（0 起，固定）：删掉一个角色后，其余角色**留在原来的槽位**，
+	// 那个位置空着（用户 2026-10-10 第 1 条：删了角色1，角色2 不该左移）。
+	// 服务端按"含已删除的创建次序"编号（`ListByAccountWithSlots`）。
+	Slot          uint32 `protobuf:"varint,7,opt,name=slot,proto3" json:"slot,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -702,6 +706,13 @@ func (x *CharacterSummary) GetLevel() uint32 {
 func (x *CharacterSummary) GetGenderHair() uint32 {
 	if x != nil {
 		return x.GenderHair
+	}
+	return 0
+}
+
+func (x *CharacterSummary) GetSlot() uint32 {
+	if x != nil {
+		return x.Slot
 	}
 	return 0
 }
@@ -1137,7 +1148,7 @@ const file_account_proto_rawDesc = "" +
 	"\aaccount\x18\x01 \x01(\tR\aaccount\x12\x1a\n" +
 	"\bverifier\x18\x02 \x01(\tR\bverifier\"A\n" +
 	"\x13CreateAccountResult\x12*\n" +
-	"\x06result\x18\x01 \x01(\v2\x12.mir2.ActionResultR\x06result\"\xcd\x01\n" +
+	"\x06result\x18\x01 \x01(\v2\x12.mir2.ActionResultR\x06result\"\xe1\x01\n" +
 	"\x10CharacterSummary\x12!\n" +
 	"\fcharacter_id\x18\x01 \x01(\x04R\vcharacterId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12%\n" +
@@ -1145,7 +1156,8 @@ const file_account_proto_rawDesc = "" +
 	"\x06gender\x18\x04 \x01(\x0e2\f.mir2.GenderR\x06gender\x12\x14\n" +
 	"\x05level\x18\x05 \x01(\rR\x05level\x12\x1f\n" +
 	"\vgender_hair\x18\x06 \x01(\rR\n" +
-	"genderHair\"\x10\n" +
+	"genderHair\x12\x12\n" +
+	"\x04slot\x18\a \x01(\rR\x04slot\"\x10\n" +
 	"\x0eListCharacters\"G\n" +
 	"\rCharacterList\x126\n" +
 	"\n" +

@@ -788,14 +788,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     } else if input::dialog_close_hit(panel, (x, y)) {
                                         // 右上角那个红 X（用户 2026-10-09 第 1 条：
                                         // 「对话窗口右上角有个X按钮，现在你没有接上"关闭/退出"」）
-                                        // —— 与 ESC 走同一条路：告诉服务端 + 本地清。
+                                        // ⚠️ 与点「退出」/按 ESC **完全同一条路**
+                                        //（用户 2026-10-10 第 2 条：点 X 也要关掉
+                                        // 物品列表与包裹）—— 所以复用同一个出口：
+                                        // 发 `NpcClose` + 本地 `close_dialog()`（它连带收货架）。
                                         if let Some(d) = n.world.dialog.as_ref() {
                                             n.npc_close(d.npc_id);
                                         }
                                         if let Some(n) = net.as_mut() {
                                             n.world.close_dialog();
                                         }
-                                        println!("[net] 对话关闭（点 X）");
+                                        println!("[net] 对话关闭（点 X，与退出同一条路）");
                                     }
                                     // ⚠️ **只有点在面板里**才吞掉这次点击。
                                     // 用户 2026-10-09：「对话期间应仍能操作（走、跑、打架），

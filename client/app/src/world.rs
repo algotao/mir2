@@ -176,24 +176,29 @@ pub(crate) fn draw_map_view<'a, T>(
     canvas.set_clip_rect(None::<Rect>);
 
     // **悬停命中**（照原版 `g_FocusCret` / Crystal `MouseObject`）：按**精灵落点**
-    // 而不是按格子（见 `actor_rect` 的说明）。重叠时取**脚最靠下**的那个 ——
-    // Mir2 的 Y 序里它画在最前面，"指着谁就亮谁"。
+    // 而不是按格子（见 `actor_rect` 的说明）。
+    //
+    // ⚠️ 重叠时的取舍：原来是"脚最靠下"（Mir2 的 Y 序里它画在最前面），但细高个的
+    // 怪（稻草人）命中框很窄，旁边正好站着一只粗壮的怪时，哪怕光标压在稻草人身上
+    // 也会被"更靠下那只"抢走 ⇒ 锁怪困难（用户 2026-10-10 第 4 条）。
+    // 改成**光标离谁的中心最近就选谁**：谁被指得最准算谁，重叠时才用 Y 序兜底。
     let mut hover: Option<u64> = None;
     if let Some(n) = net {
         if n.world.in_world() {
             let now = Instant::now();
-            let mut best = f32::MIN;
+            let mut best = (f32::MAX, f32::MIN); // (到中心的距离, y) —— 距离优先
             for e in n.world.entities.values() {
                 let Some(r) = actor_rect(tc, sprites, dir, cam, e, n.anims.get(&e.id), now) else {
                     continue;
                 };
-                if mouse.0 >= r.x
-                    && mouse.0 < r.x + r.w
-                    && mouse.1 >= r.y
-                    && mouse.1 < r.y + r.h
-                    && e.y as f32 > best
-                {
-                    best = e.y as f32;
+                if mouse.0 < r.x || mouse.0 >= r.x + r.w || mouse.1 < r.y || mouse.1 >= r.y + r.h {
+                    continue;
+                }
+                let dx = mouse.0 - (r.x + r.w / 2.0);
+                let dy = mouse.1 - (r.y + r.h / 2.0);
+                let d = (dx * dx + dy * dy).sqrt();
+                if d < best.0 - 0.5 || (d - best.0).abs() <= 0.5 && e.y as f32 > best.1 {
+                    best = (d, e.y as f32);
                     hover = Some(e.id);
                 }
             }

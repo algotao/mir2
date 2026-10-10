@@ -120,6 +120,18 @@ func TestProtoNpcDialog(t *testing.T) {
 	if got := waitShopList(t, cl, ev, true); got.GetNpcId() != uint64(npc.ID) {
 		t.Errorf("点商店入口该发货架，npc_id = %d，应为 %d", got.GetNpcId(), npc.ID)
 	}
+	// 同一时刻对话会换成"你想买什么？" + 「返回」（原版口径）⇒ 也要收掉，
+	// 不然下面第 ⑥ 步的"隔太远不该有 NpcSay"会把它当成多出来的那条。
+	//
+	// ⚠️ 标记必须是 **`<返回/@1>`**（数字序号）：客户端只认序号，写脚本标签
+	// `@main` 会解析不出来 ⇒ 点了没反应（用户 2026-10-10 第 3 条）。
+	say5 := waitNpcSay(t, cl, ev).GetNpcSay()
+	if !strings.Contains(say5.GetText(), "你想买什么") {
+		t.Errorf("点商店入口后该换成这句，实得 %q", say5.GetText())
+	}
+	if !strings.Contains(say5.GetText(), "<返回/@1>") {
+		t.Errorf("「返回」要是能点的行内标记（数字序号），实得 %q", say5.GetText())
+	}
 
 	// ⑥ 距离校验：够不着就不给对话（把 NPC 挪到 9 格外再点）
 	//

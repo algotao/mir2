@@ -524,6 +524,57 @@ func (s *characterStore) ListByAccount(ctx context.Context, account string) ([]*
 	return out, rows.Err()
 }
 
+// ListByAccountWithSlots 列出**含已删除**的角色并按 id 编号 ⇒ 槽位稳定
+// （删掉 1 号，2 号仍在第 2 个位置，`Char == nil` 的那个槽位留空）。
+//
+// ⚠️ 与 `ListByAccount` 的差别只有 SQL 里那个 `deleted = 0`：这里**故意**把软删的
+// 行也数进去，因为槽位 = 这一行在账号里的"创建次序"，删了不该让后面的人搬家。
+func (s *characterStore) ListByAccountWithSlots(ctx context.Context, account string) ([]storage.CharacterSlot, error) {
+	const q = `SELECT id, account, name, job, level, gold, deleted,
+	                  last_login, created_at, updated_at, data
+	           FROM characters WHERE account = ? ORDER BY id`
+	rows, err := s.db.QueryContext(ctx, q, account)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	var out []storage.CharacterSlot
+	slot := 0
+	for rows.Next() {
+		var (
+			c         storage.Character
+			deleted   int
+			lastLogin int64
+			createdAt int64
+			updatedAt int64
+			data      []byte
+		)
+		if err := rows.Scan(&c.ID, &c.Account, &c.Name, &c.Job, &c.Level, &c.Gold,
+			&deleted, &lastLogin, &createdAt, &updatedAt, &data); err != nil {
+			return nil, err
+		}
+		c.Deleted = deleted != 0
+		c.LastLogin = time.Unix(lastLogin, 0)
+		c.CreatedAt = time.Unix(createdAt, 0)
+		c.UpdatedAt = time.Unix(updatedAt, 0)
+		if c.Data, err = unmarshalCharacter(data); err != nil {
+			return nil, err
+		}
+		// 已删除的：**占着位子但不出现在列表里**（空槽）
+		if c.Deleted {
+			slot++
+			continue
+		}
+		out = append(out, storage.CharacterSlot{Slot: slot, Char: &c})
+		slot++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *characterStore) Update(ctx context.Context, c *storage.Character) error {
 	c.SyncFromData()
 	data, err := marshalCharacter(c.Data)

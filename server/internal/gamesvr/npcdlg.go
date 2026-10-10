@@ -214,8 +214,15 @@ func (s *Server) dlgSelectIndex(c net.Conn, p *Player, idx int) {
 		s.openShop(c, p, p.dialog.npcID)
 		// 原版点"买"之后对话**换成**这句（用户给的截图：正文"你想买什么?" + 「返回」
 		// 链接），货架列表是另一个窗。给 proto 玩家补上这段（legacy 客户端自己画）。
+		//
+		// ⚠️ 行内标记必须是 **`<文字/@序号>`**（序号 1 起，与 `links` 次序一致）：
+		// 客户端只认数字序号（`input::parse_marked_line`）。早先这里直接写
+		// `<返回/@main>`（脚本标签）⇒ 解析不出来 ⇒ "返回"变成一行死文字、
+		// 点它没反应（用户 2026-10-10 第 3 条）。所以正文给序号、**同时**把
+		// `links` 设成 [返回 → @main] —— 客户端回序号，服务端按 links 找标签跳转。
 		if c == nil && p.protoOut != nil {
-			s.npcSay(c, p, p.dialog.npcID, "你想买什么？\\\n<返回/@main>", nil)
+			p.dialog.links = []script.Link{{Text: "返回", Label: "main"}}
+			s.npcSay(c, p, p.dialog.npcID, "你想买什么？\\\n<返回/@1>", nil)
 		}
 		return
 	case "sell":

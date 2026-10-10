@@ -49,6 +49,13 @@ type Account struct {
 // Character 是角色。
 //
 // 对应 Delphi THumDataInfo（Grobal2.pas:955-958）。
+/// CharacterSlot 是"选角界面的一个槽位"：`Slot` 是位置，`Char` 为 nil = 空位
+///（被删掉的那个位置留着，后面的人不左移 —— 见 `CharacterStore::ListByAccountWithSlots`）。
+type CharacterSlot struct {
+	Slot int
+	Char *Character
+}
+
 type Character struct {
 	ID        int64
 	Account   string
@@ -367,6 +374,13 @@ type CharacterStore interface {
 	GetByName(ctx context.Context, name string) (*Character, error)
 	// ListByAccount 列出某账号下的全部未删除角色（原版上限 2 个）。
 	ListByAccount(ctx context.Context, account string) ([]*Character, error)
+	// ListByAccountWithSlots 同 [`ListByAccount`]，但**连同已删除的一起编号**：
+	// 返回的第 i 项对应选角界面的第 i 个槽位。
+	//
+	// ⚠️ 为什么要带已删除的：选角界面里每个角色占**固定的槽位** —— 删掉 1 号之后，
+	// 2 号必须还待在 2 号位（用户 2026-10-10 第 1 条：删了角色1，角色2 左移了）。
+	// 只按"未删除"编号就会把后面的人整体左移一格。
+	ListByAccountWithSlots(ctx context.Context, account string) ([]CharacterSlot, error)
 	Update(ctx context.Context, c *Character) error
 	// UpdateForSession persists only while the game's account lease still belongs to sessionID.
 	UpdateForSession(ctx context.Context, c *Character, sessionID int32) error

@@ -65,6 +65,9 @@ func (cs *captureCharStore) GetByName(context.Context, string) (*storage.Charact
 func (cs *captureCharStore) ListByAccount(context.Context, string) ([]*storage.Character, error) {
 	return nil, nil
 }
+func (cs *captureCharStore) ListByAccountWithSlots(context.Context, string) ([]storage.CharacterSlot, error) {
+	return nil, nil
+}
 func (cs *captureCharStore) MarkDeleted(context.Context, int64) error { return nil }
 
 // saveTestPlayer 造一个挂了快照通道的在线玩家（够 saveAll 用）。
