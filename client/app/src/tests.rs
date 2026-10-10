@@ -1566,3 +1566,50 @@ fn 挥刀声按武器形状取() {
     assert_eq!(sound::swing(1), 51, "木剑（Shape 1）= 木器那一档的挥刀声");
     assert_eq!(sound::swing(0), 57, "形状 0（赤手）是拳头那一档");
 }
+
+/// F10 状态窗的版式：13 个装备槽都要装在背板里、互不重叠、**画与命中同源**。
+///
+/// 用户 2026-10-10「把 F10 补齐」—— 以前按 F10 什么都不会发生（数据其实早就在客户端里：
+/// `AbilityUpdate` 带着 dc/mc/sc/ac、`EquippedItems` 带着 13 个槽位，只是没窗口画）。
+/// 这条测试把"槽位都装得下"钉住：**换背板素材（`Prguse3[4]`）时必须重算版式**。
+#[test]
+fn 状态窗版式() {
+    let (x, y, w, h) = crate::status::panel((1024, 768));
+    assert_eq!(
+        (w, h),
+        (crate::status::W, crate::status::H),
+        "背板尺寸 = Prguse3[4] 的原生尺寸"
+    );
+    assert_eq!(crate::status::BG, 4, "背板图号");
+    assert!(x + w <= 1024.0 && y + h <= 768.0, "窗口要装得下");
+    // 13 个槽：都在背板里、互不重叠、中心点必须命中回自己
+    let mut seen: Vec<(f32, f32)> = Vec::new();
+    for i in 0..crate::status::EQUIP_SLOTS {
+        let (sx, sy, sw, sh) = crate::status::equip_slot_rect(i);
+        assert!(
+            sx >= 0.0 && sy >= 0.0 && sx + sw <= w && sy + sh <= h,
+            "第 {i} 槽（{sx},{sy},{sw},{sh}）越出背板 {w}x{h}"
+        );
+        assert!(!seen.contains(&(sx, sy)), "第 {i} 槽与前面的重叠");
+        seen.push((sx, sy));
+        assert_eq!(
+            crate::status::equip_slot_at((sx + sw / 2.0, sy + sh / 2.0)),
+            Some(i),
+            "第 {i} 槽中心应命中它自己（画与命中同源）"
+        );
+    }
+    // 槽位不许压到下面的属性文本（改版式时最容易撞的地方）
+    let (_, last_y, _, last_h) = crate::status::equip_slot_rect(crate::status::EQUIP_SLOTS - 1);
+    assert!(
+        last_y + last_h <= crate::status::TEXT_Y,
+        "最后一排槽（底 {}）压到属性文本（顶 {}）了",
+        last_y + last_h,
+        crate::status::TEXT_Y
+    );
+    // 关闭按钮在右上角，且小坐标不算命中
+    assert!(crate::status::on_close((
+        crate::status::CLOSE_X + 2.0,
+        crate::status::CLOSE_Y + 2.0
+    )));
+    assert!(!crate::status::on_close((0.0, 0.0)));
+}

@@ -189,7 +189,7 @@ nHair   := m_btHair * 2 + m_btGender;
 |---|---|---|---|
 | `HUMIMGIMAGESFILE` `:59` | `Hum.wil` | ✓ 13.9 MB | ✅ 已用（`HUM_LIB`） |
 | `WEAPONIMAGESFILE` `:61` | `Weapon.wil` | ✓ 8.2 MB，**76 块** | ✅ 已用（`WEAPON_LIB`） |
-| `HAIRIMGIMAGESFILE` `:60` | `Hair.wil` | ✗ **不存在**（有 `hair2.wzl` 2.6 MB 真数据、`hair_ck`/`hair4_ck` 空壳） | ❌ 未做（见 §8-2） |
+| `HAIRIMGIMAGESFILE` `:60` | `Hair.wil` | ✗ **不存在**；头发库是 **`hair2.wzl`**（21600 张 = 36 块 = 18 种发型 × 2 性别） | ✅ 已用（`HAIR_LIB = "hair2"`，2026-10-10） |
 | `HUMWINGIMAGESFILE` `:57` | `HumEffect.wil` | ✓ **22 MB** | ❌ 未做（翅膀/时装层） |
 | —（本版源码未引） | `WeaponEffect.wzl` | ✓ **25 MB** | ❌ 未做（用途待查，见 §8-4） |
 | `BAGITEMIMAGESFILE` `:66` | `Items.wil` | ✓ 3.7 MB（6846 张图标） | ✅ 已用（背包/图标） |
@@ -287,6 +287,13 @@ m_nHairOffset   := HUMANFRAME * (m_btHair * 2 + m_btSex);         // ⚠️ 见 
   注释掉了、生效的是下面那套**），站立帧 = `ActStand.start + dir*(frame+skip)`（`Npc` 站着不动 ⇒ 帧恒 0）。
   **已核验**：我们 `merchant.txt` + `Npcs.txt` 里地图 0 的 **23 + 11 个 NPC，外观块全部有图**
   （例：屠夫 `appr=4` → 块起点 240，42 帧有图）。
+- ⚠️ **NPC 只有 6 个朝向**：块长 60 帧（`GetNpcOffset` 的步长 `appr*60`）、商人那张动作表
+  （`MA31`/`MA32`）站立**步长 10** ⇒ 方向 0/10/20/30/40/50，**给到 6/7 就串到下一个 NPC 的
+  图块**（画成旁边那个的样子）。⇒ 客户端 `npc_index` 按 `(块长-1)/步长` **夹住方向**
+  （`client/core/src/actor.rs`）。
+- ⚠️ **NPC 朝向要固定**：官方默认 `m_btDirection := 4`（朝下/正面，`ObjBase.pas:1210`）；
+  `merchant.txt` 那个"正面"列官方服务端**不读**（`TMerchant` 记录里没有朝向字段，只有卫兵
+  `LocalDB.pas:239` 从配置读）。**不能像怪物那样随机**（怪物随机没问题：它们会走动转向）。
 
 ### 4.6 图标 / 大图 / 掉落
 
@@ -361,6 +368,8 @@ if StdItem.AniCount > 0        then m_btDressEffType := StdItem.AniCount;
 | 特征字节（weapon/dress 两位） | ✅ | `server/internal/gamesvr/equip.go:279`、`netproto.go:1519-1521` |
 | 身体层 `Hum.wzl` | ✅ | `client/app/src/actor.rs:375` |
 | 武器层 `Weapon.wzl` | ✅ | `client/app/src/actor.rs:472` |
+| 头发层 `hair2.wzl` | ✅ 2026-10-10 | `client/app/src/actor.rs` 的 `hair_sprite`、`core::actor::hair_index` |
+| **F10 状态窗**（小人 + 13 装备槽 + 属性） | ✅ 2026-10-10 | `client/app/src/status.rs`（背板 `Prguse3[4]`） |
 | 怪物 `Mon%d` / NPC `Npc.wzl` | ✅ | `client/core/src/actor.rs:280/352` |
 | 图标 `Items.wzl[Looks]` | ✅ | 背包窗口 |
 | 技能/地图/HUD/小地图 | ✅ | 各自模块 |
@@ -369,7 +378,6 @@ if StdItem.AniCount > 0        then m_btDressEffType := StdItem.AniCount;
 
 | 层 | 素材 | 备注 |
 |---|---|---|
-| 头发 | `Hair.wil` **不存在**，但有 `hair2.wzl`（2.6 MB） | 待验：`hair2` 的块布局是否同 `Hair`（§8-2） |
 | 翅膀 / 时装 | `HumEffect.wzl` ✓ 22 MB | 公式见 §5.2，但 `m_btDressEffType` 我们还没算 |
 | 武器特效 | `WeaponEffect.wzl` ✓ 25 MB | 用途未确认（§8-4） |
 | 坐骑 | 同 HumEffect | 需要服务端算 `m_btHorseType` |
@@ -406,13 +414,14 @@ if StdItem.AniCount > 0        then m_btDressEffType := StdItem.AniCount;
 
 ## 8. 待查（有明确问题、还没答案）
 
-1. **头发字节的双重加倍**：服务端 `ObjBase.pas:20022` 发 `Hair*2+性别`，而
-   `MirClient/Actor.pas:1906-1908` 收到后又 `*2 + 性别` ⇒ 两边**配不上**。
-   最可能：本仓库的 `M2Server` 与 `MirClient` **不是同一配对的版本**（老的官方服务端发**原始**发型值）。
-   **对我们意味着**：现在的 `join.go:92` 发裸 `chr.Data.Hair`（没乘）—— 在**做头发层之前必须定下来**：
-   以"客户端侧公式（`(Hair*2+性别)*600`）"为准，服务端就该发**原始**发型值（＝我们现在这样）。
-2. **`hair2.wzl` 能不能当头发层**：它有真数据（2.6 MB），而官方常量指的是不存在的 `Hair.wil`。
-   验法：按 §4.2 的头发公式取几块，看画出来是不是"人头上的头发"。
+1. ~~头发字节的双重加倍~~ **已定口径（2026-10-10）**：官方 `M2Server` 发 `Hair*2+性别`、
+   而 `MirClient` 收到**又乘一次** ⇒ 两边配不上（疑版本不配对）。我们**以客户端公式为准**：
+   服务端发**原始**发型值（`join.go:92` 现在就是这样），客户端 `hair_index` 做 `*2+性别`。
+   ⚠️ 别"顺手把服务端也乘一次"—— 那会让头发跳到 4 倍偏移上。
+2. ~~`hair2.wzl` 能不能当头发层~~ **已验证（2026-10-10）**：`hair2` = 21600 张 = 36 块 =
+   18 种发型 × 2 性别，与 `Actor.pas:1904` 的 `ImageCount div HUMANFRAME div 2` 完全吻合；
+   按锚点把"身体 + 头发 + 武器"合成，8 个方向头发都长在头上（发型 3 = 棕发，全方向可辨）。
+   块 0（发型 0、男）是空的 ⇒ 那是"默认光头"，不是素材坏了。
 3. **`Weapon2.wzl` / `Weapon9.wzl` 的索引口径**（§4.4 的推测未证实）。验法：找一个确定属于
    新武器库的武器（形状 ≥ 38）在**现代客户端**里的实际块号，再倒推公式；或找本源客户端的物品表对照。
 4. **`WeaponEffect.wzl`（25 MB）到底给谁用**：本版源码没有引用。可能是更新版本客户端的

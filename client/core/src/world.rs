@@ -174,6 +174,21 @@ pub struct Ability {
     /// 等级一直有（`level`），经验/负重是**协议一直没下发这两个数**，服务端补齐后才画得出。
     pub exp: u32,
     pub max_exp: u32,
+    /// 攻击 / 魔法 / 道术的上下限（状态窗那几行"攻击 2-5"）。
+    ///
+    /// ⚠️ 这些字段**协议里一直都有**（`common.proto` 的 `Ability.dc_min..mac`），服务端
+    /// 也一直在填（`netproto.go` 的 `protocolAbility`）—— 只是客户端到 2026-10-10 做状态窗
+    /// 才解析。想加"界面上要显示的数值"时，**先看协议里有没有**，别急着加协议字段。
+    pub dc_min: u32,
+    pub dc_max: u32,
+    pub mc_min: u32,
+    pub mc_max: u32,
+    pub sc_min: u32,
+    pub sc_max: u32,
+    /// 防御 / 魔防（原版是 (min,max) 对偶，新协议的 `ac`/`mac` 是单值，服务端取 min；
+    /// 见 `protocolAbility` 的说明）。
+    pub ac: u32,
+    pub mac: u32,
 }
 
 impl Ability {
@@ -191,6 +206,14 @@ impl Ability {
             max_weight: ab.max_weight,
             exp: ab.exp,
             max_exp: ab.max_exp,
+            dc_min: ab.dc_min,
+            dc_max: ab.dc_max,
+            mc_min: ab.mc_min,
+            mc_max: ab.mc_max,
+            sc_min: ab.sc_min,
+            sc_max: ab.sc_max,
+            ac: ab.ac,
+            mac: ab.mac,
         }
     }
 }

@@ -33,7 +33,7 @@ pub(crate) fn open_lib(dir: &Path, name: &str) -> Option<Wzl> {
 
 /// 登录模式可浏览的图库。
 pub(crate) const LIBS: &[&str] = &[
-    "Prguse", "Hum", "Items", "Mon1", "Tiles", "Magic", "ChrSel", "Effect", "Weapon",
+    "Prguse", "Hum", "Weapon", "hair2", "Items", "Mon1", "Tiles", "Magic", "ChrSel", "Effect",
 ];
 
 // ---------- 配色 ----------

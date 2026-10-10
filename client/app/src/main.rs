@@ -86,6 +86,7 @@ pub(crate) mod actor;
 pub(crate) use actor::*;
 pub(crate) mod hud;
 pub(crate) mod minimap;
+pub(crate) mod status;
 pub(crate) use minimap::*;
 pub(crate) mod net;
 pub(crate) use net::*;
@@ -246,6 +247,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //（原版背包也是本地开合；服务端只管背包内容）。
     let mut bag_open = false;
     let mut bag_page = 0usize;
+    // 状态窗（F10）—— 同样是**纯客户端窗口状态**：数据全在 `world.ability` / `world.equip` 里
+    //（服务端一直在下发，见 `status.rs` 的说明），开关不跟服务端同步。
+    let mut status_open = false;
     // 怪声音的随机源（`sfx::monster_ambient` 的 1/8 判定；不为这一处引 rand 依赖）
     let mut sfx_rng: u32 = 0x1234_5678;
     // 悬停可攻击目标时把光标换成"准星"（Crystal 是 `MouseCursor.Attack`，
@@ -350,6 +354,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // `Action::Quit`）才真退。其余模式（世界/素材浏览器）保持原样。
                     // 背包窗开着 ⇒ ESC **先关背包**
                     Some(Keycode::Escape) if mode == 2 && bag_open => bag_open = false,
+                    // 状态窗同理 ⇒ ESC **先关状态窗**（别顺手把客户端退了）
+                    Some(Keycode::Escape) if mode == 2 && status_open => status_open = false,
                     // NPC 对话开着 ⇒ ESC **先关对话**（原版 `@exit`），别顺手退了客户端
                     Some(Keycode::Escape)
                         if mode == 2
@@ -373,6 +379,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         bag_open = !bag_open;
                         bag_page = 0;
                         println!("[ui] 背包窗 {}", if bag_open { "打开" } else { "关闭" });
+                    }
+                    // F10 = 状态窗（原版键位：F9 包裹 / F10 属性 / F11 技能 / F12 内挂）
+                    Some(Keycode::F10) if mode == 2 => {
+                        status_open = !status_open;
+                        println!("[ui] 状态窗 {}", if status_open { "打开" } else { "关闭" });
                     }
                     Some(Keycode::F1) if ctrl(keymod) => mode = 1,
                     Some(Keycode::F2) if ctrl(keymod) => mode = 2,
@@ -702,6 +713,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         press_at = None;
                                         held_move = None;
                                     }
+                                }
+                            }
+                            // ②″ F10 状态窗：点 X = 关窗；点装备槽 = 报一下那件；点窗里别处 = 吞掉
+                            //（与背包窗同一套处理；两个窗一右一左，不会叠）
+                            if status_open {
+                                let (wx, wy, _, _) = crate::status::panel((crate::window::WIN_W, crate::window::WIN_H));
+                                let inside = x >= wx
+                                    && x < wx + crate::status::W
+                                    && y >= wy
+                                    && y < wy + crate::status::H;
+                                if inside {
+                                    let (lx, ly) = (x - wx, y - wy);
+                                    if crate::status::on_close((lx, ly)) {
+                                        status_open = false;
+                                        println!("[ui] 状态窗关闭（点 X）");
+                                    } else if let Some(slot) = crate::status::equip_slot_at((lx, ly)) {
+                                        if let Some(n) = net.as_ref() {
+                                            let msg = match n.world.equip.get(slot) {
+                                                Some(Some(it)) => {
+                                                    format!("装备槽 {}：{}", slot + 1, it.name)
+                                                }
+                                                _ => format!("装备槽 {} 是空的", slot + 1),
+                                            };
+                                            println!("[ui] {msg}");
+                                            let shown = trunc(&msg, 30);
+                                            if let Some(n) = net.as_mut() {
+                                                n.chat.push(shown, C_CHAT_SYS);
+                                            }
+                                        }
+                                    }
+                                    combat_target = None;
+                                    move_target = None;
+                                    press_at = None;
+                                    held_move = None;
                                 }
                             }
                             // ②′ 背包窗开着：点格子 = 把"看到的是哪件"反馈到聊天区
@@ -1334,6 +1379,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 net.as_ref(),
                 combat_target,
             )?;
+            // 状态窗（F10）：与背包窗同一层（世界与 HUD 之上）
+            if status_open {
+                if let Some(dir) = asset_dir.as_deref() {
+                    status::draw(
+                        &mut canvas,
+                        &tex_creator,
+                        &mut ui,
+                        &mut ui_texts,
+                        &mut sprites,
+                        dir,
+                        net.as_ref(),
+                        Instant::now(),
+                    )?;
+                }
+            }
             // 背包窗画在**世界与 HUD 之上**（它是浮窗；原版也是最后贴）。
             // 素材目录缺失时和 `draw_map_view` 一样什么都不画（那屏已经打了横幅提示）。
             if bag_open {

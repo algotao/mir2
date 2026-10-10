@@ -349,10 +349,38 @@ pub fn npc_actions(race: u8, appr: u16) -> &'static [Act; 7] {
 /// `m_nCurrentFrame` 来自 `GetDefaultFrame` = `ActStand.start + dir * (frame + skip) + cf`）。
 ///
 /// `frame` 是站立段内的帧（NPC 站着不动 ⇒ 恒 0；有动画的 NPC 才需要它）。
+///
+/// ⚠️ **方向要夹进本块**：一个 NPC 的块只有 [`NPC_BLOCK`] 帧，而商人那张动作表
+/// （`MA31` / `MA32`）的站立**步长是 10** ⇒ 只有 **6 个朝向**（0/10/20/30/40/50）。
+/// 方向给到 6 或 7 就会算到 `+60/+70` —— 那是**下一个 NPC 的图块**，
+/// 症状是"这个 NPC 画成了旁边那个的样子"（随机朝向时特别容易撞上）。
 pub fn npc_index(race: u8, appr: u16, dir: u8, frame: u16) -> u32 {
     let stand = npc_actions(race, appr)[MAct::Stand as usize];
+    // `(块长-1)/步长` = 这块最多放得下几个朝向（步长 10、60 帧 ⇒ 0..5；步长 8 ⇒ 0..7）。
+    let stride = (stand.stride() as u32).max(1);
+    let dir = (dir as u32).min((npc_block_size(appr) - 1) / stride) as u8;
     npc_offset(appr) + stand.first(dir) + frame as u32
 }
+
+/// 一个 NPC 图块的帧数：**下一支的块起点减本支的块起点**（`GetNpcOffset` 里高段有
+/// 20 帧一支的：`61..=64 => 3350` ⇒ `appr=60` 的块只有 20 帧）。
+///
+/// 非单调的几处（`27|32` 比前一支小）退回 [`NPC_BLOCK`]。
+pub fn npc_block_size(appr: u16) -> u32 {
+    let base = npc_offset(appr);
+    let next = npc_offset(appr.saturating_add(1));
+    if next > base {
+        next - base
+    } else {
+        NPC_BLOCK
+    }
+}
+
+/// NPC 图块的**名义**帧数（`0..=22 => appr * 60` 那一支；高的几支是 20 帧，
+/// 用 [`npc_block_size`] 算实际值）。
+///
+/// 60 帧 / 站立步长 10 ⇒ **6 个朝向**，见 [`npc_index`] 的说明。
+pub const NPC_BLOCK: u32 = 60;
 
 /// 怪物用的容器名（不含扩展名）——原版 `aGetMonImg`（`Actor.pas:958-1000`）。
 ///
@@ -416,6 +444,36 @@ pub const HUM_LIB: &str = "Hum";
 /// ⚠️ 同时记得：`Shape` 是外观号、`Looks` 才是 `Items.wzl` 里的**图标**号
 ///（木剑 `Shape=1 / Looks=30`），两者不能混。
 pub const WEAPON_LIB: &str = "Weapon";
+
+/// 头发容器 —— **`hair2.wzl`**（不是官方常量里那个 `Hair.wil`，本套素材没有那个文件）。
+///
+/// # 口径（2026-10-10 查证）
+///
+/// 1. **客户端的头发公式自己要乘一次**（`MirClient/Actor.pas:1904-1908`）：
+///
+///    ```pascal
+///    haircount := g_WHairImgImages.ImageCount div HUMANFRAME div 2;   // 块数 = 发型数
+///    m_btHair := m_btHair * 2;
+///    m_nHairOffset := HUMANFRAME * (m_btHair + m_btSex);              // 600*(发型*2+性别)
+///    ```
+///
+///    ⇒ **服务端要发的"发型"是原始样式号**，乘 2 加性别是**客户端**的事。
+///    ⚠️ 但 `M2Server/ObjBase.pas:20022` 发的是 `m_btHair*2 + m_btGender`（已乘过）——
+///    两边**配不上**，说明那份服务端与这份客户端**不是同一配对版本**（老的官方服务端
+///    发的就是原始值）。**我们的服务端发的是裸 `chr.Data.Hair`（原始值）⇒ 与客户端公式自洽**
+///    （见 `docs/authority.md` §8-1，别改成"服务端也乘一次"）。
+/// 2. **素材印证**：`hair2.wzl` = 21600 张 = 36 块 = **18 种发型 × 2 性别**
+///    —— 与上面那句 `ImageCount div 600 div 2` 完全吻合；块 1（`600*(0*2+1)`）是深蓝发、
+///    块 3 是红发，锚点 `ay ≈ -48` 与身体一致（能直接叠在头上）。
+///    块 0（发型 0、男）**是空的** ⇒ 默认"光头"不画东西，属正常。
+/// 3. 本套素材里 `hair_ck` / `hair4_ck` 是 64 字节空壳，**不要去用**。
+pub const HAIR_LIB: &str = "hair2";
+
+/// 头发在 [`HAIR_LIB`] 里的图号：`600 * (发型*2 + 性别) + 动作帧`（[`human_index`] 的同一套，
+/// 只是容器不同）。`style` 是**原始**发型号（服务端给的那个），`sex` 取 `dress & 1`。
+pub fn hair_index(style: u8, sex: u8, act: HAct, dir: u8, frame: u16) -> u32 {
+    human_index(style.wrapping_mul(2).wrapping_add(sex), act, dir, frame)
+}
 
 // ---------- 生成段 ----------
 // 由 `client/core/tools/gen_actor_tables.py` 从 Actor.pas 抽出；**不要手改数字**。
@@ -2259,13 +2317,38 @@ mod tests {
             "铁剑该是银灰（近中性），实得 rgb({sr},{sg},{sb}) —— 别与木剑换块"
         );
 
-        // 头发：原版要的容器叫 `Hair`（`Share.pas:59` 的 `HAIRIMGIMAGESFILE`），
-        // 而本套素材**没有这个文件**；有的是 `hair2`（真素材）与 `hair_ck` / `hair4_ck`
-        // ——后两个的 `.wzx` 索引里有 5328 条，`.wzl` 却只有 64 字节的头（取不出图）。
-        // 这条断言就是"不画头发"这个决定的地基：哪天它红了，说明素材补上了。
+        // 头发：官方常量指的是 `Hair.wil`（`Share.pas:59`），而本套素材**没有这个文件**
+        // —— 有的头发库叫 **`hair2`**（见 `HAIR_LIB` 的说明）。哪天 `Hair.wzl` 出现了，
+        // 说明官方库名下的素材补齐了，可以考虑换回官方名字。
         assert!(
             Wzl::open(dir.join("Hair")).is_err(),
-            "本套素材出现了 Hair.wzl ⇒ 头发层（Actor.pas:3162-3167）该实现了"
+            "本套素材出现了 Hair.wzl ⇒ `HAIR_LIB` 可以换回官方库名"
+        );
+        // `hair2` = 21600 张 = **36 块 = 18 种发型 × 2 性别**，与 `Actor.pas:1904` 那句
+        // `haircount := ImageCount div HUMANFRAME div 2` 完全吻合 ⇒ 它就是要的头发库，
+        // 公式 `600*(发型*2+性别)` 也对得上（见 `hair_index`）。
+        let hair =
+            Wzl::open(dir.join(HAIR_LIB)).unwrap_or_else(|e| panic!("{HAIR_LIB}.wzl: {e}"));
+        assert_eq!(
+            hair.len(),
+            36 * HUMAN_FRAME as usize,
+            "{HAIR_LIB} 该是 36 块（18 种发型 × 2 性别）"
+        );
+        // 发型 1（深蓝发）：男 ⇒ 块 2、女 ⇒ 块 3，两块都要有图
+        for sex in 0..2u8 {
+            let part = 1u8 * 2 + sex;
+            assert!(
+                (0..8u8).any(|d| hair
+                    .decode(human_index(part, stand, d, 0) as usize)
+                    .is_some_and(|s| !s.is_empty())),
+                "发型 1 性别 {sex}（块 {part}）：八个方向都没有图 ⇒ 头发口径变了？"
+            );
+        }
+        // 发型 0、男（块 0）**是空的** —— 那是"默认光头"，不是素材坏了。
+        assert!(
+            hair.decode(human_index(0, stand, 4, 0) as usize)
+                .map_or(true, |s| s.is_empty()),
+            "hair2 块 0 有图了 ⇒ 发型 0「不画」这条要重新想"
         );
 
         // NPC：`Npc.wzl` **在**（5010 张、有真图）—— 曾长期被误判成"本套素材缺失"，
@@ -2289,10 +2372,45 @@ mod tests {
         if let Ok(hair_ck) = Wzl::open(dir.join("hair_ck")) {
             for i in 0..hair_ck.len().min(8) {
                 if let Some(s) = hair_ck.decode(i) {
-                    assert!(s.is_empty(), "hair_ck 第 {i} 张取出了真图 ⇒ 头发层该实现了");
+                    assert!(s.is_empty(), "hair_ck 第 {i} 张取出了真图 ⇒ 素材变了，要重查");
                 }
             }
         }
+    }
+
+    /// NPC 朝向必须夹在**它自己那个块**里（站立步长 10、60 帧 ⇒ 只能 0..5）。
+    ///
+    /// 不夹的话 `dir = 6/7` 会算到 `+60/+70` —— 那是**下一个 NPC 的图块**。
+    /// 真实撞上过：服务端给 NPC 用 `rand.IntN(8)` 随机朝向（2026-10-10 修成固定 4），
+    /// 于是商人有 1/4 的概率画成旁边那个 NPC 的样子。
+    #[test]
+    fn npc朝向夹在块内() {
+        for appr in [4u16, 11, 20, 26, 35, 41, 47, 50, 60, 75, 82] {
+            let base = npc_offset(appr);
+            let size = npc_block_size(appr);
+            for dir in 0..8u8 {
+                let i = npc_index(50, appr, dir, 0);
+                assert!(
+                    (base..base + size).contains(&i),
+                    "appr={appr}（块 [{base},{})）dir={dir}：图号 {i} 跑到块外了",
+                    base + size
+                );
+            }
+        }
+        // 步长 10 ⇒ 6 个朝向：6/7 夹回 5
+        assert_eq!(npc_index(50, 4, 6, 0), npc_index(50, 4, 5, 0));
+        assert_eq!(npc_index(50, 4, 7, 0), npc_index(50, 4, 5, 0));
+    }
+
+    /// 头发图号 = `600 * (发型*2 + 性别)`（`hair_index`）——块号是**乘法**，别写成加法。
+    #[test]
+    fn 头发图号() {
+        // 发型 0：男 ⇒ 块 0、女 ⇒ 块 1；发型 1：男 ⇒ 块 2、女 ⇒ 块 3
+        assert_eq!(hair_index(0, 0, HAct::Stand, 0, 0), 0);
+        assert_eq!(hair_index(0, 1, HAct::Stand, 0, 0), HUMAN_FRAME);
+        assert_eq!(hair_index(1, 1, HAct::Stand, 0, 0), 3 * HUMAN_FRAME);
+        // 站着朝下第 0 帧 = 块起点 + `ActStand.first(4)` = +32
+        assert_eq!(hair_index(1, 1, HAct::Stand, 4, 0), 3 * HUMAN_FRAME + 32);
     }
 }
 

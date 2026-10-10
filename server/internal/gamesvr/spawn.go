@@ -67,6 +67,14 @@ func (s *Server) spawnNPCs(mapID string) {
 		}
 		npc := entity.NewMonster(proto.NpcIDBase+s.npc.seq.Add(1), info, mp, np.X, np.Y)
 		npc.IsNPC = true
+		// ⚠️ 朝向必须**固定**，不能像怪物那样随机（`NewMonster` 默认 `rand.IntN(8)`）：
+		// NPC 的图块只有 60 帧、站立步长 10 ⇒ **只有 6 个朝向**，给到 6/7 会算到
+		// **下一个 NPC 的图块**（症状：这个 NPC 画成了旁边那个的样子）。
+		//
+		// 取值照官方默认：`TBaseObject` 构造时 `m_btDirection := 4`（朝下/正面，
+		// `ObjBase.pas:1210`）。`merchant.txt` 那个"正面"列官方服务端**不用**
+		// —— `TMerchant` 记录里没有朝向字段（只有卫兵 `LocalDB.pas:239` 从配置读）。
+		npc.Object.SetPlace(mp, np.X, np.Y, 4)
 		// 属沙城的 NPC：在这里交易要抽城堡税（原版 m_boCastle）
 		npc.CastleNPC = np.Castle
 

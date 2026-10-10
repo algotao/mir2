@@ -440,7 +440,11 @@ pub(crate) fn actor_rect<'a, T>(
     let (fx, fy) = anim.map_or((e.x as f32, e.y as f32), |a| a.draw_pos((e.x, e.y), now));
     let (px, py) = cell_to_screen_f(cam, fx, fy);
     let mut hit: Option<FRect> = None;
-    for layer in [body_sprite(e, anim, now), weapon_sprite(e, anim, now)] {
+    for layer in [
+        body_sprite(e, anim, now),
+        hair_sprite(e, anim, now),
+        weapon_sprite(e, anim, now),
+    ] {
         let Some((lib, idx)) = layer else { continue };
         if sprites.ensure(tc, dir_assets, lib, idx).is_none() {
             continue;
@@ -497,6 +501,38 @@ pub(crate) fn weapon_sprite(
     ))
 }
 
+/// 取"头发层"（只有玩家有；服务端发的 `hair` 是**原始发型号**）。
+///
+/// 层序：本体 → **头发** → 武器（官方 `Actor.pas:3835-3848` 是"武器(在身后时) → 身体 → 头发"，
+/// 我们武器统一画在最上，于是头发夹在中间 —— 免得剑压住头发）。
+///
+/// 发型 `0` 不画：`hair2.wzl` 的块 0（发型 0、男）**本来就是空的**（光头）。
+pub(crate) fn hair_sprite(
+    e: &mir2_core::world::Entity,
+    anim: Option<&ActorAnim>,
+    now: Instant,
+) -> Option<(&'static str, u32)> {
+    use mir2_core::actor as A;
+    if e.kind != 0 {
+        return None;
+    }
+    let f = e.feature.as_ref()?;
+    if f.hair == 0 || e.dead {
+        return None;
+    }
+    // ⚠️ 与 `body_sprite`/`weapon_sprite` **同一份采样**（同样的 run/相位）：各算各的会错帧
+    let (held, held_ms) = anim.map_or((None, 0), |a| (a.action, a.action_ms(now)));
+    let moving = anim.is_some_and(|a| a.moving(now));
+    let walk_ms = anim.map_or(0, |a| a.walk_ms(now));
+    let (act, frame) = human_sample(held, held_ms, moving, e.run, walk_ms, false);
+    // 性别位从 `dress` 低位取（服务端发的 dress = 衣服Shape*2 + 性别）
+    let sex = (f.dress & 1) as u8;
+    Some((
+        A::HAIR_LIB,
+        A::hair_index(f.hair as u8, sex, act, A::dir_of(e.dir), frame),
+    ))
+}
+
 /// 画一个实体：**先精灵、取不到再退标记**，最后统一画名字与血条。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_actor<'a, T>(
@@ -541,8 +577,8 @@ pub(crate) fn draw_actor<'a, T>(
             show_numbers,
         );
     }
-    // 本体 → 武器（原版层序：武器压在身体上面）
-    let layers = [body, weapon_sprite(e, anim, now)];
+    // 本体 → 头发 → 武器（原版层序：武器压在身体上面；头发夹在中间，免得被剑压住）
+    let layers = [body, hair_sprite(e, anim, now), weapon_sprite(e, anim, now)];
     for &(lib, idx) in layers.iter().flatten() {
         sprites.ensure(tc, dir_assets, lib, idx);
     }
