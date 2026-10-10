@@ -769,16 +769,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let lx = x - bx;
                                     let ly = y - by;
                                     if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
-                                        let idx = bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
-                                        if let Some(Some(it)) = n.world.bag.get(idx) {
-                                            if it.make_index != 0 {
-                                                sell_held = Some(idx);
-                                                println!("[ui] 抓起 {}", it.name);
-                                                // 目标/走路清掉：下面 `(ct, mt)` 统一走
-                                                //（抓起时 did_butch=false 但商店窗命中段
-                                                // 会把这次点击吞掉 ⇒ 不会走/选）
-                                                press_at = None;
-                                                pending_pickup = None;
+                                        // ⚠️ 手上已经拿着东西 ⇒ 点包裹是**放回去**（取消），
+                                        // 不是再抓一件（用户 2026-10-10："放回包裹"）
+                                        if sell_held.is_some() {
+                                            sell_held = None;
+                                            println!("[ui] 放回包裹");
+                                        } else {
+                                            let idx =
+                                                bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
+                                            if let Some(Some(it)) = n.world.bag.get(idx) {
+                                                if it.make_index != 0 {
+                                                    sell_held = Some(idx);
+                                                    // 换一件 ⇒ 槽里原来那件取下来（手上只能有一件）
+                                                    sell_placed = None;
+                                                    println!("[ui] 抓起 {}", it.name);
+                                                    // 目标/走路清掉：下面 `(ct, mt)` 统一走
+                                                    //（抓起时 did_butch=false 但商店窗命中段
+                                                    // 会把这次点击吞掉 ⇒ 不会走/选）
+                                                    press_at = None;
+                                                    pending_pickup = None;
+                                                }
                                             }
                                         }
                                     }
@@ -1072,9 +1082,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let (sx, sy, sw, sh) = crate::shop::sell_panel();
                                 if x >= sx && x < sx + sw && y >= sy && y < sy + sh {
                                     match crate::shop::sell_hit((x - sx, y - sy)) {
+                                        // 右上角的**红色关闭叉**（素材自带）⇒ 关卖窗
+                                        crate::shop::SellHit::Close => {
+                                            shop_open = false;
+                                            sell_held = None;
+                                            sell_placed = None;
+                                            println!("[ui] 卖货窗关闭（素材关闭叉）");
+                                        }
+                                        // 圆槽：**手上拿着 ⇒ 放下；已经放着 ⇒ 再拿起来**
+                                        //（用户 2026-10-10：物品放下后还可以再次拾起、放回包裹）
                                         crate::shop::SellHit::Slot => {
-                                            if let Some(held) = sell_held.take() {
-                                                sell_placed = Some(held);
+                                            match (sell_held, sell_placed) {
+                                                (Some(held), None) => {
+                                                    sell_placed = Some(held);
+                                                    sell_held = None;
+                                                }
+                                                (None, Some(p)) => {
+                                                    sell_held = Some(p);
+                                                    sell_placed = None;
+                                                }
+                                                _ => {}
                                             }
                                         }
                                         crate::shop::SellHit::Ok => {

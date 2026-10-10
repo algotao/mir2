@@ -2055,34 +2055,44 @@ fn 点怪优先锁悬停的那只() {
 #[test]
 fn 卖货窗的浮件几何与命中() {
     let (x, y, w, h) = crate::shop::sell_panel();
-    // ① 挂在**对话窗正下方**（原版就是这样，不是挂在购买列表下面 —— 卖模式下
-    //    列表窗根本不出）
+    // ① 窗 = 素材 `Prguse[392]` 的原生尺寸（140×181），**右对齐**上方对话窗
     let (dx, dy, dw, dh) = input::dialog_panel();
-    assert_eq!(y, dy + dh + 8.0, "卖窗该紧贴对话窗下方");
     assert_eq!(
-        x + w,
-        dx + dw,
-        "卖窗要**右对齐**上方对话窗（右缘齐平，用户 2026-10-10）"
+        (w, h),
+        (crate::shop::SELL_SLOT.2, crate::shop::SELL_SLOT.3),
+        "卖窗就是那张素材，不该有自留边距"
     );
-    assert!(y + h <= 768.0, "整块窗要落在 1024×768 画面内");
-    assert!(x + w <= 1024.0);
+    assert_eq!(x + w, dx + dw, "卖窗要**右对齐**上方对话窗");
+    assert_eq!(y, dy + dh + 8.0, "挂在对话窗正下方");
+    assert!(y + h <= 768.0 && x + w <= 1024.0, "整块窗要落在画面内");
 
-    // ② 命中：槽（放东西）、OK（真卖）
-    let (sx, sy, _sw, sh) = crate::shop::SELL_SLOT;
+    // ② 命中：素材**自带**的三个区 —— 右上的红叉 / 下方的圆形 OK / 中间的大圆槽
+    let (cx, cy, cw, ch) = crate::shop::SELL_CLOSE;
     assert_eq!(
-        crate::shop::sell_hit((sx + 4.0, sy + 4.0)),
-        crate::shop::SellHit::Slot,
-        "点槽 ⇒ 放下手上的东西"
+        crate::shop::sell_hit((cx + cw / 2.0, cy + ch / 2.0)),
+        crate::shop::SellHit::Close,
+        "点素材右上角的红叉 ⇒ 关窗"
     );
     let (ox, oy, ow, oh) = crate::shop::SELL_OK;
     assert_eq!(
         crate::shop::sell_hit((ox + ow / 2.0, oy + oh / 2.0)),
-        crate::shop::SellHit::Ok
+        crate::shop::SellHit::Ok,
+        "点素材自带的圆形 OK ⇒ 卖出"
     );
-    // 槽和 OK 别重叠（重叠的话先命中谁就看运气了）
-    let slot_bottom = sy + sh;
+    // 圆槽按圆心判（OK 压在圆槽下缘 ⇒ 圆心处必须是圆槽，不是 OK）
+    let (ccx, ccy, r) = crate::shop::SELL_CIRCLE;
+    assert_eq!(
+        crate::shop::sell_hit((ccx, ccy)),
+        crate::shop::SellHit::Slot,
+        "圆心 ⇒ 放东西的槽"
+    );
+    assert_eq!(
+        crate::shop::sell_hit((ccx + r - 2.0, ccy)),
+        crate::shop::SellHit::Slot,
+        "圆内靠边也是槽"
+    );
     assert!(
-        oy >= slot_bottom,
-        "OK（y={oy}）不该压在槽（到 {slot_bottom}）上"
+        crate::shop::SELL_CIRCLE.2 < crate::shop::SELL_SLOT.2,
+        "圆要整个在素材里"
     );
 }

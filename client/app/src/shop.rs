@@ -268,52 +268,67 @@ const TRI_W: f32 = 1.5;
 // 窗的位置：照原版截图（用户 2026-10-10「卖.png」）它不是一块大板，是**三个浮件**
 // ——「"卖:"横条（带红 X）」挂对话窗正下方，放物品的圆槽**悬挂**在条下，OK 在圈右下。
 
-/// 窗口宽度：只够放下槽（140）与右下角的 OK（72）。
-const SELL_W: f32 = 230.0;
-
-/// 卖货窗的落点与尺寸。
+/// 卖货窗的落点与尺寸 = 素材 `Prguse[392]` 的原生尺寸（140×181），不再自留边距。
 pub(crate) fn sell_panel() -> (f32, f32, f32, f32) {
     let (dx, dy, dw, dh) = crate::input::dialog_panel();
     // **右对齐**上方对话窗（用户 2026-10-10）：右缘跟对话窗的右缘齐平
-    (dx + dw - SELL_W, dy + dh + 8.0, SELL_W, 250.0)
+    (
+        dx + dw - SELL_SLOT.2,
+        dy + dh + 8.0,
+        SELL_SLOT.2,
+        SELL_SLOT.3,
+    )
 }
 /// **放物品的槽** = `Prguse[392]`（140×181，链子挂坠+圆槽，物品放进去显示在中间）。
 ///
 /// 2026-10-10 用户比对素材给出的图号；之前是自绘的金属圈，现在换成官方槽。
 pub(crate) const SELL_SLOT_IMG: u32 = 392;
-/// 槽在窗口内的落点（素材原生尺寸 140×181，不缩放）—— 挂在横条下方。
-pub(crate) const SELL_SLOT: (f32, f32, f32, f32) = (28.0, 40.0, 140.0, 181.0);
-/// 槽的**中心**（物品图标放这里）。
-pub(crate) fn sell_slot_center() -> (f32, f32) {
-    (
-        SELL_SLOT.0 + SELL_SLOT.2 / 2.0,
-        SELL_SLOT.1 + SELL_SLOT.3 / 2.0,
-    )
-}
-/// OK 按钮（窗口内矩形，圆槽右下）。
-pub(crate) const SELL_OK: (f32, f32, f32, f32) = (150.0, 226.0, 72.0, 28.0);
-/// "卖:"与金额的位置 —— **只画文字，不画自绘的条/框**。
-pub(crate) const SELL_TITLE: (f32, f32) = (8.0, 8.0);
+/// 槽在窗口内的落点：素材 392 **本身就是整个卖窗**（标题栏/圆槽/OK/关闭叉都在
+/// 图里）⇒ 整张原样贴在窗口原点，不再自己挪。
+pub(crate) const SELL_SLOT: (f32, f32, f32, f32) = (0.0, 0.0, 140.0, 181.0);
+/// **官方素材自带的三个区**（`Prguse[392]` 140×181 里就画好了，我们**不重画**，
+/// 只做命中）—— 坐标是拿 `wzldump` 导出后逐像素量出来的（2026-10-10）：
+///
+/// - 右上角的**红色关闭叉**：像素落在 x 117..127 / y 3..17；
+/// - 下方的**蓝底白字圆形 OK**：蓝色像素落在 x 56..112 / y 144..171；
+/// - 中间那个**大圆槽**：物品放进去的地方（圆心 [`SELL_CIRCLE`]）。
+pub(crate) const SELL_CLOSE: (f32, f32, f32, f32) = (114.0, 1.0, 16.0, 20.0);
+pub(crate) const SELL_OK: (f32, f32, f32, f32) = (56.0, 144.0, 58.0, 28.0);
+/// 大圆槽的圆心与半径（素材内坐标）：物品放进去时按它**居中**。
+pub(crate) const SELL_CIRCLE: (f32, f32, f32) = (70.0, 80.0, 52.0);
+/// 金额文字的位置（素材标题栏上；**只画文字**，不自绘控件）。
+pub(crate) const SELL_TITLE: (f32, f32) = (48.0, 4.0);
 
 /// 卖货窗里点中了什么。
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SellHit {
-    /// 放物品的槽（把手上的东西放进来）。
+    /// 放物品的槽：把手上的东西放进来 / **点已放进去的东西 ⇒ 再拿起来**。
     Slot,
+    /// 素材右下角那个圆形 OK ⇒ 真卖。
     Ok,
+    /// 素材右上角那个红色关闭叉。
+    Close,
     None,
 }
 
 /// 窗口内的一点落在哪里。
 pub(crate) fn sell_hit(local: (f32, f32)) -> SellHit {
     let (lx, ly) = local;
-    let (sx, sy, sw, sh) = SELL_SLOT;
-    if lx >= sx && lx < sx + sw && ly >= sy && ly < sy + sh {
-        return SellHit::Slot;
+    // ⚠️ 顺序：**关闭叉 → OK 圆钮 → 大圆槽**（OK 压在圆槽下缘 ⇒ 先判 OK）
+    let (cx, cy, cw, ch) = SELL_CLOSE;
+    if lx >= cx && lx < cx + cw && ly >= cy && ly < cy + ch {
+        return SellHit::Close;
     }
     let (ox, oy, ow, oh) = SELL_OK;
     if lx >= ox && lx < ox + ow && ly >= oy && ly < oy + oh {
         return SellHit::Ok;
+    }
+    // 圆槽：按圆心距离判（素材内坐标 ⇒ 减掉槽的落点）
+    let (ccx, ccy, r) = SELL_CIRCLE;
+    let (sx, sy, _, _) = SELL_SLOT;
+    let (dx, dy) = (lx - (sx + ccx), ly - (sy + ccy));
+    if dx * dx + dy * dy <= r * r {
+        return SellHit::Slot;
     }
     SellHit::None
 }
@@ -378,8 +393,9 @@ pub(crate) fn draw_sell<'a, T>(
         );
     }
 
-    // 槽里的物品（居中；不放缩 —— 官方也是原样贴）
-    let (ccx, ccy) = sell_slot_center();
+    // 槽里的物品：**按圆心居中**（用户 2026-10-10「放到出售圆圈内后要自动居中」；
+    // 不放缩 —— 官方也是原样贴）。圆心是相对素材的 ⇒ 加上槽的落点。
+    let (ccx, ccy, _) = SELL_CIRCLE;
     if let Some(idx) = placed {
         if let Some(Some(it)) = n.world.bag.get(idx) {
             if let Some((iw, ih)) = ui.size(dir, "Items", it.looks) {
@@ -391,26 +407,14 @@ pub(crate) fn draw_sell<'a, T>(
                     "Items",
                     it.looks,
                     FRect::new(0.0, 0.0, iw, ih),
-                    FRect::new(x + ccx - iw / 2.0, y + ccy - ih / 2.0, iw, ih),
+                    FRect::new(x + sx + ccx - iw / 2.0, y + sy + ccy - ih / 2.0, iw, ih),
                     255,
                 );
             }
         }
     }
-
-    // OK（与购买窗同款蓝底白字）
-    let (ox, oy, ow, oh) = SELL_OK;
-    canvas.set_draw_color(Color::RGB(60, 70, 150));
-    let _ = canvas.fill_rect(FRect::new(x + ox, y + oy, ow, oh));
-    texts.draw(
-        canvas,
-        tc,
-        "OK",
-        x + ox + ow / 2.0 - 9.0,
-        y + oy + oh / 2.0 - 8.0,
-        (240, 240, 255),
-        None,
-    )?;
+    // ⚠️ **不画自绘的 OK**：`Prguse[392]` 里自带蓝底白字的圆形 OK（像素 x 56..112 /
+    // y 144..171），命中区见 [`SELL_OK`]（用户 2026-10-10：卖窗不应有自绘元素）。
     Ok(())
 }
 
