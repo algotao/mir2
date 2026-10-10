@@ -148,10 +148,14 @@ func (s *Server) guardPick(m *entity.Monster) *guardTarget {
 
 // guardAttackMonster 守卫打怪的一次结算。**调用方持 s.mu**。
 //
-// 伤害直接复用"宝宝打怪"那条（`petAttackMonster`：命中判定 + `DC..DCMax - AC` + 红毒放大），
-// 只多一件事：把"谁打的我"记到怪身上（`LastHiterID`）—— 别的怪/守卫的判据也读它。
+// 伤害复用"怪打怪"那条（`monsterVsMonster`：`DC..DCMax − AC` + 红毒放大），
+// 只多两件事：
+//   - 弓箭守卫（race 112）**不判命中**（原版箭无虚发，见 `monsterVsMonster`）；
+//   - 把"谁打的我"记到怪身上（`LastHiterID`）—— 别的怪/守卫的判据也读它。
 func (s *Server) guardAttackMonster(m, target *entity.Monster, now time.Time) petHit {
-	h := s.petAttackMonster(m, target, now)
+	// 大刀走 `_Attack`（有命中判定）；弓箭守卫没有
+	checkHit := m.Info == nil || m.Info.Race != entity.RcArcherGuard
+	h := s.monsterVsMonster(m, target, now, checkHit)
 	target.LastHiterID = m.ID
 	return h
 }

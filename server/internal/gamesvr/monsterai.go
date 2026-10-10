@@ -264,7 +264,10 @@ func (s *Server) tickMonsters(now time.Time) {
 			// ⚠️ 守卫**原地站桩**、**视野内就能打**（远程）：目标跑出视野就丢，绝不追。
 			// 口径 `docs/g.md`（两者都"固定站位、不移动"）；原版大刀 `TSuperGuard.AttackTarget`
 			// 连自己的坐标都是临时挪到目标身上再挪回来 —— 打人不挪步。
-			if m.CanAttack(now) {
+			// ⚠️ 守卫的出手间隔**不是**通用的 `attackInterval`：弓箭守卫按
+			// `WalkSpeed`（500ms，原版 `m_nWalkSpeed`）连发 —— 见
+			// `Monster::GuardAttackInterval`。用通用值会让它只有原版 40% 的频率。
+			if m.CanAttackEvery(now, m.GuardAttackInterval()) {
 				switch {
 				case target != nil && m.Distance(target.Obj.PosX(), target.Obj.PosY()) <= m.ViewRange:
 					m.MarkAttacked(now)

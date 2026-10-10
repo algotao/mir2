@@ -560,6 +560,33 @@ func (m *Monster) CanAttack(now time.Time) bool {
 // MarkAttacked 记录一次攻击时刻。
 func (m *Monster) MarkAttacked(now time.Time) { m.lastAttack = now }
 
+// GuardAttackInterval 守卫的出手间隔。
+//
+// ⚠️ **弓箭守卫按 `WalkSpeed`（`WALK_SPD`），不是攻击速度**：原版
+// `TArcherGuard.Run`（`ObjMon2.pas:924+`）判的是 `m_nWalkSpeed`，而它来自
+// `LocalDB.pas:1351` 的 `_MAX(200, WALK_SPD)` = **500ms** ⇒ 每半秒一支箭。
+// 我们原来按 `ATTACK_SPD`（1200ms）出手 ⇒ 只有原版的 40% 频率，这就是
+// 用户 2026-10-10 说的"守卫只能打掉一点点"（单箭伤害 20~35 是**官方数据**，
+// GeeM2 `Monster` 表 `弓箭守卫` DC=20/DCMAX=35，没算错）。
+//
+// 大刀（`TSuperGuard.AttackTarget`，`ObjGuard.pas:31-40`）判的是 `m_nNextHitTime`
+// （= ATTACK_SPD）⇒ 照旧。
+func (m *Monster) GuardAttackInterval() time.Duration {
+	if m.Info != nil && m.Info.Race == RcArcherGuard && m.Info.WalkSpeed > 0 {
+		ms := m.Info.WalkSpeed
+		if ms < 200 { // 与 `LocalDB.pas:1351` 同一个下限
+			ms = 200
+		}
+		return time.Duration(ms) * time.Millisecond
+	}
+	return m.attackInterval
+}
+
+// CanAttackEvery 按**给定**间隔判此刻能不能出手（守卫的间隔不是 attackInterval）。
+func (m *Monster) CanAttackEvery(now time.Time, d time.Duration) bool {
+	return now.Sub(m.lastAttack) >= d
+}
+
 // 放弃追击的两个阈值，照原版 `ObjBase.pas:3886-3891`：
 //
 //	(GetTickCount - m_dwTargetFocusTick) > 30000   或   |dx| > 15 或 |dy| > 15

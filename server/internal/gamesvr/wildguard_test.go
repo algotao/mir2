@@ -196,3 +196,77 @@ func TestBladeIsInvincible(t *testing.T) {
 		t.Errorf("城堡单位不该被这条免疫挡住：HP=%d，期望 4000", hp)
 	}
 }
+
+// TestGuardAttackUsesWalkSpeed 弓箭守卫的出手间隔 = **`WalkSpeed`（500ms）**，
+// 不是数据里的 `ATTACK_SPD`（1200ms）。
+//
+// ⚠️ 这是 2026-10-10 用户报的"守卫只能打掉一点点"的**主因**：原版
+// `TArcherGuard.Run` 判的是 `m_nWalkSpeed`（`LocalDB.pas:1351` = `WALK_SPD` = 500）。
+// 用 1200ms ⇒ 只有原版 40% 的出手频率。（单箭伤害 20~35 是官方数据，没算错。）
+func TestGuardAttackUsesWalkSpeed(t *testing.T) {
+	archer := newTestMonster(7004, "弓箭守卫", 2000)
+	archer.Info.Race = entity.RcArcherGuard
+	archer.Info.WalkSpeed = 500
+	archer.Info.AttackSpeed = 1200
+	if got := archer.GuardAttackInterval(); got != 500*time.Millisecond {
+		t.Errorf("弓箭守卫的出手间隔 = %v，期望 500ms（WALK_SPD）", got)
+	}
+	// 大刀走 `m_nNextHitTime`（= ATTACK_SPD）⇒ 就是通用那个间隔
+	blade := newTestMonster(7005, "大刀卫士", 9999)
+	blade.Info.Race = entity.RcGuard
+	blade.Info.WalkSpeed = 500
+	if got := blade.GuardAttackInterval(); got != blade.AttackInterval() {
+		t.Errorf("大刀的出手间隔 = %v，期望通用间隔 %v", got, blade.AttackInterval())
+	}
+	// 普通怪不受影响（这条函数只给守卫用，但别悄悄改了别人）
+	mon := newTestMonster(7006, "多钩猫", 30)
+	mon.Info.Race = entity.RcMonster
+	if got := mon.GuardAttackInterval(); got != mon.AttackInterval() {
+		t.Errorf("普通怪的间隔不该被守卫规则改：%v", got)
+	}
+}
+
+// TestGuardDamageRules 守卫打怪的两条伤害规则：大刀**固定/无视防御**、弓箭**必中**。
+//
+// 口径：`docs/use.md`（大刀"一刀 200 固定伤害，无视防御"；弓箭"远程箭矢"）
+// + 原版 `TArcherGuard.sub_4A6B30`（`ObjMon2.pas:904-921`，没有命中判定）。
+func TestGuardDamageRules(t *testing.T) {
+	s, p := butchTestServer(t)
+	now := time.Now()
+
+	// ① 大刀：目标 AC 高到"按 AC 减免就该打不动"，但固定伤害 ⇒ 必须照掉 200
+	blade := newGuard(t, s, p, 7007, entity.RcGuard, 1, 0)
+	blade.Info.DC, blade.Info.DCMax = 200, 200
+	victim := addMonster(t, s, p, 7008, entity.RcMonster, 2, 0)
+	victim.Info.AC = 150 // 减免后只剩 50 —— 但大刀无视防御
+	victim.MaxHP, victim.HP = 1000, 1000
+
+	s.mu.Lock()
+	h := s.guardAttackMonster(blade, victim, now)
+	s.mu.Unlock()
+	if h.dmg != 200 {
+		t.Errorf("大刀打怪该是固定 200（无视 AC=150），实得 %d", h.dmg)
+	}
+
+	// ② 弓箭守卫：命中判定被跳过 ⇒ 每箭都落在怪身上（怪的敏捷再高也不打空）
+	archer := newGuard(t, s, p, 7009, entity.RcArcherGuard, 1, 0)
+	archer.Info.Hit, archer.Info.DC, archer.Info.DCMax = 15, 20, 35
+	// 敏捷拉满（`MonsterSpeedPoint` 的分母）⇒ 换宠物来打的话几乎全空
+	dodgy := addMonster(t, s, p, 7010, entity.RcMonster, 2, 0)
+	dodgy.Info.AC, dodgy.Info.Speed = 0, 200
+	dodgy.MaxHP, dodgy.HP = 100000, 100000
+
+	s.mu.Lock()
+	for i := 0; i < 30; i++ {
+		h := s.guardAttackMonster(archer, dodgy, now.Add(time.Duration(i)*time.Second))
+		if h.dmg == 0 {
+			s.mu.Unlock()
+			t.Fatalf("弓箭守卫第 %d 箭打空了 —— 原版它**没有命中判定**（箭无虚发）", i+1)
+		}
+		if h.dmg < 20 || h.dmg > 35 {
+			s.mu.Unlock()
+			t.Fatalf("弓箭伤害 %d 不在官方 DC 20~35 之内", h.dmg)
+		}
+	}
+	s.mu.Unlock()
+}

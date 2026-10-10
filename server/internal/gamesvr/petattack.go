@@ -95,11 +95,23 @@ type petHit struct {
 // 伤害走标准怪物挥砍：命中判定（命中 vs 敏捷）+ `rollDamage(DC..DCMax, AC)`
 // （与 monsterStrike 同源，只是目标从玩家换成怪）；红毒照原版 StruckDamage 放大。
 func (s *Server) petAttackMonster(m, target *entity.Monster, now time.Time) petHit {
+	return s.monsterVsMonster(m, target, now, true)
+}
+
+// monsterVsMonster 一次"怪打怪"的结算（宠物 / 守卫共用）。**调用方持 s.mu**。
+//
+// `checkHit = false` ⇒ 跳过命中判定：**原版弓箭守卫没有打空这一说** ——
+// `TArcherGuard.sub_4A6B30`（`ObjMon2.pas:904-921`）直接 `nPower → StruckDamage`，
+// 不走 `_Attack` 的命中/打空分支（`docs/use.md`：弓箭守卫"远程箭矢"，箭无虚发）。
+// 我们原来给它也判命中 ⇒ 一半的箭凭空消失，"打不动"的第二半原因。
+func (s *Server) monsterVsMonster(m, target *entity.Monster, now time.Time, checkHit bool) petHit {
 	ret := petHit{pet: m, target: target, hp: target.HP, maxHP: target.MaxHP}
 	if target.Info == nil || m.Info == nil {
 		return ret
 	}
-	if combat.Misses(combat.MonsterHitPoint(m), combat.MonsterHitPoint(target), combat.MonsterSpeedPoint(target)) {
+	if checkHit && combat.Misses(
+		combat.MonsterHitPoint(m), combat.MonsterHitPoint(target), combat.MonsterSpeedPoint(target),
+	) {
 		return ret // 打空（不发包，由调用方看 dmg == 0 跳过）
 	}
 	minAtk, maxAtk := uint32(m.Info.DC), uint32(m.Info.DCMax)
@@ -107,6 +119,14 @@ func (s *Server) petAttackMonster(m, target *entity.Monster, now time.Time) petH
 		maxAtk = minAtk
 	}
 	dmg := rollDamage(minAtk, maxAtk, uint32(target.Info.AC))
+	// 大刀卫士（race 11 = RC_GUARD）：**固定伤害、无视防御**（`docs/use.md`：
+	// "近战一刀 200 固定伤害，无视防御"；数据里 `卫士` DC..DCMax = 200/200，
+	// 所以"固定"天然成立，这里只跳过减防御那一步）。
+	// ⚠️ 与 `monsterStrike`（它打玩家那条路）是同一条规则 —— 原来只实现了一半，
+	// 守卫打怪仍被怪的 AC 削一刀（`docs/g.md` 第 3 条：大刀对怪物是**主动击杀**）。
+	if m.Info.Race == entity.RcGuard {
+		dmg = maxAtk
+	}
 	dmg = s.struckMonster(target, dmg, now) // 红毒：受伤放大
 	if dmg == 0 {
 		return ret

@@ -3943,3 +3943,27 @@ D-67 写"`Weapon.wzl` 的 `.wzx` 只有 11403 条记录、大半是空壳 ⇒ �
 新增：`TestProtoShopOpensFromDialogEntry`（点 NPC **没有** ShopList、选 @buy 才有）、
 `商店窗几何与命中`（新板式/标题行不可点/7 行翻页）、地面物 show/hide。
 ⚠️ 肉眼项：商店窗新板式的样子、地面物图标落点，要看用户的眼睛。
+
+---
+
+## D-43 守卫打怪"只能打掉一点点"（用户 2026-10-10）：错在**频率**与**命中**，不在伤害值
+
+**先核实数据，别急着改数值**：`弓箭守卫` 的 `DC=20/DCMAX=35` 是**官方数据**
+（GeeM2 1.76 `Monster` 表：`('弓箭守卫',112,45,71,99,…,2000,0,15,15,20,35,…)`，
+`server/data/seed/GEEM2.db.sql`）。所以日志里"20~35 点"**没有算错**，错的是另外两处。
+
+| 缺口 | 原版 | 我们原来 | 现在 |
+|---|---|---|---|
+| **出手间隔** | `TArcherGuard.Run` 判 `m_nWalkSpeed`（`ObjMon2.pas:924+`），而它 = `max(200, WALK_SPD)` = **500ms**（`LocalDB.pas:1351`）| 用 `ATTACK_SPD`（1200ms）⇒ **只有原版 40% 的频率** | `Monster::GuardAttackInterval`：弓箭按 `WalkSpeed`，大刀仍按 `ATTACK_SPD`（`TSuperGuard` 判 `m_nNextHitTime`）|
+| **命中判定** | `TArcherGuard.sub_4A6B30`（`ObjMon2.pas:904-921`）**没有**打空分支 ⇒ 箭无虚发 | 走 `combat.Misses` ⇒ 一半的箭凭空消失 | 守卫打怪时按种族跳过（大刀走 `_Attack`，照旧判命中）|
+| **大刀打怪** | `docs/use.md`：一刀 200 固定、无视防御（`卫士` DC=200/200）| 只在**打玩家**那条路（`monsterStrike`）实现，打怪仍被 AC 削一刀 | `monsterVsMonster` 里 `RcGuard ⇒ dmg = maxAtk` |
+
+**实测（改后）**：稻草人(20HP)/多钩猫(30)/钉耙猫(32) 基本**一箭死**；毒蜘蛛(65) 两三箭
+（约 1~1.5 秒）—— 与"官方 DC 20~35 + 每 500ms 一箭"一致。
+
+**纪律**：`怪物打怪` 的结算抽成 `monsterVsMonster(..., checkHit bool)`，宠物那条路
+（`petAttackMonster`）与守卫共用同一份 —— 两边各写一遍必然漂移。
+
+**验收**：`TestGuardAttackUsesWalkSpeed`（弓箭 500ms / 大刀=通用 / 普通怪不受影响）、
+`TestGuardDamageRules`（大刀 AC=150 仍掉 200；弓箭 30 箭**箭箭中**且落在官方 20~35 内）。
+Go 25 包全过。
