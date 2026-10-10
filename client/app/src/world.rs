@@ -258,6 +258,8 @@ pub(crate) fn draw_map_view<'a, T>(
                     hover == Some(e.id),
                     // 别人不画数值（参考图里只有玩家头顶带）
                     false,
+                    // 满血也画血条：**正在打它 / 鼠标指着它**（打空的第一刀就要看得见）
+                    hover == Some(e.id) || combat_target == Some(e.id),
                 )?;
             }
 
@@ -301,6 +303,7 @@ pub(crate) fn draw_map_view<'a, T>(
                 C_ENT_SELF,
                 false, // 自己永不算是"悬停高亮"（原版 `g_FocusCret <> g_MySelf`）
                 true,  // 自己头顶画 `当前/总量`（用户参考图）
+                true,  // 自己的血条常驻（满血也画）
             )?;
 
             // 伤害飘字（A′：打怪要看得见数字）。往上飘，三档亮度代替淡出 ——

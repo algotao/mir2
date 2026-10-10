@@ -267,6 +267,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut shop_page = 0usize;
     // 选中的商品（**绝对下标**，跨页有效）：点行选中、点 OK 才买（原版口径）
     let mut shop_sel: Option<usize> = None;
+    // 包裹是**因为打开购买窗**才开起来的吗（是 ⇒ 关购买窗时一起收走；
+    // 玩家自己按 F9 开的 ⇒ 别替他关，用户 2026-10-10 第 1 条）
+    let mut bag_by_shop = false;
     // 待捡的地面物品：点了地上的东西 ⇒ 先走过去，**到了那格**才发拾取
     //（服务端要求"人站在物品那格上"，与原版 `CM_PICKUP` 同一条校验）
     let mut pending_pickup: Option<(u64, (i32, i32))> = None;
@@ -396,8 +399,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             n.world.close_dialog();
                         }
                     }
-                    // 商店窗同理 ⇒ ESC **先关商店窗**
-                    Some(Keycode::Escape) if mode == 2 && shop_open => shop_open = false,
+                    // 商店窗同理 ⇒ ESC **先关商店窗**，并把"因买东西才开的"包裹一起收走
+                    //（用户 2026-10-10 第 1 条：购买窗关闭 ⇒ 物品列表与包裹一起关）
+                    Some(Keycode::Escape) if mode == 2 && shop_open => {
+                        shop_open = false;
+                        shop_sel = None;
+                        if crate::shop::shop_close::should_close_bag(bag_by_shop) {
+                            bag_open = false;
+                            bag_by_shop = false;
+                        }
+                    }
                     Some(Keycode::Escape) if mode != 1 && mode != 4 => break 'main,
                     // ⚠️ **开发键让开原版键位**（口径见 `docs/use.md`）：F1~F8 是技能、
                     // F9~F12 是包裹/属性/技能/内挂、M 是大地图、Tab 是小地图、数字是快捷物品
@@ -1553,14 +1564,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             shop_page = 0;
             shop_sel = None;
             shop_open = shop_seq_now > 0;
-            if shop_open {
+            if shop_open && !bag_open {
                 bag_open = true;
+                bag_by_shop = true; // 记住是"因为买东西才开的" ⇒ 收摊时要一起收走
             }
         }
-        // 货架被收走（对话关了 / 换图）⇒ 窗跟着关
-        if net.as_ref().is_none_or(|n| n.world.shop.is_none()) {
+        // 货架被收走（对话关了 / 换图）⇒ **商品列表与包裹一起关**
+        //（用户 2026-10-10 第 1 条：购买对话框关闭时，物品列表及包裹窗口也关闭）
+        if net.as_ref().is_none_or(|n| n.world.shop.is_none()) && shop_open {
             shop_open = false;
             shop_sel = None;
+            if bag_by_shop {
+                bag_open = false;
+                bag_by_shop = false;
+            }
         }
 
         // 待捡的地面物品：到了那格就捡；东西没了（别人捡走）就作废。

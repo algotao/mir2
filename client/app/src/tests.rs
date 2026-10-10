@@ -1551,6 +1551,24 @@ fn 背包窗在商店开着时让位到右边() {
     assert_eq!(sy, 52.0, "顶上那排（原版截图里包裹就在那个高度）");
 }
 
+/// 关掉购买窗 ⇒ **商品列表与包裹一起关**（用户 2026-10-10 第 1 条）。
+///
+/// 判据在 `main` 的帧循环里，这里把那条**规则**抽成纯函数才好测：
+/// `shop_closing_should_close_bag(bag_by_shop)` —— 包裹是"因买东西才开的"才收。
+#[test]
+fn 关购买窗时包裹跟着收走() {
+    assert!(
+        crate::shop::shop_close::should_close_bag(true),
+        "包裹是因购买才开的 ⇒ 收摊时一起关"
+    );
+    assert!(
+        !crate::shop::shop_close::should_close_bag(false),
+        "玩家自己按 F9 开的包裹，别替他关"
+    );
+    // 商品列表本身：货架没了（`world.shop == None`）⇒ `shop::draw` 什么都不画
+    //（那条在 core 的 `商品列表挂上货架关对话时一起收走` 里钉着）
+}
+
 /// 小地图**区域标注**（用户 2026-10-09 选的 (a)）：表由 `tools/gen_map_labels.py`
 /// 从原版 `data/MapDesc1.dat`（GBK）生成，键是**地图显示名**（= 服务端的 `map_title`）。
 #[test]

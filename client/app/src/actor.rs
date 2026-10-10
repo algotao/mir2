@@ -574,6 +574,10 @@ pub(crate) fn draw_actor<'a, T>(
     highlight: bool,
     // 画 `当前/总量`（只有自己那份传 true）
     show_numbers: bool,
+    // **无条件画血条**（满血也画）：正在打它 / 鼠标指着它 ⇒ 立刻看得见血条。
+    // ⚠️ 原来只在"掉过血"（`hp < max_hp`）时才画 ⇒ 第一刀打空时怪身上一根条都没有，
+    // 看不出在打谁（用户 2026-10-10 第 2 条）。原版 `g_FocusCret` 锁上就带条。
+    force_bar: bool,
 ) -> Result<(), sdl3::Error> {
     // 补间后的位置（不做插值的话，精灵是一格一格跳的）
     let (fx, fy) = anim.map_or((e.x as f32, e.y as f32), |a| a.draw_pos((e.x, e.y), now));
@@ -596,6 +600,7 @@ pub(crate) fn draw_actor<'a, T>(
             e.dir,
             highlight,
             show_numbers,
+            force_bar,
         );
     }
     // 本体 → 头发 → 武器（原版层序：武器压在身体上面；头发夹在中间，免得被剑压住）
@@ -638,6 +643,7 @@ pub(crate) fn draw_actor<'a, T>(
         color,
         highlight,
         show_numbers,
+        force_bar,
     )
 }
 
@@ -697,6 +703,7 @@ pub(crate) fn draw_entity_marker<'a, T>(
     highlight: bool,
     // 画 `当前/总量`（只有自己那份传 true）
     show_numbers: bool,
+    force_bar: bool,
 ) -> Result<(), sdl3::Error> {
     let (sx, sy) = cell_to_screen(cam, cx, cy);
     // 视口外直接跳过（地图比视口大得多）
@@ -736,6 +743,7 @@ pub(crate) fn draw_entity_marker<'a, T>(
         color,
         highlight,
         show_numbers,
+        force_bar,
     )
 }
 
@@ -757,6 +765,8 @@ pub(crate) fn draw_name_bar<'a, T>(
     highlight: bool,
     // 画 `当前/总量`（**只有自己**：参考图里玩家头顶带数值，怪只给一条血条）
     show_numbers: bool,
+    // 满血也画条（**正在打它 / 鼠标指着它** ⇒ 立刻看得见血条，见 `draw_actor` 的说明）。
+    force_bar: bool,
 ) -> Result<(), sdl3::Error> {
     // ⚠️ 名字必须走**真字体**（`font::TextCache`）：SDL3 那个 8×8 调试字体
     // **只认 ASCII** ⇒ 中文名字一个字都画不出来（用户 2026-10-09 报的"没有显示名字，
@@ -775,8 +785,10 @@ pub(crate) fn draw_name_bar<'a, T>(
         // 白字黑边（原版 `BoldTextOut` 就是描一遍黑边，见 font.rs 的说明）
         Some((0, 0, 0)),
     )?;
-    // 血条：自己**一直画**（参考图里自己的条常驻），别人只在掉血时画（否则一屏全是条）
-    if max_hp > 0 && (hp < max_hp || show_numbers) {
+    // 血条：自己**一直画**（参考图里自己的条常驻）；别人原本只在掉血时画（否则一屏
+    // 全是条），但**正在打它/鼠标指着它时无条件画** —— 满血也有条，才看得出在打谁
+    //（用户 2026-10-10 第 2 条：打空也要立刻显示血条）。
+    if max_hp > 0 && (hp < max_hp || show_numbers || force_bar) {
         let w = UNIT_X as f32 - 16.0;
         let frac = (hp as f32 / max_hp as f32).clamp(0.0, 1.0);
         let y = cell_top - names.line_height() - 10.0;
