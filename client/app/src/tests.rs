@@ -2046,3 +2046,44 @@ fn 点怪优先锁悬停的那只() {
     w.entities.get_mut(&100).unwrap().dead = true;
     assert_eq!(mouse_intent(&w, (11, 10), false, Some(100)).0, None);
 }
+
+/// **卖货窗**：三个浮件（"卖:"横条 / 悬挂的放物品槽 / OK）的几何与命中。
+///
+/// 上一版卖窗绘制块嵌在购买窗的绘制块里，加了"卖模式不画购买窗"的条件后把整个
+/// 块短路了 ⇒ 卖窗永远不出现（用户 2026-10-10 截图）—— 这条把**卖窗挂在对话窗
+/// 正下方、不与别的窗打架**钉住。
+#[test]
+fn 卖货窗的浮件几何与命中() {
+    let (x, y, w, h) = crate::shop::sell_panel();
+    // ① 挂在**对话窗正下方**（原版就是这样，不是挂在购买列表下面 —— 卖模式下
+    //    列表窗根本不出）
+    let (_dx, dy, _dw, dh) = input::dialog_panel();
+    assert_eq!(y, dy + dh + 8.0, "卖窗该紧贴对话窗下方");
+    assert!(y + h <= 768.0, "整块窗要落在 1024×768 画面内");
+    assert!(x + w <= 1024.0);
+
+    // ② 命中：槽（放东西）、OK（真卖）、关闭 X，三块互不重叠
+    let (sx, sy, _sw, sh) = crate::shop::SELL_SLOT;
+    assert_eq!(
+        crate::shop::sell_hit((sx + 4.0, sy + 4.0)),
+        crate::shop::SellHit::Slot,
+        "点槽 ⇒ 放下手上的东西"
+    );
+    let (ox, oy, ow, oh) = crate::shop::SELL_OK;
+    assert_eq!(
+        crate::shop::sell_hit((ox + ow / 2.0, oy + oh / 2.0)),
+        crate::shop::SellHit::Ok
+    );
+    let (cx, cy, cw, ch) = crate::shop::SELL_CLOSE;
+    assert_eq!(
+        crate::shop::sell_hit((cx + cw / 2.0, cy + ch / 2.0)),
+        crate::shop::SellHit::Close,
+        "点横条右上角的红 X ⇒ 关卖窗"
+    );
+    // 槽和 OK 别重叠（重叠的话先命中谁就看运气了）
+    let slot_bottom = sy + sh;
+    assert!(
+        oy >= slot_bottom,
+        "OK（y={oy}）不该压在槽（到 {slot_bottom}）上"
+    );
+}

@@ -265,20 +265,25 @@ const TRI_W: f32 = 1.5;
 // 流程照原版截图：点背包里的物品**抓到手上** → 移到这个窗的**放物品槽**里点一下放下
 // → 物品显示在槽中间、"卖:"后面显示能卖多少钱 → 点 **OK** 才真卖。
 //
-// 窗的位置：**购买列表窗的正下方**（对话窗左上、列表窗中、卖货窗下，一列排开）。
+// 窗的位置：照原版截图（用户 2026-10-10「卖.png」）它不是一块大板，是**三个浮件**
+// ——「"卖:"横条（带红 X）」挂对话窗正下方，放物品的圆槽**悬挂**在条下，OK 在圈右下。
 
 /// 卖货窗的落点与尺寸。
 pub(crate) fn sell_panel() -> (f32, f32, f32, f32) {
-    let (_, ly, _, lh) = panel();
-    (8.0, ly + lh + 8.0, 260.0, 250.0)
+    let (dx, dy, _, dh) = crate::input::dialog_panel();
+    (dx, dy + dh + 8.0, 260.0, 250.0)
 }
 
-/// **放物品的槽** = `Prguse[392]`（140×181，竖长凹槽，物品放进去显示在中间）。
+/// "卖:"横条（窗口内）：标题 + 金额 + 关闭 X。
+pub(crate) const SELL_TITLE_BAR: (f32, f32, f32, f32) = (0.0, 0.0, 260.0, 32.0);
+/// 关闭 X（横条右上角的红叉区域）。
+pub(crate) const SELL_CLOSE: (f32, f32, f32, f32) = (238.0, 7.0, 18.0, 18.0);
+/// **放物品的槽** = `Prguse[392]`（140×181，链子挂坠+圆槽，物品放进去显示在中间）。
 ///
 /// 2026-10-10 用户比对素材给出的图号；之前是自绘的金属圈，现在换成官方槽。
 pub(crate) const SELL_SLOT_IMG: u32 = 392;
-/// 槽在窗口内的落点（素材原生尺寸 140×181，不缩放）。
-pub(crate) const SELL_SLOT: (f32, f32, f32, f32) = (12.0, 40.0, 140.0, 181.0);
+/// 槽在窗口内的落点（素材原生尺寸 140×181，不缩放）—— 挂在横条下方。
+pub(crate) const SELL_SLOT: (f32, f32, f32, f32) = (28.0, 40.0, 140.0, 181.0);
 /// 槽的**中心**（物品图标放这里）。
 pub(crate) fn sell_slot_center() -> (f32, f32) {
     (
@@ -286,10 +291,10 @@ pub(crate) fn sell_slot_center() -> (f32, f32) {
         SELL_SLOT.1 + SELL_SLOT.3 / 2.0,
     )
 }
-/// OK 按钮（窗口内矩形）。
-pub(crate) const SELL_OK: (f32, f32, f32, f32) = (168.0, 210.0, 72.0, 28.0);
+/// OK 按钮（窗口内矩形，圆槽右下）。
+pub(crate) const SELL_OK: (f32, f32, f32, f32) = (150.0, 226.0, 72.0, 28.0);
 /// "卖:"标题的位置。
-pub(crate) const SELL_TITLE: (f32, f32) = (12.0, 10.0);
+pub(crate) const SELL_TITLE: (f32, f32) = (12.0, 8.0);
 
 /// 卖货窗里点中了什么。
 #[derive(Debug, PartialEq, Eq)]
@@ -297,12 +302,18 @@ pub(crate) enum SellHit {
     /// 放物品的槽（把手上的东西放进来）。
     Slot,
     Ok,
+    /// 标题条右上角的关闭 X。
+    Close,
     None,
 }
 
 /// 窗口内的一点落在哪里。
 pub(crate) fn sell_hit(local: (f32, f32)) -> SellHit {
     let (lx, ly) = local;
+    let (cx, cy, cw, ch) = SELL_CLOSE;
+    if lx >= cx && lx < cx + cw && ly >= cy && ly < cy + ch {
+        return SellHit::Close;
+    }
     let (sx, sy, sw, sh) = SELL_SLOT;
     if lx >= sx && lx < sx + sw && ly >= sy && ly < sy + sh {
         return SellHit::Slot;
@@ -331,12 +342,14 @@ pub(crate) fn draw_sell<'a, T>(
     if !n.world.in_world() || n.world.shop.is_none() {
         return Ok(()); // 没有货架（没在跟商人谈）⇒ 卖货窗也不出
     }
-    let (x, y, w, h) = sell_panel();
+    let (x, y, _w, _h) = sell_panel();
+    // ⚠️ 没有大底板（原版就是三个浮件）：只画「"卖:"横条」，槽与 OK 是独立浮件。
     canvas.set_blend_mode(BlendMode::Blend);
     canvas.set_draw_color(Color::RGBA(10, 8, 6, 225));
-    canvas.fill_rect(FRect::new(x, y, w, h))?;
+    let (tbx, tby, tbw, tbh) = SELL_TITLE_BAR;
+    canvas.fill_rect(FRect::new(x + tbx, y + tby, tbw, tbh))?;
     canvas.set_draw_color(Color::RGB(190, 170, 120));
-    canvas.draw_rect(FRect::new(x, y, w, h))?;
+    canvas.draw_rect(FRect::new(x + tbx, y + tby, tbw, tbh))?;
     canvas.set_blend_mode(BlendMode::None);
 
     // 标题条："卖:" + 金额（放进圈里的那件能卖多少钱）
@@ -362,6 +375,11 @@ pub(crate) fn draw_sell<'a, T>(
         C_SEL,
         None,
     )?;
+
+    // 关闭 X（横条右上角的红叉；原版卖条自带）
+    let (cx, cy, cw, ch) = SELL_CLOSE;
+    canvas.set_draw_color(Color::RGB(180, 50, 50));
+    let _ = canvas.fill_rect(FRect::new(x + cx, y + cy, cw, ch));
 
     // 放物品的槽（`Prguse[392]`，140×181，原生尺寸贴上去）
     let (sx, sy, sw, sh) = SELL_SLOT;

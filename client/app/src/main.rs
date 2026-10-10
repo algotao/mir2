@@ -1072,6 +1072,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let (sx, sy, sw, sh) = crate::shop::sell_panel();
                                 if x >= sx && x < sx + sw && y >= sy && y < sy + sh {
                                     match crate::shop::sell_hit((x - sx, y - sy)) {
+                                        crate::shop::SellHit::Close => {
+                                            shop_open = false;
+                                            sell_held = None;
+                                            sell_placed = None;
+                                            println!("[ui] 卖货窗关闭（点 X）");
+                                        }
                                         crate::shop::SellHit::Slot => {
                                             if let Some(held) = sell_held.take() {
                                                 sell_placed = Some(held);
@@ -1810,15 +1816,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                 }
             }
-            // 商店窗（浮窗，画在背包窗之后）；**"卖"模式不出商品列表**（那时要出的是
-            // 下面那个放物品的槽 —— 原版买/卖是两个不同的窗，共用同一次货架数据）
-            if shop_open
-                && net
-                    .as_ref()
-                    .and_then(|n| n.world.shop.as_ref())
-                    .is_some_and(|s| !s.is_sell())
-            {
-                if let Some(dir) = asset_dir.as_deref() {
+            // ⚠️ 买/卖是**两个不同的窗**（共用同一次货架数据，`ShopList.mode` 区分）：
+            // 买 ⇒ 商品列表窗；卖 ⇒ "卖:"条 + 悬挂的放物品槽 + OK。
+            // 三块绘制**并列**（上一版把卖窗嵌在购买窗的绘制块里，加了"卖模式不画
+            // 购买窗"的条件后把整个块短路了 ⇒ 卖窗永远不出现 —— 用户 2026-10-10 截图）。
+            let shop_is_sell = net
+                .as_ref()
+                .and_then(|n| n.world.shop.as_ref())
+                .is_some_and(|s| s.is_sell());
+            if let Some(dir) = asset_dir.as_deref() {
+                // ① 商店窗（买）：商品列表
+                if shop_open && !shop_is_sell {
                     shop::draw(
                         &mut canvas,
                         &tex_creator,
@@ -1829,50 +1837,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         shop_page,
                         shop_sel,
                     )?;
-                    // 抓在手上的物品：跟着鼠标走（原版就是把东西"拿在手里"）
-                    if let Some(held) = sell_held {
-                        if let (Some(n), Some(dir)) = (net.as_ref(), asset_dir.as_deref()) {
-                            if let Some(Some(it)) = n.world.bag.get(held) {
-                                if let Some((iw, ih)) = ui.size(dir, "Items", it.looks) {
-                                    let _ = ui.draw_src(
-                                        &mut canvas,
-                                        &tex_creator,
-                                        dir,
-                                        "Items",
-                                        it.looks,
-                                        FRect::new(0.0, 0.0, iw as f32, ih as f32),
-                                        FRect::new(
-                                            mouse.0 - 4.0,
-                                            mouse.1 - 4.0,
-                                            iw as f32,
-                                            ih as f32,
-                                        ),
-                                        255,
-                                    );
-                                }
+                }
+                // ② 抓在手上的物品：跟着鼠标走（原版就是把东西"拿在手里"）
+                if let Some(held) = sell_held {
+                    if let Some(n) = net.as_ref() {
+                        if let Some(Some(it)) = n.world.bag.get(held) {
+                            if let Some((iw, ih)) = ui.size(dir, "Items", it.looks) {
+                                let _ = ui.draw_src(
+                                    &mut canvas,
+                                    &tex_creator,
+                                    dir,
+                                    "Items",
+                                    it.looks,
+                                    FRect::new(0.0, 0.0, iw as f32, ih as f32),
+                                    FRect::new(mouse.0 - 4.0, mouse.1 - 4.0, iw as f32, ih as f32),
+                                    255,
+                                );
                             }
                         }
                     }
-                    // 卖货窗（拖放式：抓起 → 放进槽 → OK 才卖）；只在"卖"模式画
-                    if shop_open
-                        && bag_open
-                        && net
-                            .as_ref()
-                            .and_then(|n| n.world.shop.as_ref())
-                            .is_some_and(|s| s.is_sell())
-                    {
-                        if let Some(dir) = asset_dir.as_deref() {
-                            shop::draw_sell(
-                                &mut canvas,
-                                &tex_creator,
-                                &mut ui,
-                                &mut ui_texts,
-                                dir,
-                                net.as_ref(),
-                                sell_placed,
-                            )?;
-                        }
-                    }
+                }
+                // ③ 卖货窗（卖）：放物品的槽 + OK
+                if shop_open && bag_open && shop_is_sell {
+                    shop::draw_sell(
+                        &mut canvas,
+                        &tex_creator,
+                        &mut ui,
+                        &mut ui_texts,
+                        dir,
+                        net.as_ref(),
+                        sell_placed,
+                    )?;
                 }
             }
             // 光标跟着悬停状态走：悬停的是**怪**才换准星（原版悬停谁都不换光标，
