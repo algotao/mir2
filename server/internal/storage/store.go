@@ -49,17 +49,30 @@ type Account struct {
 // Character 是角色。
 //
 // 对应 Delphi THumDataInfo（Grobal2.pas:955-958）。
-/// CharacterSlot 是"选角界面的一个槽位"：`Slot` 是位置，`Char` 为 nil = 空位
-///（被删掉的那个位置留着，后面的人不左移 —— 见 `CharacterStore::ListByAccountWithSlots`）。
+// / CharacterSlot 是"选角界面的一个槽位"：`Slot` 是位置，`Char` 为 nil = 空位
+// /（被删掉的那个位置留着，后面的人不左移 —— 见 `CharacterStore::ListByAccountWithSlots`）。
 type CharacterSlot struct {
 	Slot int
 	Char *Character
 }
 
+// / MaxChrSlots 选角界面的槽位数（原版 1.76 一个账号 **2** 个角色，
+// / `UsrSoc.pas:652`；客户端 `select_ui::Art::SLOTS` 同值）。
+// /
+// / ⚠️ 槽位与 id 无关：某号位上的角色被删掉 ⇒ 那个位置**空出来**（留给下一个新角色），
+// / 但它**后面**的角色不左移（用户 2026-10-10 第 1 条）。
+const MaxChrSlots = 2
+
 type Character struct {
-	ID        int64
-	Account   string
-	Name      string
+	ID      int64
+	Account string
+	Name    string
+	/// 选角界面的**槽位**（0..MaxChrSlots-1；-1 = 还没分配）。
+	///
+	/// ⚠️ 必须落库：删掉 1 号位的角色后，下一个新角色要**补到这个空位**（原版语义），
+	/// 而"按行号现算"做不到 —— 已删除的行会一直占位，把活着的角色顶到槽位之外
+	///（用户 2026-10-10：改完之后选角界面不出现人物了）。
+	Slot      int
 	Job       uint32 // 0=战 1=法 2=道
 	Level     uint32
 	Gold      int64

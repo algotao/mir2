@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS characters (
     id         INTEGER PRIMARY KEY,
     account    TEXT    NOT NULL,
     name       TEXT    NOT NULL UNIQUE,
+    slot       INTEGER NOT NULL DEFAULT -1, -- 选角槽位（见 storage.MaxChrSlots）
     job        INTEGER NOT NULL DEFAULT 0,
     level      INTEGER NOT NULL DEFAULT 1,
     gold       INTEGER NOT NULL DEFAULT 0,
@@ -250,6 +251,64 @@ func migrate(db *sql.DB) error {
 	}
 	if err := migrateGameLeases(db); err != nil {
 		return err
+	}
+	if err := migrateCharacterSlot(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrateCharacterSlot 给老库补 `characters.slot` 列并回填。
+//
+// 回填口径：按账号、按 id（创建次序）给**活着的**角色从 0 开始编号；
+// 已删除的置 -1（它们的槽位已经"让出来"了 —— 见 `nextFreeSlot` / `allocSlot`）。
+// 这样"删了 1 号、2 号不左移"这件事对老数据也成立（那一刻它本来就在 1 号位之后）。
+func migrateCharacterSlot(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE characters ADD COLUMN slot INTEGER NOT NULL DEFAULT -1`); err != nil {
+		// 列已存在（新库/已迁移过）⇒ 只做回填
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("sqlite: 加 characters.slot: %w", err)
+		}
+	}
+	// ⚠️ 先**读完**再写：这个库是单连接的（`SetMaxOpenConns(1)`），
+	// 边遍历 rows 边 Exec 会把唯一的连接占死 ⇒ 直接死锁（实测过）。
+	rows, err := db.Query(`SELECT id, account FROM characters WHERE deleted = 0 ORDER BY account, id`)
+	if err != nil {
+		return fmt.Errorf("sqlite: 读角色: %w", err)
+	}
+	type assign struct {
+		id   int64
+		slot int
+	}
+	var plan []assign
+	next := map[string]int{}
+	for rows.Next() {
+		var id int64
+		var account string
+		if err := rows.Scan(&id, &account); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		slot := next[account]
+		if slot >= storage.MaxChrSlots {
+			slot = storage.MaxChrSlots - 1
+		}
+		plan = append(plan, assign{id: id, slot: slot})
+		next[account] = slot + 1
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	for _, a := range plan {
+		if _, err := db.Exec(`UPDATE characters SET slot = ? WHERE id = ?`, a.slot, a.id); err != nil {
+			return fmt.Errorf("sqlite: 回填槽位: %w", err)
+		}
+	}
+	// 已删除的：槽位置 -1（位置让出来）
+	if _, err := db.Exec(`UPDATE characters SET slot = -1 WHERE deleted <> 0`); err != nil {
+		return fmt.Errorf("sqlite: 清已删除的槽位: %w", err)
 	}
 	return nil
 }
@@ -439,12 +498,18 @@ func (s *characterStore) Create(ctx context.Context, c *storage.Character) error
 	if err != nil {
 		return err
 	}
+	// 槽位：**补最小的那个空位**（删掉的角色把位置让出来了 —— 原版语义）。
+	// 上层（accountsvc / gamesvr）按"活着的角色数 < 上限"拦过，所以一定有空位。
+	//
+	// ⚠️ **无条件**分配，不能写成 `if c.Slot < 0`：Go 的零值是 **0**，一个没设过的
+	// `Slot` 看起来就像"我要 0 号位" ⇒ 第二个人也会被塞进 0 号位（实测过）。
+	c.Slot = s.allocSlot(ctx, c.Account)
 	now := time.Now().Unix()
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO characters
-		 (account, name, job, level, gold, deleted, last_login, created_at, updated_at, data)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		c.Account, c.Name, c.Job, c.Level, c.Gold,
+		 (account, name, slot, job, level, gold, deleted, last_login, created_at, updated_at, data)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		c.Account, c.Name, c.Slot, c.Job, c.Level, c.Gold,
 		boolToInt(c.Deleted), now, now, now, data)
 	if err != nil {
 		return mapErr(err)
@@ -461,7 +526,7 @@ func (s *characterStore) Create(ctx context.Context, c *storage.Character) error
 }
 
 func (s *characterStore) GetByName(ctx context.Context, name string) (*storage.Character, error) {
-	const q = `SELECT id, account, name, job, level, gold, deleted,
+	const q = `SELECT id, account, name, slot, job, level, gold, deleted,
 	                  last_login, created_at, updated_at, data
 	           FROM characters WHERE name = ?`
 	var (
@@ -473,7 +538,7 @@ func (s *characterStore) GetByName(ctx context.Context, name string) (*storage.C
 		data      []byte
 	)
 	err := s.db.QueryRowContext(ctx, q, name).Scan(
-		&c.ID, &c.Account, &c.Name, &c.Job, &c.Level, &c.Gold,
+		&c.ID, &c.Account, &c.Name, &c.Slot, &c.Job, &c.Level, &c.Gold,
 		&deleted, &lastLogin, &createdAt, &updatedAt, &data)
 	if err != nil {
 		return nil, mapErr(err)
@@ -489,9 +554,9 @@ func (s *characterStore) GetByName(ctx context.Context, name string) (*storage.C
 }
 
 func (s *characterStore) ListByAccount(ctx context.Context, account string) ([]*storage.Character, error) {
-	const q = `SELECT id, account, name, job, level, gold, deleted,
+	const q = `SELECT id, account, name, slot, job, level, gold, deleted,
 	                  last_login, created_at, updated_at, data
-	           FROM characters WHERE account = ? AND deleted = 0 ORDER BY id`
+	           FROM characters WHERE account = ? AND deleted = 0 ORDER BY slot, id`
 	rows, err := s.db.QueryContext(ctx, q, account)
 	if err != nil {
 		return nil, mapErr(err)
@@ -508,7 +573,7 @@ func (s *characterStore) ListByAccount(ctx context.Context, account string) ([]*
 			updatedAt int64
 			data      []byte
 		)
-		if err := rows.Scan(&c.ID, &c.Account, &c.Name, &c.Job, &c.Level, &c.Gold,
+		if err := rows.Scan(&c.ID, &c.Account, &c.Name, &c.Slot, &c.Job, &c.Level, &c.Gold,
 			&deleted, &lastLogin, &createdAt, &updatedAt, &data); err != nil {
 			return nil, err
 		}
@@ -527,10 +592,11 @@ func (s *characterStore) ListByAccount(ctx context.Context, account string) ([]*
 // ListByAccountWithSlots 列出**含已删除**的角色并按 id 编号 ⇒ 槽位稳定
 // （删掉 1 号，2 号仍在第 2 个位置，`Char == nil` 的那个槽位留空）。
 //
-// ⚠️ 与 `ListByAccount` 的差别只有 SQL 里那个 `deleted = 0`：这里**故意**把软删的
-// 行也数进去，因为槽位 = 这一行在账号里的"创建次序"，删了不该让后面的人搬家。
+// 槽位取自**库里的 `slot` 列**（建号时分配的、删了就空出来的那个位置）：
+// 曾经按"行号（含已删除）"现算 —— 那会把活着的角色顶到槽位之外，
+// 选角界面就**一个人都不画**（用户 2026-10-10）。
 func (s *characterStore) ListByAccountWithSlots(ctx context.Context, account string) ([]storage.CharacterSlot, error) {
-	const q = `SELECT id, account, name, job, level, gold, deleted,
+	const q = `SELECT id, account, name, slot, job, level, gold, deleted,
 	                  last_login, created_at, updated_at, data
 	           FROM characters WHERE account = ? ORDER BY id`
 	rows, err := s.db.QueryContext(ctx, q, account)
@@ -540,7 +606,6 @@ func (s *characterStore) ListByAccountWithSlots(ctx context.Context, account str
 	defer rows.Close()
 
 	var out []storage.CharacterSlot
-	slot := 0
 	for rows.Next() {
 		var (
 			c         storage.Character
@@ -550,7 +615,7 @@ func (s *characterStore) ListByAccountWithSlots(ctx context.Context, account str
 			updatedAt int64
 			data      []byte
 		)
-		if err := rows.Scan(&c.ID, &c.Account, &c.Name, &c.Job, &c.Level, &c.Gold,
+		if err := rows.Scan(&c.ID, &c.Account, &c.Name, &c.Slot, &c.Job, &c.Level, &c.Gold,
 			&deleted, &lastLogin, &createdAt, &updatedAt, &data); err != nil {
 			return nil, err
 		}
@@ -561,18 +626,61 @@ func (s *characterStore) ListByAccountWithSlots(ctx context.Context, account str
 		if c.Data, err = unmarshalCharacter(data); err != nil {
 			return nil, err
 		}
-		// 已删除的：**占着位子但不出现在列表里**（空槽）
+		// 已删除的：位置**空出来**给下一个新角色（原版语义），自己不出现在列表里
 		if c.Deleted {
-			slot++
 			continue
 		}
-		out = append(out, storage.CharacterSlot{Slot: slot, Char: &c})
-		slot++
+		if c.Slot < 0 || c.Slot >= storage.MaxChrSlots {
+			c.Slot = nextFreeSlot(&out) // 老数据兜底：补到剩下的空位
+		}
+		out = append(out, storage.CharacterSlot{Slot: c.Slot, Char: &c})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// / allocSlot 找出该账号**最小的空槽位**（已被活着的角色占掉的不算空位）。
+func (s *characterStore) allocSlot(ctx context.Context, account string) int {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT slot FROM characters WHERE account = ? AND deleted = 0`, account)
+	if err != nil {
+		return 0
+	}
+	defer rows.Close()
+	used := make([]bool, storage.MaxChrSlots)
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			continue
+		}
+		if n >= 0 && n < storage.MaxChrSlots {
+			used[n] = true
+		}
+	}
+	for i := range used {
+		if !used[i] {
+			return i
+		}
+	}
+	return 0
+}
+
+// / nextFreeSlot 给"还没分配槽位"的角色补一个空位（最小的那个）。
+func nextFreeSlot(taken *[]storage.CharacterSlot) int {
+	used := make([]bool, storage.MaxChrSlots)
+	for _, cs := range *taken {
+		if cs.Slot >= 0 && cs.Slot < storage.MaxChrSlots {
+			used[cs.Slot] = true
+		}
+	}
+	for i := range used {
+		if !used[i] {
+			return i
+		}
+	}
+	return storage.MaxChrSlots - 1 // 满了：挤在最后一格（上层按上限拦，正常到不了）
 }
 
 func (s *characterStore) Update(ctx context.Context, c *storage.Character) error {
