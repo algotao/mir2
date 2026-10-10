@@ -2057,12 +2057,17 @@ fn 卖货窗的浮件几何与命中() {
     let (x, y, w, h) = crate::shop::sell_panel();
     // ① 挂在**对话窗正下方**（原版就是这样，不是挂在购买列表下面 —— 卖模式下
     //    列表窗根本不出）
-    let (_dx, dy, _dw, dh) = input::dialog_panel();
+    let (dx, dy, dw, dh) = input::dialog_panel();
     assert_eq!(y, dy + dh + 8.0, "卖窗该紧贴对话窗下方");
+    assert_eq!(
+        x + w,
+        dx + dw,
+        "卖窗要**右对齐**上方对话窗（右缘齐平，用户 2026-10-10）"
+    );
     assert!(y + h <= 768.0, "整块窗要落在 1024×768 画面内");
     assert!(x + w <= 1024.0);
 
-    // ② 命中：槽（放东西）、OK（真卖）、关闭 X，三块互不重叠
+    // ② 命中：槽（放东西）、OK（真卖）
     let (sx, sy, _sw, sh) = crate::shop::SELL_SLOT;
     assert_eq!(
         crate::shop::sell_hit((sx + 4.0, sy + 4.0)),
@@ -2073,12 +2078,6 @@ fn 卖货窗的浮件几何与命中() {
     assert_eq!(
         crate::shop::sell_hit((ox + ow / 2.0, oy + oh / 2.0)),
         crate::shop::SellHit::Ok
-    );
-    let (cx, cy, cw, ch) = crate::shop::SELL_CLOSE;
-    assert_eq!(
-        crate::shop::sell_hit((cx + cw / 2.0, cy + ch / 2.0)),
-        crate::shop::SellHit::Close,
-        "点横条右上角的红 X ⇒ 关卖窗"
     );
     // 槽和 OK 别重叠（重叠的话先命中谁就看运气了）
     let slot_bottom = sy + sh;

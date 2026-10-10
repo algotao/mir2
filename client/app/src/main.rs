@@ -1072,12 +1072,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let (sx, sy, sw, sh) = crate::shop::sell_panel();
                                 if x >= sx && x < sx + sw && y >= sy && y < sy + sh {
                                     match crate::shop::sell_hit((x - sx, y - sy)) {
-                                        crate::shop::SellHit::Close => {
-                                            shop_open = false;
-                                            sell_held = None;
-                                            sell_placed = None;
-                                            println!("[ui] 卖货窗关闭（点 X）");
-                                        }
                                         crate::shop::SellHit::Slot => {
                                             if let Some(held) = sell_held.take() {
                                                 sell_placed = Some(held);
@@ -1838,7 +1832,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         shop_sel,
                     )?;
                 }
-                // ② 抓在手上的物品：跟着鼠标走（原版就是把东西"拿在手里"）
+                // ② 卖货窗（卖）：放物品的槽 + OK
+                if shop_open && bag_open && shop_is_sell {
+                    shop::draw_sell(
+                        &mut canvas,
+                        &tex_creator,
+                        &mut ui,
+                        &mut ui_texts,
+                        dir,
+                        net.as_ref(),
+                        sell_placed,
+                    )?;
+                }
+                // ③ 抓在手上的物品：跟着鼠标走（原版就是把东西"拿在手里"）。
+                //
+                // ⚠️ 必须画在卖窗**之后**（最上层）：原来夹在买窗与卖窗之间 ⇒
+                // 物品移到卖窗上时被卖窗遮住（用户 2026-10-10）。
                 if let Some(held) = sell_held {
                     if let Some(n) = net.as_ref() {
                         if let Some(Some(it)) = n.world.bag.get(held) {
@@ -1856,18 +1865,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                }
-                // ③ 卖货窗（卖）：放物品的槽 + OK
-                if shop_open && bag_open && shop_is_sell {
-                    shop::draw_sell(
-                        &mut canvas,
-                        &tex_creator,
-                        &mut ui,
-                        &mut ui_texts,
-                        dir,
-                        net.as_ref(),
-                        sell_placed,
-                    )?;
                 }
             }
             // 光标跟着悬停状态走：悬停的是**怪**才换准星（原版悬停谁都不换光标，
