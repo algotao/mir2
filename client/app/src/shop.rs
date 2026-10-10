@@ -295,7 +295,10 @@ pub(crate) const SELL_SLOT: (f32, f32, f32, f32) = (0.0, 0.0, 140.0, 181.0);
 pub(crate) const SELL_CLOSE: (f32, f32, f32, f32) = (114.0, 1.0, 16.0, 20.0);
 pub(crate) const SELL_OK: (f32, f32, f32, f32) = (56.0, 144.0, 58.0, 28.0);
 /// 大圆槽的圆心与半径（素材内坐标）：物品放进去时按它**居中**。
-pub(crate) const SELL_CIRCLE: (f32, f32, f32) = (70.0, 80.0, 52.0);
+///
+/// ⚠️ 圆在素材的**中下部**（链条从顶部标题栏垂下来，圆吊在下面）——
+/// 中心 (72, 94) 是按用户给的原版截图（卖.png）比例量出来的，不是素材正中。
+pub(crate) const SELL_CIRCLE: (f32, f32, f32) = (72.0, 94.0, 54.0);
 /// 金额文字的位置（素材标题栏上；**只画文字**，不自绘控件）。
 pub(crate) const SELL_TITLE: (f32, f32) = (48.0, 4.0);
 
@@ -354,7 +357,24 @@ pub(crate) fn draw_sell<'a, T>(
     // ⚠️ **不画自绘的底板/金额框**（用户 2026-10-10：「多了一个你自绘的卖出金额图」）
     // ⇒ 原版卖窗就是"槽 + OK"两个浮件，这里只画文字与官方素材。
 
-    // "卖:" + 金额（放进槽里的那件能卖多少钱）—— 只有文字，没有自绘的条/框
+    // 放物品的槽（`Prguse[392]`，140×181，原生尺寸贴上去）。
+    // ⚠️ **先贴素材**：素材整张盖上会盖掉先画的字（用户 2026-10-10：
+    // 「预估金额没有显示」就是"卖:"和金额先画、被素材盖了）。
+    let (sx, sy, sw, sh) = SELL_SLOT;
+    if let Some((iw, ih)) = ui.size(dir, "Prguse", SELL_SLOT_IMG) {
+        let _ = ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            "Prguse",
+            SELL_SLOT_IMG,
+            FRect::new(0.0, 0.0, iw as f32, ih as f32),
+            FRect::new(x + sx, y + sy, sw, sh),
+            255,
+        );
+    }
+
+    // "卖:" + 金额（放进槽里的那件能卖多少钱）—— 画在素材标题栏上（只有文字）
     texts.draw(
         canvas,
         tc,
@@ -377,21 +397,6 @@ pub(crate) fn draw_sell<'a, T>(
         C_SEL,
         None,
     )?;
-
-    // 放物品的槽（`Prguse[392]`，140×181，原生尺寸贴上去）
-    let (sx, sy, sw, sh) = SELL_SLOT;
-    if let Some((iw, ih)) = ui.size(dir, "Prguse", SELL_SLOT_IMG) {
-        let _ = ui.draw_src(
-            canvas,
-            tc,
-            dir,
-            "Prguse",
-            SELL_SLOT_IMG,
-            FRect::new(0.0, 0.0, iw as f32, ih as f32),
-            FRect::new(x + sx, y + sy, sw, sh),
-            255,
-        );
-    }
 
     // 槽里的物品：**按圆心居中**（用户 2026-10-10「放到出售圆圈内后要自动居中」；
     // 不放缩 —— 官方也是原样贴）。圆心是相对素材的 ⇒ 加上槽的落点。

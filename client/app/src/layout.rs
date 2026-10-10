@@ -182,7 +182,13 @@ pub(crate) const BAG_GOLD_Y: f32 = 184.0;
 /// 左边的位置让给商品列表）。
 pub(crate) fn bag_pos(shop_open: bool) -> (f32, f32) {
     if shop_open {
-        (WIN_W as f32 - BAG_W - 8.0, 52.0)
+        // ⚠️ 照原版截图（用户 2026-10-10）：卖出时包裹**紧贴卖窗右侧**——
+        // 抓起物品 → 放进圆槽的鼠标移动距离最短。底部大致与卖窗底齐平
+        //（卖窗 181 高、包裹 270 高 ⇒ 包裹顶部会高出卖窗一截，与原版一致）。
+        let (sx, sy, sw, sh) = crate::shop::sell_panel();
+        let x = sx + sw + 12.0;
+        let y = (sy + sh - BAG_H).max(4.0);
+        (x, y)
     } else {
         (8.0, 4.0 + crate::input::DIALOG_H + 8.0)
     }

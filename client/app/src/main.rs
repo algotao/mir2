@@ -1825,6 +1825,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 素材目录缺失时和 `draw_map_view` 一样什么都不画（那屏已经打了横幅提示）。
             if bag_open {
                 if let Some(dir) = asset_dir.as_deref() {
+                    // 抓在手上 / 放进卖窗圆槽的那件 ⇒ 原格子隐藏（用户 2026-10-10）
+                    let mut hide = Vec::new();
+                    if let Some(h) = sell_held {
+                        hide.push(h);
+                    }
+                    if let Some(p) = sell_placed {
+                        hide.push(p);
+                    }
                     hud::draw_bag(
                         &mut canvas,
                         &tex_creator,
@@ -1834,6 +1842,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         net.as_ref(),
                         bag_page,
                         shop_open,
+                        &hide,
                     )?;
                 }
             }

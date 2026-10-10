@@ -378,6 +378,7 @@ pub(crate) fn draw_bag<'a, T>(
     net: Option<&Net>,
     page: usize,
     shop_open: bool,
+    hide: &[usize],
 ) -> Result<(), sdl3::Error> {
     let Some(n) = net else { return Ok(()) };
     if !n.world.in_world() {
@@ -413,6 +414,13 @@ pub(crate) fn draw_bag<'a, T>(
         let Some(Some(item)) = n.world.bag.get(base + i) else {
             continue;
         };
+        // ⚠️ 抓在手上 / 放进卖窗圆槽的那件 ⇒ **原格子不画**（用户 2026-10-10：
+        // 「拾取包裹物品后，应在包裹对应格子隐藏该物品」）。服务端没有中间态
+        //（卖出才结算，见 `onShopSell`），这纯粹是客户端表现 —— 与原版一致：
+        // 拿在手里时格子是空的，取消/卖出后才真正动背包。
+        if hide.contains(&(base + i)) {
+            continue;
+        }
         let (cx, cy, cw, ch) = crate::layout::bag_cell_rect(i);
         let (cx, cy) = (x + cx, y + cy);
         // 图标：`Items.wzl[looks]`，在格子里居中
