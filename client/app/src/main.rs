@@ -280,6 +280,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 卖货窗（原版拖放式，用户第 3 条）：抓在手上 / 放进圈里的**背包槽位**。
     let mut sell_held: Option<usize> = None;
     let mut sell_placed: Option<usize> = None;
+    // 双击使用：上次点的是哪格、什么时候（450ms 内同格再点 = 双击 ⇒ 使用物品）
+    let mut last_bag_click: Option<(usize, Instant)> = None;
     // 待捡的地面物品：点了地上的东西 ⇒ 先走过去，**到了那格**才发拾取
     //（服务端要求"人站在物品那格上"，与原版 `CM_PICKUP` 同一条校验）
     let mut pending_pickup: Option<(u64, (i32, i32))> = None;
@@ -763,35 +765,80 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             // 卖货：商店开着 ⇒ 点背包格 = **抓起**（原版拖放式：抓到手上、
                             // 移到卖货圈、点一下放下、点 OK 才卖 —— 用户第 3 条）。
+                            let mut bag_handled = false;
                             if mouse_btn == MouseButton::Left && shop_open && bag_open {
                                 if let Some(n) = net.as_ref() {
                                     let (bx, by) = crate::layout::bag_pos(shop_open);
                                     let lx = x - bx;
                                     let ly = y - by;
                                     if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
-                                        // ⚠️ 手上已经拿着东西 ⇒ 点包裹是**放回去**（取消），
-                                        // 不是再抓一件（用户 2026-10-10："放回包裹"）
-                                        if sell_held.is_some() {
-                                            sell_held = None;
-                                            println!("[ui] 放回包裹");
-                                        } else {
-                                            let idx =
-                                                bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
+                                        let idx = bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
+                                        // —— 包裹操作规范（用户 2026-10-10，普通/卖出一致）——
+                                        // 2/3. 手上拿着：放到**空格** = 移动；放到**有东西的格**
+                                        //     = **交换**（那格的物品变为拾取）。服务端是权威
+                                        //     （发 `MoveItem`），本地乐观更新，等全量刷新覆盖。
+                                        // 5. 双击物品格 = **使用**（原版 `CM_EAT`）。
+                                        let held_same = sell_held == Some(idx);
+                                        let double_click = match last_bag_click {
+                                            Some((c, t)) if c == idx => {
+                                                t.elapsed() < Duration::from_millis(450)
+                                            }
+                                            _ => false,
+                                        };
+                                        last_bag_click = Some((idx, Instant::now()));
+                                        if double_click && !held_same && sell_held.is_none() {
                                             if let Some(Some(it)) = n.world.bag.get(idx) {
                                                 if it.make_index != 0 {
-                                                    sell_held = Some(idx);
-                                                    // 换一件 ⇒ 槽里原来那件取下来（手上只能有一件）
-                                                    sell_placed = None;
-                                                    println!("[ui] 抓起 {}", it.name);
-                                                    // 目标/走路清掉：下面 `(ct, mt)` 统一走
-                                                    //（抓起时 did_butch=false 但商店窗命中段
-                                                    // 会把这次点击吞掉 ⇒ 不会走/选）
-                                                    press_at = None;
-                                                    pending_pickup = None;
+                                                    n.bag_use(idx as u32);
+                                                    println!("[net] 使用 {}", it.name);
                                                 }
                                             }
+                                        } else if let Some(held) = sell_held {
+                                            if held != idx {
+                                                n.bag_move(held as u32, idx as u32);
+                                                // 乐观更新：等服务端全量覆盖
+                                                if let Some(nm) = net.as_mut() {
+                                                    let moved =
+                                                        nm.world.bag.get(held).cloned().flatten();
+                                                    let target =
+                                                        nm.world.bag.get(idx).cloned().flatten();
+                                                    if let Some(it) = moved {
+                                                        nm.world.bag[idx] = Some(it);
+                                                    }
+                                                    let was_empty = target.is_none();
+                                                    sell_held = if was_empty {
+                                                        None // 放到空格 = 移动完
+                                                    } else {
+                                                        Some(idx) // 交换：那格的物品变为拾取
+                                                    };
+                                                    if let Some(sw) = target {
+                                                        nm.world.bag[held] = Some(sw);
+                                                    } else {
+                                                        nm.world.bag[held] = None;
+                                                    }
+                                                }
+                                                println!("[net] 包裹 {} → {}", held, idx);
+                                            }
+                                        } else if let Some(Some(it)) = n.world.bag.get(idx) {
+                                            // 1. 左键单击 = 拾取
+                                            if it.make_index != 0 {
+                                                sell_held = Some(idx);
+                                                // 换一件 ⇒ 槽里原来那件取下来（手上只能有一件）
+                                                sell_placed = None;
+                                                println!("[ui] 抓起 {}", it.name);
+                                                press_at = None;
+                                                pending_pickup = None;
+                                            }
                                         }
+                                        bag_handled = true;
                                     }
+                                }
+                                if bag_handled {
+                                    combat_target = None;
+                                    move_target = None;
+                                    press_at = None;
+                                    held_move = None;
+                                    continue;
                                 }
                             }
                             let (ct, mt) = if did_butch || butch_target.is_some() {

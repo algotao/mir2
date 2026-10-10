@@ -481,6 +481,10 @@ func (ps *protoSession) dispatch(env *protocol.Envelope) (keep bool) {
 		return ps.onShopSell(body.ShopSell)
 	case *protocol.Envelope_PickupItem:
 		return ps.onPickupItem(body.PickupItem)
+	case *protocol.Envelope_MoveItem:
+		return ps.onMoveItem(body.MoveItem)
+	case *protocol.Envelope_UseItem:
+		return ps.onUseItem(body.UseItem)
 	case *protocol.Envelope_Butch:
 		return ps.onButch(body.Butch)
 	default:
@@ -1736,6 +1740,28 @@ func (ps *protoSession) onPickupItem(m *protocol.PickupItem) bool {
 		return ps.rejectOutOfOrder("还没进世界")
 	}
 	ps.srv.pickupGroundByID(nil, p, m.GetGroundId())
+	return true
+}
+
+// onMoveItem 移动/交换背包两格（原版 `CM_MOVEITEM`；用户 2026-10-10 的包裹
+// 操作规范第 2/3 条：放到空格 = 移动，放到有东西的格 = 交换）。
+func (ps *protoSession) onMoveItem(m *protocol.MoveItem) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	ps.srv.doMoveItem(p, int(m.GetFrom()), int(m.GetTo()))
+	return true
+}
+
+// onUseItem 使用背包物品（原版 `CM_EAT`；用户 2026-10-10 规范第 5 条：
+// 包裹中双击物品 = 使用）。服务端吃/用完会发全量背包 + 能力值刷新。
+func (ps *protoSession) onUseItem(m *protocol.UseItem) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	ps.srv.doEat(nil, p, int(m.GetSlot()))
 	return true
 }
 

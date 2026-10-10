@@ -730,6 +730,63 @@ func (x *UseItem) GetClientTick() uint32 {
 	return 0
 }
 
+// 客户端 → 服务端：**移动/交换**背包里两格的物品（原版 `CM_MOVEITEM`：点起一格、
+// 放到另一格；目标格有东西就是**交换**）。
+//
+// 槽位是**服务端背包数组**的下标：服务端背包保持无空洞（`takeBagItem` 取走后
+// 前移补位）⇒ 客户端按顺序摆的格子与服务端下标一一对应，直接按下标走。
+type MoveItem struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	From          uint32                 `protobuf:"varint,1,opt,name=from,proto3" json:"from,omitempty"`
+	To            uint32                 `protobuf:"varint,2,opt,name=to,proto3" json:"to,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MoveItem) Reset() {
+	*x = MoveItem{}
+	mi := &file_item_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MoveItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MoveItem) ProtoMessage() {}
+
+func (x *MoveItem) ProtoReflect() protoreflect.Message {
+	mi := &file_item_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MoveItem.ProtoReflect.Descriptor instead.
+func (*MoveItem) Descriptor() ([]byte, []int) {
+	return file_item_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *MoveItem) GetFrom() uint32 {
+	if x != nil {
+		return x.From
+	}
+	return 0
+}
+
+func (x *MoveItem) GetTo() uint32 {
+	if x != nil {
+		return x.To
+	}
+	return 0
+}
+
 type DropItem struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Slot          uint32                 `protobuf:"varint,1,opt,name=slot,proto3" json:"slot,omitempty"`
@@ -741,7 +798,7 @@ type DropItem struct {
 
 func (x *DropItem) Reset() {
 	*x = DropItem{}
-	mi := &file_item_proto_msgTypes[12]
+	mi := &file_item_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -753,7 +810,7 @@ func (x *DropItem) String() string {
 func (*DropItem) ProtoMessage() {}
 
 func (x *DropItem) ProtoReflect() protoreflect.Message {
-	mi := &file_item_proto_msgTypes[12]
+	mi := &file_item_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -766,7 +823,7 @@ func (x *DropItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DropItem.ProtoReflect.Descriptor instead.
 func (*DropItem) Descriptor() ([]byte, []int) {
-	return file_item_proto_rawDescGZIP(), []int{12}
+	return file_item_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *DropItem) GetSlot() uint32 {
@@ -800,7 +857,7 @@ type PickupItem struct {
 
 func (x *PickupItem) Reset() {
 	*x = PickupItem{}
-	mi := &file_item_proto_msgTypes[13]
+	mi := &file_item_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -812,7 +869,7 @@ func (x *PickupItem) String() string {
 func (*PickupItem) ProtoMessage() {}
 
 func (x *PickupItem) ProtoReflect() protoreflect.Message {
-	mi := &file_item_proto_msgTypes[13]
+	mi := &file_item_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -825,7 +882,7 @@ func (x *PickupItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PickupItem.ProtoReflect.Descriptor instead.
 func (*PickupItem) Descriptor() ([]byte, []int) {
-	return file_item_proto_rawDescGZIP(), []int{13}
+	return file_item_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *PickupItem) GetGroundId() uint64 {
@@ -852,7 +909,7 @@ type EquipItem struct {
 
 func (x *EquipItem) Reset() {
 	*x = EquipItem{}
-	mi := &file_item_proto_msgTypes[14]
+	mi := &file_item_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -864,7 +921,7 @@ func (x *EquipItem) String() string {
 func (*EquipItem) ProtoMessage() {}
 
 func (x *EquipItem) ProtoReflect() protoreflect.Message {
-	mi := &file_item_proto_msgTypes[14]
+	mi := &file_item_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -877,7 +934,7 @@ func (x *EquipItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EquipItem.ProtoReflect.Descriptor instead.
 func (*EquipItem) Descriptor() ([]byte, []int) {
-	return file_item_proto_rawDescGZIP(), []int{14}
+	return file_item_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *EquipItem) GetSlot() uint32 {
@@ -904,7 +961,7 @@ type UnequipItem struct {
 
 func (x *UnequipItem) Reset() {
 	*x = UnequipItem{}
-	mi := &file_item_proto_msgTypes[15]
+	mi := &file_item_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -916,7 +973,7 @@ func (x *UnequipItem) String() string {
 func (*UnequipItem) ProtoMessage() {}
 
 func (x *UnequipItem) ProtoReflect() protoreflect.Message {
-	mi := &file_item_proto_msgTypes[15]
+	mi := &file_item_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -929,7 +986,7 @@ func (x *UnequipItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnequipItem.ProtoReflect.Descriptor instead.
 func (*UnequipItem) Descriptor() ([]byte, []int) {
-	return file_item_proto_rawDescGZIP(), []int{15}
+	return file_item_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *UnequipItem) GetEquipSlot() uint32 {
@@ -957,7 +1014,7 @@ type RepairItem struct {
 
 func (x *RepairItem) Reset() {
 	*x = RepairItem{}
-	mi := &file_item_proto_msgTypes[16]
+	mi := &file_item_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -969,7 +1026,7 @@ func (x *RepairItem) String() string {
 func (*RepairItem) ProtoMessage() {}
 
 func (x *RepairItem) ProtoReflect() protoreflect.Message {
-	mi := &file_item_proto_msgTypes[16]
+	mi := &file_item_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -982,7 +1039,7 @@ func (x *RepairItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RepairItem.ProtoReflect.Descriptor instead.
 func (*RepairItem) Descriptor() ([]byte, []int) {
-	return file_item_proto_rawDescGZIP(), []int{16}
+	return file_item_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RepairItem) GetSlot() uint32 {
@@ -1019,7 +1076,7 @@ type SystemNotice struct {
 
 func (x *SystemNotice) Reset() {
 	*x = SystemNotice{}
-	mi := &file_item_proto_msgTypes[17]
+	mi := &file_item_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1031,7 +1088,7 @@ func (x *SystemNotice) String() string {
 func (*SystemNotice) ProtoMessage() {}
 
 func (x *SystemNotice) ProtoReflect() protoreflect.Message {
-	mi := &file_item_proto_msgTypes[17]
+	mi := &file_item_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1044,7 +1101,7 @@ func (x *SystemNotice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SystemNotice.ProtoReflect.Descriptor instead.
 func (*SystemNotice) Descriptor() ([]byte, []int) {
-	return file_item_proto_rawDescGZIP(), []int{17}
+	return file_item_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *SystemNotice) GetText() string {
@@ -1112,7 +1169,10 @@ const file_item_proto_rawDesc = "" +
 	"\aUseItem\x12\x12\n" +
 	"\x04slot\x18\x01 \x01(\rR\x04slot\x12\x1f\n" +
 	"\vclient_tick\x18\x02 \x01(\rR\n" +
-	"clientTick\"U\n" +
+	"clientTick\".\n" +
+	"\bMoveItem\x12\x12\n" +
+	"\x04from\x18\x01 \x01(\rR\x04from\x12\x0e\n" +
+	"\x02to\x18\x02 \x01(\rR\x02to\"U\n" +
 	"\bDropItem\x12\x12\n" +
 	"\x04slot\x18\x01 \x01(\rR\x04slot\x12\x14\n" +
 	"\x05count\x18\x02 \x01(\rR\x05count\x12\x1f\n" +
@@ -1153,7 +1213,7 @@ func file_item_proto_rawDescGZIP() []byte {
 	return file_item_proto_rawDescData
 }
 
-var file_item_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_item_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_item_proto_goTypes = []any{
 	(*ItemStack)(nil),        // 0: mir2.ItemStack
 	(*BagItems)(nil),         // 1: mir2.BagItems
@@ -1167,19 +1227,20 @@ var file_item_proto_goTypes = []any{
 	(*GoldChanged)(nil),      // 9: mir2.GoldChanged
 	(*RepairCostNotice)(nil), // 10: mir2.RepairCostNotice
 	(*UseItem)(nil),          // 11: mir2.UseItem
-	(*DropItem)(nil),         // 12: mir2.DropItem
-	(*PickupItem)(nil),       // 13: mir2.PickupItem
-	(*EquipItem)(nil),        // 14: mir2.EquipItem
-	(*UnequipItem)(nil),      // 15: mir2.UnequipItem
-	(*RepairItem)(nil),       // 16: mir2.RepairItem
-	(*SystemNotice)(nil),     // 17: mir2.SystemNotice
-	(*Vec2)(nil),             // 18: mir2.Vec2
+	(*MoveItem)(nil),         // 12: mir2.MoveItem
+	(*DropItem)(nil),         // 13: mir2.DropItem
+	(*PickupItem)(nil),       // 14: mir2.PickupItem
+	(*EquipItem)(nil),        // 15: mir2.EquipItem
+	(*UnequipItem)(nil),      // 16: mir2.UnequipItem
+	(*RepairItem)(nil),       // 17: mir2.RepairItem
+	(*SystemNotice)(nil),     // 18: mir2.SystemNotice
+	(*Vec2)(nil),             // 19: mir2.Vec2
 }
 var file_item_proto_depIdxs = []int32{
 	0,  // 0: mir2.BagItems.items:type_name -> mir2.ItemStack
 	0,  // 1: mir2.AddItem.item:type_name -> mir2.ItemStack
 	0,  // 2: mir2.UpdateItem.item:type_name -> mir2.ItemStack
-	18, // 3: mir2.GroundItemShow.position:type_name -> mir2.Vec2
+	19, // 3: mir2.GroundItemShow.position:type_name -> mir2.Vec2
 	0,  // 4: mir2.GroundItemShow.item:type_name -> mir2.ItemStack
 	0,  // 5: mir2.EquippedItems.items:type_name -> mir2.ItemStack
 	6,  // [6:6] is the sub-list for method output_type
@@ -1201,7 +1262,7 @@ func file_item_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_item_proto_rawDesc), len(file_item_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   18,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

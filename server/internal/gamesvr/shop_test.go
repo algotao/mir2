@@ -395,3 +395,68 @@ func countBagItemNamed(s *Server, p *Player, name string) int {
 	}
 	return n
 }
+
+// TestStackCarriesSellPrice 背包下发的 `ItemStack` 要带**卖价**。
+//
+// ⚠️ 用户 2026-10-10：卖窗「预估金额显示 0」—— 根因是 `itemStack` 里
+// `SellPrice` 那行在上一轮的字符串替换中静默失败（函数加了、字段没填，
+// Go 对未使用的私有函数不报错 ⇒ 溜过来了）。这条把它钉死。
+func TestStackCarriesSellPrice(t *testing.T) {
+	sword := shopItem() // 测试剑 price=3000 ⇒ 卖价 = 1500
+	s, _ := flagTestServer(t, "[0 比奇省 0] MINE\n")
+	set, err := data.NewStdItemSet([]*data.StdItem{sword})
+	if err != nil {
+		t.Fatalf("建物品表: %v", err)
+	}
+	s.data.tables = &data.Tables{Items: set}
+
+	ui := &pb.UserItem{Index: 1, MakeIndex: 7, Dura: 10, DuraMax: 10}
+	st, ok := s.itemStack(ui)
+	if !ok {
+		t.Fatal("itemStack 该成功")
+	}
+	if st.GetSellPrice() != 1500 {
+		t.Errorf("SellPrice = %d，期望 1500（原价 3000 的一半）", st.GetSellPrice())
+	}
+	if st.GetMakeIndex() != 7 {
+		t.Errorf("MakeIndex = %d，期望 7", st.GetMakeIndex())
+	}
+}
+
+// TestDoMoveItemSwapAndMove 包裹的**移动/交换**（用户 2026-10-10 规范第 2/3 条）。
+func TestDoMoveItemSwapAndMove(t *testing.T) {
+	s, p := butchTestServer(t, wuItem(1, "测试剑", 0, data.MinMax{}))
+	a := &pb.UserItem{Index: 1, MakeIndex: 11}
+	b := &pb.UserItem{Index: 1, MakeIndex: 22}
+	p.Char.Data.BagItems[2] = a
+	p.Char.Data.BagItems[5] = b
+
+	// 交换：2 ↔ 5
+	s.doMoveItem(p, 2, 5)
+	if got := p.Char.Data.BagItems[5]; got == nil || got.MakeIndex != 11 {
+		t.Errorf("交换后格 5 该是 11 号物品，实得 %+v", got)
+	}
+	if got := p.Char.Data.BagItems[2]; got == nil || got.MakeIndex != 22 {
+		t.Errorf("交换后格 2 该是 22 号物品，实得 %+v", got)
+	}
+
+	// 移动到空格：5（现在是 11 号）→ 0（0 格置空）
+	p.Char.Data.BagItems[0] = nil
+	s.doMoveItem(p, 5, 0)
+	if got := p.Char.Data.BagItems[0]; got == nil || got.MakeIndex != 11 {
+		t.Errorf("移动后格 0 该是 11 号物品（原格 5 的那件），实得 %+v", got)
+	}
+	if got := p.Char.Data.BagItems[5]; got != nil && got.Index != 0 {
+		t.Errorf("移动后格 5 该空，实得 %+v", got)
+	}
+
+	// 越界/同格：不炸、不变
+	before := p.Char.Data.BagItems[0]
+	s.doMoveItem(p, 0, 0)
+	s.doMoveItem(p, 0, entity.MaxBagSize+3)
+	if got := p.Char.Data.BagItems[0]; got == nil || got.MakeIndex != 11 {
+		t.Errorf("同格/越界不该改变背包，实得 %+v", got)
+	} else {
+		_ = before
+	}
+}

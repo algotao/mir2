@@ -563,6 +563,16 @@ impl Net {
         let _ = self.sess.cmds.send(mir2_net::Cmd::PickupItem { ground_id });
     }
 
+    /// 移动/交换背包两格（放到有东西的格 = 交换；服务端是权威，改完全量刷新）。
+    pub(crate) fn bag_move(&self, from: u32, to: u32) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::MoveItem { from, to });
+    }
+
+    /// 使用背包物品（双击；服务端吃/用完全量刷新背包与能力值）。
+    pub(crate) fn bag_use(&self, slot: u32) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::UseItem { slot });
+    }
+
     /// 挖肉（原版 `CM_BUTCH`）：`Alt` + 点动物尸体。服务端按"2 格内 + 是死了的动物"校验。
     pub(crate) fn butch(&self, target_id: u64, x: i32, y: i32, direction: i32) {
         let _ = self.sess.cmds.send(mir2_net::Cmd::Butch {
@@ -876,6 +886,11 @@ pub(crate) fn to_cmd(body: &mir2_protocol::envelope::Body, session: i32) -> Opti
         Body::PickupItem(p) => mir2_net::Cmd::PickupItem {
             ground_id: p.ground_id,
         },
+        Body::MoveItem(m) => mir2_net::Cmd::MoveItem {
+            from: m.from,
+            to: m.to,
+        },
+        Body::UseItem(u) => mir2_net::Cmd::UseItem { slot: u.slot },
         // 世界输入不走这里（`Cmd::Move`/`Attack` 由输入那条路直发）；服务端单向消息
         // （实体事件、心跳…）本来就不是命令 ⇒ 到这里是 `None`，由调用方打日志。
         _ => return None,

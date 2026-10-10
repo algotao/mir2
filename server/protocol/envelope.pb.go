@@ -110,6 +110,7 @@ type Envelope struct {
 	//	*Envelope_RepairItem
 	//	*Envelope_RepairCostNotice
 	//	*Envelope_SystemNotice
+	//	*Envelope_MoveItem
 	//	*Envelope_ChatInput
 	//	*Envelope_ChatMessage
 	//	*Envelope_NpcClick
@@ -805,6 +806,15 @@ func (x *Envelope) GetSystemNotice() *SystemNotice {
 	return nil
 }
 
+func (x *Envelope) GetMoveItem() *MoveItem {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_MoveItem); ok {
+			return x.MoveItem
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetChatInput() *ChatInput {
 	if x != nil {
 		if x, ok := x.Body.(*Envelope_ChatInput); ok {
@@ -1200,6 +1210,10 @@ type Envelope_SystemNotice struct {
 	SystemNotice *SystemNotice `protobuf:"bytes,2066,opt,name=system_notice,json=systemNotice,proto3,oneof"`
 }
 
+type Envelope_MoveItem struct {
+	MoveItem *MoveItem `protobuf:"bytes,2067,opt,name=move_item,json=moveItem,proto3,oneof"`
+}
+
 type Envelope_ChatInput struct {
 	// ---------- 0x09xx 聊天 ----------
 	ChatInput *ChatInput `protobuf:"bytes,2305,opt,name=chat_input,json=chatInput,proto3,oneof"`
@@ -1387,6 +1401,8 @@ func (*Envelope_RepairCostNotice) isEnvelope_Body() {}
 
 func (*Envelope_SystemNotice) isEnvelope_Body() {}
 
+func (*Envelope_MoveItem) isEnvelope_Body() {}
+
 func (*Envelope_ChatInput) isEnvelope_Body() {}
 
 func (*Envelope_ChatMessage) isEnvelope_Body() {}
@@ -1467,7 +1483,7 @@ var File_envelope_proto protoreflect.FileDescriptor
 const file_envelope_proto_rawDesc = "" +
 	"\n" +
 	"\x0eenvelope.proto\x12\x04mir2\x1a\rcontrol.proto\x1a\raccount.proto\x1a\vscene.proto\x1a\fcombat.proto\x1a\n" +
-	"item.proto\x1a\fsocial.proto\x1a\tnpc.proto\"\xbd$\n" +
+	"item.proto\x1a\fsocial.proto\x1a\tnpc.proto\"\xed$\n" +
 	"\bEnvelope\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\rR\x03seq\x12\x17\n" +
 	"\aack_seq\x18\x02 \x01(\rR\x06ackSeq\x12\x1d\n" +
@@ -1566,7 +1582,8 @@ const file_envelope_proto_rawDesc = "" +
 	"\vrepair_item\x18\x8f\x10 \x01(\v2\x10.mir2.RepairItemH\x00R\n" +
 	"repairItem\x12G\n" +
 	"\x12repair_cost_notice\x18\x90\x10 \x01(\v2\x16.mir2.RepairCostNoticeH\x00R\x10repairCostNotice\x12:\n" +
-	"\rsystem_notice\x18\x92\x10 \x01(\v2\x12.mir2.SystemNoticeH\x00R\fsystemNotice\x121\n" +
+	"\rsystem_notice\x18\x92\x10 \x01(\v2\x12.mir2.SystemNoticeH\x00R\fsystemNotice\x12.\n" +
+	"\tmove_item\x18\x93\x10 \x01(\v2\x0e.mir2.MoveItemH\x00R\bmoveItem\x121\n" +
 	"\n" +
 	"chat_input\x18\x81\x12 \x01(\v2\x0f.mir2.ChatInputH\x00R\tchatInput\x127\n" +
 	"\fchat_message\x18\x82\x12 \x01(\v2\x11.mir2.ChatMessageH\x00R\vchatMessage\x12.\n" +
@@ -1671,16 +1688,17 @@ var file_envelope_proto_goTypes = []any{
 	(*RepairItem)(nil),            // 68: mir2.RepairItem
 	(*RepairCostNotice)(nil),      // 69: mir2.RepairCostNotice
 	(*SystemNotice)(nil),          // 70: mir2.SystemNotice
-	(*ChatInput)(nil),             // 71: mir2.ChatInput
-	(*ChatMessage)(nil),           // 72: mir2.ChatMessage
-	(*NpcClick)(nil),              // 73: mir2.NpcClick
-	(*NpcSay)(nil),                // 74: mir2.NpcSay
-	(*NpcSelect)(nil),             // 75: mir2.NpcSelect
-	(*NpcClose)(nil),              // 76: mir2.NpcClose
-	(*ShopList)(nil),              // 77: mir2.ShopList
-	(*ShopBuy)(nil),               // 78: mir2.ShopBuy
-	(*ShopSell)(nil),              // 79: mir2.ShopSell
-	(*ShopResult)(nil),            // 80: mir2.ShopResult
+	(*MoveItem)(nil),              // 71: mir2.MoveItem
+	(*ChatInput)(nil),             // 72: mir2.ChatInput
+	(*ChatMessage)(nil),           // 73: mir2.ChatMessage
+	(*NpcClick)(nil),              // 74: mir2.NpcClick
+	(*NpcSay)(nil),                // 75: mir2.NpcSay
+	(*NpcSelect)(nil),             // 76: mir2.NpcSelect
+	(*NpcClose)(nil),              // 77: mir2.NpcClose
+	(*ShopList)(nil),              // 78: mir2.ShopList
+	(*ShopBuy)(nil),               // 79: mir2.ShopBuy
+	(*ShopSell)(nil),              // 80: mir2.ShopSell
+	(*ShopResult)(nil),            // 81: mir2.ShopResult
 }
 var file_envelope_proto_depIdxs = []int32{
 	2,  // 0: mir2.Envelope.client_hello:type_name -> mir2.ClientHello
@@ -1752,22 +1770,23 @@ var file_envelope_proto_depIdxs = []int32{
 	68, // 66: mir2.Envelope.repair_item:type_name -> mir2.RepairItem
 	69, // 67: mir2.Envelope.repair_cost_notice:type_name -> mir2.RepairCostNotice
 	70, // 68: mir2.Envelope.system_notice:type_name -> mir2.SystemNotice
-	71, // 69: mir2.Envelope.chat_input:type_name -> mir2.ChatInput
-	72, // 70: mir2.Envelope.chat_message:type_name -> mir2.ChatMessage
-	73, // 71: mir2.Envelope.npc_click:type_name -> mir2.NpcClick
-	74, // 72: mir2.Envelope.npc_say:type_name -> mir2.NpcSay
-	75, // 73: mir2.Envelope.npc_select:type_name -> mir2.NpcSelect
-	76, // 74: mir2.Envelope.npc_close:type_name -> mir2.NpcClose
-	77, // 75: mir2.Envelope.shop_list:type_name -> mir2.ShopList
-	78, // 76: mir2.Envelope.shop_buy:type_name -> mir2.ShopBuy
-	79, // 77: mir2.Envelope.shop_sell:type_name -> mir2.ShopSell
-	80, // 78: mir2.Envelope.shop_result:type_name -> mir2.ShopResult
-	1,  // 79: mir2.Envelope.raw:type_name -> mir2.Raw
-	80, // [80:80] is the sub-list for method output_type
-	80, // [80:80] is the sub-list for method input_type
-	80, // [80:80] is the sub-list for extension type_name
-	80, // [80:80] is the sub-list for extension extendee
-	0,  // [0:80] is the sub-list for field type_name
+	71, // 69: mir2.Envelope.move_item:type_name -> mir2.MoveItem
+	72, // 70: mir2.Envelope.chat_input:type_name -> mir2.ChatInput
+	73, // 71: mir2.Envelope.chat_message:type_name -> mir2.ChatMessage
+	74, // 72: mir2.Envelope.npc_click:type_name -> mir2.NpcClick
+	75, // 73: mir2.Envelope.npc_say:type_name -> mir2.NpcSay
+	76, // 74: mir2.Envelope.npc_select:type_name -> mir2.NpcSelect
+	77, // 75: mir2.Envelope.npc_close:type_name -> mir2.NpcClose
+	78, // 76: mir2.Envelope.shop_list:type_name -> mir2.ShopList
+	79, // 77: mir2.Envelope.shop_buy:type_name -> mir2.ShopBuy
+	80, // 78: mir2.Envelope.shop_sell:type_name -> mir2.ShopSell
+	81, // 79: mir2.Envelope.shop_result:type_name -> mir2.ShopResult
+	1,  // 80: mir2.Envelope.raw:type_name -> mir2.Raw
+	81, // [81:81] is the sub-list for method output_type
+	81, // [81:81] is the sub-list for method input_type
+	81, // [81:81] is the sub-list for extension type_name
+	81, // [81:81] is the sub-list for extension extendee
+	0,  // [0:81] is the sub-list for field type_name
 }
 
 func init() { file_envelope_proto_init() }
@@ -1852,6 +1871,7 @@ func file_envelope_proto_init() {
 		(*Envelope_RepairItem)(nil),
 		(*Envelope_RepairCostNotice)(nil),
 		(*Envelope_SystemNotice)(nil),
+		(*Envelope_MoveItem)(nil),
 		(*Envelope_ChatInput)(nil),
 		(*Envelope_ChatMessage)(nil),
 		(*Envelope_NpcClick)(nil),

@@ -122,6 +122,7 @@ message Envelope {
     // `SM_SYSMESSAGE` **到不了**新协议客户端 —— 挖肉的"肉被发现 / 什么都没找到"
     // 这类关键反馈全都无声（用户 2026-10-10："挖肉挖出不来"，其实出了、只是没话说）。
     SystemNotice system_notice = 0x0812;
+    MoveItem move_item = 0x0813;
 
     // ---------- 0x09xx 聊天 ----------
     ChatInput chat_input = 0x0901;

@@ -373,14 +373,24 @@ func (s *Server) pickupGroundItem(c net.Conn, p *Player, found *GroundItem, x, y
 // 数据中 AC.Min 是回血量、MAC.Min 是回蓝量（金创药(小量) 20/0、
 // 太阳水 30/40、魔法药(小量) 0/30）。
 func (s *Server) handleEat(c net.Conn, p *Player, m wire.Packet) {
+	s.doEat(c, p, int(m.Head.Recog))
+}
+
+// doEat 使用背包 `slot` 格的物品（legacy `CM_EAT` 与新协议 `UseItem` 共用）。
+//
+// 槽位是**服务端背包数组**的下标 —— 背包保持无空洞（`takeBagItem` 前移补位）⇒
+// 客户端按顺序摆的格子与服务端下标一一对应。
+//
+// ⚠️ 失败路径对 proto 玩家要走 `notice`（他们收不到 legacy 的 SM_EAT_FAIL/`sysMsg`），
+// 不然"点了没反应"。
+func (s *Server) doEat(c net.Conn, p *Player, idx int) {
 	// 地图标记 `NODRUG`：官方 `EatItems` 的**第一行**就是它
 	//（`ObjBase.pas:23330`），该图禁止使用一切药品/消耗品。
 	if mi := s.mapFlagOf(p.Obj.MapRef()); mi != nil && mi.NoDrug {
-		s.sysMsg(c, sCanotUseDrugOnThisMap)
+		s.notice(p, sCanotUseDrugOnThisMap)
 		s.send(c, proto.SM_EAT_FAIL, 0, 0, 0, 0, "")
 		return
 	}
-	idx := int(m.Head.Recog)
 	data := p.Char.Data
 	if data == nil || data.Abil == nil || idx < 0 || idx >= p.bagLen() {
 		s.send(c, proto.SM_EAT_FAIL, 0, 0, 0, 0, "")
@@ -564,7 +574,32 @@ func (s *Server) itemStack(u *pb.UserItem) (*protocol.ItemStack, bool) {
 		MakeIndex: u.MakeIndex,
 		// 类别：客户端按它挑点/捡的音效（原版 `ItemClickSound`）
 		StdMode: uint32(tmpl.StdMode),
+		// 卖价（原版 = 原价一半）：卖窗"卖:"后面显示的就是它。
+		// ⚠️ 漏了这行客户端就一直显示 0（2026-10-10 用户实测踩到 ——
+		// 上一轮的字符串替换静默失败，这次补上并加了测试钉住）。
+		SellPrice: sellPriceOf(tmpl),
 	}, true
+}
+
+// doMoveItem 移动/交换背包里两格的物品（原版 `CM_MOVEITEM`：目标格有东西就是交换）。
+//
+// 槽位是服务端背包数组的下标（背包无空洞 ⇒ 客户端格子与服务端下标一一对应）。
+// 服务端是权威：这里改完发**全量背包**刷新，客户端不用自己猜。
+func (s *Server) doMoveItem(p *Player, from, to int) {
+	data := p.Char.Data
+	if data == nil || p.bagLen() == 0 {
+		return
+	}
+	// ⚠️ `bagLen` 自己要拿 `stateMu` ⇒ **必须在加锁之前**读（锁里再调它 = 自死锁，
+	// Go 的互斥锁不可重入 —— 这个坑踩过一次，测试直接超时 10 分钟才发现）。
+	n := p.bagLen()
+	if from < 0 || to < 0 || from == to || from >= n || to >= n || from >= entity.MaxBagSize || to >= entity.MaxBagSize {
+		return
+	}
+	p.stateMu.Lock()
+	data.BagItems[from], data.BagItems[to] = data.BagItems[to], data.BagItems[from]
+	p.stateMu.Unlock()
+	s.sendBagItems(nil, p)
 }
 
 // sendUseItems 下发已穿戴装备（body：槽位/ClientItem/... 每 2 段一组）。

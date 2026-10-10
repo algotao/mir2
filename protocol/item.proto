@@ -98,6 +98,16 @@ message UseItem {
   uint32 client_tick = 2;
 }
 
+// 客户端 → 服务端：**移动/交换**背包里两格的物品（原版 `CM_MOVEITEM`：点起一格、
+// 放到另一格；目标格有东西就是**交换**）。
+//
+// 槽位是**服务端背包数组**的下标：服务端背包保持无空洞（`takeBagItem` 取走后
+// 前移补位）⇒ 客户端按顺序摆的格子与服务端下标一一对应，直接按下标走。
+message MoveItem {
+  uint32 from = 1;
+  uint32 to = 2;
+}
+
 message DropItem {
   uint32 slot = 1;
   uint32 count = 2;
