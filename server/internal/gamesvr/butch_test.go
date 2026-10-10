@@ -11,6 +11,7 @@ import (
 	"github.com/algotao/mir2/server/internal/storage"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/internal/wire"
+	"github.com/algotao/mir2/server/protocol"
 )
 
 // butchTestServer 造一个"标了 MINE 的地图 + 站在 (5,5) 的玩家"，物品表由调用方给。
@@ -417,5 +418,66 @@ func TestKillLeavesCorpse(t *testing.T) {
 	s.sweepCorpses(time.Now())
 	if s.monsterByID(mon.ID) != nil {
 		t.Error("超过 corpseLifetime 的尸体该被收走")
+	}
+}
+
+// TestButchSkeletonToldToProto 变骷髅这件事**必须告诉新协议客户端**。
+//
+// ⚠️ 用户 2026-10-10 第 2 条：「挖完肉后的动物尸体，印象中应该会变化」。
+// `broadcastSkeleton` 原来只发 legacy 的 `SM_SKELETON`，而 proto 玩家的 legacy
+// 下行会被丢弃 ⇒ Proto 玩家永远看不到骷髅。这条把"会发 `Skeleton`"钉住。
+func TestButchSkeletonToldToProto(t *testing.T) {
+	s, p := butchTestServer(t, wuItem(1, "鸡肉", 40, data.MinMax{}))
+	sink := &protoSink{ch: make(chan *protocol.Envelope, 64)}
+	p.protoOut = sink
+
+	// ⚠️ 广播按**空间索引 + 视野半径**找观众（view.go:17-26）⇒ 测试服务器得给个
+	// 视野半径（默认可能是 0），玩家还得进索引，否则没人收到
+	s.cfg.viewRange = 12
+	s.world.index.Add(p)
+	mon := deadAnimal(s, p, 51)
+	mon.MeatQuality = 5000
+	mon.Leathery = 1 // 一刀就够
+	mon.AnimalSet = true
+
+	butchOnce(s, p, mon)
+	if !mon.Skeleton {
+		t.Fatal("这一刀该把皮革度挖穿（初值 1）")
+	}
+	var got *protocol.Skeleton
+	for {
+		select {
+		case e := <-sink.ch:
+			if k, ok := e.Body.(*protocol.Envelope_Skeleton); ok {
+				got = k.Skeleton
+			}
+		default:
+			if got == nil {
+				t.Fatal("没收到 `Skeleton`（proto 玩家看不到尸体变化）")
+			}
+			return
+		}
+	}
+}
+
+// TestSaveSnapshotCarriesPosition 存档快照要带上**当前所在位置**。
+//
+// ⚠️ 用户 2026-10-10 第 5 条：下线再上回到了新手村。原因是 `joinWorld` 拿
+// `CurMap/CurX/CurY` 定位（join.go:76-86），而全代码从来没写过这三个字段 ⇒
+// 存的永远是新角色建号时的坐标。这条把"快照 = 当前地图 + 当前坐标"钉住。
+func TestSaveSnapshotCarriesPosition(t *testing.T) {
+	_, p := butchTestServer(t, wuItem(1, "鸡肉", 40, data.MinMax{}))
+	// 挪到一个不是出生点的位置
+	m := p.Obj.MapRef()
+	p.Obj.SetPlace(m, 33, 44, 0)
+	snap := saveSnapshotOf(p)
+	if snap == nil || snap.Data == nil {
+		t.Fatal("快照为空")
+	}
+	if snap.Data.CurMap != m.Name {
+		t.Errorf("快照地图 = %q，期望 %q", snap.Data.CurMap, m.Name)
+	}
+	if snap.Data.CurX != 33 || snap.Data.CurY != 44 {
+		t.Errorf("快照坐标 = (%d,%d)，期望 (33,44)", snap.Data.CurX, snap.Data.CurY)
 	}
 }

@@ -784,14 +784,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
-                            let (ct, mt) = if did_butch {
+                            let (ct, mt) = if did_butch || butch_target.is_some() {
+                                // 挖肉中（含"这一下就是挖肉"）⇒ **不走路、不选目标**
+                                //（用户 2026-10-10 第 1 条：挖肉时人物不该动）
                                 (None, None)
                             } else {
                                 // 照原版 `_DXDrawMouseDown`（`ClMain.pas:2805-2878`）：
                                 // **先清掉旧目标**，点到**活怪**就锁住它（之后每帧自动靠近/出手，
                                 // 直到它死掉或消失）；点空地 ⇒ 走/跑到那一格。
                                 net.as_ref()
-                                    .map(|n| mouse_intent(&n.world, cell, run))
+                                    .map(|n| mouse_intent(&n.world, cell, run, hover))
                                     .unwrap_or((None, None))
                             };
                             combat_target = ct;
@@ -1149,12 +1151,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if t.elapsed() < Duration::from_millis(input::CLICK_MS) {
                                 if let Some(n) = net.as_mut() {
                                     if n.world.in_world() {
-                                        let (ct, mt) = input::click_step(
-                                            &n.world,
-                                            n.world.self_pos,
-                                            press_cell,
-                                            false,
-                                        );
+                                        let (ct, mt) = if butch_target.is_some() {
+                                            (None, None) // 挖肉中 ⇒ 松手也不走一格
+                                        } else {
+                                            input::click_step(
+                                                &n.world,
+                                                n.world.self_pos,
+                                                press_cell,
+                                                false,
+                                                hover,
+                                            )
+                                        };
                                         if ct.is_some() || mt.is_some() {
                                             combat_target = ct;
                                             move_target = mt;
@@ -1394,8 +1401,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // ⚠️ 它必须与"人物不动、地图卷动"（[`follow_cam`]）配套：镜头跟着人走，鼠标**屏幕**
         // 位置不变时它对应的**格子**会往前跑 ⇒ 按住不放就是**一直走下去**（原版的"按住跑直线"）。
         // 镜头不卷或者目标不重取，两样单独都做不出这个手感。
+        // ⚠️ 挖肉中 ⇒ 按住/移动鼠标都**不许**变成走路（用户第 1 条）
         if mode == 2
             && held_move.is_some()
+            && butch_target.is_none()
             && retarget_at.elapsed() >= Duration::from_millis(MOUSE_REPEAT_MS)
         {
             retarget_at = Instant::now();
@@ -1538,7 +1547,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match here {
                     // 没进世界（掉线/还没到）⇒ 目标作废，别攒着一堆移动
                     None => move_target = None,
-                    Some(pos) => match next_move_step(pos, (tx, ty), run) {
+                    Some(pos) => match input::route_step(map.as_ref(), pos, (tx, ty), run) {
                         // 已经站在目标格上 ⇒ 收工（原版到点也停）
                         None => move_target = None,
                         Some((dir, step_run)) => {

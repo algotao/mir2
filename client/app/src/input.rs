@@ -2,6 +2,7 @@
 //!
 //! ⚠️ 从 `main.rs` 拆出来的（2026-10-09，纯搬移、没改逻辑）。
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use crate::geom::dir_to;
@@ -17,7 +18,16 @@ pub(crate) fn mouse_intent(
     world: &mir2_core::world::World,
     cell: (i32, i32),
     run: bool,
+    hover: Option<u64>,
 ) -> (Option<u64>, Option<(i32, i32, bool)>) {
+    // ⚠️ **锁怪优先用 `hover`**（用户 2026-10-10 第 4 条）：`hover` 是上一帧按
+    // **画出来的精灵框**算的（名字条就是靠它显示出来的），怪的脚在哪一格不重要；
+    // 而 `cell` 是光标**脚下那格** —— 怪比格子高、又站在斜前方时，脚下那格常常
+    // 是它身后/旁边的空地 ⇒ "明明指着它却锁不上、人还往空地跑"。
+    // `hover` 为空才退回按格子找。
+    if let Some(id) = hover.filter(|id| world.attackable(*id)) {
+        return (Some(id), None);
+    }
     match world.attack_target_at(cell) {
         Some(id) => (Some(id), None),
         None => (None, Some((cell.0, cell.1, run))),
@@ -37,7 +47,12 @@ pub(crate) fn click_step(
     from: (i32, i32),
     cell: (i32, i32),
     run: bool,
+    hover: Option<u64>,
 ) -> (Option<u64>, Option<(i32, i32, bool)>) {
+    // 与 `mouse_intent` 同一条：**锁怪优先 `hover`**（见那里的说明）
+    if let Some(id) = hover.filter(|id| world.attackable(*id)) {
+        return (Some(id), None);
+    }
     if let Some(id) = world.attack_target_at(cell) {
         return (Some(id), None);
     }
@@ -165,14 +180,110 @@ pub(crate) fn ctrl(m: sdl3::keyboard::Mod) -> bool {
 /// `ClFunc.pas:352-355`：`_MAX(abs(dx), abs(dy))`）。
 /// ⚠️ 少了这条，目标格是**奇数距离**时跑步（一次跨 2 格）会**跨过去再跨回来**，
 /// 表现就是"奔跑位置左右乱换"（用户 2026-10-08 报的）；距离 < 2 时改成走 1 格正好落到。
+#[allow(dead_code)] // 保留：没地图时的那条老路（`route_step(None, …)`）
 pub(crate) fn next_move_step(
+    from: (i32, i32),
+    to: (i32, i32),
+    want_run: bool,
+) -> Option<(mir2_protocol::Direction, bool)> {
+    route_step(None, from, to, want_run)
+}
+
+/// 朝 `to` 走一步：**先 BFS 找路**，找不到才退回"直着朝它走"。
+///
+/// ⚠️ 为什么要有 BFS（用户 2026-10-10 第 3 条）：原来只看 `dir_to`（一格一步的
+/// 贪心），前面横着一道墙/一棵树就**永远贴着障碍推**，追怪的时候表现就是
+/// "跑向怪物的寻路能力很差"。BFS 找的是真正的通路（8 邻，**斜向不许穿墙角**），
+/// 取路径上的第一步 —— 服务端照样逐格校验，所以只是"别犯傻"，不是作弊。
+///
+/// `map` 为 `None`（地图没加载）或 BFS 到不了（目标本身被围死）⇒ 退回贪心：
+/// 走过去被服务端拒了，那条路会照原版锁 1 秒再试（`MoveRejected`）。
+pub(crate) fn route_step(
+    map: Option<&mir2_core::map::Map>,
     from: (i32, i32),
     to: (i32, i32),
     want_run: bool,
 ) -> Option<(mir2_protocol::Direction, bool)> {
     let dir = dir_to(from, to)?; // 同一格 ⇒ None ⇒ 调用方收工
     let far = (to.0 - from.0).abs().max((to.1 - from.1).abs()) >= 2; // GetDistance（切比雪夫）
-    Some((dir, want_run && far))
+    let fallback = Some((dir, want_run && far));
+    let Some(m) = map else {
+        return fallback; // 没有地图 ⇒ 老办法（直着走）
+    };
+    // 目标格自己不可走（怪站在墙里/图外）⇒ 别白搜
+    if !walkable(m, to) {
+        return fallback;
+    }
+    let first = bfs_first_step(m, from, to)?;
+    // 跑不跑按**这一步**的距离算（与原来同一个口径：≥2 才跑）
+    let (dx, dy) = (first.0 - from.0, first.1 - from.1);
+    let run = want_run && dx.abs().max(dy.abs()) >= 2;
+    Some((dir_to(from, first)?, run))
+}
+
+/// 一格能不能走（`Map::can_walk` 只收 `usize` ⇒ 这里顺手挡掉负数与越界）。
+fn walkable(m: &mir2_core::map::Map, c: (i32, i32)) -> bool {
+    c.0 >= 0 && c.1 >= 0 && m.can_walk(c.0 as usize, c.1 as usize)
+}
+
+/// 从 `from` 广搜到 `to`，返回路径上的**第一格**（`from` 的相邻格）。
+///
+/// 上限 `ROUTE_MAX_CELLS` 格：够绕开一屏内的所有障碍，又不会在"根本到不了"
+/// 的情况下把整张图搜一遍（追怪是每几百毫秒调一次）。
+const ROUTE_MAX_CELLS: usize = 4096;
+
+fn bfs_first_step(m: &mir2_core::map::Map, from: (i32, i32), to: (i32, i32)) -> Option<(i32, i32)> {
+    if !walkable(m, from) || from == to {
+        return None;
+    }
+    let mut prev: HashMap<(i32, i32), (i32, i32)> = HashMap::new();
+    let mut q: VecDeque<(i32, i32)> = VecDeque::new();
+    let mut seen: HashSet<(i32, i32)> = HashSet::new();
+    seen.insert(from);
+    q.push_back(from);
+    let mut visited = 0usize;
+
+    while let Some(cur) = q.pop_front() {
+        if cur == to {
+            // 回溯到起点，记下**起点迈出去的那一格**
+            let mut node = to;
+            while prev.get(&node) != Some(&from) {
+                node = *prev.get(&node)?;
+            }
+            return Some(node);
+        }
+        visited += 1;
+        if visited > ROUTE_MAX_CELLS {
+            return None;
+        }
+        for (dx, dy) in [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (1, -1),
+            (-1, 1),
+            (-1, -1),
+        ] {
+            let next = (cur.0 + dx, cur.1 + dy);
+            if seen.contains(&next) || !walkable(m, next) {
+                continue;
+            }
+            // 斜向：两边至少有一格通，别从墙缝里钻过去
+            if dx != 0
+                && dy != 0
+                && !walkable(m, (cur.0 + dx, cur.1))
+                && !walkable(m, (cur.0, cur.1 + dy))
+            {
+                continue;
+            }
+            seen.insert(next);
+            prev.insert(next, cur);
+            q.push_back(next);
+        }
+    }
+    None
 }
 
 // ---------- NPC 对话面板（用户 2026-10-09：点 NPC 要出对话）----------

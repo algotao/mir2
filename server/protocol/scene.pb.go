@@ -84,6 +84,71 @@ func (DisappearReason) EnumDescriptor() ([]byte, []int) {
 }
 
 // 实体的完整快照（进图初始快照 / 实体出现 用）。
+// 服务端 → 客户端：一具尸体**变成骷髅**（原版 `SendRefMsg(RM_SKELETON)`）。
+//
+// 挖肉挖到皮革度归零那一下发生（用户 2026-10-10 第 2 条："挖完肉后的动物尸体
+// 应该会变化"）。客户端收到后把这只实体的**外观换成骷髅**（appr/race_img 由服务端
+// 给 —— 骷髅在怪物表里本来就是一只怪），死亡动作保留 ⇒ 看到的就是一副骨架躺在地上。
+type Skeleton struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	EntityId      uint64                 `protobuf:"varint,1,opt,name=entity_id,json=entityId,proto3" json:"entity_id,omitempty"`
+	Appr          uint32                 `protobuf:"varint,2,opt,name=appr,proto3" json:"appr,omitempty"`                      // 换成哪只怪的外观（服务端按怪物表给"骷髅"）
+	RaceImg       uint32                 `protobuf:"varint,3,opt,name=race_img,json=raceImg,proto3" json:"race_img,omitempty"` // 动作表（同上）
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Skeleton) Reset() {
+	*x = Skeleton{}
+	mi := &file_scene_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Skeleton) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Skeleton) ProtoMessage() {}
+
+func (x *Skeleton) ProtoReflect() protoreflect.Message {
+	mi := &file_scene_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Skeleton.ProtoReflect.Descriptor instead.
+func (*Skeleton) Descriptor() ([]byte, []int) {
+	return file_scene_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *Skeleton) GetEntityId() uint64 {
+	if x != nil {
+		return x.EntityId
+	}
+	return 0
+}
+
+func (x *Skeleton) GetAppr() uint32 {
+	if x != nil {
+		return x.Appr
+	}
+	return 0
+}
+
+func (x *Skeleton) GetRaceImg() uint32 {
+	if x != nil {
+		return x.RaceImg
+	}
+	return 0
+}
+
 type EntityState struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EntityId      uint64                 `protobuf:"varint,1,opt,name=entity_id,json=entityId,proto3" json:"entity_id,omitempty"`
@@ -102,7 +167,7 @@ type EntityState struct {
 
 func (x *EntityState) Reset() {
 	*x = EntityState{}
-	mi := &file_scene_proto_msgTypes[0]
+	mi := &file_scene_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -114,7 +179,7 @@ func (x *EntityState) String() string {
 func (*EntityState) ProtoMessage() {}
 
 func (x *EntityState) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[0]
+	mi := &file_scene_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -127,7 +192,7 @@ func (x *EntityState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityState.ProtoReflect.Descriptor instead.
 func (*EntityState) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{0}
+	return file_scene_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *EntityState) GetEntityId() uint64 {
@@ -235,7 +300,7 @@ type EnterWorld struct {
 
 func (x *EnterWorld) Reset() {
 	*x = EnterWorld{}
-	mi := &file_scene_proto_msgTypes[1]
+	mi := &file_scene_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -247,7 +312,7 @@ func (x *EnterWorld) String() string {
 func (*EnterWorld) ProtoMessage() {}
 
 func (x *EnterWorld) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[1]
+	mi := &file_scene_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -260,7 +325,7 @@ func (x *EnterWorld) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnterWorld.ProtoReflect.Descriptor instead.
 func (*EnterWorld) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{1}
+	return file_scene_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *EnterWorld) GetSelfEntityId() uint64 {
@@ -360,7 +425,7 @@ type ChangeMap struct {
 
 func (x *ChangeMap) Reset() {
 	*x = ChangeMap{}
-	mi := &file_scene_proto_msgTypes[2]
+	mi := &file_scene_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -372,7 +437,7 @@ func (x *ChangeMap) String() string {
 func (*ChangeMap) ProtoMessage() {}
 
 func (x *ChangeMap) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[2]
+	mi := &file_scene_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -385,7 +450,7 @@ func (x *ChangeMap) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangeMap.ProtoReflect.Descriptor instead.
 func (*ChangeMap) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{2}
+	return file_scene_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ChangeMap) GetMapId() uint32 {
@@ -457,7 +522,7 @@ type MapChunk struct {
 
 func (x *MapChunk) Reset() {
 	*x = MapChunk{}
-	mi := &file_scene_proto_msgTypes[3]
+	mi := &file_scene_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -469,7 +534,7 @@ func (x *MapChunk) String() string {
 func (*MapChunk) ProtoMessage() {}
 
 func (x *MapChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[3]
+	mi := &file_scene_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -482,7 +547,7 @@ func (x *MapChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MapChunk.ProtoReflect.Descriptor instead.
 func (*MapChunk) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{3}
+	return file_scene_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *MapChunk) GetMapId() uint32 {
@@ -525,7 +590,7 @@ type TimeOfDay struct {
 
 func (x *TimeOfDay) Reset() {
 	*x = TimeOfDay{}
-	mi := &file_scene_proto_msgTypes[4]
+	mi := &file_scene_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -537,7 +602,7 @@ func (x *TimeOfDay) String() string {
 func (*TimeOfDay) ProtoMessage() {}
 
 func (x *TimeOfDay) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[4]
+	mi := &file_scene_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -550,7 +615,7 @@ func (x *TimeOfDay) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimeOfDay.ProtoReflect.Descriptor instead.
 func (*TimeOfDay) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{4}
+	return file_scene_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *TimeOfDay) GetHour() uint32 {
@@ -584,7 +649,7 @@ type MapDescription struct {
 
 func (x *MapDescription) Reset() {
 	*x = MapDescription{}
-	mi := &file_scene_proto_msgTypes[5]
+	mi := &file_scene_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -596,7 +661,7 @@ func (x *MapDescription) String() string {
 func (*MapDescription) ProtoMessage() {}
 
 func (x *MapDescription) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[5]
+	mi := &file_scene_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -609,7 +674,7 @@ func (x *MapDescription) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MapDescription.ProtoReflect.Descriptor instead.
 func (*MapDescription) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{5}
+	return file_scene_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *MapDescription) GetMapId() uint32 {
@@ -635,7 +700,7 @@ type EntityAppear struct {
 
 func (x *EntityAppear) Reset() {
 	*x = EntityAppear{}
-	mi := &file_scene_proto_msgTypes[6]
+	mi := &file_scene_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -647,7 +712,7 @@ func (x *EntityAppear) String() string {
 func (*EntityAppear) ProtoMessage() {}
 
 func (x *EntityAppear) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[6]
+	mi := &file_scene_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -660,7 +725,7 @@ func (x *EntityAppear) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityAppear.ProtoReflect.Descriptor instead.
 func (*EntityAppear) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{6}
+	return file_scene_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *EntityAppear) GetEntity() *EntityState {
@@ -680,7 +745,7 @@ type EntityDisappear struct {
 
 func (x *EntityDisappear) Reset() {
 	*x = EntityDisappear{}
-	mi := &file_scene_proto_msgTypes[7]
+	mi := &file_scene_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -692,7 +757,7 @@ func (x *EntityDisappear) String() string {
 func (*EntityDisappear) ProtoMessage() {}
 
 func (x *EntityDisappear) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[7]
+	mi := &file_scene_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -705,7 +770,7 @@ func (x *EntityDisappear) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityDisappear.ProtoReflect.Descriptor instead.
 func (*EntityDisappear) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{7}
+	return file_scene_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *EntityDisappear) GetEntityId() uint64 {
@@ -742,7 +807,7 @@ type EntityMove struct {
 
 func (x *EntityMove) Reset() {
 	*x = EntityMove{}
-	mi := &file_scene_proto_msgTypes[8]
+	mi := &file_scene_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -754,7 +819,7 @@ func (x *EntityMove) String() string {
 func (*EntityMove) ProtoMessage() {}
 
 func (x *EntityMove) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[8]
+	mi := &file_scene_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -767,7 +832,7 @@ func (x *EntityMove) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityMove.ProtoReflect.Descriptor instead.
 func (*EntityMove) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{8}
+	return file_scene_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *EntityMove) GetEntityId() uint64 {
@@ -827,7 +892,7 @@ type EntityAction struct {
 
 func (x *EntityAction) Reset() {
 	*x = EntityAction{}
-	mi := &file_scene_proto_msgTypes[9]
+	mi := &file_scene_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -839,7 +904,7 @@ func (x *EntityAction) String() string {
 func (*EntityAction) ProtoMessage() {}
 
 func (x *EntityAction) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[9]
+	mi := &file_scene_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -852,7 +917,7 @@ func (x *EntityAction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityAction.ProtoReflect.Descriptor instead.
 func (*EntityAction) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{9}
+	return file_scene_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *EntityAction) GetEntityId() uint64 {
@@ -887,7 +952,7 @@ type EntityHealth struct {
 
 func (x *EntityHealth) Reset() {
 	*x = EntityHealth{}
-	mi := &file_scene_proto_msgTypes[10]
+	mi := &file_scene_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -899,7 +964,7 @@ func (x *EntityHealth) String() string {
 func (*EntityHealth) ProtoMessage() {}
 
 func (x *EntityHealth) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[10]
+	mi := &file_scene_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -912,7 +977,7 @@ func (x *EntityHealth) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityHealth.ProtoReflect.Descriptor instead.
 func (*EntityHealth) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{10}
+	return file_scene_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *EntityHealth) GetEntityId() uint64 {
@@ -946,7 +1011,7 @@ type EntityStatus struct {
 
 func (x *EntityStatus) Reset() {
 	*x = EntityStatus{}
-	mi := &file_scene_proto_msgTypes[11]
+	mi := &file_scene_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -958,7 +1023,7 @@ func (x *EntityStatus) String() string {
 func (*EntityStatus) ProtoMessage() {}
 
 func (x *EntityStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[11]
+	mi := &file_scene_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -971,7 +1036,7 @@ func (x *EntityStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityStatus.ProtoReflect.Descriptor instead.
 func (*EntityStatus) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{11}
+	return file_scene_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *EntityStatus) GetEntityId() uint64 {
@@ -998,7 +1063,7 @@ type AbilityUpdate struct {
 
 func (x *AbilityUpdate) Reset() {
 	*x = AbilityUpdate{}
-	mi := &file_scene_proto_msgTypes[12]
+	mi := &file_scene_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1010,7 +1075,7 @@ func (x *AbilityUpdate) String() string {
 func (*AbilityUpdate) ProtoMessage() {}
 
 func (x *AbilityUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[12]
+	mi := &file_scene_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1023,7 +1088,7 @@ func (x *AbilityUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AbilityUpdate.ProtoReflect.Descriptor instead.
 func (*AbilityUpdate) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{12}
+	return file_scene_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *AbilityUpdate) GetAbility() *Ability {
@@ -1054,7 +1119,7 @@ type MoveInput struct {
 
 func (x *MoveInput) Reset() {
 	*x = MoveInput{}
-	mi := &file_scene_proto_msgTypes[13]
+	mi := &file_scene_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1066,7 +1131,7 @@ func (x *MoveInput) String() string {
 func (*MoveInput) ProtoMessage() {}
 
 func (x *MoveInput) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[13]
+	mi := &file_scene_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1079,7 +1144,7 @@ func (x *MoveInput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveInput.ProtoReflect.Descriptor instead.
 func (*MoveInput) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{13}
+	return file_scene_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *MoveInput) GetFrom() *Vec2 {
@@ -1138,7 +1203,7 @@ type Butch struct {
 
 func (x *Butch) Reset() {
 	*x = Butch{}
-	mi := &file_scene_proto_msgTypes[14]
+	mi := &file_scene_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1150,7 +1215,7 @@ func (x *Butch) String() string {
 func (*Butch) ProtoMessage() {}
 
 func (x *Butch) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[14]
+	mi := &file_scene_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1163,7 +1228,7 @@ func (x *Butch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Butch.ProtoReflect.Descriptor instead.
 func (*Butch) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{14}
+	return file_scene_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *Butch) GetTargetId() uint64 {
@@ -1198,7 +1263,7 @@ type MoveRejected struct {
 
 func (x *MoveRejected) Reset() {
 	*x = MoveRejected{}
-	mi := &file_scene_proto_msgTypes[15]
+	mi := &file_scene_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1210,7 +1275,7 @@ func (x *MoveRejected) String() string {
 func (*MoveRejected) ProtoMessage() {}
 
 func (x *MoveRejected) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[15]
+	mi := &file_scene_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1223,7 +1288,7 @@ func (x *MoveRejected) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveRejected.ProtoReflect.Descriptor instead.
 func (*MoveRejected) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{15}
+	return file_scene_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *MoveRejected) GetAuthoritativePosition() *Vec2 {
@@ -1250,7 +1315,7 @@ type EntityFeatureChanged struct {
 
 func (x *EntityFeatureChanged) Reset() {
 	*x = EntityFeatureChanged{}
-	mi := &file_scene_proto_msgTypes[16]
+	mi := &file_scene_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1262,7 +1327,7 @@ func (x *EntityFeatureChanged) String() string {
 func (*EntityFeatureChanged) ProtoMessage() {}
 
 func (x *EntityFeatureChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_scene_proto_msgTypes[16]
+	mi := &file_scene_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1275,7 +1340,7 @@ func (x *EntityFeatureChanged) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityFeatureChanged.ProtoReflect.Descriptor instead.
 func (*EntityFeatureChanged) Descriptor() ([]byte, []int) {
-	return file_scene_proto_rawDescGZIP(), []int{16}
+	return file_scene_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *EntityFeatureChanged) GetEntityId() uint64 {
@@ -1296,7 +1361,11 @@ var File_scene_proto protoreflect.FileDescriptor
 
 const file_scene_proto_rawDesc = "" +
 	"\n" +
-	"\vscene.proto\x12\x04mir2\x1a\fcommon.proto\"\xb8\x02\n" +
+	"\vscene.proto\x12\x04mir2\x1a\fcommon.proto\"V\n" +
+	"\bSkeleton\x12\x1b\n" +
+	"\tentity_id\x18\x01 \x01(\x04R\bentityId\x12\x12\n" +
+	"\x04appr\x18\x02 \x01(\rR\x04appr\x12\x19\n" +
+	"\brace_img\x18\x03 \x01(\rR\araceImg\"\xb8\x02\n" +
 	"\vEntityState\x12\x1b\n" +
 	"\tentity_id\x18\x01 \x01(\x04R\bentityId\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\rR\x04kind\x12\x12\n" +
@@ -1424,55 +1493,56 @@ func file_scene_proto_rawDescGZIP() []byte {
 }
 
 var file_scene_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_scene_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_scene_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_scene_proto_goTypes = []any{
 	(DisappearReason)(0),         // 0: mir2.DisappearReason
-	(*EntityState)(nil),          // 1: mir2.EntityState
-	(*EnterWorld)(nil),           // 2: mir2.EnterWorld
-	(*ChangeMap)(nil),            // 3: mir2.ChangeMap
-	(*MapChunk)(nil),             // 4: mir2.MapChunk
-	(*TimeOfDay)(nil),            // 5: mir2.TimeOfDay
-	(*MapDescription)(nil),       // 6: mir2.MapDescription
-	(*EntityAppear)(nil),         // 7: mir2.EntityAppear
-	(*EntityDisappear)(nil),      // 8: mir2.EntityDisappear
-	(*EntityMove)(nil),           // 9: mir2.EntityMove
-	(*EntityAction)(nil),         // 10: mir2.EntityAction
-	(*EntityHealth)(nil),         // 11: mir2.EntityHealth
-	(*EntityStatus)(nil),         // 12: mir2.EntityStatus
-	(*AbilityUpdate)(nil),        // 13: mir2.AbilityUpdate
-	(*MoveInput)(nil),            // 14: mir2.MoveInput
-	(*Butch)(nil),                // 15: mir2.Butch
-	(*MoveRejected)(nil),         // 16: mir2.MoveRejected
-	(*EntityFeatureChanged)(nil), // 17: mir2.EntityFeatureChanged
-	(*Vec2)(nil),                 // 18: mir2.Vec2
-	(Direction)(0),               // 19: mir2.Direction
-	(*EntityFeature)(nil),        // 20: mir2.EntityFeature
-	(*Ability)(nil),              // 21: mir2.Ability
+	(*Skeleton)(nil),             // 1: mir2.Skeleton
+	(*EntityState)(nil),          // 2: mir2.EntityState
+	(*EnterWorld)(nil),           // 3: mir2.EnterWorld
+	(*ChangeMap)(nil),            // 4: mir2.ChangeMap
+	(*MapChunk)(nil),             // 5: mir2.MapChunk
+	(*TimeOfDay)(nil),            // 6: mir2.TimeOfDay
+	(*MapDescription)(nil),       // 7: mir2.MapDescription
+	(*EntityAppear)(nil),         // 8: mir2.EntityAppear
+	(*EntityDisappear)(nil),      // 9: mir2.EntityDisappear
+	(*EntityMove)(nil),           // 10: mir2.EntityMove
+	(*EntityAction)(nil),         // 11: mir2.EntityAction
+	(*EntityHealth)(nil),         // 12: mir2.EntityHealth
+	(*EntityStatus)(nil),         // 13: mir2.EntityStatus
+	(*AbilityUpdate)(nil),        // 14: mir2.AbilityUpdate
+	(*MoveInput)(nil),            // 15: mir2.MoveInput
+	(*Butch)(nil),                // 16: mir2.Butch
+	(*MoveRejected)(nil),         // 17: mir2.MoveRejected
+	(*EntityFeatureChanged)(nil), // 18: mir2.EntityFeatureChanged
+	(*Vec2)(nil),                 // 19: mir2.Vec2
+	(Direction)(0),               // 20: mir2.Direction
+	(*EntityFeature)(nil),        // 21: mir2.EntityFeature
+	(*Ability)(nil),              // 22: mir2.Ability
 }
 var file_scene_proto_depIdxs = []int32{
-	18, // 0: mir2.EntityState.position:type_name -> mir2.Vec2
-	19, // 1: mir2.EntityState.direction:type_name -> mir2.Direction
-	20, // 2: mir2.EntityState.feature:type_name -> mir2.EntityFeature
-	18, // 3: mir2.EnterWorld.position:type_name -> mir2.Vec2
-	19, // 4: mir2.EnterWorld.direction:type_name -> mir2.Direction
-	1,  // 5: mir2.EnterWorld.entities:type_name -> mir2.EntityState
-	20, // 6: mir2.EnterWorld.self_feature:type_name -> mir2.EntityFeature
-	18, // 7: mir2.ChangeMap.position:type_name -> mir2.Vec2
-	1,  // 8: mir2.ChangeMap.entities:type_name -> mir2.EntityState
-	20, // 9: mir2.ChangeMap.self_feature:type_name -> mir2.EntityFeature
-	1,  // 10: mir2.EntityAppear.entity:type_name -> mir2.EntityState
+	19, // 0: mir2.EntityState.position:type_name -> mir2.Vec2
+	20, // 1: mir2.EntityState.direction:type_name -> mir2.Direction
+	21, // 2: mir2.EntityState.feature:type_name -> mir2.EntityFeature
+	19, // 3: mir2.EnterWorld.position:type_name -> mir2.Vec2
+	20, // 4: mir2.EnterWorld.direction:type_name -> mir2.Direction
+	2,  // 5: mir2.EnterWorld.entities:type_name -> mir2.EntityState
+	21, // 6: mir2.EnterWorld.self_feature:type_name -> mir2.EntityFeature
+	19, // 7: mir2.ChangeMap.position:type_name -> mir2.Vec2
+	2,  // 8: mir2.ChangeMap.entities:type_name -> mir2.EntityState
+	21, // 9: mir2.ChangeMap.self_feature:type_name -> mir2.EntityFeature
+	2,  // 10: mir2.EntityAppear.entity:type_name -> mir2.EntityState
 	0,  // 11: mir2.EntityDisappear.reason:type_name -> mir2.DisappearReason
-	18, // 12: mir2.EntityMove.from:type_name -> mir2.Vec2
-	18, // 13: mir2.EntityMove.to:type_name -> mir2.Vec2
-	19, // 14: mir2.EntityMove.direction:type_name -> mir2.Direction
-	21, // 15: mir2.AbilityUpdate.ability:type_name -> mir2.Ability
-	18, // 16: mir2.MoveInput.from:type_name -> mir2.Vec2
-	18, // 17: mir2.MoveInput.to:type_name -> mir2.Vec2
-	19, // 18: mir2.MoveInput.direction:type_name -> mir2.Direction
-	18, // 19: mir2.Butch.position:type_name -> mir2.Vec2
-	19, // 20: mir2.Butch.direction:type_name -> mir2.Direction
-	18, // 21: mir2.MoveRejected.authoritative_position:type_name -> mir2.Vec2
-	20, // 22: mir2.EntityFeatureChanged.feature:type_name -> mir2.EntityFeature
+	19, // 12: mir2.EntityMove.from:type_name -> mir2.Vec2
+	19, // 13: mir2.EntityMove.to:type_name -> mir2.Vec2
+	20, // 14: mir2.EntityMove.direction:type_name -> mir2.Direction
+	22, // 15: mir2.AbilityUpdate.ability:type_name -> mir2.Ability
+	19, // 16: mir2.MoveInput.from:type_name -> mir2.Vec2
+	19, // 17: mir2.MoveInput.to:type_name -> mir2.Vec2
+	20, // 18: mir2.MoveInput.direction:type_name -> mir2.Direction
+	19, // 19: mir2.Butch.position:type_name -> mir2.Vec2
+	20, // 20: mir2.Butch.direction:type_name -> mir2.Direction
+	19, // 21: mir2.MoveRejected.authoritative_position:type_name -> mir2.Vec2
+	21, // 22: mir2.EntityFeatureChanged.feature:type_name -> mir2.EntityFeature
 	23, // [23:23] is the sub-list for method output_type
 	23, // [23:23] is the sub-list for method input_type
 	23, // [23:23] is the sub-list for extension type_name
@@ -1492,7 +1562,7 @@ func file_scene_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_scene_proto_rawDesc), len(file_scene_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   17,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

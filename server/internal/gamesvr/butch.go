@@ -11,6 +11,7 @@ import (
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/internal/wire"
 	"github.com/algotao/mir2/server/internal/world"
+	"github.com/algotao/mir2/server/protocol"
 )
 
 // 挖肉（取肉）与挖矿。
@@ -61,6 +62,12 @@ const (
 	meatCutMin, meatCutRange         = 100, 201 // Random(201)+100 ⇒ 100..300
 	// leatheryReset 是"把肉挖出来之后"重置的皮革度（原版 `m_nBodyLeathery := 50`）
 	leatheryReset = 50
+	// skeletonAppr / skeletonRaceImg 是"取完肉的尸体变成什么"：**怪物表里的骷髅**
+	//（`data/monsters.json`：骷髅 appr=20、race_img=14）。原版这里是置
+	// `m_boSkeleton := True`（ObjBase.pas:17494-17508），客户端拿它换骨架外观；
+	// 我们直接把外观换成骷髅这只怪（素材里本来就有它），效果一致、也不用新素材。
+	skeletonAppr    = 20
+	skeletonRaceImg = 14
 	// animalRaceLo/Hi 是 `RC_ANIMAL`/`RC_MONSTER`（Grobal2.pas:1103-1104）：
 	// 原版判"能不能变成骷髅"用的是这个区间，而 `m_boAnimal` 只在
 	// 鸡/鹿/狼三个 race 上被置真（UsrEngn.pas:1835-1865）⇒ 两者对我们是等价的。
@@ -506,6 +513,16 @@ func (s *Server) broadcastSkeleton(m *entity.Monster) {
 	body := proto.MessageBodyWL{Param1: m.FeatureBits(), Param2: m.StatusBits(), Tag1: proto.MakeFeatureEx(true)}
 	raw := body.Bytes()
 	s.broadcastToViewers(m.MapRef(), m.PosX(), m.PosY(), func(o *Player) {
+		// ⚠️ 新协议：上面那条 legacy 包会被 `protoDown` 丢掉 ⇒ proto 玩家**永远看不到
+		// 骷髅**（用户 2026-10-10 第 2 条）。让它把外观换成骷髅（怪物表里"骷髅"这只
+		// 怪的 appr/race_img），死亡动作保留 ⇒ 看到的就是一副骨架躺在地上。
+		if sink := o.protoOut; sink != nil {
+			sink.enqueue(&protocol.Envelope{Body: &protocol.Envelope_Skeleton{
+				Skeleton: &protocol.Skeleton{
+					EntityId: uint64(m.ID), Appr: uint32(skeletonAppr), RaceImg: uint32(skeletonRaceImg),
+				}}})
+			return
+		}
 		s.send(o.conn, proto.SM_SKELETON, int32(m.ID), uint16(m.HP), uint16(m.MaxHP), 0, string(raw[:]))
 	})
 }

@@ -68,6 +68,7 @@ message Envelope {
     MapChunk map_chunk = 0x0403;
     TimeOfDay time_of_day = 0x0404;
     MapDescription map_description = 0x0405;
+    Skeleton skeleton = 0x0406;
 
     // ---------- 0x05xx 实体 ----------
     EntityAppear entity_appear = 0x0501;

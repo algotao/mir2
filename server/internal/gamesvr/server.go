@@ -591,6 +591,20 @@ func saveSnapshotOf(p *Player) *storage.Character {
 	p.Char.Data.AllowGroup = p.allowGroup
 	p.Char.Data.AllowGroupRecall = p.allowGroupRecall
 
+	// ⚠️ **当前位置也要进快照**：`joinWorld` 就是拿 `CurMap/CurX/CurY` 定位的
+	//（join.go:76-86），可全代码里从来没写过这三个字段 ⇒ 存盘永远是建号时的
+	// 新手村坐标 ⇒ 下线再上"回到新手村"（用户 2026-10-10 第 5 条）。
+	// 与上面两个开关同一条纪律：在**做快照这一刻**同步（自动存档/下线/脚本动作
+	// 都走这里），而不是指望每个调用点记得写。
+	if p.Obj != nil {
+		if m := p.Obj.MapRef(); m != nil && m.Name != "" {
+			p.Char.Data.CurMap = m.Name
+		}
+		p.Char.Data.CurX = uint32(p.Obj.PosX())
+		p.Char.Data.CurY = uint32(p.Obj.PosY())
+		p.Char.Data.Dir = uint32(p.Obj.Facing())
+	}
+
 	// `storage.Character` 除 Data 外都是值类型 ⇒ 浅拷贝之后再换掉 Data 即可
 	//（`store.Update` 会自己 `SyncFromData` 把索引列从 Data 同步过去）。
 	snap := *p.Char

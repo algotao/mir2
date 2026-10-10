@@ -15,6 +15,17 @@ option go_package = "github.com/algotao/mir2/server/protocol;protocol";
 // ---------- 0x04xx 场景 ----------
 
 // 实体的完整快照（进图初始快照 / 实体出现 用）。
+// 服务端 → 客户端：一具尸体**变成骷髅**（原版 `SendRefMsg(RM_SKELETON)`）。
+//
+// 挖肉挖到皮革度归零那一下发生（用户 2026-10-10 第 2 条："挖完肉后的动物尸体
+// 应该会变化"）。客户端收到后把这只实体的**外观换成骷髅**（appr/race_img 由服务端
+// 给 —— 骷髅在怪物表里本来就是一只怪），死亡动作保留 ⇒ 看到的就是一副骨架躺在地上。
+message Skeleton {
+  uint64 entity_id = 1;
+  uint32 appr = 2;      // 换成哪只怪的外观（服务端按怪物表给"骷髅"）
+  uint32 race_img = 3;  // 动作表（同上）
+}
+
 message EntityState {
   uint64 entity_id = 1;
   uint32 kind = 2;              // 0=玩家 1=怪物 2=NPC

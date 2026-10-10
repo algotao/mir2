@@ -1096,8 +1096,8 @@ fn 自己的补间盖满发送步频() {
 /// 照原版 `_DXDrawMouseDown`（`ClMain.pas:2805-2878`）与 `AttackTarget`（`:2691`）。
 #[test]
 fn 点鼠标算什么() {
-    use mir2_core::world::{World, KIND_MONSTER};
-    let mut w = World::default();
+    use mir2_core::world::KIND_MONSTER;
+    let mut w = mir2_core::world::World::default();
     w.self_id = 1;
     w.self_pos = (10, 10);
     let mut put = |id: u64, kind: u32, x: i32, y: i32, dead: bool| {
@@ -1126,21 +1126,21 @@ fn 点鼠标算什么() {
     put(300, KIND_MONSTER, 14, 10, true); // 死怪（尸骨）
 
     // 点活怪 ⇒ 锁它，不去走
-    assert_eq!(mouse_intent(&w, (12, 10), false), (Some(100), None));
+    assert_eq!(mouse_intent(&w, (12, 10), false, None), (Some(100), None));
     // 点空地 ⇒ 走那一格（右键 = 跑）
     assert_eq!(
-        mouse_intent(&w, (11, 10), false),
+        mouse_intent(&w, (11, 10), false, None),
         (None, Some((11, 10, false)))
     );
     assert_eq!(
-        mouse_intent(&w, (11, 10), true),
+        mouse_intent(&w, (11, 10), true, None),
         (None, Some((11, 10, true)))
     );
     // 玩家 / 死怪 / 自己那格 ⇒ 走
-    assert_eq!(mouse_intent(&w, (13, 10), false).0, None);
-    assert_eq!(mouse_intent(&w, (14, 10), false).0, None);
+    assert_eq!(mouse_intent(&w, (13, 10), false, None).0, None);
+    assert_eq!(mouse_intent(&w, (14, 10), false, None).0, None);
     assert_eq!(
-        mouse_intent(&w, (10, 10), false),
+        mouse_intent(&w, (10, 10), false, None),
         (None, Some((10, 10, false)))
     );
 }
@@ -1153,11 +1153,11 @@ fn 点鼠标算什么() {
 /// ⇒ 目标半路被丢。
 #[test]
 fn 按住不丢已锁的怪() {
-    use mir2_core::world::{World, KIND_MONSTER};
-    let mut w = World::default();
+    use mir2_core::world::KIND_MONSTER;
+    let mut w = mir2_core::world::World::default();
     w.self_id = 1;
     w.self_pos = (10, 10);
-    let put = |w: &mut World, id: u64, kind: u32, x: i32, y: i32, dead: bool| {
+    let put = |w: &mut mir2_core::world::World, id: u64, kind: u32, x: i32, y: i32, dead: bool| {
         w.entities.insert(
             id,
             Entity {
@@ -1181,7 +1181,7 @@ fn 按住不丢已锁的怪() {
     put(&mut w, 100, KIND_MONSTER, 12, 10, false);
 
     // 新鲜按下：光标在怪身上 ⇒ 锁它
-    assert_eq!(mouse_intent(&w, (12, 10), false), (Some(100), None));
+    assert_eq!(mouse_intent(&w, (12, 10), false, None), (Some(100), None));
     // 按住重取：光标已经滑到**空地** ⇒ **仍然锁着它**（不是掉头去走）
     assert_eq!(
         mouse_repeat(&w, (15, 10), false, Some(100)),
@@ -1252,21 +1252,21 @@ fn 呈现模式不缩小() {
 fn click_walks_exactly_one_step() {
     let w = mir2_core::world::World::default();
     // 从 (10,10) 点 (15,13)：只迈一格，方向按**符号**取（右下）
-    let (ct, mt) = input::click_step(&w, (10, 10), (15, 13), false);
+    let (ct, mt) = input::click_step(&w, (10, 10), (15, 13), false, None);
     assert!(ct.is_none(), "空地上不该锁目标");
     assert_eq!(mt, Some((11, 11, false)), "只迈一格，按符号取方向");
     // 正左/正上这些也要对
     assert_eq!(
-        input::click_step(&w, (10, 10), (2, 10), true).1,
+        input::click_step(&w, (10, 10), (2, 10), true, None).1,
         Some((9, 10, true))
     );
     assert_eq!(
-        input::click_step(&w, (10, 10), (10, 3), false).1,
+        input::click_step(&w, (10, 10), (10, 3), false, None).1,
         Some((10, 9, false))
     );
     // 点在自己身上（同一格）⇒ 什么都不做
     assert_eq!(
-        input::click_step(&w, (10, 10), (10, 10), false),
+        input::click_step(&w, (10, 10), (10, 10), false, None),
         (None, None)
     );
 }
@@ -1930,4 +1930,119 @@ fn 状态窗版式() {
     assert_eq!(crate::status::slot_name(0), "衣服");
     assert_eq!(crate::status::slot_name(1), "武器");
     assert_eq!(crate::status::slot_name(4), "头盔");
+}
+
+/// **追怪寻路**：原来只看"朝它那个方向"（贪心），前面横一道墙就永远贴着墙推
+/// —— 现在走 BFS（用户 2026-10-10 第 3 条）。
+///
+/// 地图（7×3，X = 不可走）：
+/// ```text
+///   y=0:  . . . X . . .
+///   y=1:  S . . X . . T     S = 自己 (0,1)，T = 目标 (6,1)
+///   y=2:  . . . . . . .
+/// ```
+/// 直着朝右会撞在 x=3 那道墙上 ⇒ 得先往下绕到 y=2 过去。
+#[test]
+fn 追怪遇到墙要绕过去() {
+    let map = test_map(7, 3, &[(3, 0), (3, 1)]);
+    // 跟着 BFS 一路走下去：该能绕到目标格，且**半步都不踩墙**
+    let mut pos = (0, 1);
+    let mut steps = 0;
+    while pos != (6, 1) && steps < 40 {
+        let Some((d, _)) = route_step(Some(&map), pos, (6, 1), true) else {
+            break;
+        };
+        let (dx, dy) = dir_delta(d);
+        pos = (pos.0 + dx, pos.1 + dy);
+        steps += 1;
+        assert!(
+            !matches!(pos, (3, 0) | (3, 1)),
+            "不该走进墙里：第 {steps} 步走到 {pos:?}"
+        );
+    }
+    assert_eq!(pos, (6, 1), "跟着 BFS 走该能绕到目标格，实得 {pos:?}");
+}
+
+/// 没有地图（还没加载）⇒ 退回"直着走"那条老路，不能一步都不给。
+#[test]
+fn 没地图时寻路退回直着走() {
+    let step = route_step(None, (0, 0), (4, 0), true);
+    assert!(step.is_some(), "没地图也该给出一步（老办法）");
+    assert_eq!(step.unwrap().0, mir2_protocol::Direction::DirRight);
+}
+
+/// 造一张 `w×h` 的地图，`blocked` 里那些格不可走。
+fn test_map(w: u16, h: u16, blocked: &[(i32, i32)]) -> mir2_core::map::Map {
+    let head = 52usize; // `Map::parse` 的 HEADER_LEN
+    let mut bytes = vec![0u8; head + (w as usize) * (h as usize) * 12];
+    bytes[0..2].copy_from_slice(&w.to_le_bytes());
+    bytes[2..4].copy_from_slice(&h.to_le_bytes());
+    bytes[4] = 0; // 标题长度
+                  // ⚠️ `parse` 是**按列主序**读的：`out[x * h + y]`
+    for (bx, by) in blocked {
+        let off = head + (*bx as usize * h as usize + *by as usize) * 12;
+        bytes[off] = 0x00;
+        bytes[off + 1] = 0x80; // bk_img |= 0x8000 ⇒ 不可走
+    }
+    mir2_core::map::Map::parse(&bytes).expect("测试地图该能解析")
+}
+
+/// 测试用：把协议方向换成格子的偏移量。
+fn dir_delta(d: mir2_protocol::Direction) -> (i32, i32) {
+    use mir2_protocol::Direction as D;
+    match d {
+        D::DirUp => (0, -1),
+        D::DirUpRight => (1, -1),
+        D::DirRight => (1, 0),
+        D::DirDownRight => (1, 1),
+        D::DirDown => (0, 1),
+        D::DirDownLeft => (-1, 1),
+        D::DirLeft => (-1, 0),
+        D::DirUpLeft => (-1, -1),
+        D::Unspecified => (0, 0),
+    }
+}
+
+/// **锁怪优先用 `hover`**（用户 2026-10-10 第 4 条）：名字条能显示 ⇒ 画出来的框
+/// 已经命中它了 ⇒ 左键就该锁它，而不是按"光标脚下那一格"去找。
+#[test]
+fn 点怪优先锁悬停的那只() {
+    let mut w = mir2_core::world::World::default();
+    w.self_id = 1;
+    w.self_pos = (10, 10);
+    // 怪站在 (12,10)；光标**脚下那格**是 (11,10)（空的），但悬停的是它
+    w.entities.insert(
+        100,
+        Entity {
+            id: 100,
+            kind: mir2_core::world::KIND_MONSTER,
+            name: "鸡".into(),
+            x: 12,
+            y: 10,
+            dir: 0,
+            feature: None,
+            hp: 5,
+            run: false,
+            max_hp: 5,
+            status_bits: 0,
+            dead: false,
+            action: None,
+            action_seq: 0,
+        },
+    );
+    // 只看脚下那格 ⇒ 锁不上（这正是"锁怪能力差"的原因）
+    assert_eq!(
+        mouse_intent(&w, (11, 10), false, None).0,
+        None,
+        "只看格子：光标脚下是空地"
+    );
+    // 带着 hover ⇒ 直接锁它
+    assert_eq!(
+        mouse_intent(&w, (11, 10), false, Some(100)).0,
+        Some(100),
+        "悬停的就是它 ⇒ 该锁它"
+    );
+    // 悬停的是**死的**/不是怪 ⇒ 不当目标（骷髅不该被追着打）
+    w.entities.get_mut(&100).unwrap().dead = true;
+    assert_eq!(mouse_intent(&w, (11, 10), false, Some(100)).0, None);
 }

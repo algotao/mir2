@@ -697,6 +697,23 @@ impl World {
                     Change::None
                 }
             }
+            // 尸体变骷髅：把**外观换成骷髅**（appr/race_img 由服务端给），死亡动作
+            // 保留 ⇒ 看到的就是一副骨架躺在地上（原版 `RM_SKELETON`）。
+            Body::Skeleton(k) => {
+                let changed = if let Some(e) = self.entities.get_mut(&k.entity_id) {
+                    let f = e.feature.get_or_insert_with(Default::default);
+                    f.appr = k.appr;
+                    f.race_img = k.race_img;
+                    true
+                } else {
+                    false
+                };
+                if changed {
+                    Change::World
+                } else {
+                    Change::None
+                }
+            }
             Body::ShopList(l) => {
                 // ⚠️ `shop_seq` 每次**收到货架**都 +1：客户端开不开窗跟着它走 ——
                 // 只对比 npc_id 的话，同一个商人第二次点"购买"（用户 2026-10-10
@@ -802,6 +819,16 @@ impl World {
     ///
     /// ⚠️ 同一格上叠着好几个时取 `id` 最小的那个（`entities` 是 `BTreeMap`，顺序稳定
     /// ⇒ 每次点都锁同一个，不会"点一下换一个"）。
+    /// `id` 这只实体现在**能被锁定并打**吗（活着的怪、不是自己、也不是 NPC）？
+    ///
+    /// 给"按 `hover` 锁怪"用（用户 2026-10-10 第 4 条）：`hover` 是画出来的框命中
+    /// 的实体，可能是 NPC（那条路是**说话**不是打）、也可能是死的 ⇒ 这里统一判。
+    pub fn attackable(&self, id: u64) -> bool {
+        self.entities
+            .get(&id)
+            .is_some_and(|e| e.kind == KIND_MONSTER && !e.dead && e.id != self.self_id)
+    }
+
     pub fn attack_target_at(&self, cell: (i32, i32)) -> Option<u64> {
         self.entities
             .values()
