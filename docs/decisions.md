@@ -4738,3 +4738,35 @@ TDControl  rect / Visible / WLib+FaceIndex / SurfaceX(父偏移) / InRange(hit)
 | ⑧ | **服务端 `netproto.go` 巨型 switch** | 1600+ 行分发 | 纯整洁，**优先级最低**（没造成过 bug） |
 
 **执行顺序**：① → ② → ③（④ 作为 ① 的副产品慢慢长）。
+
+---
+
+## D-77 架构方向 ① 落地：背包/卖窗拖拽抽成纯状态机 `bagdrag`（2026-10-11）
+
+`main.rs` 里原本有**两份近乎一样**的背包点击逻辑（普通 vs 卖出模式），
+一边改了另一边容易忘。现在合成一份，且**不碰 SDL** ⇒ 能进单元测试。
+
+### 结构
+
+```
+bagdrag::BagDrag            ← 纯状态（手上拿着什么 / 卖窗槽里放着什么 / 上次点哪格）
+    .click_bag(slot, now, repair, cell) -> Act
+    .click_slot()                      圆槽：手 ↔ 槽 搬
+    .take_placed() / .placed_make()    卖：认**实例号**
+    .rebind(find)                      背包重排后按实例号重定位（D-75）
+    .clear()
+apply_bag_act(act, net)     ← 执行（发包 + 乐观更新），两个窗共用
+```
+
+`Act` = `None` / `Repair` / `Use` / `Equip` / `Move{from,to}` / `PickUp` / `PutBack`。
+
+⚠️ 状态机**只认 `Cell { make, std_mode }`**，不从 `BagItem` 整个搬
+⇒ 测的时候不用造一整个 `BagItem`，一个数组就够。
+
+### 顺带的两点
+
+- 卖 [OK] 改成**按实例号找物品**（原来是按下标）⇒ 背包重排也卖不错（D-75 的延续）。
+- "点回原格 = 放回" 只在**过了双击窗口**才成立 —— 450ms 内同格再点是**用物**，
+  测试里把这条边界钉住了。
+
+**验收**：客户端 122/148/7/3 + Go 25 包，clippy 0；`bagdrag` 11 条测试。
