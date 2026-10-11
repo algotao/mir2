@@ -5205,3 +5205,22 @@ Go 同 package 的文件共享 handler/helpers，不会引入 import cycle）：
 表达退出，不把控制流越层传递。
 
 **验收**：客户端 154/148/7/4，clippy 0。
+
+---
+
+## D-96 架构方向 ⑧ 续：新协议连接逻辑拆成 transport/auth/scene 域（2026-10-11）
+
+在 D-94 按业务 handler 拆 shop/item/npc/world 后，继续把 `netproto.go` 剩余的登录、
+会话、进图快照逻辑按职责搬出：
+
+- `netproto_auth.go`：取盐 / 登录 / 建账号 / reconnect；
+- `netproto_character.go`：建删角 / 列表 / 选角 / 出生点；
+- `netproto_scene.go`：进入世界、快照、实体 Feature 转换；
+- `netproto.go` 现在只保留监听连接、握手/dispatch、通用 send/error 等协议 transport 骨架。
+
+所有新文件同为 `package gamesvr`；这是**按域组织同包代码**，不是拆 Go package，所以不会
+引入 import cycle，也不改变 handler 调用关系。纯移动没有重写协议逻辑。
+
+文件规模：`netproto.go` 原约 1,880 行 → **553 行**；其余按域文件最大 372 行。
+
+**验收**：`go vet ./...` 通过，Go 25 包全过。
