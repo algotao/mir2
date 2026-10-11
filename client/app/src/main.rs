@@ -121,6 +121,12 @@ fn toggle_status(status_open: &mut bool) {
     println!("[ui] 状态窗 {}", if *status_open { "打开" } else { "关闭" });
 }
 
+/// 开关小地图（**Tab 与底栏那颗 [小地图] 都走这里** —— 鼠标与键盘同一个动作）。
+fn toggle_minimap(minimap_on: &mut bool) {
+    *minimap_on = !*minimap_on;
+    println!("[ui] 小地图 {}", if *minimap_on { "打开" } else { "关闭" });
+}
+
 /// 开关背包（**F9 与底栏那颗 [包裹] 都走这里**）。
 ///
 /// ⚠️ 原来 F9 那支还顺手把 `bag_page` 归零 —— 抽出来就是为了"点按钮"和"按 F9"
@@ -593,7 +599,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             // Tab = **小地图**开关、M = **大地图**开关（原版 1.76 的键位，
                             // 见 `docs/use.md`；音乐已经挪到 Ctrl+M，不再抢 M）。
-                            Some(Keycode::Tab) => minimap_on = !minimap_on,
+                            Some(Keycode::Tab) => toggle_minimap(&mut minimap_on),
                             Some(Keycode::M) => bigmap_on = !bigmap_on,
                             // 空格：打一下身边的目标（A′：走 + 砍 = 能玩）。**左键点怪**才是
                             // 主路（会锁住目标、自动靠近）—— 见下面 `MouseButtonDown` 那段。
@@ -801,6 +807,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     // 目标清掉，**本次点击不再穿透到世界**（与其它浮窗
                                     // 同一条纪律：命中就 `continue`，不然人还会走）。
+                                    combat_target = None;
+                                    move_target = None;
+                                    press_at = None;
+                                    pending_pickup = None;
+                                    held_move = None;
+                                    continue;
+                                }
+                                // 底栏**左下**那排快捷按钮（小地图/交易/行会/组队/属性）。
+                                // 小地图那颗 = **Tab** 同一个动作（`toggle_minimap`）。
+                                if let Some(b) = crate::layout::hud_quick_at(mouse) {
+                                    match b {
+                                        crate::layout::QuickBtn::MiniMap => {
+                                            toggle_minimap(&mut minimap_on)
+                                        }
+                                        crate::layout::QuickBtn::Trade => {
+                                            ui_say(net.as_mut(), "玩家交易还没做。")
+                                        }
+                                        crate::layout::QuickBtn::Guild => {
+                                            ui_say(net.as_mut(), "行会还没做。")
+                                        }
+                                        crate::layout::QuickBtn::Group => {
+                                            ui_say(net.as_mut(), "组队还没做。")
+                                        }
+                                        crate::layout::QuickBtn::PlusAbil => {
+                                            ui_say(net.as_mut(), "属性加点还没做。")
+                                        }
+                                    }
                                     combat_target = None;
                                     move_target = None;
                                     press_at = None;

@@ -138,6 +138,87 @@ pub(crate) fn hud_btn_at(p: (f32, f32)) -> Option<HudBtn> {
     })
 }
 
+// ---------- 底栏**左下**那排快捷按钮 ----------
+//
+// 原版 `DBotMiniMap / DBotTrade / DBotGuild / DBotGroup / DBotPlusAbil / …`
+// （`FState.pas:1305-1335`），一排横着摆，图号是**常态 / 按下**成对出现的
+// （`DBotGroupDirectPaint`：`Downed` ⇒ `FaceIndex+1`，`FState.pas:3929-3947`）
+// ⇒ 与右上那 4 颗（只有高亮态）**不是同一种**按钮。
+//
+// ⚠️ 好友那颗（官方 `DBotFriend` = 530）在本套素材里是空的 ⇒ 不画。
+
+/// 底栏左下的快捷按钮。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuickBtn {
+    /// 小地图（= **Tab** 同一个动作）。
+    MiniMap,
+    /// 交易（玩家之间；还没做）。
+    Trade,
+    /// 行会（还没做）。
+    Guild,
+    /// 组队（还没做）。
+    Group,
+    /// 属性 / 内挂（还没做）。
+    PlusAbil,
+}
+
+impl QuickBtn {
+    pub const ALL: [Self; 5] = [
+        Self::MiniMap,
+        Self::Trade,
+        Self::Guild,
+        Self::Group,
+        Self::PlusAbil,
+    ];
+
+    /// **常态**图的图号（按下态是 `+1`）。
+    pub fn img(self) -> u32 {
+        match self {
+            Self::MiniMap => 130,
+            Self::Trade => 132,
+            Self::Guild => 134,
+            Self::Group => 128,
+            Self::PlusAbil => 140,
+        }
+    }
+
+    /// 尺寸（30 一档的间距里，属性那颗宽一点）。
+    pub fn size(self) -> (f32, f32) {
+        match self {
+            Self::PlusAbil => (36.0, 13.0),
+            _ => (28.0, 13.0),
+        }
+    }
+
+    /// 在**面板坐标**里的落点（官方 `FState.pas:1306-1320`：219 / 249 / 279 / 309 / 339，
+    /// 同一行 y=104）—— 正好压在聊天框上方。
+    pub fn at(self) -> (f32, f32) {
+        let x = match self {
+            Self::MiniMap => 219.0,
+            Self::Trade => 249.0,
+            Self::Guild => 279.0,
+            Self::Group => 309.0,
+            Self::PlusAbil => 339.0,
+        };
+        (x, 104.0)
+    }
+
+    /// 命中框（**屏幕坐标**）。
+    pub fn rect(self) -> (f32, f32, f32, f32) {
+        let (lx, ly) = self.at();
+        let (w, h) = self.size();
+        (hud_local_x(lx), WIN_H as f32 - HUD_BOARD_H + ly, w, h)
+    }
+}
+
+/// 屏幕坐标点中了哪个快捷按钮（没中 ⇒ `None`）。
+pub(crate) fn hud_quick_at(p: (f32, f32)) -> Option<QuickBtn> {
+    QuickBtn::ALL.into_iter().find(|b| {
+        let (x, y, w, h) = b.rect();
+        p.0 >= x && p.0 < x + w && p.1 >= y && p.1 < y + h
+    })
+}
+
 /// 单球（只有血量那一支）的球底与血条美术，以及落点。
 ///
 /// 官方对「**武士** 且 **等级 < 28**」用另一套：`Prguse[5]` 是球底、`Prguse[6]` 是血条

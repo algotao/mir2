@@ -2193,3 +2193,45 @@ fn 底栏功能按钮的落点与命中() {
     // 世界中间（不在按钮区）⇒ 不命中
     assert_eq!(hud_btn_at((win_w / 2.0, win_h / 2.0)), None);
 }
+
+/// **底栏左下那排快捷按钮**（小地图/交易/行会/组队/属性）。
+///
+/// 落点抄官方 `FState.pas:1306-1320`（219/249/279/309/339，同一行 y=104）；
+/// 这两态按钮（常态 `img`、按下 `img+1`），与右上那 4 颗"只有高亮态"的不是同一种。
+#[test]
+fn 底栏快捷按钮的落点与命中() {
+    use crate::layout::{hud_quick_at, QuickBtn, HUD_BOARD_H};
+    let win_h = crate::window::WIN_H as f32;
+    let board_top = win_h - HUD_BOARD_H;
+
+    for (b, want_x) in [
+        (QuickBtn::MiniMap, 219.0),
+        (QuickBtn::Trade, 249.0),
+        (QuickBtn::Guild, 279.0),
+        (QuickBtn::Group, 309.0),
+        (QuickBtn::PlusAbil, 339.0),
+    ] {
+        assert_eq!(b.at(), (want_x, 104.0), "{b:?} 的面板坐标");
+        let (x, y, w, h) = b.rect();
+        assert!(y >= board_top && y + h <= win_h, "{b:?} 落在底栏外：y={y}");
+        assert_eq!(
+            hud_quick_at((x + w / 2.0, y + h / 2.0)),
+            Some(b),
+            "{b:?} 的中心点不命中自己"
+        );
+    }
+    // 一排横着摆 ⇒ 同一行、互不重叠
+    for b in QuickBtn::ALL {
+        assert_eq!(b.rect().1, QuickBtn::MiniMap.rect().1, "{b:?} 不在同一行");
+        for c in QuickBtn::ALL {
+            if b == c {
+                continue;
+            }
+            let (ax, ay, aw, ah) = b.rect();
+            let (cx, cy, cw, ch) = c.rect();
+            let overlap = ax < cx + cw && cx < ax + aw && ay < cy + ch && cy < ay + ah;
+            assert!(!overlap, "{b:?} 与 {c:?} 的命中框重叠了");
+        }
+    }
+    assert_eq!(hud_quick_at((0.0, 0.0)), None);
+}

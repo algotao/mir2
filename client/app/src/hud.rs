@@ -103,6 +103,19 @@ pub(crate) fn draw_hud<'a, T>(
             let _ = ui.draw(canvas, tc, dir, "Prguse", b.img(), x, y);
         }
     }
+    // **底栏左下那排快捷按钮**（小地图/交易/行会/组队/属性）：这两态按钮
+    // （常态 = `img`、按下 = `img+1`；官方 `DBotGroupDirectPaint`）⇒ **常态总是画**，
+    // 悬停时换成 +1 那张（与右上那 4 颗"只在悬停叠高亮"不是同一种）。
+    let qhovered = crate::layout::hud_quick_at(mouse);
+    for b in crate::layout::QuickBtn::ALL {
+        let (x, y, _, _) = b.rect();
+        let img = if qhovered == Some(b) {
+            b.img() + 1
+        } else {
+            b.img()
+        };
+        let _ = ui.draw(canvas, tc, dir, "Prguse", img, x, y);
+    }
 
     // 血 / 魔法球。官方分**两支**（`FState.pas:3606-3640`）：
     //
