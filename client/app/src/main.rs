@@ -389,6 +389,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut bag_by_shop = false;
     // 按住 Alt 吗（挖肉的修饰键；SDL 的鼠标事件不带 keymod ⇒ 从键盘事件自己记）
     let mut alt_down = false;
+    // 左键**是否按住**。
+    //
+    // ⚠️ 高亮图（8-11 / 130-141 / 64 / 371 / 386-388 / 393）**不是 hover，是"按住"**
+    //（用户 2026-10-11 更正）：原版 `TDButton.Downed` 由 `MouseDown` 置位、
+    // `MouseUp` 清除，`*DirectPaint` 只在 `Downed` 时画那张图 ⇒ 按下/保持按下
+    // 期间才变亮，松手就回到常态（常态在窗口底图里）。
+    let mut lmb_down = false;
     // **挖肉状态**：按住 Alt 点中一具尸体 ⇒ 锁定为"正在挖它"，**按住不放就持续挖**
     //（用户 2026-10-10 第 1 条：不是反复点左键）。值 = 目标实体号；
     // Alt 松开 / 目标没了 / 人走远 ⇒ 清。
@@ -493,6 +500,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 800×600 的逻辑空间里 ⇒ 一律让 SDL 换算（它同时管逻辑呈现的缩放与留边）。
             // 漏了它的表现是"按钮点不中 / 点哪走哪偏一截"（踩过）。
             let ev = ev.get_converted_coords(&canvas).unwrap_or(ev);
+            // 左键按住状态（高亮图只在这期间展现 —— 见上面 `lmb_down` 的说明）
+            match &ev {
+                Event::MouseButtonDown {
+                    mouse_btn: MouseButton::Left,
+                    ..
+                } => lmb_down = true,
+                Event::MouseButtonUp {
+                    mouse_btn: MouseButton::Left,
+                    ..
+                } => lmb_down = false,
+                _ => {}
+            }
             match ev {
                 Event::Quit { .. } => break 'main,
                 // 窗口尺寸/像素尺寸变了 ⇒ 重挑呈现模式（见 `apply_presentation`）。
@@ -2271,6 +2290,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 net.as_ref(),
                 combat_target,
                 dialog_scroll,
+                lmb_down,
             )?;
             // **快捷（腰带）栏**：画在世界与 HUD 之上（框在底栏里、内容在这里）。
             if mode == 2 {
@@ -2283,6 +2303,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         dir,
                         &belt,
                         mouse,
+                        lmb_down,
                     )?;
                 }
             }
@@ -2328,7 +2349,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         bag_page,
                         shop_open,
                         &hide,
-                        close_hover,
+                        close_hover && lmb_down,
                     )?;
                 }
             }
@@ -2344,19 +2365,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // ① 商店窗（买）：商品列表
                 if shop_open && !shop_is_sell {
                     // 商店窗的悬停（OK 按钮的 hover 态要用）
-                    let shop_hover = net
-                        .as_ref()
-                        .and_then(|n| n.world.shop.as_ref())
-                        .map(|sh| {
-                            let (wx, wy, _, _) = crate::shop::panel();
-                            let base = shop_page * crate::shop::ROWS;
-                            let rows = sh.items.len().saturating_sub(base);
-                            if mouse.0 < wx || mouse.1 < wy {
-                                return crate::shop::Hit::None;
-                            }
-                            crate::shop::hit((mouse.0 - wx, mouse.1 - wy), rows)
-                        })
-                        .unwrap_or(crate::shop::Hit::None);
+                    // 高亮只在**按住**时展现（原版 `Downed`；不是 hover）
+                    let shop_hover = if lmb_down {
+                        net.as_ref()
+                            .and_then(|n| n.world.shop.as_ref())
+                            .map(|sh| {
+                                let (wx, wy, _, _) = crate::shop::panel();
+                                let base = shop_page * crate::shop::ROWS;
+                                let rows = sh.items.len().saturating_sub(base);
+                                if mouse.0 < wx || mouse.1 < wy {
+                                    return crate::shop::Hit::None;
+                                }
+                                crate::shop::hit((mouse.0 - wx, mouse.1 - wy), rows)
+                            })
+                            .unwrap_or(crate::shop::Hit::None)
+                    } else {
+                        crate::shop::Hit::None
+                    };
                     shop::draw(
                         &mut canvas,
                         &tex_creator,
@@ -2371,17 +2396,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 // ② 卖货窗（卖）：放物品的槽 + OK（hover 时叠高亮素材 393）
                 if shop_open && bag_open && shop_is_sell {
-                    let sell_hover = net
-                        .as_ref()
-                        .map(|_| {
-                            let (sx, sy, _, _) = crate::shop::sell_panel();
-                            if mouse.0 < sx || mouse.1 < sy {
-                                crate::shop::SellHit::None
-                            } else {
-                                crate::shop::sell_hit((mouse.0 - sx, mouse.1 - sy))
-                            }
-                        })
-                        .unwrap_or(crate::shop::SellHit::None);
+                    let sell_hover = if lmb_down {
+                        net.as_ref()
+                            .map(|_| {
+                                let (sx, sy, _, _) = crate::shop::sell_panel();
+                                if mouse.0 < sx || mouse.1 < sy {
+                                    crate::shop::SellHit::None
+                                } else {
+                                    crate::shop::sell_hit((mouse.0 - sx, mouse.1 - sy))
+                                }
+                            })
+                            .unwrap_or(crate::shop::SellHit::None)
+                    } else {
+                        crate::shop::SellHit::None
+                    };
                     shop::draw_sell(
                         &mut canvas,
                         &tex_creator,
@@ -2482,6 +2510,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 窗口该压在小地图上面，否则标题栏与关闭 X 会被盖住（命中与视觉就不一致了）。
             if status_open {
                 if let Some(dir) = asset_dir.as_deref() {
+                    // 关闭钮的高亮 371 只在**按住**时叠（原版 `DCloseState` 走 `Downed`）
+                    let st_held = lmb_down && {
+                        let (sx, sy, _, _) = crate::status::panel(
+                            ui.size(dir, crate::status::BG_LIB, crate::status::BG)
+                                .unwrap_or((232, 325)),
+                        );
+                        let (cx, cy, cw, ch) = crate::status::CLOSE;
+                        mouse.0 >= sx + cx
+                            && mouse.0 < sx + cx + cw
+                            && mouse.1 >= sy + cy
+                            && mouse.1 < sy + cy + ch
+                    };
                     status::draw(
                         &mut canvas,
                         &tex_creator,
@@ -2490,6 +2530,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         dir,
                         net.as_ref(),
                         status_page,
+                        st_held,
                     )?;
                 }
             }

@@ -4448,3 +4448,31 @@ clippy 0。
 （同样这些数若被当成设计坐标再乘 1.28，就**不该**还在画布里）。
 
 **验收**：客户端 100/148/7/3 + Go 25 包，clippy 0。
+
+---
+
+## D-65 高亮图是"按下态"，不是 hover（2026-10-11 用户更正）
+
+之前我把所有高亮图都接成了 **hover（鼠标悬停）**，用户更正：**是 click /
+保持 click 时展现，释放则回归常态**。查官方，这正是 `TDButton.Downed` 的语义：
+
+- `MouseDown` ⇒ `Downed := TRUE`；`MouseUp` ⇒ `Downed := FALSE`（`DWinCtl.pas:666-695`）；
+- `DMyStateDirectPaint`（`FState.pas:3912-3926`）：`if d.Downed then draw Images[FaceIndex]`；
+- `DCloseBagDirectPaint`（`FState.pas:4683-4695`）：同样只认 `Downed`；
+- `DBotGroupDirectPaint`（`FState.pas:3929-3947`）：`Downed` ⇒ `FaceIndex+1`，否则 `FaceIndex`。
+
+⇒ 统一改口径：**高亮只在"左键按住 + 压在该控件上"期间展现**，松手回到常态
+（常态就在窗口底图里）。新增 `lmb_down`（左键按住状态，事件循环里维护），
+并把下列全部从 hover 改成 held：
+
+| 控件 | 高亮图 | 原来 | 现在 |
+|---|---|---|---|
+| 底栏右上 4 颗 | 8-11 | hover | **按住** |
+| 底栏左下 7 颗 | 130/132/134/128/140/136/138（+1） | hover | **按住**（常态照常画） |
+| 腰带 6 格 | （无官方高亮，自绘底色） | hover | **按住** |
+| 背包关闭 X | 64 | hover | **按住** |
+| 状态窗关闭 X | 371 | **一直画着**（等于常亮） | **按住** |
+| 交易窗 OK/左/右 | 386/387/388 | hover | **按住** |
+| 卖窗 OK | 393 | hover | **按住** |
+
+**验收**：客户端 100/148/7/3 + Go 25 包，clippy 0。

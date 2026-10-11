@@ -117,6 +117,8 @@ pub(crate) fn draw_map_view<'a, T>(
     combat_target: Option<u64>,
     // NPC 对话窗卷到第几行（正文常常超出背板 ⇒ 要能滚，见 `input::dialog_max_scroll`）
     dialog_scroll: usize,
+    // 左键是否按住（高亮图只在按住时展现 —— 见 `hud::draw_hud` 的说明）
+    lmb_down: bool,
 ) -> Result<Option<u64>, sdl3::Error> {
     fill(canvas, 0.0, 0.0, WIN_W as f32, BAR_TOP, C_PANEL)?;
 
@@ -473,6 +475,7 @@ pub(crate) fn draw_map_view<'a, T>(
         &m.title,
         dialog_scroll,
         mouse,
+        lmb_down,
     )?;
 
     // 悬停结果还给主循环：光标要跟着它换（Crystal 的 Attack 光标）

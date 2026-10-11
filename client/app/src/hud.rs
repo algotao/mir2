@@ -61,9 +61,10 @@ pub(crate) fn draw_hud<'a, T>(
     map_title: &str,
     // NPC 对话窗卷到第几行（见 `input::dialog_max_scroll`）
     dialog_scroll: usize,
-    // ⚠️ 鼠标位置（画布坐标）：底栏右上那 4 个功能按钮的**高亮**要它
-    //（原版只在 `Downed` 时画那张图，我们扩成悬停也高亮）。
+    // 鼠标位置（画布坐标）+ **左键是否按住**：底栏那些按钮的高亮图只在
+    // **按住**时展现（原版 `TDButton.Downed`，不是 hover —— 用户 2026-10-11 更正）。
     mouse: (f32, f32),
+    lmb_down: bool,
 ) -> Result<(), sdl3::Error> {
     let (bw, bh) = ui.size(dir, "Prguse", HUD_BOARD).unwrap_or((800, 251));
     let (bw, bh) = (bw as f32, bh as f32);
@@ -101,18 +102,26 @@ pub(crate) fn draw_hud<'a, T>(
     // 而这里的矩形是按 **画布** 1024×768 算的 ⇒ 乘完就飞到画布外去了
     // （右上 4 颗 x 867→1110、左下 5 颗 y 621→795，全都看不见）
     // —— 2026-10-11 用户报"完全看不到"就是这个。底栏/球/等级一路也都是画布坐标。
-    let hovered = crate::layout::hud_btn_at(mouse);
+    let held = if lmb_down {
+        crate::layout::hud_btn_at(mouse)
+    } else {
+        None
+    };
     for b in crate::layout::HudBtn::ALL {
-        if hovered == Some(b) {
+        if held == Some(b) {
             hud_img(canvas, tc, ui, dir, b.img(), b.rect());
         }
     }
     // **底栏左下那排快捷按钮**（小地图/交易/行会/组队/属性/注销/退出）：两态按钮
     // （常态 = `img`、按下 = `img+1`；官方 `DBotGroupDirectPaint`）⇒ **常态总是画**，
     // 悬停时换成 +1 那张（与右上那 4 颗"只在悬停叠高亮"不是同一种）。
-    let qhovered = crate::layout::hud_quick_at(mouse);
+    let qheld = if lmb_down {
+        crate::layout::hud_quick_at(mouse)
+    } else {
+        None
+    };
     for b in crate::layout::QuickBtn::ALL {
-        let img = if qhovered == Some(b) {
+        let img = if qheld == Some(b) {
             b.img() + 1
         } else {
             b.img()
@@ -504,7 +513,7 @@ pub(crate) fn draw_bag<'a, T>(
     page: usize,
     shop_open: bool,
     hide: &[usize],
-    close_hover: bool,
+    close_held: bool,
 ) -> Result<(), sdl3::Error> {
     let Some(n) = net else { return Ok(()) };
     if !n.world.in_world() {
@@ -534,10 +543,11 @@ pub(crate) fn draw_bag<'a, T>(
     }
 
     // **关闭钮的高亮**（用户 2026-10-11 第 4 条，素材编号 64）：底图 `Prguse[3]`
-    // 里已经印着那个红叉 ⇒ 鼠标压上去时**叠**一张 64，盖出"亮了一下"的效果。
+    // 里已经印着那个红叉 ⇒ **按住**时叠一张 64（原版 `DCloseBagDirectPaint` 只认
+    // `Downed`；用户 2026-10-11 更正：不是 hover）。
     // ⚠️ 64 与 371 逐像素完全相同（16×23，同一张图拷了两份）⇒ 这里用 64；
     // 如果原版的高亮其实是另一张更亮的图，请再指个编号。
-    if close_hover {
+    if close_held {
         if let Some((iw, ih)) = ui.size(dir, "Prguse", crate::layout::BAG_CLOSE_IMG) {
             let _ = ui.draw_src(
                 canvas,
@@ -876,6 +886,7 @@ fn hud_img_rect<'a, T>(
 ///
 /// ⚠️ 数据是客户端本地的（官方 `g_ItemArr`）⇒ 只认 `BeltSlot` 里那两个字段，
 /// 物品真身始终在背包里；背包重排后由调用方把失效的格清掉。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_belt<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
@@ -884,12 +895,18 @@ pub(crate) fn draw_belt<'a, T>(
     dir: &Path,
     belt: &[Option<crate::layout::BeltSlot>; crate::layout::BELT_SLOTS],
     mouse: (f32, f32),
+    lmb_down: bool,
 ) -> Result<(), sdl3::Error> {
-    let hovered = crate::layout::belt_slot_at(mouse);
+    let held = if lmb_down {
+        crate::layout::belt_slot_at(mouse)
+    } else {
+        None
+    };
     for (i, slot) in belt.iter().enumerate() {
         let (x, y, w, h) = crate::layout::belt_slot_rect(i);
-        // 悬停时给个浅色底（原版没有，但"哪一格被指着"得看得出来）
-        if hovered == Some(i) {
+        // 按住时给个浅色底（原版腰带格没有高亮图；这是我们自己加的按下反馈，
+        // 与其它按钮同一条规矩：只在按住期间展现）
+        if held == Some(i) {
             canvas.set_blend_mode(BlendMode::Blend);
             canvas.set_draw_color(sdl3::pixels::Color::RGBA(255, 236, 140, 46));
             let _ = canvas.fill_rect(FRect::new(x, y, w, h));

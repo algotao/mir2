@@ -145,6 +145,7 @@ pub(crate) fn page_step(page: usize, dir: i8) -> usize {
 }
 
 /// 画状态窗。`page` = 0 装备页 / 1 属性页。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
@@ -153,6 +154,9 @@ pub(crate) fn draw<'a, T>(
     dir_assets: &Path,
     net: Option<&Net>,
     page: usize,
+    // 鼠标**按住**着关闭钮吗（高亮图 371 只在按住时展现 —— 原版 `DCloseState`
+    // 走 `TDButton.Downed`，不是 hover；用户 2026-10-11 更正）。
+    close_held: bool,
 ) -> Result<(), sdl3::Error> {
     let Some(n) = net else { return Ok(()) };
     if !n.world.in_world() {
@@ -187,7 +191,11 @@ pub(crate) fn draw<'a, T>(
         y,
         ARROW_DOWN_RECT,
     );
-    button(canvas, tc, ui, dir_assets, CLOSE_IMG, x, y, CLOSE);
+    // ⚠️ 那张 371 是**高亮态**：常态（那个叉）印在窗底图 `Prguse[370]` 里
+    // ⇒ 只在按住时叠（原来无条件叠 ⇒ 等于一直亮着）。
+    if close_held {
+        button(canvas, tc, ui, dir_assets, CLOSE_IMG, x, y, CLOSE);
+    }
 
     if page == 0 {
         draw_figure(canvas, tc, ui, dir_assets, n, x, y);

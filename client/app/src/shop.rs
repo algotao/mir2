@@ -148,7 +148,9 @@ pub(crate) fn draw<'a, T>(
     net: Option<&Net>,
     page: usize,
     selected: Option<usize>,
-    hover: Hit,
+    // 鼠标**按住**着哪个控件（高亮图只在按住时展现 —— 原版 `TDButton.Downed`，
+    // 用户 2026-10-11 更正：不是 hover）。
+    held: Hit,
 ) -> Result<(), sdl3::Error> {
     let Some(n) = net else { return Ok(()) };
     if !n.world.in_world() {
@@ -240,7 +242,7 @@ pub(crate) fn draw<'a, T>(
         (PREV, BUY_PREV_HOVER, Hit::Prev),
         (NEXT, BUY_NEXT_HOVER, Hit::Next),
     ] {
-        if hover != want {
+        if held != want {
             continue;
         }
         let (bx, by, bw, bh) = r;
@@ -369,7 +371,8 @@ pub(crate) fn draw_sell<'a, T>(
     dir: &Path,
     net: Option<&Net>,
     placed: Option<usize>,
-    hover: SellHit,
+    // 鼠标**按住**着哪个控件（高亮图只在按住时展现；见 `Hit` 那条的说明）。
+    held: SellHit,
 ) -> Result<(), sdl3::Error> {
     let Some(n) = net else { return Ok(()) };
     if !n.world.in_world() || n.world.shop.is_none() {
@@ -441,8 +444,9 @@ pub(crate) fn draw_sell<'a, T>(
         }
     }
     // **OK 的高亮态**（用户 2026-10-11 第 3 条）：素材编号 **393**（24×13，蓝底
-    // 白字"OK"，比底图里那枚更亮）。常态由底图给出 ⇒ 只在鼠标压上去时叠这一张。
-    if hover == SellHit::Ok {
+    // 白字"OK"，比底图里那枚更亮）。常态由底图给出 ⇒ 只在**按住**时叠这一张
+    //（原版 `TDButton.Downed`；不是 hover）。
+    if held == SellHit::Ok {
         let (ox, oy, ow, oh) = SELL_OK;
         if let Some((iw, ih)) = ui.size(dir, "Prguse", SELL_OK_IMG) {
             let _ = ui.draw_src(
