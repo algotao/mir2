@@ -2441,7 +2441,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         bag_page,
                         shop_open,
                         &hide,
-                        ui_click.held() == Some(Press::BagClose),
+                        &ui_click,
                     )?;
                 }
             }
@@ -2573,7 +2573,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if status_open {
                 if let Some(dir) = asset_dir.as_deref() {
                     // 关闭钮的高亮 371 只在**按住**时叠（原版 `DCloseState` 走 `Downed`）
-                    let st_held = ui_click.held() == Some(Press::Status(crate::status::Hit::Close));
                     status::draw(
                         &mut canvas,
                         &tex_creator,
@@ -2582,7 +2581,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         dir,
                         net.as_ref(),
                         status_page,
-                        st_held,
+                        &ui_click,
                     )?;
                 }
             }

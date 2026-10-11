@@ -453,25 +453,24 @@ pub(crate) fn bag_pos(shop_open: bool) -> (f32, f32) {
     }
 }
 
-/// 第 `slot` 格（**页内下标**）在窗口内的矩形 `(x, y, w, h)`。
-pub(crate) fn bag_cell_rect(slot: usize) -> (f32, f32, f32, f32) {
-    let col = (slot % BAG_COLS) as f32;
-    let row = (slot / BAG_COLS) as f32;
-    (
-        BAG_GRID_X + col * BAG_CELL_W,
-        BAG_GRID_Y + row * BAG_CELL_H,
+/// 背包网格（**唯一来源**）：`bag_cell_rect` / `bag_slot_at` 都由它派生
+/// ⇒ 不会出现"画在这一格、命中算到那一格"（官方 `TDGrid` 的矩形即命中区）。
+pub(crate) fn bag_grid() -> crate::widget::Grid {
+    crate::widget::Grid::new(
+        (BAG_GRID_X, BAG_GRID_Y),
+        BAG_COLS,
+        BAG_ROWS,
         BAG_CELL_W,
         BAG_CELL_H,
     )
 }
 
+/// 第 `slot` 格（**页内下标**）在窗口内的矩形 `(x, y, w, h)`。
+pub(crate) fn bag_cell_rect(slot: usize) -> (f32, f32, f32, f32) {
+    bag_grid().cell_rect(slot)
+}
+
 /// 窗口内的一点落在哪一格（`None` = 没落在网格里）。与 [`bag_cell_rect`] 同源。
 pub(crate) fn bag_slot_at(local: (f32, f32)) -> Option<usize> {
-    for i in 0..BAG_PAGE_SLOTS {
-        let (x, y, w, h) = bag_cell_rect(i);
-        if local.0 >= x && local.0 < x + w && local.1 >= y && local.1 < y + h {
-            return Some(i);
-        }
-    }
-    None
+    bag_grid().hit_cell(local)
 }

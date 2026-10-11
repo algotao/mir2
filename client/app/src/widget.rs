@@ -182,6 +182,16 @@ impl ButtonArt {
         }
     }
 
+    /// 只有一张常态图（没有高亮图 —— 比如状态窗的翻页箭头）。
+    pub(crate) fn plain(normal: Img) -> Self {
+        Self {
+            normal: Some(normal),
+            down: None,
+            hover: None,
+            disabled: None,
+        }
+    }
+
     /// 常态图 + 按下图（左下那排快捷钮那种）。
     pub(crate) fn two_state(normal: Img, down: Img) -> Self {
         Self {
@@ -254,6 +264,142 @@ pub(crate) fn draw_button<'a, T>(
         FRect::new(b.rect.0, b.rect.1, iw as f32, ih as f32),
         255,
     );
+}
+
+// ---------- Grid（官方 TDGrid）----------
+
+/// 网格（`TDGrid`）：列数/行数 + 格子尺寸 ⇒ `cell_rect(i)` / `hit_cell(p)`。
+///
+/// ⚠️ 官方的 `TDGrid` 语义是**选中 / 拖拽起点**，不是 `OnClick` 按钮 ⇒
+/// 它不进 [`Press`]；命中是**几何**，不是按下记录。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Grid {
+    /// 第一格左上角（画布坐标）。
+    pub x: f32,
+    pub y: f32,
+    pub cols: usize,
+    pub rows: usize,
+    pub cell_w: f32,
+    pub cell_h: f32,
+}
+
+impl Grid {
+    pub(crate) fn new(
+        (x, y): (f32, f32),
+        cols: usize,
+        rows: usize,
+        cell_w: f32,
+        cell_h: f32,
+    ) -> Self {
+        Self {
+            x,
+            y,
+            cols,
+            rows,
+            cell_w,
+            cell_h,
+        }
+    }
+
+    /// 格子总数。
+    pub(crate) fn len(&self) -> usize {
+        self.cols * self.rows
+    }
+
+    /// 第 `i` 格的矩形。
+    pub(crate) fn cell_rect(&self, i: usize) -> Rect {
+        let (c, r) = (i % self.cols, i / self.cols);
+        (
+            self.x + c as f32 * self.cell_w,
+            self.y + r as f32 * self.cell_h,
+            self.cell_w,
+            self.cell_h,
+        )
+    }
+
+    /// `p` 落在第几格（`None` = 不在网格里）。与 [`Grid::cell_rect`] **同源**。
+    pub(crate) fn hit_cell(&self, p: (f32, f32)) -> Option<usize> {
+        (0..self.len()).find(|i| hit(self.cell_rect(*i), p))
+    }
+}
+
+// ---------- 一个物品格（拖拽源 + 放置目标）----------
+
+/// 物品从哪个槽位来（官方 `g_MovingItem.Index` 的正规化）。
+///
+/// ⚠️ **下一步**才接线：现在"手上拿着东西"还是 `sell_held: Option<usize>` +
+/// `sell_placed: Option<usize>`（只认背包格）⇒ 换成 `Option<Drag>` 之后，
+/// 背包 ↔ 卖窗槽 ↔ 腰带 ↔ 装备槽 就能共用一套拖拽，不用每种组合各写一遍。
+///
+/// ⚠️ 现在只有 `Bag` / `Sell` / `Belt` / `Equip` 四种；以后加仓库/交易窗只要加变体，
+/// 拖拽逻辑不用再改 —— 这正是把"手上拿着东西"从一个 `Option<usize>` 升级成
+/// 带**来源标记**的结构的意义。
+#[allow(dead_code)] // 见上面"下一步"（迁移完 `sell_held` 就去掉）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SlotRef {
+    /// 背包第 `idx` 格（**服务端那一格的下标**，不是页内下标）。
+    Bag(usize),
+    /// 卖货窗那个圆槽。
+    Sell,
+    /// 快捷（腰带）栏第 `i` 格。
+    Belt(usize),
+    /// 装备槽（服务端槽位下标）。
+    Equip(usize),
+}
+
+/// **拖拽会话**（官方 `g_boItemMoving` + `g_MovingItem` 的正规化）。
+///
+/// 一个"手上拿着东西"的状态 = 拿着的**是什么** + **从哪来**。
+#[allow(dead_code)] // 同上
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Drag {
+    pub from: SlotRef,
+}
+
+#[allow(dead_code)] // 同上
+impl Drag {
+    pub(crate) fn new(from: SlotRef) -> Self {
+        Self { from }
+    }
+
+    /// 它是从背包第几格拿起来的（不是背包来的 ⇒ `None`）。
+    pub(crate) fn bag_index(self) -> Option<usize> {
+        match self.from {
+            SlotRef::Bag(i) => Some(i),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod grid_tests {
+    use super::*;
+
+    #[test]
+    fn 网格的格子排布与命中() {
+        let g = Grid::new((10.0, 20.0), 6, 4, 35.5, 32.5);
+        assert_eq!(g.len(), 24);
+        // 第 0 格
+        assert_eq!(g.cell_rect(0), (10.0, 20.0, 35.5, 32.5));
+        // 第 6 格 = 第二行第一列
+        assert_eq!(g.cell_rect(6), (10.0, 52.5, 35.5, 32.5));
+        // 第 7 格 = 第二行第二列
+        assert_eq!(g.cell_rect(7), (45.5, 52.5, 35.5, 32.5));
+        // 命中与矩形同源
+        for i in 0..g.len() {
+            let (x, y, w, h) = g.cell_rect(i);
+            assert_eq!(g.hit_cell((x + w / 2.0, y + h / 2.0)), Some(i), "第 {i} 格");
+        }
+        assert_eq!(g.hit_cell((0.0, 0.0)), None, "网格外 ⇒ None");
+    }
+
+    #[test]
+    fn 拖拽会话带来源() {
+        let d = Drag::new(SlotRef::Bag(7));
+        assert_eq!(d.bag_index(), Some(7));
+        assert_eq!(Drag::new(SlotRef::Sell).bag_index(), None);
+        assert_eq!(Drag::new(SlotRef::Belt(2)).bag_index(), None);
+    }
 }
 
 #[cfg(test)]

@@ -4552,3 +4552,29 @@ TDControl  rect / Visible / WLib+FaceIndex / SurfaceX(父偏移) / InRange(hit)
 
 状态窗（关闭+翻页）、背包窗（格子 + `DragSession`）、腰带、对话框/列表、登录/选角（Edit）。
 `Grid` / `ItemSlot` / `Edit` / `Window`(可拖) 这几个类还没建。
+
+---
+
+## D-68 控件层续：状态窗 + 背包网格/关闭钮转过去，Grid/SlotRef/Drag 就位（2026-10-11）
+
+迁移第 2 步。
+
+| 窗 | 转了什么 |
+|---|---|
+| 状态窗 | 关闭 X（371 高亮）、上/下翻页箭头（373/372 常态图）⇒ `status::buttons()` |
+| 背包窗 | 关闭 X（64 高亮）⇒ `widget::Button`；网格 ⇒ `layout::bag_grid()`（`Grid` 成为**唯一来源**，`bag_cell_rect` / `bag_slot_at` 都由它派生） |
+
+新增三个类（**还没全部接线**）：
+
+- **`Grid`**（官方 `TDGrid`）：`cols/rows/cell_w/cell_h` ⇒ `cell_rect(i)` / `hit_cell(p)`。
+  官方 `TDGrid` 的语义是**选中/拖拽起点**，不是 OnClick 按钮 ⇒ **不进 `Press`**。
+- **`SlotRef`**：物品从哪来 —— `Bag(idx)` / `Sell` / `Belt(i)` / `Equip(slot)`。
+- **`Drag`**：官方 `g_boItemMoving` + `g_MovingItem` 的正规化（拿着什么 + 从哪来）。
+
+⚠️ **还没做的那一步**：现在"手上拿着东西"仍是 `sell_held: Option<usize>` +
+`sell_placed: Option<usize>`（只认背包格，**41 处**引用）。换成 `Option<Drag>` 之后，
+背包 ↔ 卖窗槽 ↔ 腰带 ↔ 装备槽 能共用一套拖拽，不用每种组合各写一遍。
+`SlotRef` / `Drag` 暂时 `#[allow(dead_code)]`，等这一步做完就去掉。
+
+**验收**：客户端 109/148/7/3 + Go 25 包，clippy 0。
+`widget` 测试 9 条（新增：网格排布与命中同源、拖拽会话带来源）。

@@ -72,6 +72,38 @@ pub(crate) fn panel(bg: (u32, u32)) -> (f32, f32, f32, f32) {
     ((crate::window::WIN_W as f32 - w).max(0.0), TOP, w, h)
 }
 
+/// 状态窗的三个按钮（**窗口内** → 屏幕坐标的换算在这里做一次）。
+///
+/// ⚠️ 抽出来是为了"画"和"命中"用同一份（官方 `TDControl` 的矩形即命中区）。
+pub(crate) fn buttons(ox: f32, oy: f32) -> [crate::widget::Button; 3] {
+    use crate::widget::{Button, ButtonArt};
+    let mk = |r: (f32, f32, f32, f32), k: Hit, art: ButtonArt| Button {
+        key: crate::Press::Status(k),
+        rect: crate::widget::offset(r, ox, oy),
+        art,
+        enabled: true,
+    };
+    [
+        // 翻页箭头：常态图直接铺上去（素材里没有单独的高亮图）
+        mk(
+            ARROW_UP_RECT,
+            Hit::Arrow(-1),
+            ButtonArt::plain((BG_LIB, ARROW_UP)),
+        ),
+        mk(
+            ARROW_DOWN_RECT,
+            Hit::Arrow(1),
+            ButtonArt::plain((BG_LIB, ARROW_DOWN)),
+        ),
+        // 关闭 X：371 是**高亮（按下）图**，常态在底图里
+        mk(
+            CLOSE,
+            Hit::Close,
+            ButtonArt::highlight_only((BG_LIB, CLOSE_IMG)),
+        ),
+    ]
+}
+
 /// 装备槽：`(槽位下标, x, y, w, h)`，坐标**相对窗口**，照官方 `FState.pas:1025-1070`。
 ///
 /// 衣服/武器/头盔是**压在人形上的大命中区**（内容画在小人身上，不在槽里）；
@@ -154,9 +186,8 @@ pub(crate) fn draw<'a, T>(
     dir_assets: &Path,
     net: Option<&Net>,
     page: usize,
-    // 鼠标**按住**着关闭钮吗（高亮图 371 只在按住时展现 —— 原版 `DCloseState`
-    // 走 `TDButton.Downed`，不是 hover；用户 2026-10-11 更正）。
-    close_held: bool,
+    // 控件引擎（hover / 按下都由它算 ⇒ 不再单独传"按住的是谁"）
+    widget_ui: &crate::widget::Ui,
 ) -> Result<(), sdl3::Error> {
     let Some(n) = net else { return Ok(()) };
     if !n.world.in_world() {
@@ -179,22 +210,11 @@ pub(crate) fn draw<'a, T>(
     );
     canvas.set_blend_mode(BlendMode::None);
 
-    // 三个控件按钮（官方给了显式矩形，不按锚点）
-    button(canvas, tc, ui, dir_assets, ARROW_UP, x, y, ARROW_UP_RECT);
-    button(
-        canvas,
-        tc,
-        ui,
-        dir_assets,
-        ARROW_DOWN,
-        x,
-        y,
-        ARROW_DOWN_RECT,
-    );
-    // ⚠️ 那张 371 是**高亮态**：常态（那个叉）印在窗底图 `Prguse[370]` 里
-    // ⇒ 只在按住时叠（原来无条件叠 ⇒ 等于一直亮着）。
-    if close_held {
-        button(canvas, tc, ui, dir_assets, CLOSE_IMG, x, y, CLOSE);
+    // **三个按钮走控件层**（`widget::Button`）—— 命中与绘制同源，见 [`buttons`]。
+    // ⚠️ 关闭钮那张 371 是**高亮态**：常态（那个叉）印在底图 `Prguse[370]` 里，
+    // 原来无条件叠 ⇒ 等于一直亮着；现在只在按下时才叠。
+    for b in buttons(x, y) {
+        crate::widget::draw_button(canvas, tc, ui, dir_assets, &b, &b.response(widget_ui));
     }
 
     if page == 0 {
@@ -365,33 +385,6 @@ fn anchored<'a, T>(
         idx,
         FRect::new(0.0, 0.0, w as f32, h as f32),
         FRect::new(x + ax as f32, y + ay as f32, w as f32, h as f32),
-        255,
-    );
-}
-
-/// 画一个"控件按钮"（关闭 X / 翻页箭头）：官方给的是显式矩形，不按锚点。
-#[allow(clippy::too_many_arguments)]
-fn button<'a, T>(
-    canvas: &mut WindowCanvas,
-    tc: &'a TextureCreator<T>,
-    ui: &mut ui::UiCache<'a>,
-    dir_assets: &Path,
-    idx: u32,
-    x: f32,
-    y: f32,
-    r: (f32, f32, f32, f32),
-) {
-    let Some((w, h)) = ui.size(dir_assets, BG_LIB, idx) else {
-        return;
-    };
-    let _ = ui.draw_src(
-        canvas,
-        tc,
-        dir_assets,
-        BG_LIB,
-        idx,
-        FRect::new(0.0, 0.0, w as f32, h as f32),
-        FRect::new(x + r.0, y + r.1, r.2, r.3),
         255,
     );
 }

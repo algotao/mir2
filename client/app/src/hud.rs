@@ -510,7 +510,8 @@ pub(crate) fn draw_bag<'a, T>(
     page: usize,
     shop_open: bool,
     hide: &[usize],
-    close_held: bool,
+    // 控件引擎（hover / 按下都由它算）
+    widget_ui: &crate::widget::Ui,
 ) -> Result<(), sdl3::Error> {
     let Some(n) = net else { return Ok(()) };
     if !n.world.in_world() {
@@ -539,30 +540,31 @@ pub(crate) fn draw_bag<'a, T>(
         canvas.draw_rect(FRect::new(x, y, w, h))?;
     }
 
-    // **关闭钮的高亮**（用户 2026-10-11 第 4 条，素材编号 64）：底图 `Prguse[3]`
-    // 里已经印着那个红叉 ⇒ **按住**时叠一张 64（原版 `DCloseBagDirectPaint` 只认
-    // `Downed`；用户 2026-10-11 更正：不是 hover）。
-    // ⚠️ 64 与 371 逐像素完全相同（16×23，同一张图拷了两份）⇒ 这里用 64；
-    // 如果原版的高亮其实是另一张更亮的图，请再指个编号。
-    if close_held {
-        if let Some((iw, ih)) = ui.size(dir, "Prguse", crate::layout::BAG_CLOSE_IMG) {
-            let _ = ui.draw_src(
-                canvas,
-                tc,
-                dir,
-                "Prguse",
-                crate::layout::BAG_CLOSE_IMG,
-                FRect::new(0.0, 0.0, iw as f32, ih as f32),
-                FRect::new(
-                    x + crate::layout::BAG_CLOSE_X + (crate::layout::BAG_CLOSE_W - iw as f32) / 2.0,
-                    y + crate::layout::BAG_CLOSE_Y + (crate::layout::BAG_CLOSE_H - ih as f32) / 2.0,
-                    iw as f32,
-                    ih as f32,
-                ),
-                255,
-            );
-        }
-    }
+    // **关闭钮走控件层**（`widget::Button`，素材 64 是**按下**态的高亮图；
+    // 常态那个红叉印在底图 `Prguse[3]` 里 ⇒ 只在按下时叠）。
+    let close_btn = crate::widget::Button {
+        key: crate::Press::BagClose,
+        rect: crate::widget::offset(
+            (
+                crate::layout::BAG_CLOSE_X,
+                crate::layout::BAG_CLOSE_Y,
+                crate::layout::BAG_CLOSE_W,
+                crate::layout::BAG_CLOSE_H,
+            ),
+            x,
+            y,
+        ),
+        art: crate::widget::ButtonArt::highlight_only(("Prguse", crate::layout::BAG_CLOSE_IMG)),
+        enabled: true,
+    };
+    crate::widget::draw_button(
+        canvas,
+        tc,
+        ui,
+        dir,
+        &close_btn,
+        &close_btn.response(widget_ui),
+    );
     canvas.set_blend_mode(BlendMode::None);
 
     // 24 格
