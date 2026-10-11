@@ -5224,3 +5224,22 @@ Go 同 package 的文件共享 handler/helpers，不会引入 import cycle）：
 文件规模：`netproto.go` 原约 1,880 行 → **553 行**；其余按域文件最大 372 行。
 
 **验收**：`go vet ./...` 通过，Go 25 包全过。
+
+---
+
+## D-97 架构方向 ⑥ 再推进：网络同步与世界模拟分开（2026-10-11）
+
+`runtime.rs` 再拆出两块，主循环现在按阶段编排：
+
+1. 消费输入事件（keyboard / world_input / scene_input）
+2. `network_tick::pump`：无阻塞泵网络、登录失败/开门/选角状态同步、会话 token
+3. `simulation::tick`：移动/追打/绕障、伤害与脚步音效、相机、建号回执
+4. `update::tick` / `advance_world`：货架与失效背包格、拖拽重绑、挖肉/捡取/对话
+5. `render::draw_frame`
+
+`runtime.rs` 已降至约 **600 行**（包含 SDL 资源创建、事件循环与阶段顺序）；
+`keyboard.rs` / `world_input.rs` / `scene_input.rs` / `network_tick.rs` / `simulation.rs` /
+`update.rs` / `render.rs` 分担具体阶段职责。SDL 纹理/窗口仍由 `runtime` 持有，避免
+把平台生命周期句柄塞进状态机。
+
+**验收**：客户端 154/148/7/4，clippy 0；Go 25 包。
