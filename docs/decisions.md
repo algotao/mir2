@@ -5243,3 +5243,16 @@ Go 同 package 的文件共享 handler/helpers，不会引入 import cycle）：
 把平台生命周期句柄塞进状态机。
 
 **验收**：客户端 154/148/7/4，clippy 0；Go 25 包。
+
+---
+
+## D-98 架构方向 ⑧ 收尾：`protoSink` 出站适配器独立成文件（2026-10-11）
+
+完成 D-94/D-96 的最后一块：将 `protoSink`（世界事件 → 新协议 Envelope 的串行化出口）
+从 `netproto.go` 搬到 `netproto_sink.go`。它不是入站 handler，而是出站边界：channel、
+背压/丢旧策略、实体事件/能力/背包/移动等 Envelope 映射归在一起。
+
+`netproto.go` 现在只保留 transport/握手/dispatch/common response；协议逻辑按域文件组织。
+这是纯搬移，不改 sink 队列或报文语义。
+
+**验收**：`go vet ./...` 通过，Go 25 包全过。
