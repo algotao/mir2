@@ -271,10 +271,9 @@ pub(crate) fn handle_world_mouse_down<'a>(
             // 走**同一个** `toggle_*` ⇒ 鼠标与键盘行为一致。
             // ⚠️ 面板盖在世界之上 ⇒ 点中就要 `ui_consumed`（不然人还会走）。
             if mouse_btn == MouseButton::Left {
-                if let Some(b) = crate::layout::hud_btn_at(app.mouse) {
+                if let Some(b) = crate::layout::hud_btn_at(crate::widget::canvas_pt(app.mouse)) {
                     // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
-                    app.ui_click
-                        .press(Press::Hud(b), crate::widget::canvas_rect(b.rect()));
+                    app.ui_click.press(Press::Hud(b), b.rect());
                     // 目标清掉，**本次点击不再穿透到世界**（与其它浮窗
                     // 同一条纪律：命中就 `continue`，不然人还会走）。
                     app.world_control.consume_world_click();
@@ -283,20 +282,17 @@ pub(crate) fn handle_world_mouse_down<'a>(
                 // **快捷（腰带）栏**：手上拿着东西 ⇒ 放进这格；
                 // 空手 ⇒ 使用这格里的东西（原版单击是"拿起"，
                 // 但快捷栏的意义就是快速使用 ⇒ 单击即用）。
-                if let Some(i) = crate::layout::belt_slot_at(app.mouse) {
-                    app.ui_click.press(
-                        Press::Belt(i),
-                        crate::widget::canvas_rect(crate::layout::belt_slot_rect(i)),
-                    );
+                if let Some(i) = crate::layout::belt_slot_at(crate::widget::canvas_pt(app.mouse)) {
+                    app.ui_click
+                        .press(Press::Belt(i), crate::layout::belt_slot_rect(i));
                     app.world_control.consume_world_click();
                     return;
                 }
                 // 底栏**左下**那排快捷按钮（小地图/交易/行会/组队/属性）。
                 // 小地图那颗 = **Tab** 同一个动作（`toggle_minimap`）。
-                if let Some(b) = crate::layout::hud_quick_at(app.mouse) {
+                if let Some(b) = crate::layout::hud_quick_at(crate::widget::canvas_pt(app.mouse)) {
                     // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
-                    app.ui_click
-                        .press(Press::Quick(b), crate::widget::canvas_rect(b.rect()));
+                    app.ui_click.press(Press::Quick(b), b.rect());
                     app.world_control.consume_world_click();
                     return;
                 }

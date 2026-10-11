@@ -11,6 +11,10 @@ use sdl3::render::FRect;
 // —— 拆文件时踩过：测试目标直接编译不过。别删。
 use mir2_core::actor as A;
 
+fn rect_values(r: crate::space::CRect) -> (f32, f32, f32, f32) {
+    (r.0 .0, r.1 .0, r.2 .0, r.3 .0)
+}
+
 fn ent(kind: u32, f: mir2_protocol::EntityFeature) -> Entity {
     Entity {
         id: 7,
@@ -2216,7 +2220,7 @@ fn 底栏功能按钮的落点与命中() {
         (HudBtn::Option, (764.0, 11.0)),
     ] {
         assert_eq!(b.at(), want_local, "{b:?} 的面板坐标");
-        let (x, y, w, h) = b.rect();
+        let (x, y, w, h) = rect_values(b.rect());
         // 在底栏里、且在右半边（那四颗在底栏右上）
         assert!(y >= board_top && y + h <= win_h, "{b:?} 落在底栏外：y={y}");
         assert!(
@@ -2226,7 +2230,10 @@ fn 底栏功能按钮的落点与命中() {
         );
         // 点中心要能命中自己
         assert_eq!(
-            hud_btn_at((x + w / 2.0, y + h / 2.0)),
+            hud_btn_at(crate::space::CPt(
+                crate::space::Cpx(x + w / 2.0),
+                crate::space::Cpx(y + h / 2.0)
+            )),
             Some(b),
             "{b:?} 的中心点不命中自己"
         );
@@ -2237,14 +2244,17 @@ fn 底栏功能按钮的落点与命中() {
             if a == c {
                 continue;
             }
-            let (ax, ay, aw, ah) = a.rect();
-            let (cx, cy, cw, ch) = c.rect();
+            let (ax, ay, aw, ah) = rect_values(a.rect());
+            let (cx, cy, cw, ch) = rect_values(c.rect());
             let overlap = ax < cx + cw && cx < ax + aw && ay < cy + ch && cy < ay + ah;
             assert!(!overlap, "{a:?} 与 {c:?} 的命中框重叠了");
         }
     }
     // 世界中间（不在按钮区）⇒ 不命中
-    assert_eq!(hud_btn_at((win_w / 2.0, win_h / 2.0)), None);
+    assert_eq!(
+        hud_btn_at(crate::widget::canvas_pt((win_w / 2.0, win_h / 2.0))),
+        None
+    );
 }
 
 /// **底栏左下那排快捷按钮**（小地图/交易/行会/组队/属性）。
@@ -2265,10 +2275,13 @@ fn 底栏快捷按钮的落点与命中() {
         (QuickBtn::PlusAbil, 339.0),
     ] {
         assert_eq!(b.at(), (want_x, 104.0), "{b:?} 的面板坐标");
-        let (x, y, w, h) = b.rect();
+        let (x, y, w, h) = rect_values(b.rect());
         assert!(y >= board_top && y + h <= win_h, "{b:?} 落在底栏外：y={y}");
         assert_eq!(
-            hud_quick_at((x + w / 2.0, y + h / 2.0)),
+            hud_quick_at(crate::space::CPt(
+                crate::space::Cpx(x + w / 2.0),
+                crate::space::Cpx(y + h / 2.0)
+            )),
             Some(b),
             "{b:?} 的中心点不命中自己"
         );
@@ -2280,13 +2293,19 @@ fn 底栏快捷按钮的落点与命中() {
             if b == c {
                 continue;
             }
-            let (ax, ay, aw, ah) = b.rect();
-            let (cx, cy, cw, ch) = c.rect();
+            let (ax, ay, aw, ah) = rect_values(b.rect());
+            let (cx, cy, cw, ch) = rect_values(c.rect());
             let overlap = ax < cx + cw && cx < ax + aw && ay < cy + ch && cy < ay + ah;
             assert!(!overlap, "{b:?} 与 {c:?} 的命中框重叠了");
         }
     }
-    assert_eq!(hud_quick_at((0.0, 0.0)), None);
+    assert_eq!(
+        hud_quick_at(crate::space::CPt(
+            crate::space::Cpx(0.0),
+            crate::space::Cpx(0.0)
+        )),
+        None
+    );
 }
 
 /// **快捷（腰带）栏**的 6 格：落点抄官方 `FState.pas:1340-1369`
@@ -2299,7 +2318,7 @@ fn 快捷栏六格的落点与命中() {
 
     let mut prev_right = 0.0;
     for i in 0..BELT_SLOTS {
-        let (x, y, w, h) = belt_slot_rect(i);
+        let (x, y, w, h) = rect_values(belt_slot_rect(i));
         // 都在底栏里
         assert!(
             y >= board_top && y + h <= win_h,
@@ -2309,12 +2328,22 @@ fn 快捷栏六格的落点与命中() {
         assert!(x >= prev_right, "第 {i} 格与前一格重叠/顺序错：x={x}");
         prev_right = x + w;
         assert_eq!(
-            belt_slot_at((x + w / 2.0, y + h / 2.0)),
+            belt_slot_at(crate::space::CPt(
+                crate::space::Cpx(x + w / 2.0),
+                crate::space::Cpx(y + h / 2.0)
+            )),
             Some(i),
             "第 {i} 格中心"
         );
     }
-    assert_eq!(belt_slot_at((0.0, 0.0)), None, "左上角不在快捷栏里");
+    assert_eq!(
+        belt_slot_at(crate::space::CPt(
+            crate::space::Cpx(0.0),
+            crate::space::Cpx(0.0)
+        )),
+        None,
+        "左上角不在快捷栏里"
+    );
 }
 
 /// 快捷栏只记**实例号**，不记格位号 ⇒ 背包被服务端重排后仍能找到东西。
@@ -2351,8 +2380,15 @@ fn 注销与退出按钮的落点() {
     assert!(QuickBtn::Exit.rect().0 > QuickBtn::Logout.rect().0);
     assert_eq!(QuickBtn::Exit.rect().1, QuickBtn::Logout.rect().1);
     for b in [QuickBtn::Logout, QuickBtn::Exit] {
-        let (x, y, w, h) = b.rect();
-        assert_eq!(hud_quick_at((x + w / 2.0, y + h / 2.0)), Some(b), "{b:?}");
+        let (x, y, w, h) = rect_values(b.rect());
+        assert_eq!(
+            hud_quick_at(crate::space::CPt(
+                crate::space::Cpx(x + w / 2.0),
+                crate::space::Cpx(y + h / 2.0)
+            )),
+            Some(b),
+            "{b:?}"
+        );
     }
 }
 
@@ -2403,7 +2439,7 @@ fn 底栏控件都在画布内() {
     use crate::layout::{belt_slot_rect, HudBtn, QuickBtn, BELT_SLOTS, HUD_BOARD_H};
     let (w, h) = (crate::window::WIN_W as f32, crate::window::WIN_H as f32);
     let board_top = h - HUD_BOARD_H;
-    let mut all: Vec<(String, (f32, f32, f32, f32))> = Vec::new();
+    let mut all: Vec<(String, crate::space::CRect)> = Vec::new();
     for b in HudBtn::ALL {
         all.push((format!("功能钮{b:?}"), b.rect()));
     }
@@ -2413,7 +2449,8 @@ fn 底栏控件都在画布内() {
     for i in 0..BELT_SLOTS {
         all.push((format!("腰带{i}"), belt_slot_rect(i)));
     }
-    for (name, (x, y, ww, hh)) in all {
+    for (name, r) in all {
+        let (x, y, ww, hh) = rect_values(r);
         assert!(x >= 0.0 && x + ww <= w, "{name} 横向出画布：x={x} w={ww}");
         assert!(
             y >= board_top && y + hh <= h,
@@ -2423,7 +2460,7 @@ fn 底栏控件都在画布内() {
     // 反证：同样这些数若被当成设计坐标再乘 1.28，就**不该**还在画布里
     // （说明"必须走画布坐标那条路"不是随便说的）
     let scale = crate::ui::UI_SCALE;
-    let (x, _y, _ww, _hh) = HudBtn::Option.rect();
+    let (x, _y, _ww, _hh) = rect_values(HudBtn::Option.rect());
     assert!(
         x * scale > w,
         "若按设计坐标画，功能钮会飞出画布右边（{x}×{scale} = {} > {w}）",

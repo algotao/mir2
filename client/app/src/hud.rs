@@ -105,7 +105,7 @@ pub(crate) fn draw_hud<'a, T>(
         // 常态画在底栏里 ⇒ 只有高亮（按下）图是单独的
         let btn = crate::widget::Button {
             key: crate::Press::Hud(b),
-            rect: crate::widget::canvas_rect(b.rect()),
+            rect: b.rect(),
             art: crate::widget::ButtonArt::highlight_only(("Prguse", b.img())),
             enabled: true,
         };
@@ -119,7 +119,7 @@ pub(crate) fn draw_hud<'a, T>(
         // 左下这排是**两态**按钮：常态图 + 按下图(+1)（官方 `DBotGroupDirectPaint`）
         let btn = crate::widget::Button {
             key: crate::Press::Quick(b),
-            rect: crate::widget::canvas_rect(b.rect()),
+            rect: b.rect(),
             art: crate::widget::ButtonArt::two_state(("Prguse", b.img()), ("Prguse", b.img() + 1)),
             enabled: true,
         };
@@ -870,7 +870,8 @@ pub(crate) fn draw_belt<'a, T>(
     held: Option<usize>,
 ) -> Result<(), sdl3::Error> {
     for (i, slot) in belt.iter().enumerate() {
-        let (x, y, w, h) = crate::layout::belt_slot_rect(i);
+        let r = crate::layout::belt_slot_rect(i);
+        let (x, y, w, h) = (r.0 .0, r.1 .0, r.2 .0, r.3 .0);
         // 按住时给个浅色底（原版腰带格没有高亮图；这是我们自己加的按下反馈，
         // 与其它按钮同一条规矩：只在按住期间展现）
         if held == Some(i) {

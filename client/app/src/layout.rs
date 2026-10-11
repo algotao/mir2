@@ -111,9 +111,9 @@ impl HudBtn {
     }
 
     /// 命中框（**屏幕坐标**；统一 24×24，比图略大一点好点）。
-    pub fn rect(self) -> (f32, f32, f32, f32) {
+    pub fn rect(self) -> crate::space::CRect {
         let (lx, ly) = self.at();
-        (hud_local_x(lx), WIN_H as f32 - HUD_BOARD_H + ly, 24.0, 24.0)
+        crate::space::canvas_rect(hud_local_x(lx), WIN_H as f32 - HUD_BOARD_H + ly, 24.0, 24.0)
     }
 }
 
@@ -171,9 +171,9 @@ pub(crate) struct BeltSlot {
 /// 第 `i` 格的命中框（**屏幕坐标**）。
 ///
 /// ⚠️ 这 6 格落在面板**中间那段**（会被拉宽）⇒ 宽度也要跟着乘拉伸比。
-pub(crate) fn belt_slot_rect(i: usize) -> (f32, f32, f32, f32) {
+pub(crate) fn belt_slot_rect(i: usize) -> crate::space::CRect {
     let s = hud_mid_scale();
-    (
+    crate::space::canvas_rect(
         hud_local_x(BELT_AT.0 + i as f32 * BELT_STEP),
         crate::window::WIN_H as f32 - HUD_BOARD_H + BELT_AT.1,
         BELT_W * s,
@@ -181,20 +181,16 @@ pub(crate) fn belt_slot_rect(i: usize) -> (f32, f32, f32, f32) {
     )
 }
 
-/// 屏幕坐标落在快捷栏哪一格（没中 ⇒ `None`）。
-pub(crate) fn belt_slot_at(p: (f32, f32)) -> Option<usize> {
-    (0..BELT_SLOTS).find(|i| {
-        let (x, y, w, h) = belt_slot_rect(*i);
-        p.0 >= x && p.0 < x + w && p.1 >= y && p.1 < y + h
-    })
+/// 画布点落在快捷栏哪一格（没中 ⇒ `None`）。
+pub(crate) fn belt_slot_at(p: crate::space::CPt) -> Option<usize> {
+    (0..BELT_SLOTS).find(|i| crate::space::hit(belt_slot_rect(*i), p))
 }
 
-/// 屏幕坐标点中了哪个功能按钮（没中 ⇒ `None`）。
-pub(crate) fn hud_btn_at(p: (f32, f32)) -> Option<HudBtn> {
-    HudBtn::ALL.into_iter().find(|b| {
-        let (x, y, w, h) = b.rect();
-        p.0 >= x && p.0 < x + w && p.1 >= y && p.1 < y + h
-    })
+/// 画布点中了哪个功能按钮（没中 ⇒ `None`）。
+pub(crate) fn hud_btn_at(p: crate::space::CPt) -> Option<HudBtn> {
+    HudBtn::ALL
+        .into_iter()
+        .find(|b| crate::space::hit(b.rect(), p))
 }
 
 // ---------- 底栏**左下**那排快捷按钮 ----------
@@ -274,19 +270,18 @@ impl QuickBtn {
     }
 
     /// 命中框（**屏幕坐标**）。
-    pub fn rect(self) -> (f32, f32, f32, f32) {
+    pub fn rect(self) -> crate::space::CRect {
         let (lx, ly) = self.at();
         let (w, h) = self.size();
-        (hud_local_x(lx), WIN_H as f32 - HUD_BOARD_H + ly, w, h)
+        crate::space::canvas_rect(hud_local_x(lx), WIN_H as f32 - HUD_BOARD_H + ly, w, h)
     }
 }
 
-/// 屏幕坐标点中了哪个快捷按钮（没中 ⇒ `None`）。
-pub(crate) fn hud_quick_at(p: (f32, f32)) -> Option<QuickBtn> {
-    QuickBtn::ALL.into_iter().find(|b| {
-        let (x, y, w, h) = b.rect();
-        p.0 >= x && p.0 < x + w && p.1 >= y && p.1 < y + h
-    })
+/// 画布点中了哪个快捷按钮（没中 ⇒ `None`）。
+pub(crate) fn hud_quick_at(p: crate::space::CPt) -> Option<QuickBtn> {
+    QuickBtn::ALL
+        .into_iter()
+        .find(|b| crate::space::hit(b.rect(), p))
 }
 
 /// 单球（只有血量那一支）的球底与血条美术，以及落点。
