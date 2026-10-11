@@ -13,7 +13,6 @@ pub(crate) fn tick(
     app: &mut AppState,
     sound: &audio::Audio,
     sounds: &Option<mir2_core::sound::SoundAssets>,
-    status: &mut String,
 ) -> bool {
     // 鼠标走路：按住时**一步步**朝目标格走。
     //
@@ -220,7 +219,7 @@ pub(crate) fn tick(
         app.login.leave_signup();
         app.login.busy = false;
         app.net = None;
-        *status = if ok {
+        app.status = if ok {
             "ACCOUNT CREATED - PLEASE SIGN IN".into()
         } else {
             "SIGN UP FAILED".into()

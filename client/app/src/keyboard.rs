@@ -33,7 +33,6 @@ pub(crate) fn handle_key_down(
     draws: &[mir2_core::map::TileDraw],
     tiles: &std::collections::HashMap<crate::tiles::TileKey, crate::tiles::TileTex<'_>>,
     archive: Option<&mir2_core::m2pk::Archive>,
-    status: &mut String,
     lib_idx: &mut usize,
     img_idx: &mut usize,
 ) -> Result<bool, Box<dyn std::error::Error>> {
@@ -132,7 +131,7 @@ pub(crate) fn handle_key_down(
             sound.set_music_on(app.music_on);
             // 带上"正在响几路 / 有没有 BGM"：一眼看出混音器是不是活的
             let (voices, bgm, ..) = sound.stats();
-            *status = format!(
+            app.status = format!(
                 "MUSIC {}  [sfx {} voices, bgm {}]",
                 if app.music_on { "ON" } else { "OFF" },
                 voices,
@@ -143,7 +142,7 @@ pub(crate) fn handle_key_down(
             app.sfx_on = !app.sfx_on;
             sound.set_sfx_on(app.sfx_on);
             let (voices, bgm, ..) = sound.stats();
-            *status = format!(
+            app.status = format!(
                 "SOUND {}  [sfx {} voices, bgm {}]",
                 if app.sfx_on { "ON" } else { "OFF" },
                 voices,
@@ -172,18 +171,20 @@ pub(crate) fn handle_key_down(
                     sfx(sound, sounds, mir2_core::sound::idx::NORM_BUTTON_CLICK);
                 }
                 match act {
-                    login::Action::Submit => submit_login(&mut app.login, &mut app.net, status),
+                    login::Action::Submit => {
+                        submit_login(&mut app.login, &mut app.net, &mut app.status)
+                    }
                     login::Action::SubmitSignup => {
-                        submit_signup(&mut app.login, &mut app.net, status)
+                        submit_signup(&mut app.login, &mut app.net, &mut app.status)
                     }
                     login::Action::NewAccount => {
                         // 面板切换在 `login` 里已经做完了（`enter_signup`），
                         // 这里只给状态栏一句人话（原版是开 `DNewAccount`）。
-                        *status = "NEW ACCOUNT".into();
+                        app.status = "NEW ACCOUNT".into();
                     }
-                    login::Action::CancelSignup => *status = String::new(),
+                    login::Action::CancelSignup => app.status = String::new(),
                     login::Action::ChangePassword => {
-                        *status = "CHANGE PASSWORD: NOT WIRED YET".into();
+                        app.status = "CHANGE PASSWORD: NOT WIRED YET".into();
                     }
                     login::Action::Quit => return Ok(true),
                     login::Action::None | login::Action::Dismiss => {}

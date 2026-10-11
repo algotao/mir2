@@ -57,6 +57,8 @@ pub(crate) struct AppState {
     pub select_view: select::view::ViewState,
     pub scene: Scene,
     pub net: Option<crate::net::Net>,
+    /// 供登录/资产观察器与开发诊断显示的状态文字。
+    pub status: String,
 
     // World interaction
     pub move_target: Option<(i32, i32, bool)>,
@@ -121,6 +123,7 @@ impl AppState {
             select_view: select::view::ViewState::default(),
             scene: Scene::Login,
             net: None,
+            status: String::from("READY"),
 
             move_target: None,
             move_at: now,

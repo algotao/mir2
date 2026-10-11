@@ -28,7 +28,6 @@ pub(crate) fn run_app<T>(
     let mut names = font::TextCache::new(mir2_core::text::NAME_PX);
 
     // 素材浏览器的独立数据与 GPU 纹理（F3）
-    let mut status = String::from("READY");
     let mut lib_idx: usize = 0;
     let mut img_idx: usize = 0;
     let mut loaded: Option<(usize, Wzl)> = None;
@@ -99,7 +98,6 @@ pub(crate) fn run_app<T>(
                         &draws,
                         &tiles,
                         archive.as_ref(),
-                        &mut status,
                         &mut lib_idx,
                         &mut img_idx,
                     )? {
@@ -205,17 +203,17 @@ pub(crate) fn run_app<T>(
                     }
                     match act {
                         login::Action::Submit => {
-                            submit_login(&mut app.login, &mut app.net, &mut status)
+                            submit_login(&mut app.login, &mut app.net, &mut app.status)
                         }
                         login::Action::SubmitSignup => {
-                            submit_signup(&mut app.login, &mut app.net, &mut status)
+                            submit_signup(&mut app.login, &mut app.net, &mut app.status)
                         }
                         login::Action::Quit => break 'run,
                         login::Action::Dismiss => {}
-                        login::Action::NewAccount => status = "NEW ACCOUNT".into(),
-                        login::Action::CancelSignup => status = String::new(),
+                        login::Action::NewAccount => app.status = "NEW ACCOUNT".into(),
+                        login::Action::CancelSignup => app.status = String::new(),
                         login::Action::ChangePassword => {
-                            status = "CHANGE PASSWORD: NOT WIRED YET".into();
+                            app.status = "CHANGE PASSWORD: NOT WIRED YET".into();
                         }
                         login::Action::None => {}
                     }
@@ -238,7 +236,7 @@ pub(crate) fn run_app<T>(
 
         network_tick::pump(&mut app, &sound, &sounds);
 
-        if !simulation::tick(&mut app, &sound, &sounds, &mut status) {
+        if !simulation::tick(&mut app, &sound, &sounds) {
             continue;
         }
 
@@ -260,7 +258,6 @@ pub(crate) fn run_app<T>(
             archive.as_ref(),
             &cursor_arrow,
             &cursor_cross,
-            &status,
             &mut loaded,
             &mut sprite_tex,
             lib_idx,
