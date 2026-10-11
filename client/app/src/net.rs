@@ -573,6 +573,19 @@ impl Net {
         let _ = self.sess.cmds.send(mir2_net::Cmd::UseItem { slot });
     }
 
+    /// 穿戴背包格里的可穿戴物品；目标装备槽由服务端按 `StdMode` 决定。
+    pub(crate) fn bag_equip(&self, slot: u32) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::EquipItem { slot });
+    }
+
+    /// 脱下指定装备槽的物品。
+    pub(crate) fn equip_unequip(&self, equip_slot: u32) {
+        let _ = self
+            .sess
+            .cmds
+            .send(mir2_net::Cmd::UnequipItem { equip_slot });
+    }
+
     /// 修理背包物品（`special` = 特修；要先走过 `@repair`/`@s_repair` 那个对话入口）。
     pub(crate) fn bag_repair(&self, slot: u32, special: bool) {
         let _ = self
@@ -899,6 +912,10 @@ pub(crate) fn to_cmd(body: &mir2_protocol::envelope::Body, session: i32) -> Opti
             to: m.to,
         },
         Body::UseItem(u) => mir2_net::Cmd::UseItem { slot: u.slot },
+        Body::EquipItem(e) => mir2_net::Cmd::EquipItem { slot: e.slot },
+        Body::UnequipItem(e) => mir2_net::Cmd::UnequipItem {
+            equip_slot: e.equip_slot,
+        },
         // 世界输入不走这里（`Cmd::Move`/`Attack` 由输入那条路直发）；服务端单向消息
         // （实体事件、心跳…）本来就不是命令 ⇒ 到这里是 `None`，由调用方打日志。
         _ => return None,

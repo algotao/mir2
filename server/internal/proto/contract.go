@@ -14,7 +14,7 @@ package proto
 const (
 	SlotDress     = 0  // U_DRESS      衣服
 	SlotWeapon    = 1  // U_WEAPON     武器
-	SlotRightHand = 2  // U_RIGHTHAND  右手（原版有；我们未建模：盾/蜡烛类物品不在 1.76 物品表里）
+	SlotRightHand = 2  // U_RIGHTHAND  右手（蜡烛/火把，StdMode=30）
 	SlotNecklace  = 3  // U_NECKLACE   项链
 	SlotHelmet    = 4  // U_HELMET     头盔
 	SlotArmRingL  = 5  // U_ARMRINGL   左手镯

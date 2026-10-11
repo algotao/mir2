@@ -120,11 +120,14 @@ message PickupItem {
 }
 
 message EquipItem {
+  // **背包槽位下标**（0-based；与 legacy 不同，客户端不提交目标装备槽；服务端按物品
+  // StdMode 推导目标槽并重新校验）。
   uint32 slot = 1;
   uint32 client_tick = 2;
 }
 
 message UnequipItem {
+  // 装备槽位下标（0-based；见 `internal/proto/contract.go` 的 Slot*）。
   uint32 equip_slot = 1;
   uint32 client_tick = 2;
 }

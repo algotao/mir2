@@ -4180,3 +4180,31 @@ NPC 说话（浮窗画在世界之上，本来就该吃掉这些点击）。
 ⚠️ shell 坑（两个脚本都记了）：macOS 自带的 bash 3.2 在**变量紧跟中文**时会把
 多字节字符当成变量名的一部分（`echo "图库 $LIB（素材目录…"` ⇒ `LIB（素材目录`:
 unbound variable）⇒ 一律写 `${LIB}`。
+
+---
+
+## D-54 商店买入后可穿戴：双击穿戴、F10 装备页点击脱下
+
+用户 2026-10-10 提出优先补客户端体验；素材没有缺口，不需要猜/新增图号，复用现有 F9/F10 界面。
+
+- **客户端输入**：普通包裹与商店包裹共用一套单击/双击逻辑：单击拿起；双击按 `StdMode`
+  判定——可穿戴发 `EquipItem{slot=背包下标}`，否则保留 `UseItem{slot}`；F10 **装备页**
+  点击非空命中槽发送 `UnequipItem{equip_slot}`（属性页点击仍保留信息提示）。穿戴目标槽
+  不由客户端提交，服务端按 StdMode 重算并校验。
+- **物品表槽位核验**（`data/stditems.json`）：`5/6` 武器、`10/11` 衣服、`15/16` 头盔、
+  `19..21` 项链、`22/23` 戒指、`24/26` 手镯、`25` 护身符、`30` 蜡烛/火把（右手槽）、
+  `62` 靴子、`64` 腰带。兼容旧表可能出现的 `52/54`。服务端 `equip.go` 增补 30/62/64；
+  客户端只用同一映射判断双击发穿戴还是使用。
+- **proto 上下行**：`Cmd::EquipItem` / `Cmd::UnequipItem`；服务端新入口由背包下标定位物品，
+  再调用 legacy 已有穿戴/脱下校验与库存逻辑（MakeIndex、物品槽类型、等级、负重、背包满）；
+  成功后 `EquippedItems` + `BagItems` + `AbilityUpdate` + `EntityFeatureChanged` 同步。
+  `EntityFeatureChanged` 客户端也补了处理，自己的 `self_feature` 与附近实体外观都更新。
+  proto 失败走 `SystemNotice`，不依赖 legacy `SM_TAKEON_FAIL`（protoDown 会丢）。
+- **不需要新素材**：人物/F10 装备图已由 `StateItem`/现有槽位渲染；直接复用现有 F9 双击、
+  F10 槽点击即可。当前 F10 装备页的可点击槽仍是 0–8；护身符/腰带/靴子虽然可双击穿上，
+  但状态窗尚未添加这 3 个显示/脱下命中槽（后续 UI 欠账）。
+
+**验收**：`TestProtoEquipUnequip` 验穿/脱与 `EquippedItems`/`BagItems`/`AbilityUpdate`/
+`EntityFeatureChanged` 刷新；`TestEquipSlotForActualStdModes` 钉住物品表槽位映射；客户端
+`可穿戴物品分类映射装备槽` + `穿脱装备外观消息更新自己`。Go 25 包、客户端 93/147/7/3，
+clippy 0。

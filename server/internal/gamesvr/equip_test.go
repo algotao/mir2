@@ -6,6 +6,7 @@ import (
 	"github.com/algotao/mir2/server/internal/proto"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/internal/wire"
+	"github.com/algotao/mir2/server/protocol"
 )
 
 // takeOnPacket / takeOffPacket 按**官方字段**构造穿脱报文（P1-7）：
@@ -122,4 +123,82 @@ func hasPacket(rec *recordingConn, t *testing.T, ident uint16) bool {
 		}
 	}
 	return false
+}
+
+// TestEquipSlotForActualStdModes 钉住本服物品表中实际可穿戴的 StdMode，尤其是
+// 新手初始蜡烛（30）、靴子（62）、腰带（64）。
+func TestEquipSlotForActualStdModes(t *testing.T) {
+	for _, tc := range []struct {
+		mode uint8
+		want int
+	}{
+		{5, proto.SlotWeapon}, {6, proto.SlotWeapon},
+		{10, proto.SlotDress}, {11, proto.SlotDress},
+		{15, proto.SlotHelmet}, {16, proto.SlotHelmet},
+		{19, proto.SlotNecklace}, {22, proto.SlotRingL}, {23, proto.SlotRingR},
+		{24, proto.SlotArmRingL}, {26, proto.SlotArmRingR},
+		{25, proto.SlotBujuk}, {30, proto.SlotRightHand},
+		{62, proto.SlotBoots}, {64, proto.SlotBelt},
+	} {
+		if got := equipSlotFor(tc.mode); got != tc.want {
+			t.Errorf("StdMode %d 装备槽 = %d，期望 %d", tc.mode, got, tc.want)
+		}
+	}
+	for _, mode := range []uint8{0, 1, 4, 40, 43} {
+		if got := equipSlotFor(mode); got != -1 {
+			t.Errorf("不可穿戴 StdMode %d 不该有槽位，实得 %d", mode, got)
+		}
+	}
+}
+
+// TestProtoEquipUnequip 通过新协议入口穿/脱武器，并确认所有权威刷新都送到客户端。
+func TestProtoEquipUnequip(t *testing.T) {
+	item := shopItem()
+	item.Shape = 1 // 非 0 外观，才能断言 EntityFeatureChanged
+	s, p := butchTestServer(t, item)
+	p.Char.Data.BagItems[4] = &pb.UserItem{Index: 1, MakeIndex: 55, Dura: 10, DuraMax: 10}
+	sink := &protoSink{ch: make(chan *protocol.Envelope, 64)}
+	p.protoOut = sink
+	ps := &protoSession{srv: s, player: p}
+
+	if !ps.onEquipItem(&protocol.EquipItem{Slot: 4}) {
+		t.Fatal("proto 穿戴应被接受")
+	}
+	if got := p.Char.Data.HumItems[proto.SlotWeapon]; got == nil || got.MakeIndex != 55 {
+		t.Fatalf("武器槽 = %+v，期望 MakeIndex=55", got)
+	}
+	if got := p.Char.Data.BagItems[4]; got != nil && got.Index != 0 {
+		t.Errorf("穿上后原背包格应空，实得 %+v", got)
+	}
+	if proto.FeatureWeapon(p.Obj.FeatureBits()) == 0 {
+		t.Error("穿上武器后自己的 weapon feature 应更新")
+	}
+	var gotEquip, gotBag, gotAbility, gotFeature bool
+	for len(sink.ch) > 0 {
+		e := <-sink.ch
+		switch e.Body.(type) {
+		case *protocol.Envelope_EquippedItems:
+			gotEquip = true
+		case *protocol.Envelope_BagItems:
+			gotBag = true
+		case *protocol.Envelope_AbilityUpdate:
+			gotAbility = true
+		case *protocol.Envelope_EntityFeatureChanged:
+			gotFeature = true
+		}
+	}
+	if !gotEquip || !gotBag || !gotAbility || !gotFeature {
+		t.Errorf("proto 穿戴刷新缺失：EquippedItems=%t BagItems=%t Ability=%t Feature=%t",
+			gotEquip, gotBag, gotAbility, gotFeature)
+	}
+
+	if !ps.onUnequipItem(&protocol.UnequipItem{EquipSlot: proto.SlotWeapon}) {
+		t.Fatal("proto 脱下应被接受")
+	}
+	if got := p.Char.Data.HumItems[proto.SlotWeapon]; got != nil && got.Index != 0 {
+		t.Fatalf("脱下后武器槽应空，实得 %+v", got)
+	}
+	if n := countBagItemNamed(s, p, "测试剑"); n != 1 {
+		t.Errorf("脱下后背包里测试剑 = %d 件，期望 1", n)
+	}
 }

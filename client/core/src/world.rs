@@ -548,6 +548,24 @@ impl World {
                 self.entity_events += 1;
                 Change::World
             }
+            // 外观改变（穿/脱衣服、武器等）。自己不在 entities 里，self_feature 单独存。
+            Body::EntityFeatureChanged(c) => {
+                let Some(feature) = c.feature.as_ref() else {
+                    self.unknown += 1;
+                    return Change::None;
+                };
+                if c.entity_id == self.self_id {
+                    self.self_feature = Some(*feature);
+                    return Change::World;
+                }
+                if let Some(e) = self.entities.get_mut(&c.entity_id) {
+                    e.feature = Some(*feature);
+                    Change::World
+                } else {
+                    self.unknown += 1;
+                    Change::None
+                }
+            }
             Body::EntityDisappear(d) => {
                 if d.entity_id == self.self_id {
                     // 自己"消失"不该发生（下线是断连）。记数不崩。
@@ -1705,7 +1723,32 @@ mod bag_tests {
         assert!(w.repair.is_none(), "对话关了 ⇒ 修理模式收走");
     }
 
-    /// 旧服务端（没带 mode，字段为 0）⇒ 按**买**算，别把窗开没了。
+    /// 装备改变后，服务端用 `EntityFeatureChanged` 更新自己的外观（装备页能即时重画）。
+    #[test]
+    fn 穿脱装备外观消息更新自己() {
+        let mut w = World {
+            self_id: 7,
+            self_feature: Some(proto::EntityFeature {
+                dress: 2,
+                weapon: 0,
+                ..Default::default()
+            }),
+            ..World::default()
+        };
+        let result = w.apply(&env(Body::EntityFeatureChanged(
+            proto::EntityFeatureChanged {
+                entity_id: 7,
+                feature: Some(proto::EntityFeature {
+                    dress: 2,
+                    weapon: 3,
+                    ..Default::default()
+                }),
+            },
+        )));
+        assert_eq!(result, Change::World);
+        assert_eq!(w.self_feature.as_ref().unwrap().weapon, 3);
+    }
+
     #[test]
     fn 货架没带模式时按买算() {
         let mut w = World::default();

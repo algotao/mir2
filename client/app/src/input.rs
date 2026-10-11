@@ -7,6 +7,28 @@ use std::time::Duration;
 
 use crate::geom::dir_to;
 
+/// `StdMode` 可穿戴物品的目标槽位（与服务端 `equipSlotFor` / `equip.go` 同一张表）。
+///
+/// 客户端只用它判双击后该发 `EquipItem` 还是 `UseItem`；目标槽仍由服务端重算并校验，
+/// 绝不信任客户端提交的装备位置。
+pub(crate) fn equip_slot_for_std_mode(std_mode: u32) -> Option<u32> {
+    Some(match std_mode {
+        5 | 6 => 1,    // 武器
+        10 | 11 => 0,  // 衣服
+        15 | 16 => 4,  // 头盔
+        19..=21 => 3,  // 项链
+        22 => 7,       // 左戒指
+        23 => 8,       // 右戒指
+        24 => 5,       // 左手镯
+        26 => 6,       // 右手镯
+        25 => 9,       // 护身符
+        30 => 2,       // 蜡烛 / 火把
+        52 | 62 => 11, // 靴子
+        54 | 64 => 10, // 腰带
+        _ => return None,
+    })
+}
+
 /// 一次"鼠标点下去"算什么：`(要锁的目标, 要走的格子)`。
 ///
 /// 照原版 `_DXDrawMouseDown`（`ClMain.pas:2805-2878`）：**先清掉旧目标**，再看光标那格有什么 ——

@@ -487,6 +487,10 @@ func (ps *protoSession) dispatch(env *protocol.Envelope) (keep bool) {
 		return ps.onUseItem(body.UseItem)
 	case *protocol.Envelope_RepairItem:
 		return ps.onRepairItem(body.RepairItem)
+	case *protocol.Envelope_EquipItem:
+		return ps.onEquipItem(body.EquipItem)
+	case *protocol.Envelope_UnequipItem:
+		return ps.onUnequipItem(body.UnequipItem)
 	case *protocol.Envelope_Butch:
 		return ps.onButch(body.Butch)
 	default:
@@ -1764,6 +1768,60 @@ func (ps *protoSession) onUseItem(m *protocol.UseItem) bool {
 		return ps.rejectOutOfOrder("还没进世界")
 	}
 	ps.srv.doEat(nil, p, int(m.GetSlot()))
+	return true
+}
+
+// onEquipItem 穿背包格里的可穿戴物品（原版 `CM_TAKEONITEM`）。新协议的 slot 是
+// **背包下标**；目标装备槽由服务端按 StdMode 推导，不能信客户端猜的槽位。
+func (ps *protoSession) onEquipItem(m *protocol.EquipItem) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil || p.Char == nil || p.Char.Data == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	bagSlot := int(m.GetSlot())
+	it := p.bagAt(bagSlot)
+	if it == nil || it.Index == 0 || it.MakeIndex == 0 {
+		ps.srv.notice(p, "包裹里没有这件装备")
+		return true
+	}
+	tmpl := ps.srv.data.tables.Items.Get(int(it.Index) - 1)
+	if tmpl == nil {
+		ps.srv.notice(p, "这件物品无法穿戴")
+		return true
+	}
+	equipSlot := equipSlotFor(tmpl.StdMode)
+	if equipSlot < 0 {
+		ps.srv.notice(p, "这件物品不能穿戴")
+		return true
+	}
+	pkt := wire.Packet{Head: proto.MakeDefaultMsg(proto.CM_TAKEONITEM, it.MakeIndex, uint16(equipSlot), 0, 0), Body: tmpl.Name}
+	ps.srv.handleTakeOn(nil, p, pkt)
+	return true
+}
+
+// onUnequipItem 脱下指定装备槽（原版 `CM_TAKEOFFITEM`）；MakeIndex 由服务端从槽位取。
+func (ps *protoSession) onUnequipItem(m *protocol.UnequipItem) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil || p.Char == nil || p.Char.Data == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	slot := int(m.GetEquipSlot())
+	if slot < 0 || slot >= len(p.Char.Data.HumItems) {
+		ps.srv.notice(p, "装备槽无效")
+		return true
+	}
+	it := p.Char.Data.HumItems[slot]
+	if it == nil || it.Index == 0 || it.MakeIndex == 0 {
+		ps.srv.notice(p, "这个装备槽是空的")
+		return true
+	}
+	tmpl := ps.srv.data.tables.Items.Get(int(it.Index) - 1)
+	name := ""
+	if tmpl != nil {
+		name = tmpl.Name
+	}
+	pkt := wire.Packet{Head: proto.MakeDefaultMsg(proto.CM_TAKEOFFITEM, it.MakeIndex, uint16(slot), 0, 0), Body: name}
+	ps.srv.handleTakeOff(nil, p, pkt)
 	return true
 }
 

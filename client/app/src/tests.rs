@@ -2121,3 +2121,23 @@ fn 卖货窗的浮件几何与命中() {
         "圆要整个在素材里"
     );
 }
+
+/// 双击包裹物品：按 `StdMode` 选穿戴还是使用；目标槽由服务端最终决定并校验。
+#[test]
+fn 可穿戴物品分类映射装备槽() {
+    use crate::input::equip_slot_for_std_mode as slot;
+    assert_eq!(slot(5), Some(1), "武器");
+    assert_eq!(slot(10), Some(0), "男衣服");
+    assert_eq!(slot(11), Some(0), "女衣服");
+    assert_eq!(slot(15), Some(4), "头盔");
+    assert_eq!(slot(22), Some(7), "左戒指");
+    assert_eq!(slot(23), Some(8), "右戒指");
+    assert_eq!(slot(24), Some(5), "左手镯");
+    assert_eq!(slot(26), Some(6), "右手镯");
+    assert_eq!(slot(25), Some(9), "护身符");
+    assert_eq!(slot(30), Some(2), "蜡烛/火把");
+    assert_eq!(slot(62), Some(11), "靴子（当前物品表 StdMode）");
+    assert_eq!(slot(64), Some(10), "腰带（当前物品表 StdMode）");
+    assert_eq!(slot(0), None, "药品双击应走 UseItem，不是 EquipItem");
+    assert_eq!(slot(40), None, "肉双击应走 UseItem，不是 EquipItem");
+}

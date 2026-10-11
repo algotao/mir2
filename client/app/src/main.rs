@@ -793,10 +793,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
-                            // 卖货：商店开着 ⇒ 点背包格 = **抓起**（原版拖放式：抓到手上、
-                            // 移到卖货圈、点一下放下、点 OK 才卖 —— 用户第 3 条）。
+                            // 包裹操作（普通/卖出共用）：单击拾取，双击可穿戴物品=穿、
+                            // 其他物品=使用；拿起后点空格=移动、点已有物品=交换。
                             let mut bag_handled = false;
-                            if mouse_btn == MouseButton::Left && shop_open && bag_open {
+                            if mouse_btn == MouseButton::Left && bag_open {
                                 if let Some(n) = net.as_ref() {
                                     let (bx, by) = crate::layout::bag_pos(shop_open);
                                     let lx = x - bx;
@@ -816,40 +816,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             _ => false,
                                         };
                                         last_bag_click = Some((idx, Instant::now()));
-                                        if double_click && !held_same && sell_held.is_none() {
-                                            if let Some(Some(it)) = n.world.bag.get(idx) {
-                                                if it.make_index != 0 {
-                                                    n.bag_use(idx as u32);
-                                                    println!("[net] 使用 {}", it.name);
-                                                }
-                                            }
-                                        } else if let Some(held) = sell_held {
-                                            if held != idx {
-                                                n.bag_move(held as u32, idx as u32);
-                                                // 乐观更新：等服务端全量覆盖
-                                                if let Some(nm) = net.as_mut() {
-                                                    let moved =
-                                                        nm.world.bag.get(held).cloned().flatten();
-                                                    let target =
-                                                        nm.world.bag.get(idx).cloned().flatten();
-                                                    if let Some(it) = moved {
-                                                        nm.world.bag[idx] = Some(it);
-                                                    }
-                                                    let was_empty = target.is_none();
-                                                    sell_held = if was_empty {
-                                                        None // 放到空格 = 移动完
-                                                    } else {
-                                                        Some(idx) // 交换：那格的物品变为拾取
-                                                    };
-                                                    if let Some(sw) = target {
-                                                        nm.world.bag[held] = Some(sw);
-                                                    } else {
-                                                        nm.world.bag[held] = None;
-                                                    }
-                                                }
-                                                println!("[net] 包裹 {} → {}", held, idx);
-                                            }
-                                        } else if let Some(special) = n.world.repair {
+                                        if let Some(special) = n.world.repair {
                                             // 修理模式（`@repair`/`@s_repair` 那个对话入口打开）
                                             // ⇒ 点物品 = **修它**（原版是拖进修理窗）
                                             if let Some(Some(it)) = n.world.bag.get(idx) {
@@ -862,13 +829,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     );
                                                 }
                                             }
+                                        } else if double_click && (sell_held.is_none() || held_same)
+                                        {
+                                            // 原版双击装备 = 穿戴；双击其他物品 = 使用。
+                                            // 第一击已把图标拿起并隐藏原格，第二击同格时从
+                                            // World 里仍可读到服务端权威物品，并发对应命令。
+                                            if let Some(Some(it)) = n.world.bag.get(idx) {
+                                                if it.make_index != 0 {
+                                                    if input::equip_slot_for_std_mode(it.std_mode)
+                                                        .is_some()
+                                                    {
+                                                        n.bag_equip(idx as u32);
+                                                        println!("[net] 穿戴 {}", it.name);
+                                                    } else {
+                                                        n.bag_use(idx as u32);
+                                                        println!("[net] 使用 {}", it.name);
+                                                    }
+                                                    sell_held = None;
+                                                    sell_placed = None;
+                                                }
+                                            }
+                                        } else if let Some(held) = sell_held {
+                                            if held == idx {
+                                                sell_held = None; // 单击回原格 = 取消拾取
+                                                println!("[ui] 放回原格");
+                                            } else {
+                                                n.bag_move(held as u32, idx as u32);
+                                                // 乐观交换/移动：服务端随后用全量 BagItems 覆盖。
+                                                if let Some(nm) = net.as_mut() {
+                                                    let moved =
+                                                        nm.world.bag.get(held).cloned().flatten();
+                                                    let target =
+                                                        nm.world.bag.get(idx).cloned().flatten();
+                                                    if let Some(it) = moved {
+                                                        nm.world.bag[idx] = Some(it);
+                                                    }
+                                                    sell_held = if target.is_some() {
+                                                        Some(idx)
+                                                    } else {
+                                                        None
+                                                    };
+                                                    nm.world.bag[held] = target;
+                                                }
+                                                sell_placed = None;
+                                                println!("[net] 包裹 {} → {}", held, idx);
+                                            }
                                         } else if let Some(Some(it)) = n.world.bag.get(idx) {
-                                            // 1. 左键单击 = 拾取
+                                            // 左键单击 = 拾取（普通状态/商店卖出共用）
                                             if it.make_index != 0 {
                                                 sell_held = Some(idx);
-                                                // 换一件 ⇒ 槽里原来那件取下来（手上只能有一件）
                                                 sell_placed = None;
-                                                println!("[ui] 抓起 {}", it.name);
+                                                println!("[ui] 拾起 {}", it.name);
                                                 press_at = None;
                                                 pending_pickup = None;
                                             }
@@ -1021,23 +1032,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 crate::status::Hit::Slot(slot) => {
                                                     if let Some(n) = net.as_ref() {
                                                         let name = crate::status::slot_name(slot);
-                                                        let msg = match n.world.equip.get(slot) {
-                                                            Some(Some(it)) => format!(
-                                                                "装备槽 {}（{}）：{}",
-                                                                slot + 1,
-                                                                name,
-                                                                it.name
-                                                            ),
-                                                            _ => format!(
-                                                                "装备槽 {}（{}）是空的",
-                                                                slot + 1,
-                                                                name
-                                                            ),
-                                                        };
-                                                        println!("[ui] {msg}");
-                                                        let shown = trunc(&msg, 30);
-                                                        if let Some(n) = net.as_mut() {
-                                                            n.chat.push(shown, C_CHAT_SYS);
+                                                        if status_page == 0 {
+                                                            if let Some(Some(it)) =
+                                                                n.world.equip.get(slot)
+                                                            {
+                                                                n.equip_unequip(slot as u32);
+                                                                println!(
+                                                                    "[net] 脱下 {}（{}）",
+                                                                    it.name, name
+                                                                );
+                                                            } else {
+                                                                println!(
+                                                                    "[ui] 装备槽 {}（{}）是空的",
+                                                                    slot + 1,
+                                                                    name
+                                                                );
+                                                            }
+                                                        } else {
+                                                            let msg = match n.world.equip.get(slot)
+                                                            {
+                                                                Some(Some(it)) => format!(
+                                                                    "装备槽 {}（{}）：{}",
+                                                                    slot + 1,
+                                                                    name,
+                                                                    it.name
+                                                                ),
+                                                                _ => format!(
+                                                                    "装备槽 {}（{}）是空的",
+                                                                    slot + 1,
+                                                                    name
+                                                                ),
+                                                            };
+                                                            println!("[ui] {msg}");
+                                                            if let Some(n) = net.as_mut() {
+                                                                n.chat.push(
+                                                                    trunc(&msg, 30),
+                                                                    C_CHAT_SYS,
+                                                                );
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -1051,9 +1083,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
-                            // ②′ 背包窗开着：点格子 = 把"看到的是哪件"反馈到聊天区
-                            //（`UseItem` 还没接新协议，见 `docs/todo.md`）；点关闭 X = 关窗；
-                            // 点在窗里别处 = 吞掉这次点击，**别走路**。
+                            // ②′ 背包窗：左键抓起；双击可穿戴物品 = 穿、其他物品 = 使用；
+                            // 拿着物品点空格 = 移动、点已有物品 = 交换。卖出模式复用同一只手。
                             if bag_open {
                                 let (bx, by) = crate::layout::bag_pos(shop_open);
                                 let inside = x >= bx
@@ -1076,23 +1107,82 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     } else if let Some(slot) = crate::layout::bag_slot_at((lx, ly))
                                     {
                                         let idx = bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
-                                        // （商店开着时的"抓起"在上面挖肉那段做完了 —— 那里
-                                        // 顺序更靠前，这里只剩"报格子"这条反馈。）
+                                        let double_click =
+                                            last_bag_click.is_some_and(|(prev, at)| {
+                                                prev == idx
+                                                    && at.elapsed() <= Duration::from_millis(450)
+                                            });
+                                        last_bag_click = Some((idx, Instant::now()));
                                         if let Some(n) = net.as_ref() {
-                                            let msg = match n.world.bag.get(idx) {
-                                                Some(Some(it)) => format!(
-                                                    "背包第 {} 格：{} x{}（外观图号 {}）",
-                                                    idx + 1,
-                                                    it.name,
-                                                    it.count,
-                                                    it.looks
-                                                ),
-                                                _ => format!("背包第 {} 格是空的", idx + 1),
-                                            };
-                                            println!("[ui] {msg}");
-                                            let shown = trunc(&msg, 30);
-                                            if let Some(n) = net.as_mut() {
-                                                n.chat.push(shown, C_CHAT_SYS);
+                                            // 优先级：修理模式 > 双击使用/穿戴 > 拖放移动/交换 > 抓起。
+                                            if let Some(special) = n.world.repair {
+                                                if let Some(Some(it)) = n.world.bag.get(idx) {
+                                                    if it.make_index != 0 {
+                                                        n.bag_repair(idx as u32, special);
+                                                        sell_held = None;
+                                                        println!("[net] 修理 {}", it.name);
+                                                    }
+                                                }
+                                            } else if double_click
+                                                && (sell_held.is_none() || sell_held == Some(idx))
+                                            {
+                                                if let Some(Some(it)) = n.world.bag.get(idx) {
+                                                    if it.make_index != 0 {
+                                                        if input::equip_slot_for_std_mode(
+                                                            it.std_mode,
+                                                        )
+                                                        .is_some()
+                                                        {
+                                                            n.bag_equip(idx as u32);
+                                                            println!("[net] 穿戴 {}", it.name);
+                                                        } else {
+                                                            n.bag_use(idx as u32);
+                                                            println!("[net] 使用 {}", it.name);
+                                                        }
+                                                        sell_held = None;
+                                                        sell_placed = None;
+                                                    }
+                                                }
+                                            } else if let Some(held) = sell_held {
+                                                if held == idx {
+                                                    // 点回原格 = 取消拾取。
+                                                    sell_held = None;
+                                                    println!("[ui] 放回原格");
+                                                } else {
+                                                    n.bag_move(held as u32, idx as u32);
+                                                    // 乐观交换/移动；服务端随后用全量 BagItems 覆盖。
+                                                    if let Some(nm) = net.as_mut() {
+                                                        let moved = nm
+                                                            .world
+                                                            .bag
+                                                            .get(held)
+                                                            .cloned()
+                                                            .flatten();
+                                                        let target = nm
+                                                            .world
+                                                            .bag
+                                                            .get(idx)
+                                                            .cloned()
+                                                            .flatten();
+                                                        if let Some(it) = moved {
+                                                            nm.world.bag[idx] = Some(it);
+                                                        }
+                                                        sell_held = if target.is_some() {
+                                                            Some(idx)
+                                                        } else {
+                                                            None
+                                                        };
+                                                        nm.world.bag[held] = target;
+                                                    }
+                                                    sell_placed = None;
+                                                    println!("[net] 包裹 {} → {}", held, idx);
+                                                }
+                                            } else if let Some(Some(it)) = n.world.bag.get(idx) {
+                                                if it.make_index != 0 {
+                                                    sell_held = Some(idx);
+                                                    sell_placed = None;
+                                                    println!("[ui] 拾起 {}", it.name);
+                                                }
                                             }
                                         }
                                     }

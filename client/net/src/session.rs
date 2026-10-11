@@ -111,6 +111,10 @@ pub enum Cmd {
     MoveItem { from: u32, to: u32 },
     /// 使用背包物品（原版 `CM_EAT`；包裹中双击物品 = 使用）。
     UseItem { slot: u32 },
+    /// 穿戴背包格里的可穿戴物品；目标装备槽由服务端按 `StdMode` 推导。
+    EquipItem { slot: u32 },
+    /// 脱下指定装备槽的物品（服务端用当前 `MakeIndex` 校验）。
+    UnequipItem { equip_slot: u32 },
     /// 修理背包物品（原版 `CM_USERREPAIRITEM`；`special` = 特修，价格 ×3 但不磨损上限）。
     RepairItem { slot: u32, special: bool },
     /// 挖肉（原版 `CM_BUTCH`）：按住 Alt 点动物尸体（死了的、鸡/鹿/狼这类动物）。
@@ -328,6 +332,14 @@ fn writer_loop(stream: &mut TcpStream, cmds: Receiver<Cmd>) {
             Cmd::MoveItem { from, to } => Body::MoveItem(proto::MoveItem { from, to }),
             Cmd::UseItem { slot } => Body::UseItem(proto::UseItem {
                 slot,
+                client_tick: 0,
+            }),
+            Cmd::EquipItem { slot } => Body::EquipItem(proto::EquipItem {
+                slot,
+                client_tick: 0,
+            }),
+            Cmd::UnequipItem { equip_slot } => Body::UnequipItem(proto::UnequipItem {
+                equip_slot,
                 client_tick: 0,
             }),
             Cmd::RepairItem { slot, special } => Body::RepairItem(proto::RepairItem {

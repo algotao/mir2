@@ -8,6 +8,7 @@ import (
 	"github.com/algotao/mir2/server/internal/proto"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/internal/wire"
+	"github.com/algotao/mir2/server/protocol"
 )
 
 // 装备穿脱（CM_TAKEONITEM=1003 / CM_TAKEOFFITEM=1004）。
@@ -35,7 +36,8 @@ import (
 //
 // 取自 stditems 的实际分布：
 // 5/6 武器、10/11 衣服(男/女)、15/16 头盔/斗笠、19/20/21 项链、
-// 22/23 戒指、24/26 手镯、52 靴子、54 腰带。
+// 22/23 戒指、24/26 手镯、25 护身符、30 蜡烛/火把、62 靴子、64 腰带。
+// 52/54 作为旧物品表兼容值保留。
 var stdModeToSlot = map[uint8]int{
 	5: proto.SlotWeapon, 6: proto.SlotWeapon,
 	10: proto.SlotDress, 11: proto.SlotDress,
@@ -43,11 +45,14 @@ var stdModeToSlot = map[uint8]int{
 	19: proto.SlotNecklace, 20: proto.SlotNecklace, 21: proto.SlotNecklace,
 	22: proto.SlotRingL, 23: proto.SlotRingR,
 	24: proto.SlotArmRingL, 26: proto.SlotArmRingR,
-	52: proto.SlotBoots,
-	54: proto.SlotBelt,
 	// 护身符/毒药：原版可装在左手镯(5)或护身符槽(9)，我们统一放护身符槽，
 	// 左手镯留给真正的首饰（StdMode 24/26）。
 	25: proto.SlotBujuk,
+	// 右手持物（蜡烛 / 火把；新角色初始装备就在 SlotRightHand）。
+	30: proto.SlotRightHand,
+	// 本服 `stditems.json` 的靴子/腰带实际使用 62/64；兼容旧表里出现过的 52/54。
+	52: proto.SlotBoots, 62: proto.SlotBoots,
+	54: proto.SlotBelt, 64: proto.SlotBelt,
 }
 
 // equipSlotFor 返回物品应穿戴的槽位，不可穿戴返回 -1。
@@ -69,17 +74,17 @@ func (s *Server) handleTakeOn(c net.Conn, p *Player, m wire.Packet) {
 	slot := int(m.Head.Param)
 	makeIdx := int32(m.Head.Recog)
 	if makeIdx == 0 || slot < 0 || slot >= len(data.HumItems) {
-		s.sendTakeOnFail(c, -1)
+		s.sendTakeOnFail(c, p, -1)
 		return
 	}
 	bagIdx, it, _ := s.itemByMakeIndex(p, makeIdx, m.Body, false)
 	if it == nil || it.Index == 0 || bagIdx < 0 || bagIdx >= p.bagLen() {
-		s.sendTakeOnFail(c, -1)
+		s.sendTakeOnFail(c, p, -1)
 		return
 	}
 	tmpl := s.data.tables.Items.Get(int(it.Index) - 1)
 	if tmpl == nil {
-		s.sendTakeOnFail(c, -1)
+		s.sendTakeOnFail(c, p, -1)
 		return
 	}
 	// 槽位类型核对（原版 `CheckUserItems(btWhere, StdItem)`，ObjBase.pas:17103）：
@@ -87,14 +92,14 @@ func (s *Server) handleTakeOn(c net.Conn, p *Player, m wire.Packet) {
 	if want := equipSlotFor(tmpl.StdMode); want < 0 || want != slot {
 		log.Printf("%s 穿 %s 被拒：物品该进槽 %d，报文说槽 %d",
 			p.Char.Name, tmpl.Name, want, slot)
-		s.sendTakeOnFail(c, -1)
+		s.sendTakeOnFail(c, p, -1)
 		return
 	}
 	// 等级需求（Need 字段是需求类型 0=等级 1=攻击 2=魔法 3=精神，
 	// 这里只校验等级，其余需求类型待补）
 	if tmpl.NeedLevel > 0 && p.level() < tmpl.NeedLevel {
 		log.Printf("%s 等级不足，无法穿 %s（需 %d 级）", p.Char.Name, tmpl.Name, tmpl.NeedLevel)
-		s.sendTakeOnFail(c, -1)
+		s.sendTakeOnFail(c, p, -1)
 		return
 	}
 	// 职业需求（部分物品 Need=职业限定），数据里 Need 语义是需求类型，暂不校验
@@ -103,8 +108,8 @@ func (s *Server) handleTakeOn(c net.Conn, p *Player, m wire.Packet) {
 	//（单件重量），其余槽比**佩带负重**（新物品 + 该槽原有物品的重量）。
 	if msg := s.takeOnBlockedByWeight(p, tmpl, slot); msg != "" {
 		log.Printf("%s 穿 %s 失败：%s", p.Char.Name, tmpl.Name, msg)
-		s.sysMsg(c, msg)
-		s.sendTakeOnFail(c, -1)
+		// `sendTakeOnFail` 对 proto 客户端发一条 notice；legacy 保留失败包口径。
+		s.sendTakeOnFail(c, p, -1)
 		return
 	}
 
@@ -131,8 +136,11 @@ func (s *Server) handleTakeOn(c net.Conn, p *Player, m wire.Packet) {
 
 // sendTakeOnFail 回穿戴失败（原版 `SM_TAKEON_FAIL` 的 Recog = 错误码：
 // -1 = 物品/槽位不对，-2 = 该槽没东西，-3 = 背包已满，-4 = 该物品不允许取下）。
-func (s *Server) sendTakeOnFail(c net.Conn, code int) {
+func (s *Server) sendTakeOnFail(c net.Conn, p *Player, code int) {
 	s.send(c, proto.SM_TAKEON_FAIL, int32(code), 0, 0, 0, "")
+	if p != nil && p.protoOut != nil {
+		s.notice(p, "无法穿戴：物品、装备槽或角色条件不符合")
+	}
 }
 
 // handleTakeOff 处理脱下（CM_TAKEOFFITEM = 1004）。
@@ -145,18 +153,18 @@ func (s *Server) handleTakeOff(c net.Conn, p *Player, m wire.Packet) {
 	makeIdx := int32(m.Head.Recog)
 	data := p.Char.Data
 	if data == nil || slot < 0 || slot >= len(data.HumItems) || makeIdx == 0 {
-		s.sendTakeOffFail(c, -1)
+		s.sendTakeOffFail(c, p, -1)
 		return
 	}
 	it := data.HumItems[slot]
 	if it == nil || it.Index == 0 {
-		s.sendTakeOffFail(c, -2)
+		s.sendTakeOffFail(c, p, -2)
 		return
 	}
 	if it.MakeIndex != makeIdx || !s.itemNameMatches(it, m.Body) {
 		log.Printf("%s 脱下被拒：槽%d 里是 MakeIndex=%d，报文说 %d",
 			p.Char.Name, slot, it.MakeIndex, makeIdx)
-		s.sendTakeOffFail(c, -1)
+		s.sendTakeOffFail(c, p, -1)
 		return
 	}
 
@@ -183,7 +191,7 @@ func (s *Server) handleTakeOff(c net.Conn, p *Player, m wire.Packet) {
 	})
 	if full {
 		log.Printf("%s 背包已满，无法脱下装备", p.Char.Name)
-		s.sendTakeOffFail(c, -3)
+		s.sendTakeOffFail(c, p, -3)
 		return
 	}
 	data.HumItems[slot] = &pb.UserItem{}
@@ -197,8 +205,11 @@ func (s *Server) handleTakeOff(c net.Conn, p *Player, m wire.Packet) {
 }
 
 // sendTakeOffFail 回脱下失败（原版 `SM_TAKEOFF_FAIL` 的错误码同 sendTakeOnFail）。
-func (s *Server) sendTakeOffFail(c net.Conn, code int) {
+func (s *Server) sendTakeOffFail(c net.Conn, p *Player, code int) {
 	s.send(c, proto.SM_TAKEOFF_FAIL, int32(code), 0, 0, 0, "")
+	if p != nil && p.protoOut != nil {
+		s.notice(p, "无法脱下：装备槽为空或背包已满")
+	}
 }
 
 // refreshEquip 装备变更后的一次性刷新：外观重算 + 三条下发 + 广播外观。
@@ -219,6 +230,10 @@ func (s *Server) refreshEquip(c net.Conn, p *Player) {
 		s.applyWeights(p)
 		abRaw := abilityFromPB(p.Char.Data.Abil).Bytes()
 		s.send(c, proto.SM_ABILITY, int32(p.gold()), uint16(p.Char.Data.Job), 0, 0, string(abRaw[:]))
+		if p.protoOut != nil {
+			// legacy SM_ABILITY 会被 protoDown 丢弃；穿脱装备后要同步能力与金币。
+			p.protoOut.ability(p.Char.Data.Abil, p.gold())
+		}
 		// 装备带"准确/幸运/敏捷"（武器 AC/MAC 高低位、首饰按 StdMode）⇒ 副属性也变了
 		s.sendSubAbility(c, p)
 	}
@@ -240,9 +255,17 @@ func (s *Server) refreshEquip(c net.Conn, p *Player) {
 //
 // Recog=ActorId, Param=LoWord(feature), Tag=HiWord(feature)。
 func (s *Server) sendFeatureChanged(to *Player, who *Player) {
-	f := uint32(who.Obj.FeatureBits())
+	f := int32(who.Obj.FeatureBits())
+	if sink := to.protoOut; sink != nil {
+		sink.enqueue(&protocol.Envelope{Body: &protocol.Envelope_EntityFeatureChanged{
+			EntityFeatureChanged: &protocol.EntityFeatureChanged{
+				EntityId: uint64(who.Obj.ID), Feature: featureOf(f),
+			}}})
+		return
+	}
+	bits := uint32(f)
 	s.send(to.conn, proto.SM_FEATURECHANGED, int32(who.Obj.ID),
-		uint16(f&0xFFFF), uint16(f>>16), 0, "")
+		uint16(bits&0xFFFF), uint16(bits>>16), 0, "")
 }
 
 // 衣服的两档 StdMode（`data.ItemTypeDress` = 10/11）。原版 `ObjBase.pas` 的
