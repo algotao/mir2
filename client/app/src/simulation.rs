@@ -135,39 +135,22 @@ pub(crate) fn tick(
     // ⚠️ 少了这个反应，撞墙时客户端会朝同一个方向每 `WALK_MS` 发一次、每次都被拒，
     // 人物就"卡在那儿不动"，而且服务端日志刷满 —— "跑不到怪身边"多半有它一份。
     // 计数**变没变**就是"刚刚被拒了一次"的信号（见 `World::move_fail`）。
-    let fails = app.net.as_ref().map_or(0, |n| n.world.move_fail);
-    if fails != app.world_control.last_move_fail {
-        let reason = app.net.as_ref().map_or(0, |n| n.world.move_fail_reason);
-        app.world_control.last_move_fail = fails;
-        app.world_control.move_at = Instant::now();
-        if reason == 3
-            && app.world_control.move_target.is_some()
-            && app.world_control.detour != Some(1)
-        {
-            // **撞墙先绕一步**（原版 `ClMain.pas:1886-1923`：直走那格过不去时
-            // 先试 `PrivDir`（逆时针 45°），再试 `NextDir`（顺时针 45°），
-            // 能走就走），而不是像原来那样"清目标 + 锁 1 秒"——
-            // 那正是用户 2026-10-09 第 4 条说的"点哪走哪"手感问题。
-            // 两次都撞不上才认输（下面那条），并且**不加 1 秒锁**（只等一个正常步频）。
-            app.world_control.detour = Some(app.world_control.detour.map_or(0, |k| k + 1));
-            println!(
-                "[move] 前方被挡（reason=3）⇒ 侧移 45° 试第 {} 次",
-                app.world_control.detour.unwrap_or(1) + 1
-            );
-        } else {
-            // 越界(2)/超速(1)，或绕障两次都不行 ⇒ 照原版 `ActionFailed`：
-            // 清走法目标 + 锁 [`MOVE_FAIL_LOCK_MS`]（"就近停下"）。
-            // ⚠️ **追打目标也要一起放**（用户 2026-10-10 第 6 条）：追打那块
-            // 每帧都会把 move_target 重算回去 —— 只清 move_target 的话，
-            // 下一帧又凑近、又被拒、锁完接着顶，永远停不下来。
-            // 目标格被怪占着凑不近 ⇒ 就近停下，等玩家重新点。
-            app.world_control.cancel_target();
-            app.world_control.move_block_until =
-                Instant::now() + Duration::from_millis(MOVE_FAIL_LOCK_MS);
-            println!(
+    let failures = app.net.as_ref().map_or(0, |n| n.world.move_fail);
+    let reason = app.net.as_ref().map_or(0, |n| n.world.move_fail_reason);
+    if let Some(effect) = app.world_control.on_move_rejected(
+        failures,
+        reason,
+        Instant::now(),
+        Duration::from_millis(MOVE_FAIL_LOCK_MS),
+    ) {
+        match effect {
+            crate::world_control::MoveReject::TryDetour { attempt } => {
+                println!("[move] 前方被挡（reason=3）⇒ 侧移 45° 试第 {attempt} 次")
+            }
+            crate::world_control::MoveReject::Stop { reason } => println!(
                 "[move] 服务端拒绝了这一步（reason={reason}，1=超速 2=越界 3=阻挡）\
-             —— 清走法目标 + 锁 {MOVE_FAIL_LOCK_MS}ms"
-            );
+                 —— 清走法目标 + 锁 {MOVE_FAIL_LOCK_MS}ms"
+            ),
         }
     }
 

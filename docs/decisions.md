@@ -5441,3 +5441,15 @@ SDL 纹理与 WZL 句柄仍由 runtime/render 管；素材绘制将归一结果�
 世界状态没有伪装成 UI：它仍由 WorldControl 维护，发包/权威世界数据仍在输入适配与 Net 边界。
 
 **验收**：客户端 167/149/7/3，clippy 0；Go 25 包。
+
+---
+
+## D-111 架构方向 ① 续：MoveRejected 变成 WorldControl 纯 reducer（2026-10-11）
+
+把 `simulation::tick` 里拒步分支（相同计数去重、reason=3 两次绕障、其他原因清目标并锁步）抽为
+`WorldControl::on_move_rejected(failures, reason, now, fail_lock) -> Option<MoveReject>`。
+
+它只更新世界交互状态并返回 `TryDetour{attempt}` / `Stop{reason}`；simulation 仍负责读 Net 的权威
+拒步计数、发日志与继续走世界阶段。新增测试钉住首次/二次阻挡节拍、失败锁与重复计数不重放。
+
+**验收**：客户端 169/149/7/3，clippy 0；Go 25 包。

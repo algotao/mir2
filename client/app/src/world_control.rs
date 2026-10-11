@@ -3,13 +3,22 @@
 //! SDL 鼠标按钮在 `world_input` 边界翻译成 [`MoveButton`]；这里不持 SDL 类型。
 //! 地图/网络权威数据不归此处，控制器只记目标与下一次动作时间。
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// 按住鼠标的移动意图（平台无关）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MoveButton {
     Walk,
     Run,
+}
+
+/// 服务端拒步后 reducer 给出的状态效果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MoveReject {
+    /// reason=3 的阻挡：先试下一次 45° 侧移，不启动失败锁。
+    TryDetour { attempt: u8 },
+    /// 越界/超速/绕障失败：清目标并进入就近停下锁。
+    Stop { reason: u32 },
 }
 
 /// 可测试的世界交互运行状态（而非 SDL 事件状态）。
@@ -69,6 +78,33 @@ impl WorldControl {
     pub(crate) fn release_mouse(&mut self) -> Option<Instant> {
         self.held_move = None;
         self.press_at.take()
+    }
+
+    /// 消费服务端拒步计数变化并决定绕障或停止。
+    ///
+    /// `None` = 计数没变；`Some` 时已在此处更新控制状态，调用者只执行日志/外部效果。
+    pub(crate) fn on_move_rejected(
+        &mut self,
+        failures: u64,
+        reason: u32,
+        now: Instant,
+        fail_lock: Duration,
+    ) -> Option<MoveReject> {
+        if failures == self.last_move_fail {
+            return None;
+        }
+        self.last_move_fail = failures;
+        self.move_at = now;
+        if reason == 3 && self.move_target.is_some() && self.detour != Some(1) {
+            self.detour = Some(self.detour.map_or(0, |step| step + 1));
+            Some(MoveReject::TryDetour {
+                attempt: self.detour.unwrap_or(0) + 1,
+            })
+        } else {
+            self.cancel_target();
+            self.move_block_until = now + fail_lock;
+            Some(MoveReject::Stop { reason })
+        }
     }
 
     /// 命中浮窗后取消本次世界点击可能产生的目标/待拾取状态。
@@ -150,5 +186,39 @@ mod tests {
         assert_eq!(s.combat_target, None);
         assert_eq!(s.detour, None);
         assert!(s.move_block_until > now, "拒步冷却不由清目标动作重置");
+    }
+
+    #[test]
+    fn 拒步第一次阻挡请求绕障第二次停止() {
+        let now = Instant::now();
+        let mut s = WorldControl::new(now);
+        s.move_target = Some((5, 5, true));
+        assert_eq!(
+            s.on_move_rejected(1, 3, now, Duration::from_secs(1)),
+            Some(MoveReject::TryDetour { attempt: 1 })
+        );
+        assert!(s.move_target.is_some(), "第一次阻挡保留目标以便侧移");
+        assert_eq!(s.move_block_until, now, "绕障不启动失败锁");
+
+        assert_eq!(
+            s.on_move_rejected(2, 3, now, Duration::from_secs(1)),
+            Some(MoveReject::TryDetour { attempt: 2 })
+        );
+        assert_eq!(
+            s.on_move_rejected(3, 3, now, Duration::from_secs(1)),
+            Some(MoveReject::Stop { reason: 3 })
+        );
+        assert_eq!(s.move_target, None);
+        assert_eq!(s.detour, None);
+        assert_eq!(s.move_block_until, now + Duration::from_secs(1));
+    }
+
+    #[test]
+    fn 相同拒步计数不重复触发效果() {
+        let now = Instant::now();
+        let mut s = WorldControl::new(now);
+        s.move_target = Some((2, 3, false));
+        assert_eq!(s.on_move_rejected(0, 1, now, Duration::from_secs(1)), None);
+        assert_eq!(s.move_target, Some((2, 3, false)));
     }
 }
