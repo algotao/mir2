@@ -96,6 +96,7 @@ pub(crate) mod shop;
 mod shopui;
 mod space;
 pub(crate) mod status;
+mod update;
 mod windows;
 pub(crate) use minimap::*;
 pub(crate) mod net;
@@ -2222,58 +2223,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cam.1 = cam.1.clamp(-2.0, max_y);
         }
 
-        // 货架**新到了一份**（seq 变了）⇒ 开窗、翻回第一页、清选中；
-        // 顺手把**包裹也打开**（原版买东西时包裹就在旁边开着，用户第 7 条）。
-        let shop_seq_now = net.as_ref().map_or(0, |n| n.world.shop_seq);
-        if shop_seq_now != shop_seen_seq {
-            shop_seen_seq = shop_seq_now;
-            shop_ui.close();
-            if shop_seq_now > 0 {
-                win.open_shop(); // 顺带把包裹打开（原版买东西时包裹就在旁边）
-            }
-        }
-        // 商品列表可能变短（换商人 / 服务端刷新）⇒ 页码与选中夹回合法范围，
-        // 否则会停在"已经不存在的第 4 页"或选中一件没有的商品（`shopui` 有测试）。
-        if let Some(sh) = net.as_ref().and_then(|n| n.world.shop.as_ref()) {
-            shop_ui.revalidate(sh.items.len());
-        }
-        // 货架被收走（对话关了 / 换图）⇒ **商品列表与包裹一起关**
-        //（用户 2026-10-10 第 1 条：购买对话框关闭时，物品列表及包裹窗口也关闭）
-        if net.as_ref().is_none_or(|n| n.world.shop.is_none()) && win.shop() {
-            win.shop_gone();
-            shop_ui.close();
-            drag.clear();
-        }
-
-        // **快捷栏的失效格清理**：背包被服务端重排/物品用光后，实例号找不到了
-        // ⇒ 那一格留着就是"点了没反应"，清掉。
-        if let Some(n) = net.as_ref() {
-            for slot in belt.iter_mut() {
-                let gone = slot.is_some_and(|b| {
-                    !n.world
-                        .bag
-                        .iter()
-                        .flatten()
-                        .any(|it| it.make_index == b.make_index)
-                });
-                if gone {
-                    *slot = None;
-                }
-            }
-        }
-
-        // **手上/卖窗槽里那件的"下标重绑"**（D-75）：背包被服务端重排后，`Drag`
-        // 里记的**下标**可能已经指向另一件东西 ⇒ 按实例号重新定位；找不到了就是
-        // 这件没了（用光/卖掉/被捡走）⇒ 清掉，免得"放下/卖出"动到别的物品。
-        // ⚠️ 卖错东西**不可恢复**，这条和下面删角确认框那条是同一类防线。
-        if let Some(n) = net.as_ref() {
-            drag.rebind(|mk| {
-                n.world
-                    .bag
-                    .iter()
-                    .position(|o| o.as_ref().is_some_and(|it| it.make_index == mk))
-            });
-        }
+        update::tick(
+            &mut net,
+            &mut shop_seen_seq,
+            &mut shop_ui,
+            &mut win,
+            &mut drag,
+            &mut belt,
+        );
 
         // **按住 Alt 持续挖**（用户 2026-10-10 第 1 条）：锁定了尸体且 Alt 没松 ⇒
         // 到点就发一刀（服务端还有转身间隔节流兜底）。皮革度要挖好几刀才归零
