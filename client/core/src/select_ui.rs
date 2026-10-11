@@ -200,6 +200,20 @@ impl Rect {
     }
 }
 
+/// 第 `slot` 个凹槽的矩形（与 [`slot_at`] **同源**：都出自 [`ALCOVE`]）。
+///
+/// 存在的理由：控件层要"按下的那块矩形"（放松手时不用再算一遍命中）——
+/// 原来只有点判定 `slot_at`，没有矩形。
+pub fn slot_rect(slot: usize, bg: (f32, f32)) -> Rect {
+    let (x0, y0, x1, y1) = ALCOVE[slot.min(Art::SLOTS - 1)];
+    Rect {
+        x: bg.0 + x0,
+        y: bg.1 + y0,
+        w: x1 - x0,
+        h: y1 - y0,
+    }
+}
+
 /// 一个槽里三行文字的位置。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SlotText {

@@ -109,7 +109,7 @@ pub enum Action {
 
 /// "按下的东西"（按下才画叠加图 —— 原版 `Downed` 的语义）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Hit {
+pub(crate) enum Hit {
     /// 某一块面板的「选择」按钮（= 选这个槽）。
     Sel(usize),
     /// **点角色本体**（凹槽那一块）也算选中这个槽。
@@ -144,7 +144,6 @@ pub struct Select {
     /// "要确认的动作"（原版 `DMessageDlg` 的 Yes/No）：回车/[确定]才执行，其余输入 = 取消。
     /// 目前只有删角用它 —— 删除不可恢复，宁可要求一个明确的"是"。
     pending: Option<Action>,
-    down: Option<Hit>,
     /// 每个槽上一次看到的相位 —— 用来在**解冻那一刻**响一声 `101`
     ///（原版是"点了某个槽"就响一次：`IntroScn.pas:1170/1187` 的 `PlaySound(s_meltstone)`）。
     last_phase: [su::SlotPhase; su::Art::SLOTS],
@@ -187,7 +186,6 @@ impl Select {
             newchar: None,
             mouse: (0.0, 0.0),
             pending: None,
-            down: None,
             last_phase,
             place: su::SlotPlace::default(),
             fx_place: su::SlotPlace::default(),
@@ -350,37 +348,6 @@ impl Select {
     }
 
     /// 对话框里的鼠标：只认它那几颗（框内空白无动作；框外也吃掉 —— 模态）。
-    fn newchar_click(&mut self, p: (f32, f32), l: &su::Layout) -> Action {
-        match su::DialogBox::build((l.win.0 as u32, l.win.1 as u32)).hit(p) {
-            Some(su::DialogHit::Ok) => self.confirm_newchar(),
-            Some(su::DialogHit::Close) => {
-                self.newchar = None;
-                Action::None
-            }
-            Some(su::DialogHit::Name) => {
-                if let Some(d) = self.newchar.as_mut() {
-                    d.focus = 0;
-                }
-                Action::None
-            }
-            Some(su::DialogHit::Job(i)) => {
-                if let Some(d) = self.newchar.as_mut() {
-                    d.job = i;
-                    d.focus = 1;
-                }
-                Action::None
-            }
-            Some(su::DialogHit::Sex(i)) => {
-                if let Some(d) = self.newchar.as_mut() {
-                    d.sex = i;
-                    d.focus = 2;
-                }
-                Action::None
-            }
-            None => Action::None,
-        }
-    }
-
     /// 按角色 id 预选（`MIR2_CHAR` 指的那个）。找不到就什么都不做。
     pub fn pick_id(&mut self, id: u64) {
         if let Some(c) = self.chars.iter().find(|c| c.id == id) {
@@ -389,80 +356,122 @@ impl Select {
         }
     }
 
-    fn hit_at(&self, p: (f32, f32), l: &su::Layout) -> Option<Hit> {
+    /// 命中 + **那块的矩形**（给控件引擎：按下记矩形，松开就不用再算一遍）。
+    fn hit_rect(&self, p: (f32, f32), l: &su::Layout) -> Option<(Hit, crate::widget::Rect)> {
         // 先判"点角色本体"（凹槽整块）—— 与下面那两类不重叠，顺序无所谓（见 `su::slot_at`）
         if let Some(i) = su::slot_at(p, l.bg) {
-            return Some(Hit::Slot(i));
+            let r = su::slot_rect(i, l.bg);
+            return Some((Hit::Slot(i), (r.x, r.y, r.w, r.h)));
         }
         for (i, r) in l.sel.iter().enumerate() {
             if r.hit(p) {
-                return Some(Hit::Sel(i));
+                return Some((Hit::Sel(i), (r.x, r.y, r.w, r.h)));
             }
         }
-        // ⚠️ 「开始」那颗**石台**（83×40，`su::START_PLATE_SRC`）比钮本身（44×21）大得多
-        // ⇒ 先按台子判一次，否则"看得见台子、点不中"（用户 2026-10-09 第 1 条里那份观感）。
-        if su::start_plate_at(l.menu[0]).hit(p) {
-            return Some(Hit::Menu(0));
+        // ⚠️ 「开始」那颗**石台**（83×40）比钮本身（44×21）大得多 ⇒ 先按台子判一次，
+        // 否则"看得见台子、点不中"（用户 2026-10-09 第 1 条里那份观感）。
+        let plate = su::start_plate_at(l.menu[0]);
+        if plate.hit(p) {
+            return Some((Hit::Menu(0), (plate.x, plate.y, plate.w, plate.h)));
         }
         for (i, r) in l.menu.iter().enumerate() {
             if r.hit(p) {
-                return Some(Hit::Menu(i));
+                return Some((Hit::Menu(i), (r.x, r.y, r.w, r.h)));
             }
         }
         None
     }
 
-    /// `msg` 同 [`Select::on_up`]：弹窗的几何（`None` = 量不到素材 ⇒ 不认那颗 [Ok]）。
-    pub fn on_down(&mut self, p: (f32, f32), l: &su::Layout, msg: Option<su::MsgBox>) {
-        // 弹窗开着时只认它那颗 [Ok]（模态），其余位置一律记 `None` ⇒ 抬起时不会触发别的
-        self.down = if self.pending.is_some() || self.msg.is_some() {
-            msg.filter(|m| m.hit_ok(p)).map(|_| Hit::MsgOk)
-        } else {
-            self.hit_at(p, l)
-        };
+    /// `msg` 同 [`Select::click_select`]：弹窗的几何（`None` = 量不到素材 ⇒ 不认那颗 [Ok]）。
+    ///
+    /// ⚠️ 2026-10-11 转控件层：原来自己存 `self.down`、抬起时再判一遍 ⇒ 命中算了两遍。
+    /// 现在按官方 `TDButton` 的路子：按下把 `(控件, 矩形)` 交给 `widget::Ui`，
+    /// 松开由引擎判"是不是同一块" —— 选角也享受同一套 OnClick 规范。
+    ///
+    /// ⚠️ 建角框与弹窗都是**模态**的 ⇒ 开着的时候只认它们自己的控件。
+    pub fn on_down(
+        &mut self,
+        p: (f32, f32),
+        l: &su::Layout,
+        msg: Option<su::MsgBox>,
+        ui: &mut crate::widget::Ui,
+    ) {
+        if self.newchar.is_some() {
+            let b = su::DialogBox::build((l.win.0 as u32, l.win.1 as u32));
+            if let Some(dh) = b.hit(p) {
+                ui.press(crate::Press::NewChar(dh), dlg_rect(&b, dh));
+            }
+            return;
+        }
+        if self.pending.is_some() || self.msg.is_some() {
+            if let Some(m) = msg {
+                if m.hit_ok(p) {
+                    ui.press(
+                        crate::Press::Select(Hit::MsgOk),
+                        (m.ok.x, m.ok.y, m.ok.w, m.ok.h),
+                    );
+                }
+            }
+            return;
+        }
+        if let Some((h, r)) = self.hit_rect(p, l) {
+            ui.press(crate::Press::Select(h), r);
+        }
     }
 
-    /// 抬起：只有"按下与抬起在同一颗"才算点中。
-    ///
-    /// `msg` = 弹窗（[`su::MsgBox`]）的几何，`None` = 量不到素材（那就不认它那颗 [Ok]）。
-    /// 它必须由调用方给进来：弹窗的几何属于素材尺寸，场景里只有 `Layout`（见 [`su::MsgBox`]）。
-    pub fn on_up(&mut self, p: (f32, f32), l: &su::Layout, msg: Option<su::MsgBox>) -> Action {
-        // 建角对话框是模态的：只认它那几颗按钮，其余点击一律吃掉。
-        if self.newchar.is_some() {
-            self.down = None;
-            return self.newchar_click(p, l);
-        }
-        // 弹窗是**模态**的（原版 `DMessageDlg`）：先判它那颗 [Ok] ——
-        // 点 [Ok]（且**按下也在它上面**）= 确认（删角：真删；其余：只是关掉），
-        // 点别处 = 关掉/取消。
-        //
-        // ⚠️ 这段必须在"按下与抬起同一颗"那条之前：弹窗的 [Ok] 不在 `hit_at` 的范围内
-        //（那里只有「选择」与菜单），照旧顺序走会**永远判不出点中它** ——
-        // 表现就是"确定按钮不能点击、只有回车有效"（用户 2026-10-08 报的）。
-        if self.pending.is_some() || self.msg.is_some() {
-            let on_ok = self.down == Some(Hit::MsgOk) && msg.is_some_and(|m| m.hit_ok(p));
-            self.down = None;
-            if on_ok {
-                self.msg = None;
-                // 删角的那条"待确认动作"：点 [Ok] 与回车同义
-                return self.pending.take().unwrap_or(Action::None);
-            }
+    /// **点中了**一个选角控件（引擎已判定按下与抬起在同一块）⇒ 执行。
+    pub fn click_select(&mut self, hit: Hit, _l: &su::Layout) -> Action {
+        if hit == Hit::MsgOk {
+            // 删角那条"待确认动作"：点 [Ok] 与回车同义
             self.msg = None;
-            self.pending = None;
-            return Action::None;
+            return self.pending.take().unwrap_or(Action::None);
         }
-        let hit = self.hit_at(p, l);
-        let same = hit.is_some() && hit == self.down;
-        self.down = None;
-        if !same {
-            return Action::None;
-        }
-        let hit = hit.expect("上面判过");
         // 鼠标点菜单项时把键盘光标也挪过去（两条输入共用一份状态，免得视觉上打架）
         if let Hit::Menu(i) = hit {
             self.menu_cursor = i;
         }
         self.activate(hit)
+    }
+
+    /// **点中了**建角框里的控件（引擎已判定）⇒ 执行。
+    pub fn click_newchar(&mut self, hit: su::DialogHit) -> Action {
+        match hit {
+            su::DialogHit::Ok => self.confirm_newchar(),
+            su::DialogHit::Close => {
+                self.newchar = None;
+                Action::None
+            }
+            su::DialogHit::Name => {
+                if let Some(d) = self.newchar.as_mut() {
+                    d.focus = 0;
+                }
+                Action::None
+            }
+            su::DialogHit::Job(i) => {
+                if let Some(d) = self.newchar.as_mut() {
+                    d.job = i;
+                    d.focus = 1;
+                }
+                Action::None
+            }
+            su::DialogHit::Sex(i) => {
+                if let Some(d) = self.newchar.as_mut() {
+                    d.sex = i;
+                    d.focus = 2;
+                }
+                Action::None
+            }
+        }
+    }
+
+    /// 点在**没有控件**的地方：弹窗（模态）就此关掉；建角框是模态的 ⇒ 点外面不关它。
+    pub fn click_outside(&mut self) -> Action {
+        if self.newchar.is_some() {
+            return Action::None;
+        }
+        self.msg = None;
+        self.pending = None;
+        Action::None
     }
 
     /// 键盘（**我们的扩展**）。
@@ -591,6 +600,8 @@ impl Select {
         asset_dir: &Option<std::path::PathBuf>,
         win: (u32, u32),
         now: Instant,
+        // 控件引擎：按下态问它（不再自存 `down`）
+        widget_ui: &crate::widget::Ui,
     ) -> Result<(), sdl3::Error> {
         let Some(dir) = asset_dir.as_deref() else {
             canvas.set_draw_color(sdl3::pixels::Color::RGB(80, 0, 0));
@@ -726,7 +737,11 @@ impl Select {
 
         // 按下态 / 键盘高亮：**只在按住或键盘选中时**叠那张图
         //（原版 `DscSelect1DirectPaint` 只认 `Downed`；键盘是我们的扩展）
-        match self.down {
+        let down: Option<Hit> = match widget_ui.held() {
+            Some(crate::Press::Select(h)) => Some(h),
+            _ => None,
+        };
+        match down {
             // 弹窗那颗 [Ok] 没有按下态图（原版那颗也只是同一张：登录界面那边按下是 +1 位移，
             // 选角这边按下的反馈就是"弹窗被点掉了"，不必再画一层）
             Some(Hit::MsgOk) => {}
@@ -999,8 +1014,39 @@ fn wrap(s: &str, cols: usize) -> Vec<String> {
     out
 }
 
+/// 建角框里某个控件对应的矩形（给控件引擎）。
+fn dlg_rect(b: &su::DialogBox, h: su::DialogHit) -> crate::widget::Rect {
+    let r = match h {
+        su::DialogHit::Name => b.name,
+        su::DialogHit::Job(i) => b.job[i],
+        su::DialogHit::Sex(i) => b.sex[i],
+        su::DialogHit::Ok => b.ok,
+        su::DialogHit::Close => b.close,
+    };
+    (r.x, r.y, r.w, r.h)
+}
+
 #[cfg(test)]
 mod tests {
+    /// 走一遍**真实的**按下 → 抬起（含控件引擎的 OnClick 判定）
+    /// ⇒ 拖出去松开不算点中，跟游戏里那条路是同一套。
+    fn tap(
+        s: &mut Select,
+        l: &su::Layout,
+        msg: Option<su::MsgBox>,
+        down_at: (f32, f32),
+        up_at: (f32, f32),
+    ) -> Action {
+        let mut ui = crate::widget::Ui::new();
+        ui.set_mouse(down_at);
+        s.on_down(down_at, l, msg, &mut ui);
+        match ui.release(up_at) {
+            Some(crate::Press::Select(h)) => s.click_select(h, l),
+            Some(crate::Press::NewChar(dh)) => s.click_newchar(dh),
+            _ => s.click_outside(),
+        }
+    }
+
     use super::*;
 
     /// ⚠️ 槽位**单独给**（默认取 id 当槽位）：真实下发里它是服务端按"含已删除的
@@ -1138,11 +1184,13 @@ mod tests {
             win: (1024.0, 768.0),
         };
         let c = r.center();
-        s.on_down(c, &l, None);
-        assert_eq!(s.on_up(c, &l, None), Action::None, "第一次点击只关弹窗");
+        assert_eq!(
+            tap(&mut s, &l, None, c, c),
+            Action::None,
+            "第一次点击只关弹窗"
+        );
         assert!(s.msg.is_none());
-        s.on_down(c, &l, None);
-        assert_eq!(s.on_up(c, &l, None), Action::Enter(11));
+        assert_eq!(tap(&mut s, &l, None, c, c), Action::Enter(11));
     }
 
     /// **弹窗的 [Ok] 必须能点**（用户 2026-10-08 报的"确定按钮不能点击、只有回车有效"）。
@@ -1177,9 +1225,8 @@ mod tests {
         s.on_key(Keycode::Down); // 菜单光标到「删除人物」
         assert_eq!(s.on_key(Keycode::Return), Action::None, "先弹确认框");
         let ok = b.ok.center();
-        s.on_down(ok, &l, Some(b));
         assert_eq!(
-            s.on_up(ok, &l, Some(b)),
+            tap(&mut s, &l, Some(b), ok, ok),
             Action::Delete(1),
             "[确定] 该与回车同义（真删）"
         );
@@ -1192,16 +1239,18 @@ mod tests {
         s.on_key(Keycode::Return);
         assert!(s.pending.is_some());
         let elsewhere = (b.frame.x + 10.0, b.frame.y + 10.0);
-        s.on_down(elsewhere, &l, Some(b));
-        assert_eq!(s.on_up(elsewhere, &l, Some(b)), Action::None, "别处 = 取消");
+        assert_eq!(
+            tap(&mut s, &l, Some(b), elsewhere, elsewhere),
+            Action::None,
+            "别处 = 取消"
+        );
         assert!(s.msg.is_none() && s.pending.is_none(), "取消也要清干净");
 
         // ③ "从别处**拖到** [Ok] 上松手"不算点中：删角不可恢复，只认一次干净的点击
         s.on_key(Keycode::Return);
         assert!(s.pending.is_some());
-        s.on_down(elsewhere, &l, Some(b));
         assert_eq!(
-            s.on_up(ok, &l, Some(b)),
+            tap(&mut s, &l, Some(b), elsewhere, ok),
             Action::None,
             "按下不在 [Ok] 上就不算点中它"
         );
@@ -1209,8 +1258,11 @@ mod tests {
 
         // ④ 量不到弹窗素材（`None`）时**不认**那颗按钮：只关掉，不会误删
         s.on_key(Keycode::Return);
-        s.on_down(ok, &l, None);
-        assert_eq!(s.on_up(ok, &l, None), Action::None, "没有几何就不该确认");
+        assert_eq!(
+            tap(&mut s, &l, None, ok, ok),
+            Action::None,
+            "没有几何就不该确认"
+        );
         assert!(s.pending.is_none());
     }
 

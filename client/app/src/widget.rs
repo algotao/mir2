@@ -68,6 +68,10 @@ pub(crate) enum Press {
     Shop(crate::shop::Hit),
     /// 卖货窗的槽 / [OK] / [关闭]。
     Sell(crate::shop::SellHit),
+    /// 选角场景的按钮（[`crate::select::Hit`]）。
+    Select(crate::select::Hit),
+    /// 建角对话框里的控件（[`mir2_core::select_ui::DialogHit`]）。
+    NewChar(mir2_core::select_ui::DialogHit),
     /// 登录界面的按钮（[`crate::login::Btn`]）。
     ///
     /// ⚠️ 登录是 `mode == 1`，与游戏内（`mode == 2`）的 `release` 不会撞车

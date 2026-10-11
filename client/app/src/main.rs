@@ -1742,6 +1742,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // 登录界面的按钮：不会走到这里（那是 `mode == 1` 的事，
                                 // 见下面登录那条 `release`）。列出来只为穷尽匹配。
                                 Press::Login(_) => {}
+                                // 选角场景（那是 `mode == 4` 的事）⇒ 同上，只为穷尽匹配
+                                Press::Select(_) | Press::NewChar(_) => {}
                             }
                             continue; // 按在界面上 ⇒ 不走世界的"松手"逻辑
                         }
@@ -1792,7 +1794,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(l) =
                             mir2_core::select_ui::Layout::build(UI_WIN, |c, i| ui.size(dir, c, i))
                         {
-                            scene.on_down((x, y), &l, msg);
+                            scene.on_down((x, y), &l, msg, &mut ui_click);
                         }
                     }
                 }
@@ -1805,12 +1807,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let (x, y) = ui::ui_inv_pt((x, y)); // 设计空间（见上面那条）
                     let act = match (asset_dir.as_ref(), select_scene.as_mut()) {
                         (Some(dir), Some(scene)) => {
-                            // 弹窗的几何也要给进去：不然它那颗 [确定] 点不中（见 `Select::on_up`）
-                            let msg = select::msgbox_geom(&mut ui, dir, UI_WIN);
+                            // OnClick 交给引擎判（拖出去松开就不算）⇒ 这里只执行
+                            let key = ui_click.release((x, y));
                             match mir2_core::select_ui::Layout::build(UI_WIN, |c, i| {
                                 ui.size(dir, c, i)
                             }) {
-                                Some(l) => scene.on_up((x, y), &l, msg),
+                                Some(l) => match key {
+                                    Some(Press::Select(h)) => scene.click_select(h, &l),
+                                    Some(Press::NewChar(dh)) => scene.click_newchar(dh),
+                                    // 没按在任何控件上 ⇒ 弹窗（模态）就此关掉
+                                    _ => scene.click_outside(),
+                                },
                                 None => select::Action::None,
                             }
                         }
@@ -2623,6 +2630,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // ⚠️ 给的是**设计尺寸**（800×600）：版式算在设计空间里，画的时候整体乘 1.28
                     UI_WIN,
                     started,
+                    &ui_click,
                 )?;
             }
         } else if mode == 1 {
