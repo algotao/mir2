@@ -28,6 +28,17 @@ use mir2_core::text::{Face, Glyph};
 /// 字形纹理缓存上限（一屏中文也就几十个字；越界直接清空）。
 const GLYPH_CAP: usize = 512;
 
+/// **覆盖度阈值**：≥ 它算"实心"（alpha 255），否则"透明"（alpha 0）。
+///
+/// 字形是 8 位覆盖度（0..255）；这里把它**切成两级** ⇒ 字的边缘是硬的，
+/// 不再有抗锯齿（用户 2026-10-11 要的）。
+///
+/// ⚠️ 调它就是在"硬 vs 糊"之间找平衡：
+/// 调**低**（如 64）⇒ 笔画变粗、小字更清楚，但边缘会有点毛刺；
+/// 调**高**（如 192）⇒ 笔画变细、细笔画可能断（中文"量""勇"先受影响）。
+/// 默认 128（正好一半）。
+const COV_CUTOFF: u8 = 128;
+
 /// 颜色三元组。
 pub type Rgb = (u8, u8, u8);
 
@@ -257,9 +268,17 @@ fn ensure_glyph<'a, T>(
         }
         return;
     }
+    // ⚠️ **覆盖度二值化**（用户 2026-10-11：「关闭字符输出的抗锯齿」）。
+    //
+    // fontdue 光栅化出来的是 **8 位覆盖度**（`cov`），边缘像素是 128 / 64 / 32…
+    // 这种灰阶 ⇒ 画上去就是"字发虚/有抗锯齿"。要硬边（原版那种点阵味）就把
+    // 覆盖度按阈值切成 0 / 255：**不是**改 `BlendMode` —— 混合模式决定的是
+    // "alpha 怎么和背景混"，改成 `None` 会让 alpha=0 的像素也**盖住背景**，
+    // 字会变成一个个实心方块。所以这里动数据，混合照旧用 `Blend`。
     let mut rgba = Vec::with_capacity(g.cov.len() * 4);
     for c in &g.cov {
-        rgba.extend_from_slice(&[255, 255, 255, *c]);
+        let a = if *c >= COV_CUTOFF { 255 } else { 0 };
+        rgba.extend_from_slice(&[255, 255, 255, a]);
     }
     let Ok(mut tex) = tc.create_texture(PixelFormat::RGBA32, TextureAccess::Static, g.w, g.h)
     else {
