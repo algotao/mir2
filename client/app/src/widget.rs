@@ -362,6 +362,23 @@ impl Drag {
         Self { from }
     }
 
+    /// **卖窗圆槽的点按**（原版 `DSellItemSlotDirectPaint` 的语义）：
+    /// 空手点槽 = 把槽里那件**拿回手上**；拿着东西点槽 = **放进去**。
+    /// 返回 `(手上, 槽里)`。
+    ///
+    /// ⚠️ 抽出来是因为它原来埋在事件循环里（测不到）；"同时拿着又放着"
+    /// 是不该出现的状态，这里保证不会出现。
+    pub(crate) fn toggle_slot(
+        held: Option<Drag>,
+        placed: Option<Drag>,
+    ) -> (Option<Drag>, Option<Drag>) {
+        match (held, placed) {
+            (Some(d), None) => (None, Some(d)),
+            (None, Some(d)) => (Some(d), None),
+            (h, p) => (h, p),
+        }
+    }
+
     /// 它是从背包第几格拿起来的（不是背包来的 ⇒ `None`）。
     pub(crate) fn bag_index(self) -> Option<usize> {
         match self.from {
@@ -391,6 +408,18 @@ mod grid_tests {
             assert_eq!(g.hit_cell((x + w / 2.0, y + h / 2.0)), Some(i), "第 {i} 格");
         }
         assert_eq!(g.hit_cell((0.0, 0.0)), None, "网格外 ⇒ None");
+    }
+
+    #[test]
+    fn 卖窗圆槽的点按在手上与槽之间搬() {
+        let d = Drag::new(SlotRef::Bag(3));
+        // 拿着 ⇒ 点槽 = 放进去
+        assert_eq!(Drag::toggle_slot(Some(d), None), (None, Some(d)));
+        // 空手 ⇒ 点槽 = 拿回手上
+        assert_eq!(Drag::toggle_slot(None, Some(d)), (Some(d), None));
+        // 两边都空 / 两边都有 ⇒ 原样（不该出现，也不能变出东西来）
+        assert_eq!(Drag::toggle_slot(None, None), (None, None));
+        assert_eq!(Drag::toggle_slot(Some(d), Some(d)), (Some(d), Some(d)));
     }
 
     #[test]

@@ -107,7 +107,7 @@ pub(crate) use world::*;
 #[cfg(test)]
 mod tests;
 mod widget;
-pub(crate) use widget::{Press, Ui};
+pub(crate) use widget::{Drag, Press, SlotRef, Ui};
 
 /// 待确认的"退出类"动作（底栏那两颗 [注销] / [退出] 用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -399,9 +399,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Alt 松开 / 目标没了 / 人走远 ⇒ 清。
     let mut butch_target: Option<u64> = None;
     let mut butch_next = Instant::now();
-    // 卖货窗（原版拖放式，用户第 3 条）：抓在手上 / 放进圈里的**背包槽位**。
-    let mut sell_held: Option<usize> = None;
-    let mut sell_placed: Option<usize> = None;
+    // **手上拿着的东西**（官方 `g_boItemMoving` + `g_MovingItem` —— D-57 / D-68）。
+    // `Drag` 带**来源**（背包格 / 卖窗槽 / 腰带 / 装备槽）⇒ 各槽位之间互相拖放
+    // 可以共用一套逻辑，不用每种组合各写一遍。
+    let mut held: Option<Drag> = None;
+    // 已**放进卖窗圆槽**的那件（原版：从手里放进槽 ⇒ 物品不再跟着鼠标，
+    // 但 `g_MovingItem` 仍记着它是从哪格来的 ⇒ 卖的时候要按那个下标找物品）。
+    let mut placed: Option<Drag> = None;
     // 双击使用：上次点的是哪格、什么时候（450ms 内同格再点 = 双击 ⇒ 使用物品）
     let mut last_bag_click: Option<(usize, Instant)> = None;
     // 待捡的地面物品：点了地上的东西 ⇒ 先走过去，**到了那格**才发拾取
@@ -1005,7 +1009,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         //     = **交换**（那格的物品变为拾取）。服务端是权威
                                         //     （发 `MoveItem`），本地乐观更新，等全量刷新覆盖。
                                         // 5. 双击物品格 = **使用**（原版 `CM_EAT`）。
-                                        let held_same = sell_held == Some(idx);
                                         let double_click = match last_bag_click {
                                             Some((c, t)) if c == idx => {
                                                 t.elapsed() < Duration::from_millis(450)
@@ -1026,7 +1029,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     );
                                                 }
                                             }
-                                        } else if double_click && (sell_held.is_none() || held_same)
+                                        } else if double_click
+                                            && (held.is_none()
+                                                || held.and_then(Drag::bag_index) == Some(idx))
                                         {
                                             // 原版双击装备 = 穿戴；双击其他物品 = 使用。
                                             // 第一击已把图标拿起并隐藏原格，第二击同格时从
@@ -1042,40 +1047,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                         n.bag_use(idx as u32);
                                                         println!("[net] 使用 {}", it.name);
                                                     }
-                                                    sell_held = None;
-                                                    sell_placed = None;
+                                                    held = None;
+                                                    placed = None;
                                                 }
                                             }
-                                        } else if let Some(held) = sell_held {
-                                            if held == idx {
-                                                sell_held = None; // 单击回原格 = 取消拾取
+                                        } else if let Some(held_idx) =
+                                            held.and_then(Drag::bag_index)
+                                        {
+                                            if held_idx == idx {
+                                                held = None; // 单击回原格 = 取消拾取
                                                 println!("[ui] 放回原格");
                                             } else {
-                                                n.bag_move(held as u32, idx as u32);
+                                                n.bag_move(held_idx as u32, idx as u32);
                                                 // 乐观交换/移动：服务端随后用全量 BagItems 覆盖。
                                                 if let Some(nm) = net.as_mut() {
-                                                    let moved =
-                                                        nm.world.bag.get(held).cloned().flatten();
+                                                    let moved = nm
+                                                        .world
+                                                        .bag
+                                                        .get(held_idx)
+                                                        .cloned()
+                                                        .flatten();
                                                     let target =
                                                         nm.world.bag.get(idx).cloned().flatten();
                                                     if let Some(it) = moved {
                                                         nm.world.bag[idx] = Some(it);
                                                     }
-                                                    sell_held = if target.is_some() {
-                                                        Some(idx)
+                                                    held = if target.is_some() {
+                                                        Some(Drag::new(SlotRef::Bag(idx)))
                                                     } else {
                                                         None
                                                     };
-                                                    nm.world.bag[held] = target;
+                                                    nm.world.bag[held_idx] = target;
                                                 }
-                                                sell_placed = None;
-                                                println!("[net] 包裹 {} → {}", held, idx);
+                                                placed = None;
+                                                println!("[net] 包裹 {} → {}", held_idx, idx);
                                             }
                                         } else if let Some(Some(it)) = n.world.bag.get(idx) {
                                             // 左键单击 = 拾取（普通状态/商店卖出共用）
                                             if it.make_index != 0 {
-                                                sell_held = Some(idx);
-                                                sell_placed = None;
+                                                held = Some(Drag::new(SlotRef::Bag(idx)));
+                                                placed = None;
                                                 println!("[ui] 拾起 {}", it.name);
                                                 press_at = None;
                                                 pending_pickup = None;
@@ -1330,12 +1341,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 if let Some(Some(it)) = n.world.bag.get(idx) {
                                                     if it.make_index != 0 {
                                                         n.bag_repair(idx as u32, special);
-                                                        sell_held = None;
+                                                        held = None;
                                                         println!("[net] 修理 {}", it.name);
                                                     }
                                                 }
                                             } else if double_click
-                                                && (sell_held.is_none() || sell_held == Some(idx))
+                                                && (held.is_none()
+                                                    || held.and_then(Drag::bag_index) == Some(idx))
                                             {
                                                 if let Some(Some(it)) = n.world.bag.get(idx) {
                                                     if it.make_index != 0 {
@@ -1350,23 +1362,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                             n.bag_use(idx as u32);
                                                             println!("[net] 使用 {}", it.name);
                                                         }
-                                                        sell_held = None;
-                                                        sell_placed = None;
+                                                        held = None;
+                                                        placed = None;
                                                     }
                                                 }
-                                            } else if let Some(held) = sell_held {
-                                                if held == idx {
+                                            } else if let Some(held_idx) =
+                                                held.and_then(Drag::bag_index)
+                                            {
+                                                if held_idx == idx {
                                                     // 点回原格 = 取消拾取。
-                                                    sell_held = None;
+                                                    held = None;
                                                     println!("[ui] 放回原格");
                                                 } else {
-                                                    n.bag_move(held as u32, idx as u32);
+                                                    n.bag_move(held_idx as u32, idx as u32);
                                                     // 乐观交换/移动；服务端随后用全量 BagItems 覆盖。
                                                     if let Some(nm) = net.as_mut() {
                                                         let moved = nm
                                                             .world
                                                             .bag
-                                                            .get(held)
+                                                            .get(held_idx)
                                                             .cloned()
                                                             .flatten();
                                                         let target = nm
@@ -1378,20 +1392,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                         if let Some(it) = moved {
                                                             nm.world.bag[idx] = Some(it);
                                                         }
-                                                        sell_held = if target.is_some() {
-                                                            Some(idx)
+                                                        held = if target.is_some() {
+                                                            Some(Drag::new(SlotRef::Bag(idx)))
                                                         } else {
                                                             None
                                                         };
-                                                        nm.world.bag[held] = target;
+                                                        nm.world.bag[held_idx] = target;
                                                     }
-                                                    sell_placed = None;
-                                                    println!("[net] 包裹 {} → {}", held, idx);
+                                                    placed = None;
+                                                    println!("[net] 包裹 {} → {}", held_idx, idx);
                                                 }
                                             } else if let Some(Some(it)) = n.world.bag.get(idx) {
                                                 if it.make_index != 0 {
-                                                    sell_held = Some(idx);
-                                                    sell_placed = None;
+                                                    held = Some(Drag::new(SlotRef::Bag(idx)));
+                                                    placed = None;
                                                     println!("[ui] 拾起 {}", it.name);
                                                 }
                                             }
@@ -1595,9 +1609,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 },
                                 // 快捷栏：手上拿着 ⇒ 放进这格；空手 ⇒ 使用
                                 Press::Belt(i) => {
-                                    if let Some(held) = sell_held.take() {
+                                    // 手上拿的是**背包里的东西** ⇒ 放进这一格。
+                                    // （从腰带/装备槽拿来的还没接线 ⇒ `bag_index()` 为 None，
+                                    //  那就落到下面"使用这一格"的老逻辑上。）
+                                    if let Some(idx) = held.and_then(Drag::bag_index) {
+                                        held = None;
                                         if let Some(Some(it)) =
-                                            net.as_ref().and_then(|n| n.world.bag.get(held))
+                                            net.as_ref().and_then(|n| n.world.bag.get(idx))
                                         {
                                             belt[i] = Some(crate::layout::BeltSlot {
                                                 make_index: it.make_index,
@@ -1605,7 +1623,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             });
                                             println!("[ui] 快捷栏 {} = {}", i + 1, it.name);
                                         }
-                                        sell_placed = None;
+                                        placed = None;
                                     } else if let Some(b) = belt[i] {
                                         belt_use(&mut net, &mut belt, i, b.make_index);
                                     }
@@ -1663,44 +1681,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Press::Sell(crate::shop::SellHit::Close) => {
                                     shop_open = false;
                                     bag_open = false;
-                                    sell_held = None;
-                                    sell_placed = None;
+                                    held = None;
+                                    placed = None;
                                     println!("[ui] 卖货窗关闭（同步收包裹）");
                                 }
                                 Press::Sell(crate::shop::SellHit::Slot) => {
-                                    match (sell_held, sell_placed) {
-                                        (Some(held), None) => {
-                                            sell_placed = Some(held);
-                                            sell_held = None;
-                                        }
-                                        (None, Some(p)) => {
-                                            sell_held = Some(p);
-                                            sell_placed = None;
-                                        }
-                                        _ => {}
-                                    }
+                                    // 拿着东西点槽 = **放进去**；空手点槽 = **拿回手上**。
+                                    // 两边都 `take()` 再按情况放回去 ⇒ 不存在"同时拿着又放着"。
+                                    let (h, p) = Drag::toggle_slot(held, placed);
+                                    held = h;
+                                    placed = p;
                                 }
                                 Press::Sell(crate::shop::SellHit::Ok) => {
-                                    if let Some(idx) = sell_placed.take() {
-                                        let Some(n) = net.as_ref() else {
-                                            sell_placed = Some(idx);
-                                            continue;
-                                        };
-                                        let Some(sh) = n.world.shop.as_ref() else {
-                                            sell_placed = Some(idx);
-                                            continue;
-                                        };
-                                        let npc = sh.npc_id;
-                                        let Some(Some(it)) = n.world.bag.get(idx) else {
-                                            continue;
-                                        };
-                                        if it.make_index != 0 {
-                                            let count = it.count.max(1);
-                                            let mk = it.make_index;
-                                            let name = it.name.clone();
-                                            n.shop_sell(npc, mk, count);
-                                            println!("[net] 卖出 {} x{count}", name);
-                                        }
+                                    // 只有**从背包拿来的**才能卖（其它来源还没接线 ⇒ 原样放回槽里）
+                                    let Some(d) = placed.take() else {
+                                        continue;
+                                    };
+                                    let Some(idx) = d.bag_index() else {
+                                        placed = Some(d);
+                                        continue;
+                                    };
+                                    let Some(n) = net.as_ref() else {
+                                        placed = Some(d);
+                                        continue;
+                                    };
+                                    let Some(sh) = n.world.shop.as_ref() else {
+                                        placed = Some(d);
+                                        continue;
+                                    };
+                                    let npc = sh.npc_id;
+                                    let Some(Some(it)) = n.world.bag.get(idx) else {
+                                        continue;
+                                    };
+                                    if it.make_index != 0 {
+                                        let count = it.count.max(1);
+                                        let mk = it.make_index;
+                                        let name = it.name.clone();
+                                        n.shop_sell(npc, mk, count);
+                                        println!("[net] 卖出 {} x{count}", name);
                                     }
                                 }
                                 Press::Sell(_) => {}
@@ -2277,8 +2295,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if net.as_ref().is_none_or(|n| n.world.shop.is_none()) && shop_open {
             shop_open = false;
             shop_sel = None;
-            sell_held = None;
-            sell_placed = None;
+            held = None;
+            placed = None;
             if bag_by_shop {
                 bag_open = false;
                 bag_by_shop = false;
@@ -2424,10 +2442,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(dir) = asset_dir.as_deref() {
                     // 抓在手上 / 放进卖窗圆槽的那件 ⇒ 原格子隐藏（用户 2026-10-10）
                     let mut hide = Vec::new();
-                    if let Some(h) = sell_held {
+                    if let Some(h) = held.and_then(Drag::bag_index) {
                         hide.push(h);
                     }
-                    if let Some(p) = sell_placed {
+                    if let Some(p) = placed.and_then(Drag::bag_index) {
                         hide.push(p);
                     }
                     // 关闭钮的 hover（高亮素材 64 叠上去）
@@ -2479,7 +2497,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &mut ui_texts,
                         dir,
                         net.as_ref(),
-                        sell_placed,
+                        placed.and_then(Drag::bag_index),
                         &ui_click,
                     )?;
                 }
@@ -2492,7 +2510,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
                             let idx = bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
                             if let Some(Some(it)) = n.world.bag.get(idx) {
-                                if it.make_index != 0 && sell_held.is_none() {
+                                if it.make_index != 0 && held.is_none() {
                                     hud::draw_item_tip(
                                         &mut canvas,
                                         &tex_creator,
@@ -2509,7 +2527,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 //
                 // ⚠️ 必须画在卖窗**之后**（最上层）：原来夹在买窗与卖窗之间 ⇒
                 // 物品移到卖窗上时被卖窗遮住（用户 2026-10-10）。
-                if let Some(held) = sell_held {
+                if let Some(held) = held.and_then(Drag::bag_index) {
                     if let Some(n) = net.as_ref() {
                         if let Some(Some(it)) = n.world.bag.get(held) {
                             if let Some((iw, ih)) = ui.size(dir, "Items", it.looks) {

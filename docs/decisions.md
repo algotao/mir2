@@ -4578,3 +4578,21 @@ TDControl  rect / Visible / WLib+FaceIndex / SurfaceX(父偏移) / InRange(hit)
 
 **验收**：客户端 109/148/7/3 + Go 25 包，clippy 0。
 `widget` 测试 9 条（新增：网格排布与命中同源、拖拽会话带来源）。
+
+---
+
+## D-69 "手上拿着东西"升级成 `Option<Drag>`（41 处，2026-10-11）
+
+`sell_held: Option<usize>` + `sell_placed: Option<usize>`（只认"背包第几格"）⇒
+`held: Option<Drag>` + `placed: Option<Drag>`，`Drag { from: SlotRef }` 带**来源**
+（`Bag(idx)` / `Sell` / `Belt(i)` / `Equip(slot)`）。
+
+好处：背包 ↔ 卖窗槽 ↔ 腰带 ↔ 装备槽 之间互相拖放**共用一套逻辑**，不用每种组合各写一遍。
+现在只有 `Bag` / `Sell` 两个来源真正接线（`bag_index()` 为 `None` 的分支走回老逻辑）。
+
+顺带把**卖窗圆槽的点按**从事件循环里抽成 `Drag::toggle_slot(held, placed)` ⇒
+原来埋在 2500 行 `main()` 里测不到，现在有测试钉住"不会同时拿着又放着"：
+
+- 拿着 + 空槽 ⇒ 放进去；空手 + 有槽 ⇒ 拿回手上；两边都空 / 两边都有 ⇒ 原样。
+
+**验收**：客户端 110/148/7/3 + Go 25 包，clippy 0；`widget` 测试 10 条。
