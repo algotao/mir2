@@ -499,3 +499,39 @@ func TestShopSellMeatRemovesIt(t *testing.T) {
 		t.Errorf("矿石(DuraMax=10000)不该可堆叠，StackLimit=%d", ore.StackLimit())
 	}
 }
+
+// TestShopSellPartialStack **卖堆叠物的一部分**：堆里减掉、钱按件数算。
+//
+// 原来只有"整堆卖光"和"卖一件"两种被钉住（P0 那条是肉）——"卖 4 瓶剩 6 瓶"
+// 走的是 `ui.Dura -= n` 那条分支，没人测过；而它是玩家最常干的事
+// （身上 10 瓶药、只卖掉几瓶换钱）。
+func TestShopSellPartialStack(t *testing.T) {
+	potion := wuItem(2, "金创药", 0, data.MinMax{})
+	potion.Price = 100 // 半价 = 50
+	s, p, npc, _ := protoShopServer(t, "@trading @buy @sell", shopItem(), potion)
+	p.Char.Data.Gold = 0
+	p.Char.Data.BagItems[3] = &pb.UserItem{Index: 2, MakeIndex: 55, Dura: 10} // 10 瓶
+
+	// 卖 4 瓶 ⇒ 剩 6 瓶、得 4×50
+	s.onShopSell(nil, p, &protocol.ShopSell{NpcId: uint64(npc.ID), MakeIndex: 55, Count: 4})
+
+	got := p.Char.Data.BagItems[3]
+	if got == nil || got.Index == 0 {
+		t.Fatal("只卖了一部分 ⇒ 剩下的那堆必须还在背包里")
+	}
+	if got.Dura != 6 {
+		t.Errorf("堆里应剩 6 瓶，实得 %d", got.Dura)
+	}
+	if p.Char.Data.Gold != 200 {
+		t.Errorf("金币 = %d，期望 200（半价 50 × 4 瓶）", p.Char.Data.Gold)
+	}
+
+	// 卖的比堆里还多 ⇒ 按堆里的全部卖掉（不能卖成负数、也不能多给钱）
+	s.onShopSell(nil, p, &protocol.ShopSell{NpcId: uint64(npc.ID), MakeIndex: 55, Count: 99})
+	if p.Char.Data.BagItems[3].GetIndex() != 0 {
+		t.Errorf("卖光了这一格就该清空，实得 %+v", p.Char.Data.BagItems[3])
+	}
+	if p.Char.Data.Gold != 200+300 {
+		t.Errorf("金币 = %d，期望 500（再卖 6 瓶 × 50）", p.Char.Data.Gold)
+	}
+}

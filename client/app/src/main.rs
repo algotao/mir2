@@ -1073,7 +1073,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                         nm.world.bag[idx] = Some(it);
                                                     }
                                                     held = if target.is_some() {
-                                                        Some(Drag::new(SlotRef::Bag(idx)))
+                                                        Some(Drag::new(
+                                                            SlotRef::Bag(idx),
+                                                            target
+                                                                .as_ref()
+                                                                .map_or(0, |t| t.make_index),
+                                                        ))
                                                     } else {
                                                         None
                                                     };
@@ -1085,7 +1090,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         } else if let Some(Some(it)) = n.world.bag.get(idx) {
                                             // 左键单击 = 拾取（普通状态/商店卖出共用）
                                             if it.make_index != 0 {
-                                                held = Some(Drag::new(SlotRef::Bag(idx)));
+                                                held = Some(Drag::new(
+                                                    SlotRef::Bag(idx),
+                                                    it.make_index,
+                                                ));
                                                 placed = None;
                                                 println!("[ui] 拾起 {}", it.name);
                                                 press_at = None;
@@ -1393,7 +1401,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                             nm.world.bag[idx] = Some(it);
                                                         }
                                                         held = if target.is_some() {
-                                                            Some(Drag::new(SlotRef::Bag(idx)))
+                                                            Some(Drag::new(
+                                                                SlotRef::Bag(idx),
+                                                                target
+                                                                    .as_ref()
+                                                                    .map_or(0, |t| t.make_index),
+                                                            ))
                                                         } else {
                                                             None
                                                         };
@@ -1404,7 +1417,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 }
                                             } else if let Some(Some(it)) = n.world.bag.get(idx) {
                                                 if it.make_index != 0 {
-                                                    held = Some(Drag::new(SlotRef::Bag(idx)));
+                                                    held = Some(Drag::new(
+                                                        SlotRef::Bag(idx),
+                                                        it.make_index,
+                                                    ));
                                                     placed = None;
                                                     println!("[ui] 拾起 {}", it.name);
                                                 }
@@ -2331,6 +2347,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if gone {
                     *slot = None;
                 }
+            }
+        }
+
+        // **手上/卖窗槽里那件的"下标重绑"**（D-75）：背包被服务端重排后，`Drag`
+        // 里记的**下标**可能已经指向另一件东西 ⇒ 按实例号重新定位；找不到了就是
+        // 这件没了（用光/卖掉/被捡走）⇒ 清掉，免得"放下/卖出"动到别的物品。
+        // ⚠️ 卖错东西**不可恢复**，这条和下面删角确认框那条是同一类防线。
+        if let Some(n) = net.as_ref() {
+            for slot in [&mut held, &mut placed] {
+                let Some(cur) = *slot else { continue };
+                if cur.bag_index().is_none() {
+                    continue; // 不是从背包拿的（还没接线）⇒ 不动
+                }
+                *slot = cur.rebind(|mk| {
+                    n.world
+                        .bag
+                        .iter()
+                        .position(|o| o.as_ref().is_some_and(|it| it.make_index == mk))
+                });
             }
         }
 

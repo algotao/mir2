@@ -358,17 +358,34 @@ pub(crate) enum SlotRef {
 
 /// **拖拽会话**（官方 `g_boItemMoving` + `g_MovingItem` 的正规化）。
 ///
-/// 一个"手上拿着东西"的状态 = 拿着的**是什么** + **从哪来**。
-#[allow(dead_code)] // 同上
+/// 一个"手上拿着东西"的状态 = 拿着的**是什么**（`make` 实例号）+ **从哪来**（`from`）。
+///
+/// ⚠️ `from` 里的**下标会过期**：服务端随时可能重排背包（用了东西、买了东西、
+/// 捡了地上的）⇒ 那一格可能已经换了东西。这时若还按老下标去"放下/卖出"，
+/// 动的会是**别的物品**（卖错东西不可恢复）⇒ 每帧用 [`Drag::rebind`] 按
+/// 实例号重新定位（用户 2026-10-11 盲查发现，见 D-75）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Drag {
     pub from: SlotRef,
+    /// 物品实例号（服务端 `MakeIndex`）—— 认物**只认它**，不认下标。
+    pub make: i32,
 }
 
-#[allow(dead_code)] // 同上
 impl Drag {
-    pub(crate) fn new(from: SlotRef) -> Self {
-        Self { from }
+    pub(crate) fn new(from: SlotRef, make: i32) -> Self {
+        Self { from, make }
+    }
+
+    /// **按实例号重新定位**（背包被服务端重排之后）。
+    ///
+    /// `find(make) -> 新的下标`；找不到了 ⇒ `None`（这件东西没了：用光/卖掉/被拿走）
+    /// ⇒ 调用方把"手上拿着"清掉，免得继续拿着一个幽灵。
+    pub(crate) fn rebind(self, find: impl Fn(i32) -> Option<usize>) -> Option<Self> {
+        let i = find(self.make)?;
+        Some(Self {
+            from: SlotRef::Bag(i),
+            make: self.make,
+        })
     }
 
     /// **卖窗圆槽的点按**（原版 `DSellItemSlotDirectPaint` 的语义）：
@@ -421,7 +438,7 @@ mod grid_tests {
 
     #[test]
     fn 卖窗圆槽的点按在手上与槽之间搬() {
-        let d = Drag::new(SlotRef::Bag(3));
+        let d = Drag::new(SlotRef::Bag(3), 91);
         // 拿着 ⇒ 点槽 = 放进去
         assert_eq!(Drag::toggle_slot(Some(d), None), (None, Some(d)));
         // 空手 ⇒ 点槽 = 拿回手上
@@ -433,10 +450,25 @@ mod grid_tests {
 
     #[test]
     fn 拖拽会话带来源() {
-        let d = Drag::new(SlotRef::Bag(7));
+        let d = Drag::new(SlotRef::Bag(7), 91);
         assert_eq!(d.bag_index(), Some(7));
-        assert_eq!(Drag::new(SlotRef::Sell).bag_index(), None);
-        assert_eq!(Drag::new(SlotRef::Belt(2)).bag_index(), None);
+        assert_eq!(Drag::new(SlotRef::Sell, 1).bag_index(), None);
+        assert_eq!(Drag::new(SlotRef::Belt(2), 1).bag_index(), None);
+    }
+
+    #[test]
+    fn 背包重排后按实例号重新定位() {
+        // 实例号 91 原来在第 7 格，服务端重排后跑到了第 2 格
+        let d = Drag::new(SlotRef::Bag(7), 91);
+        let bag: [(i32, usize); 2] = [(90, 5), (91, 2)];
+        let got = d
+            .rebind(|mk| bag.iter().find(|(m, _)| *m == mk).map(|(_, i)| *i))
+            .expect("还在背包里");
+        assert_eq!(got.bag_index(), Some(2), "下标要跟着重排走");
+        assert_eq!(got.make, 91, "实例号不变");
+
+        // 找不到了（用光/卖掉/被捡走）⇒ None，免得拿着一个幽灵继续操作
+        assert_eq!(d.rebind(|_| None), None);
     }
 }
 
