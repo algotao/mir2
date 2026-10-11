@@ -1,6 +1,11 @@
 package gamesvr
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/algotao/mir2/server/internal/data"
+	pb "github.com/algotao/mir2/server/internal/storage/pb"
+)
 
 // TestAmuletNeed 哪些技能要护身符、要几个（Magic.pas 的外层 case 13..19 / case 30）。
 func TestAmuletNeed(t *testing.T) {
@@ -39,5 +44,31 @@ func TestAmuletCountOf(t *testing.T) {
 		if got := amuletCountOf(c.dura); got != c.want {
 			t.Errorf("amuletCountOf(%d) = %d, 期望 %d", c.dura, got, c.want)
 		}
+	}
+}
+
+// TestItemStackAmuletCount 护身符报给客户端的**个数**要走 `ROUND(Dura/100)`。
+//
+// ⚠️ 护身符/毒药（StdMode 25）的 `Dura` 是"个数×100"（`CheckAmulet` 按
+// `ROUND(Dura/100)` 判、`UseAmulet` 每次扣 100），`DuraMax` 是 10000（=100 个）。
+// 直接把 Dura 当个数报出去 ⇒ 客户端显示"10000 个护身符"（2026-10-11 审计发现）。
+func TestItemStackAmuletCount(t *testing.T) {
+	amulet := wuItem(1, "护身符", amuletStdMode, data.MinMax{})
+	amulet.DuraMax = 10000 // 官方：= 100 个
+	s, p := butchTestServer(t, amulet)
+	wuNewBag(p)
+	p.Char.Data.BagItems[1] = &pb.UserItem{Index: 1, MakeIndex: 55, Dura: 10000, DuraMax: 10000}
+	st, ok := s.itemStack(p.Char.Data.BagItems[1])
+	if !ok {
+		t.Fatal("该能构造 ItemStack")
+	}
+	if st.GetCount() != 100 {
+		t.Errorf("护身符个数 = %d，期望 100（Dura 10000 / 100）", st.GetCount())
+	}
+	// 用掉一些：剩 3750 ⇒ 38 个（ROUND(37.5) = 38）
+	p.Char.Data.BagItems[1].Dura = 3750
+	st, _ = s.itemStack(p.Char.Data.BagItems[1])
+	if st.GetCount() != 38 {
+		t.Errorf("护身符个数 = %d，期望 38（ROUND(3750/100)）", st.GetCount())
 	}
 }

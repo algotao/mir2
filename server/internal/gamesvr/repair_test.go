@@ -179,3 +179,42 @@ func TestRepairRejects(t *testing.T) {
 		t.Errorf("矿石（StdMode 43）不该能修（Dura=%d 金币=%d）", it.Dura, p.Char.Data.Gold)
 	}
 }
+
+// TestRepairRejectsMeatAndOre 肉(40)/矿石(43) **不能修**。
+//
+// ⚠️ 这两个的 `Dura` 装的是**质量/纯度**，不是耐久：
+//   - 矿石：官方就排除了（`StdItem.StdMode <> 43`，`ObjNpc.pas:2453`）；
+//   - 肉：官方没排除，但我们的肉质量只影响卖价 ⇒ 让人花钱"修"满质量就是
+//     **拿钱换卖价**的口子。2026-10-11 把 40 从可堆叠里挪出去之后，这道门原来
+//     是靠 `StackLimit() > 0` 挡的 —— 这条把它钉死，免得以后再漂。
+func TestRepairRejectsMeatAndOre(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		mode uint8
+	}{
+		{"鸡肉", 40},
+		{"铜矿", 43},
+	} {
+		it := wuItem(1, c.name, c.mode, data.MinMax{})
+		it.Price = 100
+		s, p, npc := repairTestServer(t, "@repair @s_repair")
+		// ⚠️ `repairTestServer` 自己的物品表只有"测试剑"（StdMode 5）⇒ 得把 1 号
+		// 换成我们要试的那件，否则修的还是那把剑（第一次写就踩了这个）
+		set, err := data.NewStdItemSet([]*data.StdItem{it})
+		if err != nil {
+			t.Fatalf("换物品表失败: %v", err)
+		}
+		s.data.tables.Items = set
+		// 把要修的东西放到武器槽（修理只认身上那几格）
+		p.Char.Data.HumItems[proto.SlotWeapon] =
+			&pb.UserItem{Index: 1, MakeIndex: 7, Dura: 100, DuraMax: 1000}
+		before := p.Char.Data.Gold
+		repairWeapon(s, p, npc)
+		if p.Char.Data.Gold != before {
+			t.Errorf("修%s 竟然扣了钱（%d → %d）：它不该能修", c.name, before, p.Char.Data.Gold)
+		}
+		if got := p.Char.Data.HumItems[proto.SlotWeapon].Dura; got != 100 {
+			t.Errorf("修%s 把 Dura 改成了 %d（质量/纯度被修满了）", c.name, got)
+		}
+	}
+}

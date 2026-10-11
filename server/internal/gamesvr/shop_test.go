@@ -482,8 +482,11 @@ func TestShopSellMeatRemovesIt(t *testing.T) {
 	if got := countBagItemNamed(s, p, "鸡肉"); got != 0 {
 		t.Fatalf("卖掉的肉还在背包里（%d 块）—— P0 复现", got)
 	}
-	if p.Char.Data.Gold != 10040 {
-		t.Errorf("金币 = %d，期望 10040（初值 10000 + 半价 40）", p.Char.Data.Gold)
+	// ⚠️ 卖价**按质量打折**（官方 `GetUserItemPrice`，2026-10-11 补上）：
+	// 质量 3000/4000 ⇒ n10 = 80 - 80/2/4000*(4000-3000) = 70 ⇒ 卖价 35
+	// （质量满才是 40）
+	if p.Char.Data.Gold != 10035 {
+		t.Errorf("金币 = %d，期望 10035（初值 10000 + 质量 3000/4000 的卖价 35）", p.Char.Data.Gold)
 	}
 	if res := lastShopResult(sink); res == nil || !res.GetOk() {
 		t.Errorf("卖出该回 ok=true，实得 %+v", res)

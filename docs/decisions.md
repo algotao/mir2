@@ -4265,3 +4265,23 @@ clippy 0。
 （我在底图 y105-106 那条暗带上量到了它，对得上）。
 
 **验收**：93/148/7/3，clippy 0；新增 `建角窗几何照官方源码` 把坐标钉住。
+
+---
+
+## D-58 堆叠分类审计（2026-10-11）：修掉 3 个连带问题
+
+上一轮 D-55 把"肉卖不掉"修成了 `StackLimit()` 加一条 `DuraMax > 1 ⇒ 不可堆叠`。
+**这条规则是错的** —— 本轮把服务端所有堆叠/数量判据审了一遍，挖出三个问题：
+
+| # | 问题 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | **护身符/药粉被误伤**（回归，我自己引入的） | StdMode 25 的 `DuraMax` 是 5000~20000，但它们的 `Dura` 是**个数×100**（`CheckAmulet` 按 `ROUND(Dura/100)` 判数量、`UseAmulet` 每次扣 100），**本来就可堆叠** ⇒ 被 `DuraMax > 1` 判成不可堆叠，且客户端数量会显示成 1 | 判据改回**只看 StdMode**：把 **40(肉) / 43(矿石)** 从 `stackableModes` 里挪出去，其余不动。`TestStackLimitByStdMode` 钉住 |
+| 2 | **护身符数量显示错** | `itemStack` 直接把 `Dura` 当个数报 ⇒ 客户端显示"10000 个护身符"（实际 100） | 走现成的 `amuletCountOf`（`ROUND(Dura/100)`），别自己写 `/100`。`TestItemStackAmuletCount` |
+| 3 | **肉/矿石卖价不看质量** | 我们一律"原价/2"；官方 `GetUserItemPrice`（`ObjNpc.pas:1838-1878`）对 40/43 按质量打折：`n10 = _MAX(2, Round(原价 - 原价/2/DuraMax*(DuraMax-Dura)))`，再由 `GetSellItemPrice = Round(n10/2)` 对折 | 新增 `userItemPrice` + `sellPriceOf(tmpl, u)`，**卖出与客户端"卖:"显示共用同一个函数**（否则"显示 40、到手 35"）。`TestSellPriceFollowsQuality` |
+
+顺带堵一个**我自己刚开的口子**：肉不再可堆叠后，"不能修理"那道门（`StackLimit() > 0`）对它失效
+⇒ 玩家能花钱把肉的**质量修满**再卖（拿钱换卖价）。已把 40 与 43 一起列为不可修
+（官方只排除 43，这里多排除 40 是我们主动的选择，理由写在代码注释里）。
+`TestRepairRejectsMeatAndOre` 钉住。
+
+**验收**：Go 25 包 + 客户端 7 套全过，gofmt/clippy 干净。

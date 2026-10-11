@@ -427,8 +427,13 @@ func (s *Server) doRepairSlot(
 		s.repairFail(c, p, "这个商人不会修理")
 		return
 	}
-	// ⚠️ 堆叠物品的 Dura 是数量，不是耐久（仓库的老约定）；矿石（StdMode 43）也不可修。
-	if it.StackLimit() > 0 || it.StdMode == 43 {
+	// ⚠️ **三种"`Dura` 装的不是耐久"的物品都不能修**：
+	//   - 堆叠物品：`Dura` 是**数量**（仓库的老约定）；
+	//   - 43 矿石：`Dura` 是纯度（官方就是 `StdItem.StdMode <> 43`，ObjNpc.pas:2453）；
+	//   - 40 肉：`Dura` 是**质量**（`ApplyMeatQuality`）。官方没排它，但我们的肉质量
+	//     只影响卖价 ⇒ 让人花钱把质量"修"满，就是拿钱换卖价的口子（2026-10-11：
+	//     把 40 从可堆叠里挪出去之后，这道门原本是靠 `StackLimit()` 挡的）。
+	if it.StackLimit() > 0 || it.StdMode == itemStdModeOre || it.StdMode == itemStdModeMeat {
 		s.repairFail(c, p, "这个不能修理")
 		return
 	}
@@ -535,7 +540,7 @@ func (s *Server) handleSellItem(c net.Conn, p *Player, m wire.Packet) {
 		return
 	}
 
-	price := int64(it.Price) / 2
+	price := int64(sellPriceOf(it, ui))
 	if price <= 0 {
 		price = 1
 	}
@@ -771,7 +776,9 @@ func (s *Server) onShopSell(c net.Conn, p *Player, m *protocol.ShopSell) {
 			n = c
 		}
 	}
-	price := int64(it.Price) / 2
+	// ⚠️ 卖价必须与客户端"卖:"显示的是**同一个函数**（`sellPriceOf`）：
+	// 肉/矿石按质量打折，别再各算各的（2026-10-11）。
+	price := int64(sellPriceOf(it, ui))
 	if price <= 0 {
 		price = 1
 	}

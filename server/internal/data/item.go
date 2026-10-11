@@ -23,31 +23,30 @@ const MaxStack = 100
 
 // stackableModes 是可堆叠物品的 StdMode。
 //
-// 0=药品 3=卷轴 25=药粉 31=药包 40/41/42=肉/食品/材料 43=矿石。
+// 0=药品 3=卷轴 25=药粉 31=药包 41=特殊(金币等) 42=材料。
 // 装备（武器/衣服/首饰）不可堆叠。
+//
+// ⚠️⚠️ **40(肉) 与 43(矿石) 不在这里**（2026-10-11）：它们的 `UserItem.Dura`
+// 装的不是数量，而是**质量/纯度**（肉见 `butchTakeItems` 的 `ApplyMeatQuality`，
+// 矿石是纯度）⇒ 一块就是一格，**不能**按数量堆。
+//
+//	原来把 40/43 也当成可堆叠 ⇒ 卖肉时走"只卖 1 个、Dura-1"那条路：
+//	**肉不消失、钱照加**（用户 2026-10-11 的 P0，见 `TestShopSellMeatRemovesIt`）。
+//
+// ⚠️ 别改成"看 `DuraMax > 1` 就不可堆叠"——那样会误伤 **25=护身符/药粉**：
+// 它们的 `Dura` 是**个数×100**（`CheckAmulet` 按 `ROUND(Dura/100)` 判数量、
+// `UseAmulet` 每次扣 100），`DuraMax` 是 5000~20000，但它们**确实可堆叠**
+// （`amulet.go` 的 `initialDura` 有说明）。第一条修法就踩了这个坑。
 var stackableModes = map[uint8]bool{
 	0: true, 3: true, 25: true, 31: true,
-	40: true, 41: true, 42: true, 43: true,
+	41: true, 42: true,
 }
 
 // StackLimit 返回物品的堆叠上限，0 表示不可堆叠。
 //
 // ⚠️ 不用 GeeM2 的 OverLap 列：该列在官方配置里大多是 0/空，
 // 按 StdMode 判定更稳，也符合传奇的实际规则。
-//
-// ⚠️⚠️ 还有一刀（2026-10-11 的 P0）：**`DuraMax > 1` ⇒ 不可堆叠**。
-// `Dura` 这个字段在物品表里装的是什么，由 `DuraMax` 说了算：
-//   - `DuraMax <= 1`：没有耐久概念 ⇒ `Dura` 是**数量**（药水/材料/卷轴）；
-//   - `DuraMax > 1`：`Dura` 是**耐久/质量/纯度**（肉的质量 `ApplyMeatQuality`、
-//     矿石纯度、装备耐久）——一件就是一件，**不能**按数量堆。
-//
-// 原来只按 StdMode 判 ⇒ 肉(40)被当成"可堆叠、Dura=数量"，而挖肉往 `Dura`
-// 里写的是**肉质量**（比如 3000）⇒ 卖肉时走"只卖 1 个、质量 -1"那条路：
-// **肉不消失、钱照加**（用户 2026-10-11：卖了还在）。矿石(43)同理。
 func (s *StdItem) StackLimit() uint32 {
-	if s.DuraMax > 1 {
-		return 0
-	}
 	if !stackableModes[s.StdMode] {
 		return 0
 	}

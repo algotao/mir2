@@ -3,6 +3,7 @@ package gamesvr
 import (
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -539,13 +540,77 @@ func (s *Server) buildClientItem(u *pb.UserItem) (*proto.ClientItem, bool) {
 // 与 [`Server.buildClientItem`] **同源**（同一份模板查表）：那边产出定长二进制的
 // `ClientItem`，这边产出结构化字段。两处都得维护 ⇒ 以后加字段**记得两边都加**
 // （这正是 `Ability::from_proto` 那条"两个地方各写一遍必然漏一个"的教训）。
-// sellPriceOf 物品的**卖价**（原版卖东西 = 原价一半，最低 1；见 `onShopSell`）。
-// 客户端"卖:"后面显示的就是它 —— 拖进卖货圈、点 OK 之前就要看到能卖多少钱。
-func sellPriceOf(tmpl *data.StdItem) uint32 {
-	if tmpl == nil || tmpl.Price <= 1 {
+// / 物品类别里两个"带质量/纯度"的：`40 = 肉`、`43 = 矿石`（原版 `GetUserItemPrice`
+// / 就特判这两个，`ObjNpc.pas:1855/1867`）。
+const (
+	itemStdModeMeat = 40
+	itemStdModeOre  = 43
+	// oreDuraMaxFloor 矿石纯度不足这个值就按它算（官方 `ObjNpc.pas:1869`）。
+	oreDuraMaxFloor = 10000
+)
+
+// userItemPrice 一件物品**按它自己的状态**值多少钱（原版 `GetUserItemPrice`，
+// `ObjNpc.pas:1838-1878`）。
+//
+// 多数物品就是物品表的原价；只有两类要按**质量/纯度**打折：
+//   - **40 = 肉**：挖出来的肉带质量（`ApplyMeatQuality` 写进 `Dura`），
+//     质量差的卖不上价（最多砍到原价的一半，官方还有个 `_MAX(2, …)` 兜底）；
+//   - **43 = 矿石**：同理；官方还把不足 10000 的 `DuraMax` 提到 10000 再算。
+//
+// 官方公式（`Dura <= DuraMax` 那一支）：
+//
+//	n20 := 原价 / 2.0 / DuraMax * (DuraMax - Dura)
+//	n10 := _MAX(2, Round(原价 - n20))
+//
+// ⚠️ 外层判据照抄官方：`StdMode > 4 && StdItem.DuraMax > 0 && UserItem.DuraMax > 0`
+// —— 少了 `DuraMax > 0` 就会除零。
+func userItemPrice(tmpl *data.StdItem, u *pb.UserItem) int64 {
+	if tmpl == nil || u == nil {
+		return 0
+	}
+	n := int64(tmpl.Price)
+	if n <= 0 {
+		return 0
+	}
+	if !(tmpl.StdMode > 4 && tmpl.DuraMax > 0 && u.DuraMax > 0) {
+		return n
+	}
+	if tmpl.StdMode != itemStdModeMeat && tmpl.StdMode != itemStdModeOre {
+		return n
+	}
+	dmax := int64(u.DuraMax)
+	if tmpl.StdMode == itemStdModeOre && dmax < oreDuraMaxFloor {
+		dmax = oreDuraMaxFloor // 官方：`if DuraMax < 10000 then DuraMax := 10000`
+	}
+	d := int64(u.Dura)
+	if d > dmax {
+		// 官方这一支是 `n10 + n10/DuraMax*2*(DuraMax-Dura)`（Dura 越高反而减），
+		// 看着就是官方的笔误 ⇒ 超质量一律按**不打折**处理（对玩家有利，也不越界）。
+		return n
+	}
+	cut := float64(n) / 2.0 / float64(dmax) * float64(dmax-d)
+	adj := int64(math.Round(float64(n) - cut))
+	if adj < 2 {
+		adj = 2 // 官方 `_MAX(2, …)`
+	}
+	return adj
+}
+
+// sellPriceOf 这件物品**卖出去**能拿多少金币（原版 `GetSellItemPrice` =
+// `Round(n/2.0)`，`ObjNpc.pas:2127-2130`）。
+//
+// 客户端"卖:"后面显示的就是它 —— 拖进卖货槽、点 OK 之前就要看到能卖多少钱
+// ⇒ 必须和 `onShopSell` 真正给的**同一个函数**，不然"显示 40、到手 35"。
+func sellPriceOf(tmpl *data.StdItem, u *pb.UserItem) uint32 {
+	p := userItemPrice(tmpl, u)
+	if p <= 0 {
 		return 1
 	}
-	return uint32(tmpl.Price / 2)
+	v := int64(math.Round(float64(p) / 2.0))
+	if v < 1 {
+		v = 1
+	}
+	return uint32(v)
 }
 
 func (s *Server) itemStack(u *pb.UserItem) (*protocol.ItemStack, bool) {
@@ -558,11 +623,17 @@ func (s *Server) itemStack(u *pb.UserItem) (*protocol.ItemStack, bool) {
 	}
 	// 可叠加物的**数量**在原版是塞在 `Dura` 里的（金创药的 Dura 就是瓶数）——
 	// legacy 的 `ClientItem` 压根没有数量字段，只有 Dura/DuraMax。
-	// 判据与 `StackLimit()` **同一份**（2026-10-11 起加了 `DuraMax > 1` 这条）：
-	// 否则会出现"客户端以为 1 个、服务端按堆算"的错位。
+	// 判据与 `StackLimit()` **同一份**，否则会出现"客户端以为 1 个、服务端按堆算"的错位。
 	count := uint32(1)
 	if tmpl.StackLimit() > 0 && u.Dura > 0 {
 		count = uint32(u.Dura)
+	}
+	// ⚠️ 护身符/毒药（StdMode 25）的 `Dura` 是**个数×100**（`CheckAmulet` 按
+	// `ROUND(Dura/100)` 判数量、`UseAmulet` 每次扣 100）⇒ 直接把 Dura 当个数报
+	// 出去，客户端会显示"10000 个护身符"（实际 100 个）。走同一个换算函数，
+	// 别自己再写一遍 `/100`（`amuletCountOf` 是 ROUND，不是截断）。
+	if tmpl.StdMode == amuletStdMode {
+		count = uint32(amuletCountOf(u.Dura))
 	}
 	return &protocol.ItemStack{
 		Index:   uint32(u.Index),
@@ -578,7 +649,7 @@ func (s *Server) itemStack(u *pb.UserItem) (*protocol.ItemStack, bool) {
 		// 卖价（原版 = 原价一半）：卖窗"卖:"后面显示的就是它。
 		// ⚠️ 漏了这行客户端就一直显示 0（2026-10-10 用户实测踩到 ——
 		// 上一轮的字符串替换静默失败，这次补上并加了测试钉住）。
-		SellPrice: sellPriceOf(tmpl),
+		SellPrice: sellPriceOf(tmpl, u),
 	}, true
 }
 
