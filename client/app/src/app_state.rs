@@ -10,7 +10,9 @@
 
 use std::time::Instant;
 
-use crate::{bagdrag, confirm, login, pager, scrollview, select, shopui, windows, Ui};
+use crate::{
+    assetview_state, bagdrag, confirm, login, pager, scrollview, select, shopui, windows, Ui,
+};
 use mir2_core::map::Map;
 
 /// 当前客户端场景（替代裸 `u8` 模式号）。
@@ -57,6 +59,8 @@ pub(crate) struct AppState {
     pub net: Option<crate::net::Net>,
     /// 供登录/资产观察器与开发诊断显示的状态文字。
     pub status: String,
+    /// F3 素材观察器的纯选择状态（图库/图号；WZL 与纹理资源不在此处）。
+    pub asset_view: assetview_state::AssetViewState,
 
     // World interaction
     pub move_target: Option<(i32, i32, bool)>,
@@ -119,6 +123,7 @@ impl AppState {
             scene: Scene::Login,
             net: None,
             status: String::from("READY"),
+            asset_view: assetview_state::AssetViewState::default(),
 
             move_target: None,
             move_at: now,

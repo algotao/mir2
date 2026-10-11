@@ -46,15 +46,14 @@ pub(crate) fn draw_frame<'a, T>(
     cursor_cross: &Cursor,
     loaded: &mut Option<(usize, Wzl)>,
     sprite_tex: &mut Option<Texture<'a>>,
-    lib_idx: usize,
-    img_idx: &mut usize,
-) -> Result<(), sdl3::Error> {
+) -> Result<Option<usize>, sdl3::Error> {
     let ani_count = (app.started.elapsed().as_millis() / 50) as u32;
 
     canvas.set_draw_color(C_BG);
     canvas.clear();
     // 命中结果是本帧的渲染/输入适配数据，不写进游戏 AppState。
     let mut hover = None;
+    let mut asset_image_index = None;
 
     // 悬停的那个实体（由 `draw_map_view` 按精灵落点算出来）—— 光标/高亮都用它
     if app.scene == crate::app_state::Scene::World {
@@ -314,7 +313,7 @@ pub(crate) fn draw_frame<'a, T>(
             &app.ui_click,
         )?;
     } else {
-        draw_asset_view(
+        asset_image_index = draw_asset_view(
             canvas,
             tex_creator,
             asset_dir,
@@ -322,12 +321,12 @@ pub(crate) fn draw_frame<'a, T>(
             sprite_tex,
             &app.status,
             app.music_on,
-            lib_idx,
-            img_idx,
+            app.asset_view.library(),
+            app.asset_view.image(),
             app.started,
         )?;
     }
 
     frame.hover = hover;
-    Ok(())
+    Ok(asset_image_index)
 }

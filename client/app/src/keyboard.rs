@@ -33,8 +33,6 @@ pub(crate) fn handle_key_down(
     draws: &[mir2_core::map::TileDraw],
     tiles: &std::collections::HashMap<crate::tiles::TileKey, crate::tiles::TileTex<'_>>,
     archive: Option<&mir2_core::m2pk::Archive>,
-    lib_idx: &mut usize,
-    img_idx: &mut usize,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     // Alt 是挖肉的修饰键（`Alt` + 左键点动物尸体）
     if matches!(keycode, Some(Keycode::LAlt) | Some(Keycode::RAlt)) {
@@ -194,17 +192,13 @@ pub(crate) fn handle_key_down(
         // 素材浏览器（开发用）
         _ if app.scene == crate::app_state::Scene::AssetView => match keycode {
             Some(Keycode::LeftBracket) => {
-                *lib_idx = (*lib_idx + LIBS.len() - 1) % LIBS.len();
-                *img_idx = 0;
+                app.asset_view.previous_library(crate::assets::LIBS.len());
             }
             Some(Keycode::RightBracket) => {
-                *lib_idx = (*lib_idx + 1) % LIBS.len();
-                *img_idx = 0;
+                app.asset_view.next_library(crate::assets::LIBS.len());
             }
-            Some(Keycode::Comma) | Some(Keycode::Left) => {
-                *img_idx = img_idx.saturating_sub(1);
-            }
-            Some(Keycode::Period) | Some(Keycode::Right) => *img_idx += 1,
+            Some(Keycode::Comma) | Some(Keycode::Left) => app.asset_view.previous_image(),
+            Some(Keycode::Period) | Some(Keycode::Right) => app.asset_view.next_image(),
             _ => {}
         },
         _ if app.scene == crate::app_state::Scene::World => match keycode {

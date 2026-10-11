@@ -28,8 +28,6 @@ pub(crate) fn run_app<T>(
     let mut names = font::TextCache::new(mir2_core::text::NAME_PX);
 
     // 素材浏览器的独立数据与 GPU 纹理（F3）
-    let mut lib_idx: usize = 0;
-    let mut img_idx: usize = 0;
     let mut loaded: Option<(usize, Wzl)> = None;
     let mut sprite_tex: Option<Texture<'_>> = None;
     // hover / 系统光标 / 懒素材几何是 renderer 的 view cache，不属于游戏 AppState。
@@ -100,8 +98,6 @@ pub(crate) fn run_app<T>(
                         &draws,
                         &tiles,
                         archive.as_ref(),
-                        &mut lib_idx,
-                        &mut img_idx,
                     )? {
                         break 'run;
                     }
@@ -252,7 +248,7 @@ pub(crate) fn run_app<T>(
         // 前景动画的节拍：官方 `m_nAniCount` **每 50 ms 加一**（`PlayScn.pas:963`，
         // 固定定时器、与帧率无关）。所以这里按**真实时间**算，而不是每帧 +1 ——
         // 否则灯会随机器性能忽快忽慢。
-        render::draw_frame(
+        if let Some(image) = render::draw_frame(
             &app,
             &mut frame_state,
             &mut canvas,
@@ -270,9 +266,9 @@ pub(crate) fn run_app<T>(
             &cursor_cross,
             &mut loaded,
             &mut sprite_tex,
-            lib_idx,
-            &mut img_idx,
-        )?;
+        )? {
+            app.asset_view.select_image(image);
+        }
 
         // 底部那条**开发用**提示条撤了：现在那儿是 HUD 操作面板（字会压在按钮上）。
         // 按键提示改在**进世界时推一行到聊天区**（玩家看得到的那处）。

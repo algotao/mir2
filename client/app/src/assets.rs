@@ -156,9 +156,9 @@ pub(crate) fn draw_asset_view<'a, T>(
     status: &str,
     music_on: bool,
     lib_idx: usize,
-    img_idx: &mut usize,
+    img_idx: usize,
     started: Instant,
-) -> Result<(), sdl3::Error> {
+) -> Result<Option<usize>, sdl3::Error> {
     let t1 = "ASSET  BROWSER   (F1 = LOGIN,  F2 = MAP)";
     text(canvas, t1, center_x(t1, 0.0, WIN_W as f32), 14.0, C_TITLE)?;
     let t2 = format!(
@@ -179,6 +179,8 @@ pub(crate) fn draw_asset_view<'a, T>(
     frame(canvas, PX, PY, PW, PH, C_PANEL_BORDER)?;
 
     let mut info_lines: Vec<(String, Color)> = vec![("NO ASSETS".to_string(), C_ERR)];
+    let mut selected_image = img_idx;
+    let mut normalized_image = None;
     let mut sprite_dims = (0u32, 0u32);
     let mut ready = false;
 
@@ -190,20 +192,22 @@ pub(crate) fn draw_asset_view<'a, T>(
         }
         if let Some((_, lib)) = loaded.as_ref() {
             let total = lib.len();
-            if *img_idx >= total {
-                *img_idx = 0;
+            if selected_image >= total {
+                selected_image = 0;
             }
+            normalized_image = Some(selected_image);
             // 空壳图很常见（本套素材里 146 个容器是 64 字节的空壳）⇒ 往后找 64 张
             let mut found = None;
             for k in 0..64 {
-                let i = (*img_idx + k) % total.max(1);
+                let i = (selected_image + k) % total.max(1);
                 if let Some(sp) = lib.decode(i) {
                     found = Some((i, sp));
                     break;
                 }
             }
             if let Some((i, sp)) = found {
-                *img_idx = i;
+                selected_image = i;
+                normalized_image = Some(i);
                 let is16 = lib.record(i).map(|r| r.is_16bit()).unwrap_or(false);
                 sprite_dims = (sp.width as u32, sp.height as u32);
                 info_lines = vec![
@@ -252,7 +256,7 @@ pub(crate) fn draw_asset_view<'a, T>(
                     }
                 }
             } else {
-                info_lines = vec![(format!("{name}  #{}  (EMPTY)", img_idx), C_DIM)];
+                info_lines = vec![(format!("{name}  #{}  (EMPTY)", selected_image), C_DIM)];
             }
         } else {
             info_lines = vec![(format!("{name}.wzl NOT FOUND"), C_ERR)];
@@ -268,7 +272,7 @@ pub(crate) fn draw_asset_view<'a, T>(
     py += 8.0;
     for line in [
         format!("LIB [{}/{}]  =  {}", lib_idx + 1, LIBS.len(), LIBS[lib_idx]),
-        format!("IMG {}", *img_idx),
+        format!("IMG {}", selected_image),
         "[ ] CHANGE LIB      , . CHANGE IMG".to_string(),
         "F1 LOGIN   F2 MAP   M MUSIC   ESC QUIT".to_string(),
     ] {
@@ -297,5 +301,5 @@ pub(crate) fn draw_asset_view<'a, T>(
         text(canvas, msg, center_x(msg, PX, PW), PY + PH / 2.0, C_ERR)?;
     }
     let _ = IX;
-    Ok(())
+    Ok(normalized_image)
 }

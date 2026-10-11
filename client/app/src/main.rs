@@ -90,6 +90,7 @@ pub(crate) mod actor;
 pub(crate) use actor::*;
 mod app_state;
 pub(crate) mod assetview;
+mod assetview_state;
 mod bagdrag;
 mod confirm;
 pub(crate) mod hud;
