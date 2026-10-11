@@ -133,8 +133,13 @@ pub(crate) fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), B
                     } else if let Some(cell) = hit_cell(x, y) {
                         let idx = scroll + cell;
                         if idx < wzl.len() {
-                            selected = Some(idx);
-                            copied = copy(&clipboard, idx, &libs[lib_idx], false);
+                            // 再点同一张 = 取消选中（关掉下面那张原始大小预览）
+                            if selected == Some(idx) {
+                                selected = None;
+                            } else {
+                                selected = Some(idx);
+                                copied = copy(&clipboard, idx, &libs[lib_idx], false);
+                            }
                         }
                     }
                 }
@@ -144,8 +149,12 @@ pub(crate) fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), B
                     let shift = keymod.contains(Mod::LSHIFTMOD) || keymod.contains(Mod::RSHIFTMOD);
                     match keycode {
                         Some(Keycode::Escape) | Some(Keycode::Q) => {
-                            running = false;
-                            break;
+                            if selected.is_some() {
+                                selected = None; // 先收预览，再谈退出
+                            } else {
+                                running = false;
+                                break;
+                            }
                         }
                         Some(Keycode::C) => {
                             if let Some(sel) = selected {
@@ -230,6 +239,10 @@ pub(crate) fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), B
             selected,
             &mut tex_cache,
         )?;
+
+        // **原始大小预览**（用户 2026-10-11 第 5 条）：缩略图看不清大图 ⇒
+        // 点中的那张按**原始尺寸**浮在一块深底板上（放不下才等比缩小并标注缩放）。
+        draw_preview(&mut canvas, &tc, &wzl, selected, &mut tex_cache)?;
 
         // 底部信息栏
         canvas.set_draw_color(Color::RGB(18, 18, 22));
@@ -381,6 +394,87 @@ fn draw_grid<'a, T>(
             canvas.set_draw_color(Color::RGB(255, 210, 90));
             let _ = canvas.draw_rect(r);
         }
+    }
+    Ok(())
+}
+
+/// **原始大小预览**：选中那张图按原生尺寸浮在深底板上（网格之上、信息栏之下）。
+///
+/// 比窗口还大的图（比如 640×473 的地图块）等比缩小到放得下，并在角上标注缩放比
+/// —— 缩略图看不清细节，这才是"点开看"的意义（用户 2026-10-11 第 5 条）。
+fn draw_preview<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    wzl: &Wzl,
+    selected: Option<usize>,
+    cache: &mut HashMap<usize, Texture<'a>>,
+) -> Result<(), sdl3::Error> {
+    let Some(idx) = selected else {
+        return Ok(());
+    };
+    if idx >= wzl.len() {
+        return Ok(());
+    }
+    // 复用网格的纹理缓存（里面存的就是**原生尺寸**的纹理）；
+    // 不在当前页（被清掉了）就重建一次。
+    #[allow(clippy::map_entry)]
+    if !cache.contains_key(&idx) {
+        if let Some(sp) = wzl.decode(idx) {
+            if !sp.is_empty() {
+                if let Ok(mut tex) = tc.create_texture(
+                    PixelFormat::RGBA32,
+                    TextureAccess::Static,
+                    sp.width as u32,
+                    sp.height as u32,
+                ) {
+                    tex.set_blend_mode(BlendMode::Blend);
+                    tex.set_scale_mode(ScaleMode::Nearest);
+                    if tex
+                        .update(None::<sdl3::rect::Rect>, &sp.rgba, sp.width as usize * 4)
+                        .is_ok()
+                    {
+                        cache.insert(idx, tex);
+                    }
+                }
+            }
+        }
+    }
+    let Some(tex) = cache.get(&idx) else {
+        return Ok(());
+    };
+    let q = tex.query();
+    let (iw, ih) = (q.width as f32, q.height as f32);
+    if iw <= 0.0 || ih <= 0.0 {
+        return Ok(());
+    }
+
+    // 可用区：信息栏之上留 12px 边距
+    let avail_w = WIN_W as f32 - 24.0;
+    let avail_h = WIN_H as f32 - BAR_H - 24.0;
+    let scale = (avail_w / iw).min(avail_h / ih).min(1.0);
+    let (w, h) = (iw * scale, ih * scale);
+    let pad = 10.0;
+    let pw = w + pad * 2.0;
+    let ph = h + pad * 2.0;
+    // 水平居中、贴着信息栏上方
+    let px = (WIN_W as f32 - pw) / 2.0;
+    let py = WIN_H as f32 - BAR_H - ph - 8.0;
+
+    canvas.set_blend_mode(BlendMode::Blend);
+    canvas.set_draw_color(Color::RGBA(12, 12, 16, 242));
+    canvas.fill_rect(FRect::new(px, py, pw, ph))?;
+    canvas.set_draw_color(Color::RGB(70, 160, 255));
+    canvas.draw_rect(FRect::new(px, py, pw, ph))?;
+    canvas.set_blend_mode(BlendMode::None);
+    canvas.copy(tex, None::<FRect>, FRect::new(px + pad, py + pad, w, h))?;
+
+    // 缩放比（只有真被缩小了才标）
+    if scale < 1.0 {
+        canvas.set_draw_color(Color::RGB(255, 210, 90));
+        let _ = canvas.draw_debug_text(
+            &format!("缩放 {:.0}%", scale * 100.0),
+            sdl3::render::FPoint::new(px + 6.0, py + 4.0),
+        );
     }
     Ok(())
 }

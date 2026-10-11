@@ -1272,12 +1272,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if x >= sx && x < sx + sw && y >= sy && y < sy + sh {
                                     ui_consumed = true;
                                     match crate::shop::sell_hit((x - sx, y - sy)) {
-                                        // 右上角的**红色关闭叉**（素材自带）⇒ 关卖窗
+                                        // 右上角的**红色关闭叉**（素材自带）⇒ 关卖窗。
+                                        // ⚠️ **同时关包裹**（用户 2026-10-11 第 3 条）：
+                                        // 卖窗就是"卖出"这件事的入口，它关了包裹留着没意义，
+                                        // 原版关卖窗时包裹也是一起收的。
                                         crate::shop::SellHit::Close => {
                                             shop_open = false;
+                                            bag_open = false;
                                             sell_held = None;
                                             sell_placed = None;
-                                            println!("[ui] 卖货窗关闭（素材关闭叉）");
+                                            println!("[ui] 卖货窗关闭（同步收包裹）");
                                         }
                                         // 圆槽：**手上拿着 ⇒ 放下；已经放着 ⇒ 再拿起来**
                                         //（用户 2026-10-10：物品放下后还可以再次拾起、放回包裹）
@@ -2025,6 +2029,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(p) = sell_placed {
                         hide.push(p);
                     }
+                    // 关闭钮的 hover（高亮素材 64 叠上去）
+                    let (cbx, cby) = crate::layout::bag_pos(shop_open);
+                    let close_hover = mouse.0 >= cbx + crate::layout::BAG_CLOSE_X
+                        && mouse.0 < cbx + crate::layout::BAG_CLOSE_X + crate::layout::BAG_CLOSE_W
+                        && mouse.1 >= cby + crate::layout::BAG_CLOSE_Y
+                        && mouse.1 < cby + crate::layout::BAG_CLOSE_Y + crate::layout::BAG_CLOSE_H;
                     hud::draw_bag(
                         &mut canvas,
                         &tex_creator,
@@ -2035,6 +2045,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         bag_page,
                         shop_open,
                         &hide,
+                        close_hover,
                     )?;
                 }
             }
@@ -2075,8 +2086,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         shop_hover,
                     )?;
                 }
-                // ② 卖货窗（卖）：放物品的槽 + OK
+                // ② 卖货窗（卖）：放物品的槽 + OK（hover 时叠高亮素材 393）
                 if shop_open && bag_open && shop_is_sell {
+                    let sell_hover = net
+                        .as_ref()
+                        .map(|_| {
+                            let (sx, sy, _, _) = crate::shop::sell_panel();
+                            if mouse.0 < sx || mouse.1 < sy {
+                                crate::shop::SellHit::None
+                            } else {
+                                crate::shop::sell_hit((mouse.0 - sx, mouse.1 - sy))
+                            }
+                        })
+                        .unwrap_or(crate::shop::SellHit::None);
                     shop::draw_sell(
                         &mut canvas,
                         &tex_creator,
@@ -2085,6 +2107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         dir,
                         net.as_ref(),
                         sell_placed,
+                        sell_hover,
                     )?;
                 }
                 // ③ 物品悬停提示：鼠标压在包裹格上 ⇒ 显示名字/类别/耐久/卖价

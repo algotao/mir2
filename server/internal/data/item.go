@@ -35,9 +35,19 @@ var stackableModes = map[uint8]bool{
 // ⚠️ 不用 GeeM2 的 OverLap 列：该列在官方配置里大多是 0/空，
 // 按 StdMode 判定更稳，也符合传奇的实际规则。
 //
-// 对可堆叠物品，UserItem.Dura 表示**数量**而非耐久
-// （原版就是这样复用同一个字段）。
+// ⚠️⚠️ 还有一刀（2026-10-11 的 P0）：**`DuraMax > 1` ⇒ 不可堆叠**。
+// `Dura` 这个字段在物品表里装的是什么，由 `DuraMax` 说了算：
+//   - `DuraMax <= 1`：没有耐久概念 ⇒ `Dura` 是**数量**（药水/材料/卷轴）；
+//   - `DuraMax > 1`：`Dura` 是**耐久/质量/纯度**（肉的质量 `ApplyMeatQuality`、
+//     矿石纯度、装备耐久）——一件就是一件，**不能**按数量堆。
+//
+// 原来只按 StdMode 判 ⇒ 肉(40)被当成"可堆叠、Dura=数量"，而挖肉往 `Dura`
+// 里写的是**肉质量**（比如 3000）⇒ 卖肉时走"只卖 1 个、质量 -1"那条路：
+// **肉不消失、钱照加**（用户 2026-10-11：卖了还在）。矿石(43)同理。
 func (s *StdItem) StackLimit() uint32 {
+	if s.DuraMax > 1 {
+		return 0
+	}
 	if !stackableModes[s.StdMode] {
 		return 0
 	}

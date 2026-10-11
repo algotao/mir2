@@ -315,6 +315,9 @@ pub(crate) fn sell_panel() -> (f32, f32, f32, f32) {
 ///
 /// 2026-10-10 用户比对素材给出的图号；之前是自绘的金属圈，现在换成官方槽。
 pub(crate) const SELL_SLOT_IMG: u32 = 392;
+/// **OK 的高亮态** = `Prguse[393]`（24×13，用户 2026-10-11 第 3 条给的编号；
+/// 逐像素看过：蓝底白字"OK"，比底图 392 里那枚亮）。
+pub(crate) const SELL_OK_IMG: u32 = 393;
 /// 槽在窗口内的落点：素材 392 **本身就是整个卖窗**（标题栏/圆槽/OK/关闭叉都在
 /// 图里）⇒ 整张原样贴在窗口原点，不再自己挪。
 pub(crate) const SELL_SLOT: (f32, f32, f32, f32) = (0.0, 0.0, 140.0, 181.0);
@@ -380,6 +383,7 @@ pub(crate) fn draw_sell<'a, T>(
     dir: &Path,
     net: Option<&Net>,
     placed: Option<usize>,
+    hover: SellHit,
 ) -> Result<(), sdl3::Error> {
     let Some(n) = net else { return Ok(()) };
     if !n.world.in_world() || n.world.shop.is_none() {
@@ -450,8 +454,28 @@ pub(crate) fn draw_sell<'a, T>(
             }
         }
     }
-    // ⚠️ **不画自绘的 OK**：`Prguse[392]` 里自带蓝底白字的圆形 OK（像素 x 56..112 /
-    // y 144..171），命中区见 [`SELL_OK`]（用户 2026-10-10：卖窗不应有自绘元素）。
+    // **OK 的高亮态**（用户 2026-10-11 第 3 条）：素材编号 **393**（24×13，蓝底
+    // 白字"OK"，比底图里那枚更亮）。常态由底图给出 ⇒ 只在鼠标压上去时叠这一张。
+    if hover == SellHit::Ok {
+        let (ox, oy, ow, oh) = SELL_OK;
+        if let Some((iw, ih)) = ui.size(dir, "Prguse", SELL_OK_IMG) {
+            let _ = ui.draw_src(
+                canvas,
+                tc,
+                dir,
+                "Prguse",
+                SELL_OK_IMG,
+                FRect::new(0.0, 0.0, iw as f32, ih as f32),
+                FRect::new(
+                    x + sx + ox + (ow - iw as f32) / 2.0,
+                    y + sy + oy + (oh - ih as f32) / 2.0,
+                    iw as f32,
+                    ih as f32,
+                ),
+                255,
+            );
+        }
+    }
     Ok(())
 }
 

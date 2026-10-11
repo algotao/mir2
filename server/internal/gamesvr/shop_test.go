@@ -460,3 +460,39 @@ func TestDoMoveItemSwapAndMove(t *testing.T) {
 		_ = before
 	}
 }
+
+// TestShopSellMeatRemovesIt **卖肉必须真的从背包里消失**（2026-10-11 的 P0）。
+//
+// 根因：肉(StdMode 40)被当成"可堆叠、`Dura`=数量"，而挖肉往 `Dura` 里写的是
+// **肉质量**（`butchTakeItems` 的 `ApplyMeatQuality`，比如 3000）⇒ 卖出走
+// "只卖 1 个、质量 -1"那条路：肉不消失、钱照加。
+// 修法：`StackLimit()` 加了"`DuraMax > 1` ⇒ 不可堆叠"（肉/矿石的 `Dura` 是
+// 质量/纯度，不是数量）。这条钉住它。
+func TestShopSellMeatRemovesIt(t *testing.T) {
+	meat := wuItem(2, "鸡肉", 40, data.MinMax{})
+	meat.DuraMax = 4000 // 质量上限（原版 ApplyMeatQuality）
+	meat.Price = 80
+	s, p, npc, sink := protoShopServer(t, "@trading @buy @sell", shopItem(), meat)
+
+	// 挖肉挖出来的一块：质量 3000（Dura=3000、DuraMax=4000）
+	p.Char.Data.BagItems[2] = &pb.UserItem{Index: 2, MakeIndex: 91, Dura: 3000, DuraMax: 4000}
+
+	s.onShopSell(nil, p, &protocol.ShopSell{NpcId: uint64(npc.ID), MakeIndex: 91, Count: 1})
+
+	if got := countBagItemNamed(s, p, "鸡肉"); got != 0 {
+		t.Fatalf("卖掉的肉还在背包里（%d 块）—— P0 复现", got)
+	}
+	if p.Char.Data.Gold != 10040 {
+		t.Errorf("金币 = %d，期望 10040（初值 10000 + 半价 40）", p.Char.Data.Gold)
+	}
+	if res := lastShopResult(sink); res == nil || !res.GetOk() {
+		t.Errorf("卖出该回 ok=true，实得 %+v", res)
+	}
+	// 矿石同理（Dura=纯度）
+	ore := wuItem(2, "铜矿", 43, data.MinMax{})
+	ore.DuraMax = 10000
+	ore.Price = 60
+	if ore.StackLimit() != 0 {
+		t.Errorf("矿石(DuraMax=10000)不该可堆叠，StackLimit=%d", ore.StackLimit())
+	}
+}

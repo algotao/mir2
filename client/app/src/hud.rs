@@ -472,6 +472,7 @@ pub(crate) fn draw_bag<'a, T>(
     page: usize,
     shop_open: bool,
     hide: &[usize],
+    close_hover: bool,
 ) -> Result<(), sdl3::Error> {
     let Some(n) = net else { return Ok(()) };
     if !n.world.in_world() {
@@ -498,6 +499,30 @@ pub(crate) fn draw_bag<'a, T>(
         canvas.fill_rect(FRect::new(x, y, w, h))?;
         canvas.set_draw_color(Color::RGB(190, 170, 120));
         canvas.draw_rect(FRect::new(x, y, w, h))?;
+    }
+
+    // **关闭钮的高亮**（用户 2026-10-11 第 4 条，素材编号 64）：底图 `Prguse[3]`
+    // 里已经印着那个红叉 ⇒ 鼠标压上去时**叠**一张 64，盖出"亮了一下"的效果。
+    // ⚠️ 64 与 371 逐像素完全相同（16×23，同一张图拷了两份）⇒ 这里用 64；
+    // 如果原版的高亮其实是另一张更亮的图，请再指个编号。
+    if close_hover {
+        if let Some((iw, ih)) = ui.size(dir, "Prguse", crate::layout::BAG_CLOSE_IMG) {
+            let _ = ui.draw_src(
+                canvas,
+                tc,
+                dir,
+                "Prguse",
+                crate::layout::BAG_CLOSE_IMG,
+                FRect::new(0.0, 0.0, iw as f32, ih as f32),
+                FRect::new(
+                    x + crate::layout::BAG_CLOSE_X + (crate::layout::BAG_CLOSE_W - iw as f32) / 2.0,
+                    y + crate::layout::BAG_CLOSE_Y + (crate::layout::BAG_CLOSE_H - ih as f32) / 2.0,
+                    iw as f32,
+                    ih as f32,
+                ),
+                255,
+            );
+        }
     }
     canvas.set_blend_mode(BlendMode::None);
 

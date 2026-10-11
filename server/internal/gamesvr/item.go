@@ -558,9 +558,10 @@ func (s *Server) itemStack(u *pb.UserItem) (*protocol.ItemStack, bool) {
 	}
 	// 可叠加物的**数量**在原版是塞在 `Dura` 里的（金创药的 Dura 就是瓶数）——
 	// legacy 的 `ClientItem` 压根没有数量字段，只有 Dura/DuraMax。
-	// 判据：`DuraMax <= 1` = 没有耐久 = 可叠加（药水/卷轴），此时 Dura 即数量。
+	// 判据与 `StackLimit()` **同一份**（2026-10-11 起加了 `DuraMax > 1` 这条）：
+	// 否则会出现"客户端以为 1 个、服务端按堆算"的错位。
 	count := uint32(1)
-	if tmpl.DuraMax <= 1 && u.Dura > 0 {
+	if tmpl.StackLimit() > 0 && u.Dura > 0 {
 		count = uint32(u.Dura)
 	}
 	return &protocol.ItemStack{
