@@ -51,7 +51,6 @@ use mir2_core::map::{TileDraw, LAYERS_ALL, UNIT_X, UNIT_Y};
 use mir2_core::wzl::Wzl;
 
 use sdl3::event::{Event, WindowEvent};
-use sdl3::keyboard::{Keycode, Mod};
 use sdl3::mouse::{Cursor, MouseButton, SystemCursor};
 
 mod audio;
@@ -96,6 +95,7 @@ pub(crate) mod minimap;
 mod pager;
 mod render;
 mod runtime;
+mod scene_input;
 mod scrollview;
 pub(crate) mod shop;
 mod shopui;

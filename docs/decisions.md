@@ -5117,3 +5117,33 @@ Go 的 `TestProtoRustSell` 现在走：**捡起 → 点屠夫 → 选择「卖�
 GoldenFrame 字节测试会保证线上版本字段不被悄悄改。
 
 **验收**：客户端 154/148/7/4，clippy 0；Go 25 包（含 Rust 客户端契约）。
+
+---
+
+## D-92 架构方向 ⑥ 续：运行循环按职责再切三块（2026-10-11）
+
+D-90 把主循环从 `main.rs` 搬进 `runtime.rs` 后，继续拆出：
+
+| 模块 / 函数 | 责任 | 特性 |
+|---|---|---|
+| `runtime::handle_key_down` | 键盘分发（Esc/快捷栏/F9/F10/开发切屏/登录/选角/素材浏览器/地图） | `true` 明确表示请求退出循环；不再把 `'run` label 泄漏进 helper |
+| `runtime::handle_mouse_wheel` | 背包/对话/商店滚轮优先级 | 纯状态操作，最上层命中消费；三窗规则集中 |
+| `scene_input::{login_down,login_up,select_down,select_up}` | 登录/选角鼠标事件的**坐标边界适配** | core 布局用设计空间，Widget 用画布空间；转换集中在一个模块 |
+| `update::advance_world` | 相机外的世界侧帧推进：持续挖/到位捡取/对话滚动 | 把原 `continue` 显式变成 `bool` 返回值，循环控制流不藏进 helper |
+
+现在文件分层：
+
+```text
+main.rs         264 行：SDL 启动、资产自检、调用 runtime
+runtime.rs    1,978 行：事件泵与阶段编排（键盘/滚轮/前端鼠标已抽出）
+render.rs       333 行：单帧绘制
+app_state.rs    144 行：会话状态
+update.rs       121 行：货架/快捷栏重绑/世界帧推进
+scene_input.rs  100 行：登录/选角鼠标空间适配
+```
+
+下一刀的边界已清楚：**世界模式的 MouseButtonDown/Up**（当前仍在 `runtime.rs` 中，
+背包/商店/地图命中混在一起）可再抽 `world_input`；要保持 `ui_consumed` / 走路意图
+清理的顺序原样，不在搬运时顺手改交互。
+
+**验收**：客户端 154/148/7/4，clippy 0；Go 25 包。
