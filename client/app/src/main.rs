@@ -107,6 +107,25 @@ pub(crate) use world::*;
 #[cfg(test)]
 mod tests;
 
+/// 待确认的"退出类"动作（底栏那两颗 [注销] / [退出] 用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuitAct {
+    /// 注销：断线回登录界面（原版 `AppLogOut`）。
+    Logout,
+    /// 退出：关掉客户端（原版 `AppExit`）。
+    Exit,
+}
+
+impl QuitAct {
+    /// 确认框上那句话。
+    fn ask(self) -> &'static str {
+        match self {
+            Self::Logout => "要注销、回到登录界面吗？",
+            Self::Exit => "要退出游戏吗？",
+        }
+    }
+}
+
 /// 往聊天区说一句（点了个"还没做"的按钮时用 —— **绝不静默**）。
 fn ui_say(net: Option<&mut Net>, msg: &str) {
     println!("[ui] {msg}");
@@ -423,6 +442,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 只记实例号 + 图标 ⇒ 背包被服务端重排后仍能找到东西（失效的格会被清掉）。
     let mut belt: [Option<crate::layout::BeltSlot>; crate::layout::BELT_SLOTS] =
         [None; crate::layout::BELT_SLOTS];
+    // **退出 / 注销**的待确认动作（`None` = 没在确认）。
+    // ⚠️ 官方那两颗按钮点了就直接生效（`DBotExitClick` ⇒ `AppExit`），但一下
+    // 把游戏关了误触代价太大 ⇒ 我们加一道确认框。
+    let mut confirm_quit: Option<QuitAct> = None;
     let mut minimap_on = false;
     let mut bigmap_on = false;
     // 音效开关：原版是**两个独立开关**（音效 / 音乐，`MShare.pas:213-214`），
@@ -501,6 +524,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // 的"ESC 退建号面板 / 关报错弹窗"全是**不可达死代码**。
                         // 现在放它们落到下面的 mode 分支去；场景要退（`Action::Exit` /
                         // `Action::Quit`）才真退。其余模式（世界/素材浏览器）保持原样。
+                        // 确认框开着 ⇒ ESC **先关它**（别顺手把窗/客户端关了）
+                        Some(Keycode::Escape) if mode == 2 && confirm_quit.is_some() => {
+                            confirm_quit = None
+                        }
                         // 背包窗开着 ⇒ ESC **先关背包**
                         Some(Keycode::Escape) if mode == 2 && bag_open => bag_open = false,
                         // 状态窗同理 ⇒ ESC **先关状态窗**（别顺手把客户端退了）
@@ -844,6 +871,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             //  隔着窗点一下照样跟 NPC 说话）。窗命中时置 true，
                             // 下面的"世界"分支（移动/挖肉/点 NPC）统一跳过。
                             let mut ui_consumed = false;
+                            // ①″ **确认框开着 ⇒ 它是模态**：只认框里的两颗按钮，
+                            // 点框外/别处一律当作"取消"（不走路、不穿透到世界）。
+                            if let Some(act) = confirm_quit {
+                                if mouse_btn == MouseButton::Left {
+                                    if let Some(dir) = asset_dir.as_deref() {
+                                        let c = hud::confirm_geom(&mut ui, dir, (WIN_W, WIN_H));
+                                        if let Some(c) = c {
+                                            if c.ok.hit(mouse) {
+                                                confirm_quit = None;
+                                                match act {
+                                                    QuitAct::Logout => {
+                                                        ui_say(net.as_mut(), "已注销。");
+                                                        net = None;
+                                                        mode = 1;
+                                                        belt = [None; crate::layout::BELT_SLOTS];
+                                                        shop_open = false;
+                                                        bag_open = false;
+                                                        status_open = false;
+                                                    }
+                                                    QuitAct::Exit => break 'main,
+                                                }
+                                            } else if c.cancel.hit(mouse) {
+                                                confirm_quit = None;
+                                            } else if !c.frame.hit(mouse) {
+                                                confirm_quit = None; // 点框外 = 取消
+                                            }
+                                        } else {
+                                            confirm_quit = None; // 量不到素材 ⇒ 别把人卡住
+                                        }
+                                    }
+                                }
+                                combat_target = None;
+                                move_target = None;
+                                press_at = None;
+                                pending_pickup = None;
+                                held_move = None;
+                                continue;
+                            }
                             // ①‴ **底栏右上那 4 个功能按钮**（人物/包裹/技能/选项，
                             // 图号 8-11，用户 2026-10-11）：点它们 = 按对应的功能键，
                             // 走**同一个** `toggle_*` ⇒ 鼠标与键盘行为一致。
@@ -918,6 +983,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         crate::layout::QuickBtn::PlusAbil => {
                                             ui_say(net.as_mut(), "属性加点还没做。")
+                                        }
+                                        // ⚠️ 这两颗**不直接生效** ⇒ 弹确认框（原版是
+                                        // 点了就走，`FState.pas:5773-5803`）
+                                        crate::layout::QuickBtn::Logout => {
+                                            confirm_quit = Some(QuitAct::Logout)
+                                        }
+                                        crate::layout::QuickBtn::Exit => {
+                                            confirm_quit = Some(QuitAct::Exit)
                                         }
                                     }
                                     combat_target = None;
@@ -2210,6 +2283,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         dir,
                         &belt,
                         mouse,
+                    )?;
+                }
+            }
+            // **退出 / 注销的确认框**（模态）⇒ 画在所有窗之上
+            if let (2, Some(act)) = (mode, confirm_quit) {
+                if let Some(dir) = asset_dir.as_deref() {
+                    hud::draw_confirm(
+                        &mut canvas,
+                        &tex_creator,
+                        &mut ui,
+                        &mut ui_texts,
+                        dir,
+                        (WIN_W, WIN_H),
+                        act.ask(),
                     )?;
                 }
             }

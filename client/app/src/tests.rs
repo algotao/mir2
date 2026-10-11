@@ -2284,3 +2284,21 @@ fn 快捷栏按实例号找物品而不是格位号() {
         .map(|(i, _)| *i);
     assert_eq!(found, Some(0), "重排后该按实例号找到新的格位");
 }
+
+/// **注销 / 退出**那两颗按钮（原版 `DBotLogout` 136 / `DBotExit` 138，
+/// `FState.pas:1330-1335`：面板 x 530 / 560，同一行 y=104）。
+#[test]
+fn 注销与退出按钮的落点() {
+    use crate::layout::{hud_quick_at, QuickBtn};
+    assert_eq!(QuickBtn::Logout.img(), 136);
+    assert_eq!(QuickBtn::Exit.img(), 138);
+    assert_eq!(QuickBtn::Logout.at(), (530.0, 104.0));
+    assert_eq!(QuickBtn::Exit.at(), (560.0, 104.0));
+    // 退出在注销右边，且在同一行
+    assert!(QuickBtn::Exit.rect().0 > QuickBtn::Logout.rect().0);
+    assert_eq!(QuickBtn::Exit.rect().1, QuickBtn::Logout.rect().1);
+    for b in [QuickBtn::Logout, QuickBtn::Exit] {
+        let (x, y, w, h) = b.rect();
+        assert_eq!(hud_quick_at((x + w / 2.0, y + h / 2.0)), Some(b), "{b:?}");
+    }
+}

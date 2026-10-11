@@ -740,6 +740,75 @@ fn draw_dialog<'a, T>(
     Ok(())
 }
 
+// ---------- 退出 / 注销 的确认框 ----------
+//
+// ⚠️ 官方这两个按钮**没有确认框**（`DBotExitClick` 直接 `AppExit`，
+// `FState.pas:5789-5803`；只有"战斗中不能退出"那道守卫）—— 但点一下就把游戏
+// 关了，误触代价太大 ⇒ 我们加一道确认。素材全用官方现成的：
+// 消息框 `Prguse[360]`（452×179）+ [确定] 363（80×34）+ [取消] 52（96×33）。
+
+/// 确认框的几何（框 + [确定] + [取消]）。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Confirm {
+    pub frame: mir2_core::select_ui::Rect,
+    pub ok: mir2_core::select_ui::Rect,
+    pub cancel: mir2_core::select_ui::Rect,
+}
+
+/// 量一次确认框的几何（素材不在 ⇒ `None`，与"素材缺失"同一条纪律）。
+pub(crate) fn confirm_geom(ui: &mut ui::UiCache, dir: &Path, win: (u32, u32)) -> Option<Confirm> {
+    let frame = ui.size(dir, "Prguse", 360)?;
+    let ok = ui.size(dir, "Prguse", 363).unwrap_or((0, 0));
+    let cancel = ui.size(dir, "Prguse", 52).unwrap_or((0, 0));
+    let b = mir2_core::select_ui::MsgBox::build(win, frame, ok);
+    // [确定] 那颗是**居中**的 ⇒ [取消] 摆在它左边，两颗合起来看着才居中
+    let (cw, ch) = (cancel.0 as f32, cancel.1 as f32);
+    let gap = 12.0;
+    Some(Confirm {
+        frame: b.frame,
+        ok: b.ok,
+        cancel: mir2_core::select_ui::Rect {
+            x: b.ok.x - gap - cw,
+            y: b.ok.y + (b.ok.h - ch) / 2.0,
+            w: cw,
+            h: ch,
+        },
+    })
+}
+
+/// 画确认框（框 + 一句话 + [确定]/[取消]）。
+pub(crate) fn draw_confirm<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    ui: &mut ui::UiCache<'a>,
+    texts: &mut font::TextCache<'a>,
+    dir: &Path,
+    win: (u32, u32),
+    msg: &str,
+) -> Result<(), sdl3::Error> {
+    let Some(c) = confirm_geom(ui, dir, win) else {
+        return Ok(());
+    };
+    let _ = ui.draw(canvas, tc, dir, "Prguse", 360, c.frame.x, c.frame.y);
+    if c.ok.w > 0.0 {
+        let _ = ui.draw(canvas, tc, dir, "Prguse", 363, c.ok.x, c.ok.y);
+    }
+    if c.cancel.w > 0.0 {
+        let _ = ui.draw(canvas, tc, dir, "Prguse", 52, c.cancel.x, c.cancel.y);
+    }
+    let w = texts.width(msg);
+    texts.draw(
+        canvas,
+        tc,
+        msg,
+        c.frame.x + (c.frame.w - w) / 2.0,
+        c.frame.y + 48.0,
+        (255, 255, 255),
+        Some((0, 0, 0)),
+    )?;
+    Ok(())
+}
+
 /// 画**快捷（腰带）栏**的 6 格：框是底栏 `Prguse[1]` 自带的 ⇒ 这里只画
 /// **物品图标（居中）** 与格号 1..6（原版 `DBelt1DirectPaint`，`FState.pas:4010-4027`）。
 ///

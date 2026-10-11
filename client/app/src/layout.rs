@@ -219,15 +219,21 @@ pub(crate) enum QuickBtn {
     Group,
     /// 属性 / 内挂（还没做）。
     PlusAbil,
+    /// 注销（回登录界面）。
+    Logout,
+    /// 退出程序。
+    Exit,
 }
 
 impl QuickBtn {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::MiniMap,
         Self::Trade,
         Self::Guild,
         Self::Group,
         Self::PlusAbil,
+        Self::Logout,
+        Self::Exit,
     ];
 
     /// **常态**图的图号（按下态是 `+1`）。
@@ -238,6 +244,8 @@ impl QuickBtn {
             Self::Guild => 134,
             Self::Group => 128,
             Self::PlusAbil => 140,
+            Self::Logout => 136,
+            Self::Exit => 138,
         }
     }
 
@@ -258,6 +266,9 @@ impl QuickBtn {
             Self::Guild => 279.0,
             Self::Group => 309.0,
             Self::PlusAbil => 339.0,
+            // 官方 `FState.pas:1330-1335`：注销 560-30、退出 560
+            Self::Logout => 530.0,
+            Self::Exit => 560.0,
         };
         (x, 104.0)
     }
