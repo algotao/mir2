@@ -68,6 +68,11 @@ pub(crate) enum Press {
     Shop(crate::shop::Hit),
     /// 卖货窗的槽 / [OK] / [关闭]。
     Sell(crate::shop::SellHit),
+    /// 登录界面的按钮（[`crate::login::Btn`]）。
+    ///
+    /// ⚠️ 登录是 `mode == 1`，与游戏内（`mode == 2`）的 `release` 不会撞车
+    /// ⇒ 它单独用自己的一次 `press` / `release`。
+    Login(crate::login::Btn),
     /// 退出确认框的 [确定]。
     ConfirmOk,
     /// 退出确认框的 [取消]。

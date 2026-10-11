@@ -1739,6 +1739,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 Press::ConfirmCancel => confirm_quit = None,
+                                // 登录界面的按钮：不会走到这里（那是 `mode == 1` 的事，
+                                // 见下面登录那条 `release`）。列出来只为穷尽匹配。
+                                Press::Login(_) => {}
                             }
                             continue; // 按在界面上 ⇒ 不走世界的"松手"逻辑
                         }
@@ -1830,7 +1833,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let l =
                             mir2_core::login_ui::Layout::build(UI_WIN, |c, i| ui.size(dir, c, i));
                         if let Some(l) = l {
-                            login.on_down((x, y), &l);
+                            login.on_down((x, y), &l, &mut ui_click);
                         }
                     }
                 }
@@ -1845,7 +1848,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let l =
                             mir2_core::login_ui::Layout::build(UI_WIN, |c, i| ui.size(dir, c, i));
                         if let Some(l) = l {
-                            let act = login.on_up((x, y), &l);
+                            // OnClick 交给引擎判（拖出去松开就不算）⇒ 这里只映射动作
+                            let act = match ui_click.release((x, y)) {
+                                Some(Press::Login(b)) => login.click(b, &l),
+                                _ => login::Action::None,
+                            };
                             // 按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` ⇒ 103）
                             if act != login::Action::None {
                                 sfx(&sound, &sounds, mir2_core::sound::idx::NORM_BUTTON_CLICK);
@@ -2640,6 +2647,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // ⚠️ 同上：设计尺寸
                 UI_WIN,
                 started,
+                &ui_click,
             )?;
         } else {
             draw_asset_view(

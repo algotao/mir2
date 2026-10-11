@@ -75,7 +75,7 @@ pub enum Mode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Btn {
+pub(crate) enum Btn {
     Ok,
     New,
     ChgPw,
@@ -84,6 +84,13 @@ enum Btn {
     /// 建号面板的 `[确定]` / `[取消]`（原版 `DNewAccountOk/Cancel`）。
     SignupOk,
     SignupCancel,
+}
+
+/// 点 `p` 落在 `r` 里吗？是 ⇒ 给引擎的 `(按钮, 矩形)`。
+///
+/// `widget::Rect` 是 `(x, y, w, h)`，而 `login_ui::Rect` 是结构体 ⇒ 在这里换一次。
+fn pick(r: mir2_core::login_ui::Rect, p: (f32, f32), b: Btn) -> Option<(Btn, crate::widget::Rect)> {
+    r.hit(p).then_some((b, (r.x, r.y, r.w, r.h)))
 }
 
 /// 登录界面的状态。
@@ -102,8 +109,6 @@ pub struct Login {
     pub busy: bool,
     /// 登录成功那一刻 ⇒ 开始播开门动画。
     pub opened_at: Option<Instant>,
-    /// 正被按住的按钮（原版靠它做"+1 位移"的按下反馈）。
-    pressed: Option<Btn>,
 }
 
 impl Default for Login {
@@ -123,7 +128,6 @@ impl Login {
             error: None,
             busy: false,
             opened_at: None,
-            pressed: None,
         }
     }
 
@@ -141,7 +145,6 @@ impl Login {
         self.confirm.clear();
         self.focus = if self.account.is_empty() { 0 } else { 1 };
         self.error = None;
-        self.pressed = None;
     }
 
     /// 关掉建号面板回登录（原版 `NewAccountClose` → `ChangeLoginState(lsLogin)`）。
@@ -150,7 +153,6 @@ impl Login {
         self.password.clear();
         self.confirm.clear();
         self.focus = 0;
-        self.pressed = None;
     }
 
     /// 建号面板的**本地校验**（原版 `CheckUserEntrys`，`IntroScn.pas:976-1029`）：
@@ -277,77 +279,66 @@ impl Login {
         }
     }
 
-    /// 鼠标按下：记下按住的是哪颗（画的时候 +1 位移）。
+    /// 鼠标按下：把"按住了哪颗"**交给控件引擎**（`widget::Ui`）。
+    ///
+    /// ⚠️ 原来是自己存一个 `self.pressed`，画的时候再看它 ⇒ 命中与绘制两处各判一次
+    /// （而且没有"拖出去就不算"这条）。现在按官方 `TDButton` 的路子：按下记
+    /// `(控件, 矩形)`，松开时对不上就不算点击 —— 登录界面也享受同一套规范。
     ///
     /// ⚠️ 输入框没有"按下"状态 —— 原版也只是把焦点交给那个 `TEdit`。
-    pub fn on_down(&mut self, p: (f32, f32), l: &Layout) {
-        if self.error.is_some() {
-            self.pressed = l.msg_ok.hit(p).then_some(Btn::MsgOk);
+    pub fn on_down(&mut self, p: (f32, f32), l: &Layout, ui: &mut crate::widget::Ui) {
+        // 建号面板只有 [确定]/[取消]/[X] 可点；登录面板是 [提交]/[新用户]/[改密码]/[X]
+        let hit = if self.error.is_some() {
+            // 报错弹窗是**模态**的 ⇒ 只有它那颗 [Ok] 可点
+            pick(l.msg_ok, p, Btn::MsgOk)
+        } else if self.signup() {
+            pick(l.signup_ok, p, Btn::SignupOk)
+                .or_else(|| pick(l.signup_cancel, p, Btn::SignupCancel))
+                .or_else(|| pick(l.close, p, Btn::Close))
+        } else {
+            pick(l.ok, p, Btn::Ok)
+                .or_else(|| pick(l.new, p, Btn::New))
+                .or_else(|| pick(l.chgpw, p, Btn::ChgPw))
+                .or_else(|| pick(l.close, p, Btn::Close))
+        };
+        if let Some((b, r)) = hit {
+            ui.press(crate::Press::Login(b), r);
             return;
         }
-        // 建号面板只有 [确定]/[取消]/[X] 可点；登录面板是 [提交]/[新用户]/[改密码]/[X]
-        self.pressed = if self.signup() {
-            if l.signup_ok.hit(p) {
-                Some(Btn::SignupOk)
-            } else if l.signup_cancel.hit(p) {
-                Some(Btn::SignupCancel)
-            } else if l.close.hit(p) {
-                Some(Btn::Close)
-            } else {
-                None
-            }
-        } else if l.ok.hit(p) {
-            Some(Btn::Ok)
-        } else if l.new.hit(p) {
-            Some(Btn::New)
-        } else if l.chgpw.hit(p) {
-            Some(Btn::ChgPw)
-        } else if l.close.hit(p) {
-            Some(Btn::Close)
-        } else {
-            None
-        };
-        // 输入框点一下就换焦点（原版也只是把焦点交给那个 TEdit）
-        if self.pressed.is_none() {
-            if l.account.hit(p) {
-                self.focus = 0;
-            } else if l.password.hit(p) {
-                self.focus = 1;
-            } else if self.signup() && l.confirm.hit(p) {
-                self.focus = 2;
-            }
+        // 没按在按钮上 ⇒ 输入框点一下就换焦点（原版也只是把焦点交给那个 TEdit）
+        if l.account.hit(p) {
+            self.focus = 0;
+        } else if l.password.hit(p) {
+            self.focus = 1;
+        } else if self.signup() && l.confirm.hit(p) {
+            self.focus = 2;
         }
     }
 
-    /// 鼠标抬起：只有"按下与抬起落在同一颗"才算点中。
-    pub fn on_up(&mut self, p: (f32, f32), l: &Layout) -> Action {
-        let Some(btn) = self.pressed.take() else {
-            return Action::None;
-        };
+    /// **点中了**某颗按钮（`widget::Ui` 已判定"按下与抬起落在同一颗"）⇒ 映射成动作。
+    ///
+    /// ⚠️ 原来这里还要自己再判一次矩形（命中判了第二遍）；现在那是引擎的事，
+    /// 这里只管"这颗钮是什么意思"。
+    pub fn click(&mut self, btn: Btn, l: &Layout) -> Action {
         // ⚠️ 弹窗的 [Ok] 要**真的把窗关掉**（清 `error`）：原来自绘的那颗只是画着好看 ——
-        // `on_up` 不清 `error`、`main` 收到 `Dismiss` 也不做什么 ⇒ 点了没反应。
-        // 回车那条路（`on_key`）一直是清的，所以**两条路必须都清**（用户 2026-10-08 报的）。
+        // 不清 `error` ⇒ 点了没反应。回车那条路（`on_key`）一直是清的，
+        // 所以**两条路必须都清**（用户 2026-10-08 报的）。
         if btn == Btn::MsgOk {
-            if l.msg_ok.hit(p) {
-                self.error = None;
-                return Action::Dismiss;
-            }
-            return Action::None;
+            self.error = None;
+            return Action::Dismiss;
         }
-        let (r, act) = match btn {
-            Btn::Ok => (l.ok, Action::Submit),
-            Btn::New => (l.new, Action::NewAccount),
-            Btn::ChgPw => (l.chgpw, Action::ChangePassword),
-            Btn::Close => (l.close, Action::Quit),
-            Btn::MsgOk => (l.msg_ok, Action::Dismiss),
-            Btn::SignupOk => (l.signup_ok, Action::SubmitSignup),
-            Btn::SignupCancel => (l.signup_cancel, Action::CancelSignup),
+        let act = match btn {
+            Btn::Ok => Action::Submit,
+            Btn::New => Action::NewAccount,
+            Btn::ChgPw => Action::ChangePassword,
+            Btn::Close => Action::Quit,
+            Btn::MsgOk => Action::Dismiss,
+            Btn::SignupOk => Action::SubmitSignup,
+            Btn::SignupCancel => Action::CancelSignup,
         };
-        if !r.hit(p) {
-            return Action::None;
-        }
-        // ⚠️ 面板的切换在**这里**完成（不是 `main` 的事）：点 [新用户] 就切进建号面板，
-        // 点 [取消]/[X] 就切回登录面板。动作只是"通知"，`main` 不必知道面板状态。
+        let _ = l; // 版式现在只用于"焦点/输入框"，按钮那部分已归引擎
+                   // ⚠️ 面板的切换在**这里**完成（不是 `main` 的事）：点 [新用户] 就切进建号面板，
+                   // 点 [取消]/[X] 就切回登录面板。动作只是"通知"，`main` 不必知道面板状态。
         match act {
             Action::NewAccount => {
                 self.enter_signup();
@@ -371,7 +362,9 @@ impl Login {
     /// ⚠️ 参数名是 `texts` 而不是 `text`：本文件其余地方还要调那个**自由函数** `text()`
     ///（8×8 调试字体，画 ASCII 用），参数一旦也叫 `text` 就会把函数遮住（编译期报
     /// "expected function, found &mut TextCache" —— 踩过）。
-    #[allow(clippy::too_many_arguments)] // 与 `font::TextCache::draw` / `ui::UiCache::draw` 同一情况：坐标+配色+画布就是这么多
+    #[allow(clippy::too_many_arguments)]
+    // 与 `font::TextCache::draw` / `ui::UiCache::draw` 同一情况：坐标+配色+画布就是这么多
+    /// `widget_ui`：控件引擎（按钮的按下态问它，不再自存一份）。
     pub fn draw<'a, T>(
         &self,
         canvas: &mut WindowCanvas,
@@ -381,6 +374,8 @@ impl Login {
         asset_dir: &Option<std::path::PathBuf>,
         win: (u32, u32),
         started: Instant,
+        // 控件引擎：按钮的按下态问它（`held`），不再自存一份 `pressed`
+        widget_ui: &crate::widget::Ui,
     ) -> Result<(), sdl3::Error> {
         let winf = (win.0 as f32, win.1 as f32);
         uifill(canvas, 0.0, 0.0, winf.0, winf.1, C_BG)?;
@@ -512,7 +507,7 @@ impl Login {
         }
 
         // ⑤ 按钮（按下时 +1 位移）
-        let down = |b: Btn| self.pressed == Some(b);
+        let down = |b: Btn| widget_ui.held() == Some(crate::Press::Login(b));
         let mut put = |canvas: &mut WindowCanvas, idx: u32, r: Rect, pressed: bool| {
             let (dx, dy) = if pressed { (1.0, 1.0) } else { (0.0, 0.0) };
             ui.draw(canvas, tc, dir, Art::DIALOG.0, idx, r.x + dx, r.y + dy);
@@ -679,6 +674,18 @@ fn wrap_px(width_of: impl Fn(&str) -> f32, s: &str, max_w: f32) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// 走一遍**真实的**按下 → 抬起（含控件引擎的 OnClick 判定）
+    /// ⇒ 拖出去松开就不算点中，跟游戏里那条路是同一套。
+    fn tap(s: &mut Login, l: &Layout, down_at: (f32, f32), up_at: (f32, f32)) -> Action {
+        let mut ui = crate::widget::Ui::new();
+        ui.set_mouse(down_at);
+        s.on_down(down_at, l, &mut ui);
+        match ui.release(up_at) {
+            Some(crate::Press::Login(b)) => s.click(b, l),
+            _ => Action::None,
+        }
+    }
+
     use super::*;
 
     /// Tab 切焦点、退格删自己那个框、回车提交。
@@ -750,14 +757,12 @@ mod tests {
         s.error = Some("账号或口令不正确".into());
         // 点在 [确定] 上 ⇒ 关掉
         let c = (l.msg_ok.x + 4.0, l.msg_ok.y + 4.0);
-        s.on_down(c, &l);
-        assert_eq!(s.on_up(c, &l), Action::Dismiss);
+        assert_eq!(tap(&mut s, &l, c, c), Action::Dismiss);
         assert!(s.error.is_none(), "点了[确定]必须把弹窗清掉");
         // 弹窗开着时点别处：不该误关（原版 `DMessageDlg` 只认它那颗按钮）
         s.error = Some("再来一次".into());
         let out = (2.0, 2.0);
-        s.on_down(out, &l);
-        assert_eq!(s.on_up(out, &l), Action::None);
+        assert_eq!(tap(&mut s, &l, out, out), Action::None);
         assert!(s.error.is_some(), "点弹窗外面不该关掉它");
     }
 
@@ -861,13 +866,11 @@ mod tests {
         let mut s = Login::new();
         // 点 [新用户] ⇒ 面板切进建号（动作只是通知）
         let c = (l.new.x + 10.0, l.new.y + 10.0);
-        s.on_down(c, &l);
-        assert_eq!(s.on_up(c, &l), Action::NewAccount);
+        assert_eq!(tap(&mut s, &l, c, c), Action::NewAccount);
         assert!(s.signup(), "面板该切到建号");
         // 点 [取消] ⇒ 回登录
         let c = (l.signup_cancel.x + 10.0, l.signup_cancel.y + 10.0);
-        s.on_down(c, &l);
-        assert_eq!(s.on_up(c, &l), Action::CancelSignup);
+        assert_eq!(tap(&mut s, &l, c, c), Action::CancelSignup);
         assert!(!s.signup());
     }
 
@@ -891,16 +894,23 @@ mod tests {
         };
         let mut s = Login::new();
         let c = (l.ok.x + 10.0, l.ok.y + 10.0);
-        s.on_down(c, &l);
-        assert_eq!(s.on_up(c, &l), Action::Submit);
+        assert_eq!(tap(&mut s, &l, c, c), Action::Submit);
         // 按下之后滑出去再抬起 = 不算点中
-        s.on_down(c, &l);
-        assert_eq!(s.on_up((l.ok.x - 50.0, c.1), &l), Action::None);
+        assert_eq!(tap(&mut s, &l, c, (l.ok.x - 50.0, c.1)), Action::None);
         // 点输入框只改焦点，不产生动作
-        s.on_down((l.password.x + 2.0, l.password.y + 2.0), &l);
+        s.on_down(
+            (l.password.x + 2.0, l.password.y + 2.0),
+            &l,
+            &mut crate::widget::Ui::new(),
+        );
         assert_eq!(s.focus, 1);
         assert_eq!(
-            s.on_up((l.password.x + 2.0, l.password.y + 2.0), &l),
+            tap(
+                &mut s,
+                &l,
+                (l.password.x + 2.0, l.password.y + 2.0),
+                (l.password.x + 2.0, l.password.y + 2.0)
+            ),
             Action::None
         );
     }
