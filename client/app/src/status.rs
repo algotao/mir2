@@ -167,15 +167,6 @@ pub(crate) fn hit(local: (f32, f32)) -> Hit {
     Hit::None
 }
 
-/// 翻页：`dir = +1` 下一页 / `-1` 上一页，在 `PAGES` 里**循环**（官方也是循环翻）。
-pub(crate) fn page_step(page: usize, dir: i8) -> usize {
-    if dir >= 0 {
-        (page + 1) % PAGES
-    } else {
-        (page + PAGES - 1) % PAGES
-    }
-}
-
 /// 画状态窗。`page` = 0 装备页 / 1 属性页。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw<'a, T>(

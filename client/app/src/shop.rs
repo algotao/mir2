@@ -125,18 +125,6 @@ pub(crate) fn hit(local: (f32, f32), rows: usize) -> Hit {
     Hit::None
 }
 
-/// 页码推进（到头就绕回）。
-pub(crate) fn page_step(page: usize, dir: i8, items: usize) -> usize {
-    let n = pages(items);
-    if dir > 0 {
-        (page + 1) % n
-    } else if dir < 0 {
-        (page + n - 1) % n
-    } else {
-        page.min(n - 1)
-    }
-}
-
 /// 画商店窗：表头三列 + 商品行（选中高亮）+ 左右翻页 + OK。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw<'a, T>(

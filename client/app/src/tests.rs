@@ -1554,10 +1554,15 @@ fn 商店窗几何与命中() {
     assert_eq!(crate::shop::pages(6), 1);
     assert_eq!(crate::shop::pages(7), 2, "第 7 件要翻页");
     assert_eq!(crate::shop::pages(20), 4);
-    assert_eq!(crate::shop::page_step(0, 1, 20), 1);
-    assert_eq!(crate::shop::page_step(3, 1, 20), 0, "到头绕回");
-    assert_eq!(crate::shop::page_step(0, -1, 20), 3, "往前翻也绕回");
-    assert_eq!(crate::shop::page_step(5, 0, 20), 3, "静止时夹回末页");
+    // 翻页**本身**迁到 `pager::Pager`（架构方向 ①）⇒ 那边有测试；这里只钉
+    // "20 件商品要分 4 页"这个**分页尺寸**的口径。
+    let mut pg = crate::pager::Pager::new();
+    for _ in 0..3 {
+        pg.step(1, crate::shop::pages(20));
+    }
+    assert_eq!(pg.page(), 3);
+    pg.step(1, crate::shop::pages(20));
+    assert_eq!(pg.page(), 0, "到头绕回");
 }
 
 /// 背包窗落点：平时在对话窗下面；**商店开着时紧贴卖窗右侧**（原版买/卖时包裹就
@@ -1951,9 +1956,13 @@ fn 状态窗版式() {
     );
     assert_eq!(crate::status::hit((0.0, 0.0)), crate::status::Hit::None);
     // 翻页**循环**（官方 4 页，我们做 2 页）
-    assert_eq!(crate::status::page_step(0, 1), 1);
-    assert_eq!(crate::status::page_step(1, 1), 0);
-    assert_eq!(crate::status::page_step(0, -1), crate::status::PAGES - 1);
+    let mut pg = crate::pager::Pager::new();
+    pg.step(1, crate::status::PAGES);
+    assert_eq!(pg.page(), 1);
+    pg.step(1, crate::status::PAGES);
+    assert_eq!(pg.page(), 0);
+    pg.step(-1, crate::status::PAGES);
+    assert_eq!(pg.page(), crate::status::PAGES - 1);
     // 槽位中文名（只用于聊天反馈，但别把下标写错）
     assert_eq!(crate::status::slot_name(0), "衣服");
     assert_eq!(crate::status::slot_name(1), "武器");

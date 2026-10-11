@@ -89,7 +89,9 @@ pub(crate) mod assetview;
 mod bagdrag;
 pub(crate) mod hud;
 pub(crate) mod minimap;
+mod pager;
 pub(crate) mod shop;
+mod shopui;
 pub(crate) mod status;
 pub(crate) use minimap::*;
 pub(crate) mod net;
@@ -203,9 +205,9 @@ fn toggle_minimap(minimap_on: &mut bool) {
 ///
 /// ⚠️ 原来 F9 那支还顺手把 `bag_page` 归零 —— 抽出来就是为了"点按钮"和"按 F9"
 /// **一模一样**（用户 2026-10-11：鼠标行为与键盘行为要一致），别一处归零一处不归。
-fn toggle_bag(bag_open: &mut bool, bag_page: &mut usize) {
+fn toggle_bag(bag_open: &mut bool, bag_page: &mut pager::Pager) {
     *bag_open = !*bag_open;
-    *bag_page = 0;
+    bag_page.reset();
     println!("[ui] 背包窗 {}", if *bag_open { "打开" } else { "关闭" });
 }
 
@@ -429,20 +431,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 背包窗（F9）与它的页码 —— **纯客户端窗口状态**，不跟服务端同步
     //（原版背包也是本地开合；服务端只管背包内容）。
     let mut bag_open = false;
-    let mut bag_page = 0usize;
+    let mut bag_page = pager::Pager::new();
     // 状态窗（F10）—— 同样是**纯客户端窗口状态**：数据全在 `world.ability` / `world.equip` 里
     //（服务端一直在下发，见 `status.rs` 的说明），开关不跟服务端同步。
     let mut status_open = false;
     // 状态窗的页码（官方 4 页，我们做 2 页：0 装备 / 1 属性）
-    let mut status_page = 0usize;
+    let mut status_page = pager::Pager::new();
     // 商店窗：**收到货架（`shop_seq` 变了）就开**。
     // ⚠️ 不能按 npc_id 判"开过没有"——同一个商人第二次点"购买"，窗口也得重开
     //（用户 2026-10-10 第 5 条：对话结束后再到"购买"，购买窗口无法打开）。
     let mut shop_seen_seq: u64 = 0;
     let mut shop_open = false;
-    let mut shop_page = 0usize;
+    // 商店窗（买）：翻页 + 选中哪一行（规则在 `shopui`，不碰 SDL ⇒ 有测试）
     // 选中的商品（**绝对下标**，跨页有效）：点行选中、点 OK 才买（原版口径）
-    let mut shop_sel: Option<usize> = None;
+    let mut shop_ui = shopui::ShopUi::new();
     // 包裹是**因为打开购买窗**才开起来的吗（是 ⇒ 关购买窗时一起收走；
     // 玩家自己按 F9 开的 ⇒ 别替他关，用户 2026-10-10 第 1 条）
     let mut bag_by_shop = false;
@@ -612,7 +614,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         //（用户 2026-10-10 第 1 条：购买窗关闭 ⇒ 物品列表与包裹一起关）
                         Some(Keycode::Escape) if mode == 2 && shop_open => {
                             shop_open = false;
-                            shop_sel = None;
+                            shop_ui.close();
                             if crate::shop::shop_close::should_close_bag(bag_by_shop) {
                                 bag_open = false;
                                 bag_by_shop = false;
@@ -875,9 +877,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 })
                                 .max(1);
                             if y > 0.0 {
-                                bag_page = (bag_page + 1) % pages;
+                                bag_page.step(1, pages);
                             } else if y < 0.0 {
-                                bag_page = (bag_page + pages - 1) % pages;
+                                bag_page.step(-1, pages);
                             }
                             done = true;
                         }
@@ -904,11 +906,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     && mouse.1 >= wy
                                     && mouse.1 < wy + wh
                                 {
-                                    shop_page = crate::shop::page_step(
-                                        shop_page,
-                                        if y > 0.0 { 1 } else { -1 },
-                                        sh.items.len(),
-                                    );
+                                    shop_ui.wheel(if y > 0.0 { 1 } else { -1 }, sh.items.len());
                                 }
                             }
                         }
@@ -1056,7 +1054,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let lx = x - bx;
                                     let ly = y - by;
                                     if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
-                                        let idx = bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
+                                        let idx =
+                                            bag_page.page() * crate::layout::BAG_PAGE_SLOTS + slot;
                                         // —— 包裹操作规范（用户 2026-10-10，普通/卖出一致）——
                                         // 2/3. 手上拿着：放到**空格** = 移动；放到**有东西的格**
                                         //     = **交换**（那格的物品变为拾取）。服务端是权威
@@ -1242,7 +1241,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 crate::status::Hit::Slot(slot) => {
                                                     if let Some(n) = net.as_ref() {
                                                         let name = crate::status::slot_name(slot);
-                                                        if status_page == 0 {
+                                                        if status_page.page() == 0 {
                                                             if let Some(Some(it)) =
                                                                 n.world.equip.get(slot)
                                                             {
@@ -1323,7 +1322,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         );
                                     } else if let Some(slot) = crate::layout::bag_slot_at((lx, ly))
                                     {
-                                        let idx = bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
+                                        let idx =
+                                            bag_page.page() * crate::layout::BAG_PAGE_SLOTS + slot;
                                         // 与上面那处**同一份规则**（`bagdrag`），不再各写一遍
                                         if let Some(n) = net.as_ref() {
                                             let act = {
@@ -1362,11 +1362,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let (wx, wy, ww, wh) = crate::shop::panel();
                                         if x >= wx && x < wx + ww && y >= wy && y < wy + wh {
                                             ui_consumed = true;
-                                            let base = shop_page * crate::shop::ROWS;
+                                            let base = shop_ui.page() * crate::shop::ROWS;
                                             let rows = sh.items.len().saturating_sub(base);
                                             match crate::shop::hit((x - wx, y - wy), rows) {
                                                 crate::shop::Hit::Row(r) => {
-                                                    shop_sel = Some(base + r);
+                                                    shop_ui.click_row(r);
                                                 }
                                                 // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
                                                 crate::shop::Hit::Prev => {
@@ -1571,8 +1571,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     println!("[ui] 状态窗关闭（点 X）");
                                 }
                                 Press::Status(crate::status::Hit::Arrow(d)) => {
-                                    status_page = crate::status::page_step(status_page, d);
-                                    println!("[ui] 状态窗翻到第 {} 页", status_page);
+                                    status_page.step(d, crate::status::PAGES);
+                                    println!("[ui] 状态窗翻到第 {} 页", status_page.page());
                                 }
                                 Press::Status(_) => {}
                                 Press::Shop(crate::shop::Hit::Prev) => {
@@ -1580,20 +1580,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .as_ref()
                                         .and_then(|n| n.world.shop.as_ref())
                                         .map_or(0, |sh| sh.items.len());
-                                    shop_page = crate::shop::page_step(shop_page, -1, n);
+                                    shop_ui.page_step(-1, n);
                                 }
                                 Press::Shop(crate::shop::Hit::Next) => {
                                     let n = net
                                         .as_ref()
                                         .and_then(|n| n.world.shop.as_ref())
                                         .map_or(0, |sh| sh.items.len());
-                                    shop_page = crate::shop::page_step(shop_page, 1, n);
+                                    shop_ui.page_step(1, n);
                                 }
                                 Press::Shop(crate::shop::Hit::Ok) => {
                                     if let Some(sh) =
                                         net.as_ref().and_then(|n| n.world.shop.as_ref())
                                     {
-                                        match shop_sel.and_then(|s| sh.items.get(s)) {
+                                        match shop_ui.sel().and_then(|s| sh.items.get(s)) {
                                             Some(it) => {
                                                 let name = it.name.clone();
                                                 let npc = sh.npc_id;
@@ -1608,7 +1608,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 Press::Shop(crate::shop::Hit::Close) => {
                                     shop_open = false;
-                                    shop_sel = None;
+                                    shop_ui.close();
                                     println!("[ui] 商店窗关闭（素材关闭钮）");
                                 }
                                 Press::Shop(_) => {}
@@ -2226,19 +2226,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let shop_seq_now = net.as_ref().map_or(0, |n| n.world.shop_seq);
         if shop_seq_now != shop_seen_seq {
             shop_seen_seq = shop_seq_now;
-            shop_page = 0;
-            shop_sel = None;
+            shop_ui.close();
             shop_open = shop_seq_now > 0;
             if shop_open && !bag_open {
                 bag_open = true;
                 bag_by_shop = true; // 记住是"因为买东西才开的" ⇒ 收摊时要一起收走
             }
         }
+        // 商品列表可能变短（换商人 / 服务端刷新）⇒ 页码与选中夹回合法范围，
+        // 否则会停在"已经不存在的第 4 页"或选中一件没有的商品（`shopui` 有测试）。
+        if let Some(sh) = net.as_ref().and_then(|n| n.world.shop.as_ref()) {
+            shop_ui.revalidate(sh.items.len());
+        }
         // 货架被收走（对话关了 / 换图）⇒ **商品列表与包裹一起关**
         //（用户 2026-10-10 第 1 条：购买对话框关闭时，物品列表及包裹窗口也关闭）
         if net.as_ref().is_none_or(|n| n.world.shop.is_none()) && shop_open {
             shop_open = false;
-            shop_sel = None;
+            shop_ui.close();
             drag.clear();
             if bag_by_shop {
                 bag_open = false;
@@ -2412,7 +2416,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &mut ui_texts,
                         dir,
                         net.as_ref(),
-                        bag_page,
+                        bag_page.page(),
                         shop_open,
                         &hide,
                         &ui_click,
@@ -2439,8 +2443,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &mut ui_texts,
                         dir,
                         net.as_ref(),
-                        shop_page,
-                        shop_sel,
+                        shop_ui.page(),
+                        shop_ui.sel(),
                         &ui_click,
                     )?;
                 }
@@ -2464,7 +2468,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let lx = mouse.0 - bx;
                         let ly = mouse.1 - by;
                         if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
-                            let idx = bag_page * crate::layout::BAG_PAGE_SLOTS + slot;
+                            let idx = bag_page.page() * crate::layout::BAG_PAGE_SLOTS + slot;
                             if let Some(Some(it)) = n.world.bag.get(idx) {
                                 if it.make_index != 0 && drag.held_slot().is_none() {
                                     hud::draw_item_tip(
@@ -2554,7 +2558,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &mut ui_texts,
                         dir,
                         net.as_ref(),
-                        status_page,
+                        status_page.page(),
                         &ui_click,
                     )?;
                 }
