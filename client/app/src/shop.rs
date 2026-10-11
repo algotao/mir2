@@ -85,7 +85,7 @@ pub(crate) fn pages(items: usize) -> usize {
 }
 
 /// 鼠标点中了什么（窗口内坐标）。
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Hit {
     /// 第 `row` 行（页内下标）⇒ **选中**它（买要再点 OK）。
     Row(usize),
@@ -326,7 +326,7 @@ pub(crate) const SELL_CIRCLE: (f32, f32, f32) = (57.0, 94.0, 54.0);
 pub(crate) const SELL_TITLE: (f32, f32) = (48.0, 4.0);
 
 /// 卖货窗里点中了什么。
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SellHit {
     /// 放物品的槽：把手上的东西放进来 / **点已放进去的东西 ⇒ 再拿起来**。
     Slot,
