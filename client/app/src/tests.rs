@@ -2337,3 +2337,43 @@ fn 聊天文字贴着白框底边且不越界() {
         );
     }
 }
+
+/// **底栏所有控件都必须在画布内**，而且用的是**画布坐标**（不是设计坐标）。
+///
+/// ⚠️ 这条钉的是一个真踩过的坑（2026-10-11）：`UiCache::draw` 吃的是**设计坐标**
+/// 800×600，内部还会再乘 `UI_SCALE`(1.28)；而底栏这一路（板、球、等级、按钮）
+/// 全在**画布坐标** 1024×768 里。把画布坐标喂给 `draw` ⇒ 右上角 4 颗 x 867→1110、
+/// 左下 5 颗 y 621→795，**全部飞出画布**，"一个都看不见"。
+/// ⇒ HUD 一律走 `draw_src`（不换算），见 `hud::hud_img`。
+#[test]
+fn 底栏控件都在画布内() {
+    use crate::layout::{belt_slot_rect, HudBtn, QuickBtn, BELT_SLOTS, HUD_BOARD_H};
+    let (w, h) = (crate::window::WIN_W as f32, crate::window::WIN_H as f32);
+    let board_top = h - HUD_BOARD_H;
+    let mut all: Vec<(String, (f32, f32, f32, f32))> = Vec::new();
+    for b in HudBtn::ALL {
+        all.push((format!("功能钮{b:?}"), b.rect()));
+    }
+    for b in QuickBtn::ALL {
+        all.push((format!("快捷钮{b:?}"), b.rect()));
+    }
+    for i in 0..BELT_SLOTS {
+        all.push((format!("腰带{i}"), belt_slot_rect(i)));
+    }
+    for (name, (x, y, ww, hh)) in all {
+        assert!(x >= 0.0 && x + ww <= w, "{name} 横向出画布：x={x} w={ww}");
+        assert!(
+            y >= board_top && y + hh <= h,
+            "{name} 纵向出画布：y={y} h={hh}"
+        );
+    }
+    // 反证：同样这些数若被当成设计坐标再乘 1.28，就**不该**还在画布里
+    // （说明"必须走画布坐标那条路"不是随便说的）
+    let scale = crate::ui::UI_SCALE;
+    let (x, _y, _ww, _hh) = HudBtn::Option.rect();
+    assert!(
+        x * scale > w,
+        "若按设计坐标画，功能钮会飞出画布右边（{x}×{scale} = {} > {w}）",
+        x * scale
+    );
+}

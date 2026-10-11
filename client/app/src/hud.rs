@@ -95,25 +95,29 @@ pub(crate) fn draw_hud<'a, T>(
 
     // **底栏右上那 4 个功能按钮**（人物/包裹/技能/选项，图号 8-11）：
     // 常态就在底栏 `Prguse[1]` 里 ⇒ 只在**悬停**时把高亮图叠上去。
+    //
+    // ⚠️⚠️ **必须用 `draw_src`（画布坐标），不能用 `ui.draw`（设计坐标）**：
+    // `ui.draw` 内部会把 x/y **再乘一次 `UI_SCALE`(1.28)**（`ui.rs:203-210`），
+    // 而这里的矩形是按 **画布** 1024×768 算的 ⇒ 乘完就飞到画布外去了
+    // （右上 4 颗 x 867→1110、左下 5 颗 y 621→795，全都看不见）
+    // —— 2026-10-11 用户报"完全看不到"就是这个。底栏/球/等级一路也都是画布坐标。
     let hovered = crate::layout::hud_btn_at(mouse);
     for b in crate::layout::HudBtn::ALL {
         if hovered == Some(b) {
-            let (x, y, _, _) = b.rect();
-            let _ = ui.draw(canvas, tc, dir, "Prguse", b.img(), x, y);
+            hud_img(canvas, tc, ui, dir, b.img(), b.rect());
         }
     }
-    // **底栏左下那排快捷按钮**（小地图/交易/行会/组队/属性）：这两态按钮
+    // **底栏左下那排快捷按钮**（小地图/交易/行会/组队/属性/注销/退出）：两态按钮
     // （常态 = `img`、按下 = `img+1`；官方 `DBotGroupDirectPaint`）⇒ **常态总是画**，
     // 悬停时换成 +1 那张（与右上那 4 颗"只在悬停叠高亮"不是同一种）。
     let qhovered = crate::layout::hud_quick_at(mouse);
     for b in crate::layout::QuickBtn::ALL {
-        let (x, y, _, _) = b.rect();
         let img = if qhovered == Some(b) {
             b.img() + 1
         } else {
             b.img()
         };
-        let _ = ui.draw(canvas, tc, dir, "Prguse", img, x, y);
+        hud_img(canvas, tc, ui, dir, img, b.rect());
     }
 
     // 血 / 魔法球。官方分**两支**（`FState.pas:3606-3640`）：
@@ -791,12 +795,14 @@ pub(crate) fn draw_confirm<'a, T>(
     let Some(c) = confirm_geom(ui, dir, win) else {
         return Ok(());
     };
-    let _ = ui.draw(canvas, tc, dir, "Prguse", 360, c.frame.x, c.frame.y);
+    // ⚠️ 同 `hud_img` 那条：这里的框/按钮都在**画布坐标** ⇒ 走 `draw_src`，
+    // 不能用 `ui.draw`（它内部还会再乘 `UI_SCALE`）。
+    hud_img_rect(canvas, tc, ui, dir, 360, c.frame);
     if c.ok.w > 0.0 {
-        let _ = ui.draw(canvas, tc, dir, "Prguse", 363, c.ok.x, c.ok.y);
+        hud_img_rect(canvas, tc, ui, dir, 363, c.ok);
     }
     if c.cancel.w > 0.0 {
-        let _ = ui.draw(canvas, tc, dir, "Prguse", 52, c.cancel.x, c.cancel.y);
+        hud_img_rect(canvas, tc, ui, dir, 52, c.cancel);
     }
     let w = texts.width(msg);
     texts.draw(
@@ -809,6 +815,60 @@ pub(crate) fn draw_confirm<'a, T>(
         Some((0, 0, 0)),
     )?;
     Ok(())
+}
+
+/// 在**画布坐标**的 `r` 处贴一张界面图（原生尺寸）。
+///
+/// ⚠️ 为什么非要绕这一层：HUD 这一路（底栏、球、等级、按钮）全在**画布坐标**
+/// 1024×768 里，而 `UiCache::draw` 吃的是**设计坐标** 800×600（它内部自己乘
+/// `UI_SCALE`）⇒ 直接调 `draw` 会再放大一次、把控件推出画布（2026-10-11 踩过）。
+/// 走 `draw_src`（不做任何换算）就与底栏那几段一致了。
+fn hud_img<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    ui: &mut ui::UiCache<'a>,
+    dir: &Path,
+    idx: u32,
+    (x, y, _w, _h): (f32, f32, f32, f32),
+) {
+    let Some((iw, ih)) = ui.size(dir, "Prguse", idx) else {
+        return;
+    };
+    let (iw, ih) = (iw as f32, ih as f32);
+    let _ = ui.draw_src(
+        canvas,
+        tc,
+        dir,
+        "Prguse",
+        idx,
+        FRect::new(0.0, 0.0, iw, ih),
+        FRect::new(x, y, iw, ih),
+        255,
+    );
+}
+
+/// 在**画布坐标**的 `r` 处贴一张界面图（**按 `r` 的尺寸**，不按原生尺寸）。
+fn hud_img_rect<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    ui: &mut ui::UiCache<'a>,
+    dir: &Path,
+    idx: u32,
+    r: mir2_core::select_ui::Rect,
+) {
+    let Some((iw, ih)) = ui.size(dir, "Prguse", idx) else {
+        return;
+    };
+    let _ = ui.draw_src(
+        canvas,
+        tc,
+        dir,
+        "Prguse",
+        idx,
+        FRect::new(0.0, 0.0, iw as f32, ih as f32),
+        FRect::new(r.x, r.y, r.w, r.h),
+        255,
+    );
 }
 
 /// 画**快捷（腰带）栏**的 6 格：框是底栏 `Prguse[1]` 自带的 ⇒ 这里只画
