@@ -1539,11 +1539,14 @@ fn 商店窗几何与命中() {
         crate::shop::Hit::Close,
         "点右上红叉 ⇒ 关窗"
     );
-    let (nx, ny, nw, nh) = crate::shop::CANCEL;
+    // ⚠️ 只有**右上角红叉**关窗：右下那块是 OK（2026-10-11 按素材 386 的主色
+    // 反查出来的），原来那个"底部右边 = 取消"的自绘框正好压在右圆钮上 ⇒
+    // 点"下一页"会变成关窗。这条把"右圆钮不再关窗"钉住。
+    let (nx, ny, nw, nh) = crate::shop::NEXT_R;
     assert_eq!(
         crate::shop::hit((nx + nw / 2.0, ny + nh / 2.0), 3),
-        crate::shop::Hit::Close,
-        "点底部右边那个钮 ⇒ 关窗"
+        crate::shop::Hit::Next,
+        "点右圆钮 ⇒ 翻下一页，不是关窗"
     );
 
     // ③ 翻页：一页 6 行；20 件 ⇒ 4 页；到头绕回

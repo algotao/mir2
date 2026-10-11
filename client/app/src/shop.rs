@@ -15,15 +15,21 @@ use crate::gfx::fill;
 use crate::net::Net;
 use crate::ui;
 
-/// **买窗底图** = `Prguse[385]`（308×205，用户 2026-10-11 比对出来的），
-/// **OK 按钮的 hover 态** = `Prguse[386]`（44×16）。
+/// **买窗底图** = `Prguse[385]`（308×205，用户 2026-10-11 比对出来的）。
+/// 它的三个按钮的**高亮图**（用户 2026-10-11 给的编号）：
+/// [`BUY_OK_HOVER`] = 386、**左** = 387、**右** = 388。
 ///
-/// 素材里量出来的三个区（`wzldump` 导出后逐像素扫颜色）：
-/// - 右上角**红叉**：x 293..303 / y 3..17；
-/// - 底部**左边**蓝块（OK）：x 28..75 / y 173..197；
-/// - 底部**右边**蓝块（= 取消/关闭）：x 76..122 / y 173..197。
+/// ⚠️ 三个按钮的位置是拿**高亮图的主色**回到底图里反查出来的（2026-10-11）：
+/// 386 的主色是 `#106684` ⇒ 底图里同色那块就是 OK；
+/// 387/388 的主色是 `#291884` ⇒ 底图里同色的两个圆钮就是左/右。
+/// （之前按"底部左/右各一块 47 宽"猜的位置是错的 —— 左/右是 24×24 圆钮，
+/// 而且那两个 47 宽的框正好压在它们上面。）
 pub(crate) const BUY_BG: u32 = 385;
 pub(crate) const BUY_OK_HOVER: u32 = 386;
+/// **左**（翻上一页）圆钮的 hover 态。
+pub(crate) const BUY_PREV_HOVER: u32 = 387;
+/// **右**（翻下一页）圆钮的 hover 态。
+pub(crate) const BUY_NEXT_HOVER: u32 = 388;
 
 /// 一页几行。
 pub(crate) const ROWS: usize = 6;
@@ -42,14 +48,16 @@ const COL_DURA: f32 = 240.0;
 const HEAD_Y: f32 = 8.0;
 const LIST_Y: f32 = 30.0;
 
-/// 素材自带的三个区（窗口内矩形）。
+/// 素材自带的区（窗口内矩形）—— 位置见 [`BUY_BG`] 那条说明。
 pub(crate) const CLOSE: (f32, f32, f32, f32) = (291.0, 1.0, 16.0, 20.0);
-pub(crate) const OK: (f32, f32, f32, f32) = (28.0, 173.0, 47.0, 24.0);
-pub(crate) const CANCEL: (f32, f32, f32, f32) = (76.0, 173.0, 47.0, 24.0);
-
-/// 翻页箭头（**自绘**：素材里的 387/388 是 24×24 圆钮，位置还没比对出来）。
-const PREV: (f32, f32, f32, f32) = (255.0, 146.0, 24.0, 18.0);
-const NEXT: (f32, f32, f32, f32) = (280.0, 146.0, 24.0, 18.0);
+/// **OK**（右下；底图里同色块 x 216..255 / y 172..184，命中区略放大一圈）。
+pub(crate) const OK: (f32, f32, f32, f32) = (214.0, 170.0, 44.0, 17.0);
+/// **左**圆钮（底图里圆心 (54,187)，24×24）。
+pub(crate) const PREV_R: (f32, f32, f32, f32) = (42.0, 175.0, 24.0, 24.0);
+/// **右**圆钮（底图里圆心 (101,187)，24×24）。
+pub(crate) const NEXT_R: (f32, f32, f32, f32) = (89.0, 175.0, 24.0, 24.0);
+const PREV: (f32, f32, f32, f32) = PREV_R;
+const NEXT: (f32, f32, f32, f32) = NEXT_R;
 
 /// 文字颜色（与对话窗同一套：表头/价格黄、正文近白）。
 const C_HEAD: (u8, u8, u8) = (232, 220, 96);
@@ -95,7 +103,9 @@ pub(crate) fn hit(local: (f32, f32), rows: usize) -> Hit {
     let (lx, ly) = local;
     let inside =
         |r: (f32, f32, f32, f32)| lx >= r.0 && lx < r.0 + r.2 && ly >= r.1 && ly < r.1 + r.3;
-    if inside(CLOSE) || inside(CANCEL) {
+    // ⚠️ 只有**右上角红叉**关窗：原来还有个自绘的“取消”框压在右圆钮上
+    // ⇒ 点“右/下一页”会变成关窗。底图里根本没有第二个关闭钮。
+    if inside(CLOSE) {
         return Hit::Close;
     }
     if inside(OK) {
@@ -222,38 +232,44 @@ pub(crate) fn draw<'a, T>(
         )?;
     }
 
-    // 翻页箭头（两个方钮：◀ ▶）与 OK / 页码
-    for (r, left) in [(PREV, true), (NEXT, false)] {
+    // 三个按钮的**常态都在底图里** ⇒ 只在 hover 时把对应的高亮素材贴上去
+    //（`Prguse[386]` = OK / 387 = 左 / 388 = 右，用户 2026-10-11 给的编号）。
+    // 素材按**原生尺寸**贴圆心/框心，不再自绘方钮压在底图上。
+    for (r, img, want) in [
+        (OK, BUY_OK_HOVER, Hit::Ok),
+        (PREV, BUY_PREV_HOVER, Hit::Prev),
+        (NEXT, BUY_NEXT_HOVER, Hit::Next),
+    ] {
+        if hover != want {
+            continue;
+        }
         let (bx, by, bw, bh) = r;
-        let (bx, by) = (x + bx, y + by);
-        canvas.set_draw_color(Color::RGB(60, 70, 150));
-        let _ = canvas.fill_rect(FRect::new(bx, by, bw, bh));
-        fill_tri(canvas, bx, by, bw, bh, left)?;
-    }
-    // OK 按钮：常态在底图里 ⇒ **只在 hover 时**贴 `Prguse[386]`（不做自绘按钮）
-    if hover == Hit::Ok {
-        let (okx, oky, okw, okh) = OK;
-        if let Some((iw, ih)) = ui.size(dir, "Prguse", BUY_OK_HOVER) {
+        if let Some((iw, ih)) = ui.size(dir, "Prguse", img) {
             let _ = ui.draw_src(
                 canvas,
                 tc,
                 dir,
                 "Prguse",
-                BUY_OK_HOVER,
+                img,
                 FRect::new(0.0, 0.0, iw as f32, ih as f32),
-                FRect::new(x + okx + 1.0, y + oky + 4.0, okw - 2.0, okh - 8.0),
+                FRect::new(
+                    x + bx + (bw - iw as f32) / 2.0,
+                    y + by + (bh - ih as f32) / 2.0,
+                    iw as f32,
+                    ih as f32,
+                ),
                 255,
             );
         }
     }
-    // 页码（右下、OK 左边）
+    // 页码（紧跟两个圆钮右边）
     let page_text = format!("{}/{}", page + 1, pages(shop.items.len()));
     texts.draw(
         canvas,
         tc,
         &page_text,
-        x + COL_DURA,
-        y + 148.0,
+        x + 124.0,
+        y + 180.0,
         (190, 170, 120),
         None,
     )?;
@@ -261,36 +277,6 @@ pub(crate) fn draw<'a, T>(
 }
 
 const C_PRICE_COL: (u8, u8, u8) = (232, 220, 96);
-
-/// 在按钮里画一个**三角**（`left` = 尖朝左）：逐列收窄的实心条拼出来的。
-/// 不用图形库路径 —— 项目里所有自绘控件都是 `fill_rect` 拼的，保持同一套路。
-fn fill_tri(
-    canvas: &mut WindowCanvas,
-    bx: f32,
-    by: f32,
-    bw: f32,
-    bh: f32,
-    left: bool,
-) -> Result<(), sdl3::Error> {
-    canvas.set_draw_color(Color::RGB(225, 225, 245));
-    let cy = by + bh / 2.0;
-    let half0 = bh / 2.0 - 3.0;
-    let steps = (half0.ceil() as i32).max(1);
-    for k in 0..=steps {
-        let f = k as f32;
-        let half = (half0 - f).max(0.5);
-        let cx0 = if left {
-            bx + bw / 2.0 - f
-        } else {
-            bx + bw / 2.0 + f - 1.0
-        };
-        canvas.fill_rect(FRect::new(cx0, cy - half, TRI_W, half * 2.0))?;
-    }
-    Ok(())
-}
-
-/// 三角每一列的宽度（`fill_tri` 用）。
-const TRI_W: f32 = 1.5;
 
 // ---------- 卖货窗（原版拖放式，用户 2026-10-10 第 3 条） ----------
 //
