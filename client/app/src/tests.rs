@@ -1499,8 +1499,12 @@ fn 商店窗几何与命中() {
     let (x, y, w, h) = crate::shop::panel();
     // ① 位置：**对话窗正下面**（对话窗占上排 8..424；商店开着时背包让位到右边 ⇒
     // 这个位置正好空出来给商品列表）
-    let (dx, dy, _dw, dh) = input::dialog_panel();
-    assert_eq!(x, dx, "左缘与对话窗对齐");
+    let (dx, dy, dw, dh) = input::dialog_panel();
+    assert_eq!(
+        x + w,
+        dx + dw,
+        "买窗**右对齐**上方对话窗（与卖窗同一条规矩）"
+    );
     assert_eq!(y, dy + dh + 8.0, "接在对话窗下面（留 8px 缝）");
     assert!(y + h <= 768.0, "整块窗要落在 1024×768 画面内");
     assert!(x + w <= 1024.0);
@@ -1522,13 +1526,24 @@ fn 商店窗几何与命中() {
         crate::shop::Hit::None,
         "只有 1 件商品时，第二行不该点得到"
     );
+    // OK 与关闭钮都在素材自带的位置（见 `shop.rs` 常量里量出来的像素范围）
+    let (okx, oky, okw, okh) = crate::shop::OK;
     assert_eq!(
-        crate::shop::hit(
-            (crate::shop::panel().2 - 30.0, crate::shop::panel().3 - 20.0),
-            3
-        ),
+        crate::shop::hit((okx + okw / 2.0, oky + okh / 2.0), 3),
         crate::shop::Hit::Ok,
-        "点 OK ⇒ 买选中的"
+        "点底部左边那个钮 ⇒ 买选中的"
+    );
+    let (cx, cy, cw, ch) = crate::shop::CLOSE;
+    assert_eq!(
+        crate::shop::hit((cx + cw / 2.0, cy + ch / 2.0), 3),
+        crate::shop::Hit::Close,
+        "点右上红叉 ⇒ 关窗"
+    );
+    let (nx, ny, nw, nh) = crate::shop::CANCEL;
+    assert_eq!(
+        crate::shop::hit((nx + nw / 2.0, ny + nh / 2.0), 3),
+        crate::shop::Hit::Close,
+        "点底部右边那个钮 ⇒ 关窗"
     );
 
     // ③ 翻页：一页 6 行；20 件 ⇒ 4 页；到头绕回

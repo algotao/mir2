@@ -1130,6 +1130,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                         }
                                                     }
                                                 }
+                                                crate::shop::Hit::Close => {
+                                                    shop_open = false;
+                                                    shop_sel = None;
+                                                    println!("[ui] 商店窗关闭（素材关闭钮）");
+                                                }
                                                 crate::shop::Hit::None => {}
                                             }
                                             combat_target = None;
@@ -1930,6 +1935,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(dir) = asset_dir.as_deref() {
                 // ① 商店窗（买）：商品列表
                 if shop_open && !shop_is_sell {
+                    // 商店窗的悬停（OK 按钮的 hover 态要用）
+                    let shop_hover = net
+                        .as_ref()
+                        .and_then(|n| n.world.shop.as_ref())
+                        .map(|sh| {
+                            let (wx, wy, _, _) = crate::shop::panel();
+                            let base = shop_page * crate::shop::ROWS;
+                            let rows = sh.items.len().saturating_sub(base);
+                            if mouse.0 < wx || mouse.1 < wy {
+                                return crate::shop::Hit::None;
+                            }
+                            crate::shop::hit((mouse.0 - wx, mouse.1 - wy), rows)
+                        })
+                        .unwrap_or(crate::shop::Hit::None);
                     shop::draw(
                         &mut canvas,
                         &tex_creator,
@@ -1939,6 +1958,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         net.as_ref(),
                         shop_page,
                         shop_sel,
+                        shop_hover,
                     )?;
                 }
                 // ② 卖货窗（卖）：放物品的槽 + OK

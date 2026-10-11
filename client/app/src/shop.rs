@@ -7,7 +7,7 @@
 //!（`world.shop`），买发 `ShopBuy`；卖 = 商店开着时**点背包里的东西**。
 
 use sdl3::pixels::Color;
-use sdl3::render::{BlendMode, FRect, TextureCreator, WindowCanvas};
+use sdl3::render::{FRect, TextureCreator, WindowCanvas};
 
 use std::path::Path;
 
@@ -15,27 +15,41 @@ use crate::gfx::fill;
 use crate::net::Net;
 use crate::ui;
 
-/// 一页几行（原版一屏 6 行：上面留表头、下面留翻页/OK 那条）。
+/// **买窗底图** = `Prguse[385]`（308×205，用户 2026-10-11 比对出来的），
+/// **OK 按钮的 hover 态** = `Prguse[386]`（44×16）。
+///
+/// 素材里量出来的三个区（`wzldump` 导出后逐像素扫颜色）：
+/// - 右上角**红叉**：x 293..303 / y 3..17；
+/// - 底部**左边**蓝块（OK）：x 28..75 / y 173..197；
+/// - 底部**右边**蓝块（= 取消/关闭）：x 76..122 / y 173..197。
+pub(crate) const BUY_BG: u32 = 385;
+pub(crate) const BUY_OK_HOVER: u32 = 386;
+
+/// 一页几行。
 pub(crate) const ROWS: usize = 6;
 const ROW_H: f32 = 20.0;
 
-/// 面板尺寸（照原版截图的比例：比对话窗窄、矮）。
-const W: f32 = 260.0;
-const H: f32 = 170.0;
+/// 面板尺寸 = 素材原生尺寸（不缩放）。
+const W: f32 = 308.0;
+const H: f32 = 205.0;
 
-/// 三列的列头/列内容 x（窗口内坐标）。
-const COL_NAME: f32 = 10.0;
-const COL_PRICE: f32 = 128.0;
-const COL_DURA: f32 = 204.0;
+/// 三列的列头/列内容 x（窗口内坐标，按 308 宽排）。
+const COL_NAME: f32 = 16.0;
+const COL_PRICE: f32 = 150.0;
+const COL_DURA: f32 = 240.0;
 
 /// 表头与首行的 y。
 const HEAD_Y: f32 = 8.0;
-const LIST_Y: f32 = 28.0;
+const LIST_Y: f32 = 30.0;
 
-/// 底部那条：左/右箭头与 OK 按钮（窗口内矩形）。
-const PREV: (f32, f32, f32, f32) = (12.0, 146.0, 28.0, 18.0);
-const NEXT: (f32, f32, f32, f32) = (46.0, 146.0, 28.0, 18.0);
-const OK: (f32, f32, f32, f32) = (192.0, 145.0, 58.0, 20.0);
+/// 素材自带的三个区（窗口内矩形）。
+pub(crate) const CLOSE: (f32, f32, f32, f32) = (291.0, 1.0, 16.0, 20.0);
+pub(crate) const OK: (f32, f32, f32, f32) = (28.0, 173.0, 47.0, 24.0);
+pub(crate) const CANCEL: (f32, f32, f32, f32) = (76.0, 173.0, 47.0, 24.0);
+
+/// 翻页箭头（**自绘**：素材里的 387/388 是 24×24 圆钮，位置还没比对出来）。
+const PREV: (f32, f32, f32, f32) = (255.0, 146.0, 24.0, 18.0);
+const NEXT: (f32, f32, f32, f32) = (280.0, 146.0, 24.0, 18.0);
 
 /// 文字颜色（与对话窗同一套：表头/价格黄、正文近白）。
 const C_HEAD: (u8, u8, u8) = (232, 220, 96);
@@ -47,7 +61,9 @@ const C_SEL: (u8, u8, u8) = (255, 230, 130);
 /// 包裹窗在商店开着时会让位到右边（`layout::bag_pos`），正好把这个位置让出来 ——
 /// 与原版截图同款布局：左上对话、左下商品列表、右侧包裹。
 pub(crate) fn panel() -> (f32, f32, f32, f32) {
-    (8.0, 4.0 + crate::input::DIALOG_H + 8.0, W, H)
+    let (dx, dy, dw, dh) = crate::input::dialog_panel();
+    // 与卖窗同一条：**右对齐**上方对话窗
+    (dx + dw - W, dy + dh + 8.0, W, H)
 }
 
 /// 第 `row` 行（**页内下标**）在窗口内的矩形。画与命中同源。
@@ -67,7 +83,10 @@ pub(crate) enum Hit {
     Row(usize),
     Prev,
     Next,
+    /// 底部左边那个按钮（素材自带）⇒ 买选中的那件。
     Ok,
+    /// 右上角红叉 / 底部右边那个按钮 ⇒ 关窗。
+    Close,
     None,
 }
 
@@ -76,6 +95,9 @@ pub(crate) fn hit(local: (f32, f32), rows: usize) -> Hit {
     let (lx, ly) = local;
     let inside =
         |r: (f32, f32, f32, f32)| lx >= r.0 && lx < r.0 + r.2 && ly >= r.1 && ly < r.1 + r.3;
+    if inside(CLOSE) || inside(CANCEL) {
+        return Hit::Close;
+    }
     if inside(OK) {
         return Hit::Ok;
     }
@@ -110,12 +132,13 @@ pub(crate) fn page_step(page: usize, dir: i8, items: usize) -> usize {
 pub(crate) fn draw<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
-    _ui: &mut ui::UiCache<'a>,
+    ui: &mut ui::UiCache<'a>,
     texts: &mut crate::font::TextCache<'a>,
-    _dir: &Path,
+    dir: &Path,
     net: Option<&Net>,
     page: usize,
     selected: Option<usize>,
+    hover: Hit,
 ) -> Result<(), sdl3::Error> {
     let Some(n) = net else { return Ok(()) };
     if !n.world.in_world() {
@@ -125,14 +148,20 @@ pub(crate) fn draw<'a, T>(
         return Ok(()); // 没有货架（没点过"交易市场" / 对话关了）⇒ 不画
     };
     let (x, y, w, h) = panel();
-    canvas.set_blend_mode(BlendMode::Blend);
-    // 这块板没有对应的官方图（原版是带网格的"货架"大窗，素材还没比对出来）⇒
-    // 画个深底 + 边框，版式（三列 + 翻页 + OK）照原版截图。
-    canvas.set_draw_color(Color::RGBA(10, 8, 6, 225));
-    canvas.fill_rect(FRect::new(x, y, w, h))?;
-    canvas.set_draw_color(Color::RGB(190, 170, 120));
-    canvas.draw_rect(FRect::new(x, y, w, h))?;
-    canvas.set_blend_mode(BlendMode::None);
+    // 底图 = `Prguse[385]`（原生尺寸贴上去：窗框、右上红叉、底部两个按钮都在图里），
+    // 我们只往上面排文字与商品行。
+    if let Some((iw, ih)) = ui.size(dir, "Prguse", BUY_BG) {
+        let _ = ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            "Prguse",
+            BUY_BG,
+            FRect::new(0.0, 0.0, iw as f32, ih as f32),
+            FRect::new(x, y, w, h),
+            255,
+        );
+    }
 
     let page = page.min(pages(shop.items.len()) - 1);
     let base = page * ROWS;
@@ -201,19 +230,22 @@ pub(crate) fn draw<'a, T>(
         let _ = canvas.fill_rect(FRect::new(bx, by, bw, bh));
         fill_tri(canvas, bx, by, bw, bh, left)?;
     }
-    // OK 按钮（原版就是一块蓝底白字）
-    let (okx, oky, okw, okh) = OK;
-    canvas.set_draw_color(Color::RGB(60, 70, 150));
-    let _ = canvas.fill_rect(FRect::new(x + okx, y + oky, okw, okh));
-    texts.draw(
-        canvas,
-        tc,
-        "OK",
-        x + okx + okw / 2.0 - 8.0,
-        y + oky + 2.0,
-        (240, 240, 255),
-        None,
-    )?;
+    // OK 按钮：常态在底图里 ⇒ **只在 hover 时**贴 `Prguse[386]`（不做自绘按钮）
+    if hover == Hit::Ok {
+        let (okx, oky, okw, okh) = OK;
+        if let Some((iw, ih)) = ui.size(dir, "Prguse", BUY_OK_HOVER) {
+            let _ = ui.draw_src(
+                canvas,
+                tc,
+                dir,
+                "Prguse",
+                BUY_OK_HOVER,
+                FRect::new(0.0, 0.0, iw as f32, ih as f32),
+                FRect::new(x + okx + 1.0, y + oky + 4.0, okw - 2.0, okh - 8.0),
+                255,
+            );
+        }
+    }
     // 页码（右下、OK 左边）
     let page_text = format!("{}/{}", page + 1, pages(shop.items.len()));
     texts.draw(
