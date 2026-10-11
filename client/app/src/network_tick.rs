@@ -40,7 +40,6 @@ pub(crate) fn pump(
             app.login.opened_at = Some(Instant::now());
             app.login.busy = false;
             app.select_scene = None;
-            app.select_view = select::view::ViewState::default();
             app.scene = crate::app_state::Scene::Login; // 开门动画在登录屏上播（见 `login::draw` 的说明）
             sfx(sound, sounds, mir2_core::sound::idx::ROCK_DOOR_OPEN);
         }
@@ -49,7 +48,6 @@ pub(crate) fn pump(
             app.login.opened_at = Some(Instant::now());
             app.login.busy = false;
             app.select_scene = None;
-            app.select_view = select::view::ViewState::default();
             app.scene = crate::app_state::Scene::Login;
             sfx(sound, sounds, mir2_core::sound::idx::ROCK_DOOR_OPEN);
         }
@@ -91,7 +89,6 @@ pub(crate) fn pump(
                     Err(_) => println!("[net] MIR2_CHAR={v} 不是整数，忽略"),
                 }
             }
-            app.select_view = select::view::ViewState::default();
             app.select_scene = Some(scene);
         }
         // 门还在放就先不切：原版顺序是"门放完 → `ChangeScene(stSelectChr)`"
@@ -105,7 +102,6 @@ pub(crate) fn pump(
             app.scene = crate::app_state::Scene::World;
             // 选角场景用不上了（它的槽动画也不必再跑）
             app.select_scene = None;
-            app.select_view = select::view::ViewState::default();
         }
         // 选角被拒（例如租约被占）⇒ 弹给用户换一个（状态机会退回 `AwaitPick`）。
         if let Some(why) = n.entrance.take_pick_error() {
