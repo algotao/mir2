@@ -962,7 +962,8 @@ fn draw_msgbox<'a, T>(
     }
     // ⚠️ 框宽是**设计空间**、字宽是**画布像素**（字号按 1.28 放大过）⇒ 先 `ui_px` 换算，
     // 否则算出的列数偏大 1.28 倍，行会顶出框外。
-    let cols = ((ui_px(b.frame.w - 24.0)) / text.width("中").max(1.0)) as usize;
+    let cols =
+        ((ui_px(crate::space::Dpx(b.frame.w - 24.0)).0) / text.width("中").max(1.0)) as usize;
     let mut y = b.frame.y + 20.0;
     for line in wrap(msg, cols.max(8)) {
         text.draw_ui(
@@ -975,7 +976,7 @@ fn draw_msgbox<'a, T>(
             Some((0, 0, 0)),
         )?;
         // ⚠️ 行高是**画布像素**（17.9px 字号算出来的），而 `y` 在设计空间里 ⇒ 除回去
-        y += ui_inv_px(text.line_height() + 2.0);
+        y += ui_inv_px(crate::space::Cpx(text.line_height() + 2.0)).0;
     }
     Ok(())
 }

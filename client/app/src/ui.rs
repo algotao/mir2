@@ -41,7 +41,9 @@ const UI_CACHE_CAP: usize = 256;
 /// ⚠️ **只拉伸美术，不拉伸字**：字走 `font::TextCache`（TTF 光栅化），
 /// 按 `UI_PX * UI_SCALE` **重新光栅化** ⇒ 清晰（用户第 2 条：字体要"缩放"不要"拉伸"）。
 /// 位图字体在 1.28 倍下只能被拉糊，那正是 D-50 用户明确不喜欢的东西。
-pub const UI_SCALE: f32 = crate::WIN_W as f32 / 800.0;
+// ⚠️ 单一来源在 `space::UI_SCALE`（坐标空间类型化之后，倍率只该有一份）
+#[allow(unused_imports)] // 文档里还在引用 [`UI_SCALE`]
+pub(crate) use crate::space::UI_SCALE;
 
 /// 设计空间（800×600）里的一个坐标/长度 → 画布坐标。
 ///
@@ -49,26 +51,30 @@ pub const UI_SCALE: f32 = crate::WIN_W as f32 / 800.0;
 /// 8×8 调试字体、`font::TextCache::draw_ui` 内部也用它）；另一半是 `UiCache::draw*`
 /// —— 它内部自己乘 [`UI_SCALE`]，调用方照样传设计坐标。
 #[inline]
-pub fn ui_px(v: f32) -> f32 {
-    v * UI_SCALE
+pub fn ui_px(v: crate::space::Dpx) -> crate::space::Cpx {
+    v.to_canvas()
 }
 
 /// 同上，点。
 #[inline]
 pub fn ui_pt(p: (f32, f32)) -> (f32, f32) {
-    (p.0 * UI_SCALE, p.1 * UI_SCALE)
+    // ⚠️ 入参是**设计空间**（素材那套 800×600），出来是画布像素
+    let c = crate::space::DPt(crate::space::Dpx(p.0), crate::space::Dpx(p.1)).to_canvas();
+    (c.0 .0, c.1 .0)
 }
 
 /// 画布坐标 → 设计空间（鼠标事件用的那个方向；见 [`UI_SCALE`]）。
 #[inline]
 pub fn ui_inv_pt(p: (f32, f32)) -> (f32, f32) {
-    (p.0 / UI_SCALE, p.1 / UI_SCALE)
+    // 鼠标事件给的是画布像素 ⇒ 转成设计空间
+    let d = crate::space::CPt(crate::space::Cpx(p.0), crate::space::Cpx(p.1)).to_design();
+    (d.0 .0, d.1 .0)
 }
 
 /// 画布长度 → 设计空间长度（**字宽/行高是画布像素**，要挪进设计坐标的算式里时用它）。
 #[inline]
-pub fn ui_inv_px(v: f32) -> f32 {
-    v / UI_SCALE
+pub fn ui_inv_px(v: crate::space::Cpx) -> crate::space::Dpx {
+    v.to_design()
 }
 
 /// **设计空间**的实心矩形（登录/选角里那些自绘的输入框、建角框）。
@@ -83,7 +89,15 @@ pub fn uifill(
     h: f32,
     col: sdl3::pixels::Color,
 ) -> Result<(), sdl3::Error> {
-    crate::fill(c, ui_px(x), ui_px(y), ui_px(w), ui_px(h), col)
+    use crate::space::Dpx;
+    crate::fill(
+        c,
+        ui_px(Dpx(x)).0,
+        ui_px(Dpx(y)).0,
+        ui_px(Dpx(w)).0,
+        ui_px(Dpx(h)).0,
+        col,
+    )
 }
 
 struct UiTex<'a> {
@@ -203,10 +217,10 @@ impl<'a> UiCache<'a> {
                 // 缩放本身交给 GPU（见 `ensure` 里设的 `ScaleMode::Linear`），
                 // 字不在这里 —— 字走 `TextCache::draw_ui`，按目标字号**重新光栅化**。
                 FRect::new(
-                    ui_px(x),
-                    ui_px(y),
-                    ui_px(q.width as f32),
-                    ui_px(q.height as f32),
+                    ui_px(crate::space::Dpx(x)).0,
+                    ui_px(crate::space::Dpx(y)).0,
+                    ui_px(crate::space::Dpx(q.width as f32)).0,
+                    ui_px(crate::space::Dpx(q.height as f32)).0,
                 ),
             )
             .ok()?;
@@ -244,10 +258,10 @@ impl<'a> UiCache<'a> {
                 &t.tex,
                 Some(FRect::new(src.0, src.1, src.2, src.3)),
                 Some(FRect::new(
-                    ui_px(dst.0),
-                    ui_px(dst.1),
-                    ui_px(dst.2),
-                    ui_px(dst.3),
+                    ui_px(crate::space::Dpx(dst.0)).0,
+                    ui_px(crate::space::Dpx(dst.1)).0,
+                    ui_px(crate::space::Dpx(dst.2)).0,
+                    ui_px(crate::space::Dpx(dst.3)).0,
                 )),
             )
             .ok()?;

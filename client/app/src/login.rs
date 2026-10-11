@@ -386,8 +386,8 @@ impl Login {
             return text(
                 canvas,
                 msg,
-                center_x(msg, 0.0, ui_px(winf.0)),
-                ui_px(winf.1) / 2.0,
+                center_x(msg, 0.0, ui_px(crate::space::Dpx(winf.0)).0),
+                ui_px(crate::space::Dpx(winf.1)).0 / 2.0,
                 C_ERR,
             );
         };
@@ -436,8 +436,8 @@ impl Login {
             return text(
                 canvas,
                 msg,
-                center_x(msg, 0.0, ui_px(winf.0)),
-                ui_px(winf.1) / 2.0,
+                center_x(msg, 0.0, ui_px(crate::space::Dpx(winf.0)).0),
+                ui_px(crate::space::Dpx(winf.1)).0 / 2.0,
                 C_ERR,
             );
         };
@@ -465,7 +465,8 @@ impl Login {
                 tc,
                 title,
                 // ⚠️ 标题宽是**画布像素**、对话框宽是**设计空间** ⇒ 先把字宽除回去
-                l.dialog.x + (l.dialog.w - ui_inv_px(texts.width(title))) / 2.0,
+                l.dialog.x
+                    + (l.dialog.w - ui_inv_px(crate::space::Cpx(texts.width(title))).0) / 2.0,
                 l.dialog.y + 60.0,
                 RGB_TEXT,
                 None,
@@ -555,15 +556,20 @@ impl Login {
             // 算出来），而 `l.msgbox` 是**设计空间**的框 ⇒ 框宽/框高先 `ui_px` 换算再相除，
             // 否则"能塞几行"会算成 1.28 倍。
             let lh = texts.line_height().max(1.0);
-            let max_lines = ((ui_px(l.msgbox.h - 96.0) / lh).floor() as usize).max(1);
-            let lines = wrap_px(|s| texts.width(s), err, ui_px(l.msgbox.w - 56.0));
+            let max_lines =
+                ((ui_px(crate::space::Dpx(l.msgbox.h - 96.0)).0 / lh).floor() as usize).max(1);
+            let lines = wrap_px(
+                |s| texts.width(s),
+                err,
+                ui_px(crate::space::Dpx(l.msgbox.w - 56.0)).0,
+            );
             for (i, line) in lines.iter().take(max_lines).enumerate() {
                 texts.draw(
                     canvas,
                     tc,
                     line,
-                    ui_px(l.msgbox.x + 28.0),
-                    ui_px(l.msgbox.y + 56.0) + i as f32 * lh,
+                    ui_px(crate::space::Dpx(l.msgbox.x + 28.0)).0,
+                    ui_px(crate::space::Dpx(l.msgbox.y + 56.0)).0 + i as f32 * lh,
                     RGB_TEXT,
                     Some(RGB_SHADOW),
                 )?;
@@ -596,8 +602,8 @@ impl Login {
                 canvas,
                 tc,
                 tip,
-                (ui_px(winf.0) - w) / 2.0,
-                ui_px(winf.1) - 44.0,
+                (ui_px(crate::space::Dpx(winf.0)).0 - w) / 2.0,
+                ui_px(crate::space::Dpx(winf.1)).0 - 44.0,
                 RGB_DIM,
                 Some(RGB_SHADOW),
             )?;
@@ -628,7 +634,7 @@ impl Login {
                 tc,
                 "|",
                 // 同上：光标按**设计空间**的字宽推进（`draw_ui` 会再乘回 1.28）
-                r.x + 2.0 + ui_inv_px(texts.width(shown)),
+                r.x + 2.0 + ui_inv_px(crate::space::Cpx(texts.width(shown))).0,
                 // ⚠️ 用 `FIELD_TEXT_TOP`（=1，居中）而不是写死 4：+4 会让文字底顶出框底
                 r.y + mir2_core::login_ui::FIELD_TEXT_TOP,
                 RGB_ACTIVE,

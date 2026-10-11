@@ -94,6 +94,7 @@ mod pager;
 mod scrollview;
 pub(crate) mod shop;
 mod shopui;
+mod space;
 pub(crate) mod status;
 mod windows;
 pub(crate) use minimap::*;
