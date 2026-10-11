@@ -318,6 +318,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------- 资产 ----------
     let asset_dir = mir2_core::paths::asset_dir();
+    // **启动自检：素材缺哪些**（架构方向 ⑦）
+    //
+    // ⚠️ 素材取不到时各窗是**静默不画**（有意的纪律：宁可不画也不画错），
+    // 代价是"少画了什么"没人知道 ⇒ 这里开局报一遍，排查"这个按钮怎么没出来"
+    // 就不用靠肉眼找了。
+    if let Some(dir) = asset_dir.as_deref() {
+        let missing = {
+            let mut ui0 = ui::UiCache::new();
+            crate::assets::audit(|lib, idx| ui0.size(dir, lib, idx))
+        };
+        if missing.is_empty() {
+            println!("[mir2-app] 素材自检：齐的");
+        } else {
+            println!(
+                "[mir2-app] 素材自检：缺 {} 张 ⇒ 对应的控件会不画",
+                missing.len()
+            );
+            for m in &missing {
+                println!("           缺 Prguse/{}[{}] = {}", m.lib, m.idx, m.what);
+            }
+        }
+    }
     let container_path = mir2_core::paths::map_container();
     let archive = match &container_path {
         Some(p) => match Archive::open(p) {

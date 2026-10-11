@@ -58,9 +58,9 @@ pub(crate) const CONTENT_Y: f32 = 52.0;
 /// 小人/衣服等大图的库（**`StateItem`**，见模块头硬规则 2）。
 pub(crate) const ITEM_LIB: &str = "StateItem";
 
-const CLOSE_IMG: u32 = 371;
-const ARROW_UP: u32 = 373;
-const ARROW_DOWN: u32 = 372;
+pub(crate) const CLOSE_IMG: u32 = 371;
+pub(crate) const ARROW_UP: u32 = 373;
+pub(crate) const ARROW_DOWN: u32 = 372;
 const FIG_M: u32 = 376;
 const FIG_F: u32 = 377;
 /// 发型图号基址：`440 + 发型*2 + 性别`（男 0 / 女 1）。
