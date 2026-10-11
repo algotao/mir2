@@ -5323,3 +5323,16 @@ Go 同 package 的文件共享 handler/helpers，不会引入 import cycle）：
 卖窗圆槽在手上/槽内搬运。
 
 **验收**：客户端 161/148/7/3，clippy 0；Go 25 包。
+
+---
+
+## D-103 架构方向 ① 续：控件交互状态与 SDL 绘制分离（2026-10-11）
+
+`widget.rs` 同时定义 `Press` / `Ui`（纯按下、释放、OnClick 状态）与 `Button` 的 SDL 绘制，
+导致 `AppState` 虽不保存 SDL 句柄，却通过 `widget::Ui` 的模块边界与渲染代码混在一起。
+
+现在 `widget_state.rs` 独立承载 `Press`、`Response`、`Ui`、坐标矩形类型和命中/转换纯函数；
+没有 SDL、纹理或窗口导入。`widget.rs` 保留 `ButtonArt` / `Button` 及纹理绘制，并 re-export
+兼容路径，调用点无需全量改名。`AppState` 的 `Ui` 类型由纯状态模块提供。
+
+**验收**：客户端 161/148/7/3，clippy 0。

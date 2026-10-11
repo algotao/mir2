@@ -126,7 +126,8 @@ pub(crate) use world::*;
 #[cfg(test)]
 mod tests;
 mod widget;
-pub(crate) use widget::{Press, Ui};
+mod widget_state;
+pub(crate) use widget_state::{Press, Ui};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---------- 命令行：`--assetview [库名]` ⇒ 打开**素材观察器**而不是进游戏 ----------
