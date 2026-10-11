@@ -1890,6 +1890,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if p.rebuild_select {
                 println!("[net] 角色列表：{} 个", chars.len());
                 let mut scene = select::Select::new(chars);
+                // 名字规则**跟着角色列表一起来**（服务端下发 ⇒ 单一来源在那边，D-84）
+                if let Some(r) = n.entrance.name_rule.clone() {
+                    scene.set_name_rule(r);
+                }
                 // `MIR2_CHAR=<id>` 指定初选（手动模式下状态机不看它了，落到界面上）
                 if let Ok(v) = std::env::var("MIR2_CHAR") {
                     match v.parse::<u64>() {

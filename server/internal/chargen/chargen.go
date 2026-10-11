@@ -53,6 +53,45 @@ func ValidName(name string) bool {
 	return !strings.ContainsAny(name, badNameChars)
 }
 
+// BadNameMessage 名字不合规时报给玩家的那句话。
+//
+// ⚠️ **全服只有这一份**（2026-10-11，D-84）：原来客户端还自己抄了一遍，
+// 改一处忘一处 ⇒ 玩家会在两端看到两种说法。现在客户端改用
+// [`Rule`] 下发的内容，措辞只在服务端。
+func BadNameMessage() string {
+	return fmt.Sprintf("角色名不合适（至少 %d 个字节，且不能含空格与 %s）", MinNameBytes, badNameChars)
+}
+
+// Rule 把名字规则**打包下发**给客户端（单一来源在服务端）。
+//
+// 客户端拿它做"立刻可见"的预检；真正的那道门仍在 [ValidName]（服务端权威）。
+type Rule struct {
+	MinBytes uint32
+	BadChars string
+	Message  string
+}
+
+// NameRule 当前的名字规则。
+func NameRule() Rule {
+	return Rule{
+		MinBytes: uint32(MinNameBytes),
+		BadChars: badNameChars,
+		Message:  BadNameMessage(),
+	}
+}
+
+// ValidByRule 按一条**下发的规则**判（客户端那侧口径完全一致）。
+func ValidByRule(name string, r Rule) bool {
+	min := int(r.MinBytes)
+	if min <= 0 {
+		min = MinNameBytes
+	}
+	if len(name) < min {
+		return false
+	}
+	return !strings.ContainsAny(name, r.BadChars)
+}
+
 // ItemSource 建角时按名字取物品模板。
 //
 // `data.StdItemSet` 天然满足它（`GetByName(name) *StdItem`）——

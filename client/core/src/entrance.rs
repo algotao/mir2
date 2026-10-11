@@ -65,12 +65,39 @@ pub enum Stage {
 }
 
 /// 进世界的握手状态机。
+/// **角色名规则**（由服务端通过 `CharacterList.name_rule` 下发，D-84）。
+///
+/// ⚠️ 客户端不自己定规则：规则与报错文案都是服务端的，这里只是**照着做预检**。
+#[derive(Debug, Clone)]
+pub struct NameRule {
+    /// 最短**字节数**（按字节：1 个汉字 = 3 字节）。
+    pub min_bytes: usize,
+    /// 不允许出现的字符。
+    pub bad_chars: Vec<char>,
+    /// 不合规时报给玩家的话（**服务端给的措辞**）。
+    pub message: String,
+}
+
+impl NameRule {
+    /// 内置兜底（服务端没下发时用）。⚠️ 只是"没收到"时的退路，
+    /// 正常情况一律用服务端那份 —— 单一来源在那边。
+    pub fn builtin() -> Self {
+        Self {
+            min_bytes: 3,
+            bad_chars: " \t/@?'".chars().collect(),
+            message: "角色名不合适（至少 3 个字节，且不能含空格与 /@?'）".to_string(),
+        }
+    }
+}
+
 pub struct Entrance {
     session: i32,
     /// 想选哪个角色（`None` = 列表里第一个）。
     want_char: Option<u64>,
     /// 上一次 `CharacterList` 里第一个角色的 id（`want_char` 为空时用它）。
     first_char: Option<u64>,
+    /// **角色名规则**（服务端下发的那份；`None` = 还没收到 ⇒ 用内置兜底）。
+    pub name_rule: Option<NameRule>,
     /// 最近一次 `CharacterList` 的**全部**角色（选角界面要显示它）。
     chars: Vec<proto::CharacterSummary>,
     /// 要不要**由调用方选**角色（`true` = app 的选角界面；`false` = 自动选第一个）。
@@ -121,6 +148,7 @@ impl Entrance {
             session,
             want_char,
             first_char: None,
+            name_rule: None,
             chars: Vec::new(),
             manual: false,
             pick_err: None,
@@ -143,6 +171,7 @@ impl Entrance {
             session: 0,
             want_char,
             first_char: None,
+            name_rule: None,
             chars: Vec::new(),
             manual: false,
             pick_err: None,
@@ -421,6 +450,15 @@ impl Entrance {
                 }
                 self.first_char = l.characters.first().map(|c| c.character_id);
                 self.chars = l.characters.clone();
+                // **名字规则由服务端下发**（D-84）：客户端不再自己抄一份规则与文案，
+                // 免得改一处忘一处 ⇒ 玩家在两端看到两种说法。
+                if let Some(r) = l.name_rule.as_ref() {
+                    self.name_rule = Some(NameRule {
+                        min_bytes: r.min_bytes.max(1) as usize,
+                        bad_chars: r.bad_chars.chars().collect(),
+                        message: r.message.clone(),
+                    });
+                }
                 if self.manual {
                     // 交给调用方选（列表为空也停在这里：界面上还有"新建角色"一条路，
                     // 直接判死会把用户堵死 —— 这是有意的行为差异，见 `set_manual_pick`）
@@ -618,6 +656,7 @@ mod tests {
     /// 一份角色列表（两个角色）。
     fn char_list(ids: &[u64]) -> Envelope {
         env(Body::CharacterList(proto::CharacterList {
+            name_rule: None,
             characters: ids
                 .iter()
                 .map(|&id| proto::CharacterSummary {
@@ -967,6 +1006,7 @@ mod tests {
 
         // 角色列表 ⇒ 发 SelectCharacter（选中第一个）
         let next = e.on(&env(Body::CharacterList(proto::CharacterList {
+            name_rule: None,
             characters: vec![
                 proto::CharacterSummary {
                     character_id: 42,
@@ -1120,6 +1160,7 @@ mod tests {
             proto::ReconnectStatus::ReconnectBackToSelect,
         ));
         match e.on(&env(Body::CharacterList(proto::CharacterList {
+            name_rule: None,
             characters: vec![proto::CharacterSummary {
                 character_id: 42,
                 ..Default::default()
@@ -1147,6 +1188,7 @@ mod tests {
         ));
         e.on(&env(Body::CharacterList(proto::CharacterList {
             characters: vec![],
+            name_rule: None,
         })));
         assert!(e.failed().unwrap().contains("没有角色"));
 
@@ -1157,6 +1199,7 @@ mod tests {
             proto::ReconnectStatus::ReconnectBackToSelect,
         ));
         e.on(&env(Body::CharacterList(proto::CharacterList {
+            name_rule: None,
             characters: vec![proto::CharacterSummary {
                 character_id: 42,
                 ..Default::default()

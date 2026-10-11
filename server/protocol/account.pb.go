@@ -753,16 +753,87 @@ func (*ListCharacters) Descriptor() ([]byte, []int) {
 	return file_account_proto_rawDescGZIP(), []int{9}
 }
 
+// 角色名的规则（**服务端下发**，客户端照它做预检）—— 2026-10-11（D-84）。
+//
+// ⚠️ 为什么不由客户端自己写一份：规则（最少几个字节、禁用哪些字符）和
+// **报错文案**原本两端各抄了一遍，改一处忘一处 ⇒ 玩家会在两端看到两种说法。
+// 服务端是权威（真正的那道门在那边），所以让它把规则一起发下来，
+// 客户端只做"立刻可见"的预检，措辞也用服务端给的。
+type NameRule struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 最短**字节数**（按字节，不按字符：1 个汉字 = 3 字节）。
+	MinBytes uint32 `protobuf:"varint,1,opt,name=min_bytes,json=minBytes,proto3" json:"min_bytes,omitempty"`
+	// 不允许出现的字符（原样给字符串，客户端逐字符比对）。
+	BadChars string `protobuf:"bytes,2,opt,name=bad_chars,json=badChars,proto3" json:"bad_chars,omitempty"`
+	// 不合规时报给玩家的那句话。
+	Message       string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NameRule) Reset() {
+	*x = NameRule{}
+	mi := &file_account_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NameRule) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NameRule) ProtoMessage() {}
+
+func (x *NameRule) ProtoReflect() protoreflect.Message {
+	mi := &file_account_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NameRule.ProtoReflect.Descriptor instead.
+func (*NameRule) Descriptor() ([]byte, []int) {
+	return file_account_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *NameRule) GetMinBytes() uint32 {
+	if x != nil {
+		return x.MinBytes
+	}
+	return 0
+}
+
+func (x *NameRule) GetBadChars() string {
+	if x != nil {
+		return x.BadChars
+	}
+	return ""
+}
+
+func (x *NameRule) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 type CharacterList struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Characters    []*CharacterSummary    `protobuf:"bytes,1,rep,name=characters,proto3" json:"characters,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Characters []*CharacterSummary    `protobuf:"bytes,1,rep,name=characters,proto3" json:"characters,omitempty"`
+	// 建角时要用的名字规则（**单一来源在服务端**）。
+	NameRule      *NameRule `protobuf:"bytes,2,opt,name=name_rule,json=nameRule,proto3" json:"name_rule,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CharacterList) Reset() {
 	*x = CharacterList{}
-	mi := &file_account_proto_msgTypes[10]
+	mi := &file_account_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -774,7 +845,7 @@ func (x *CharacterList) String() string {
 func (*CharacterList) ProtoMessage() {}
 
 func (x *CharacterList) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[10]
+	mi := &file_account_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -787,12 +858,19 @@ func (x *CharacterList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CharacterList.ProtoReflect.Descriptor instead.
 func (*CharacterList) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{10}
+	return file_account_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CharacterList) GetCharacters() []*CharacterSummary {
 	if x != nil {
 		return x.Characters
+	}
+	return nil
+}
+
+func (x *CharacterList) GetNameRule() *NameRule {
+	if x != nil {
+		return x.NameRule
 	}
 	return nil
 }
@@ -806,7 +884,7 @@ type SelectCharacter struct {
 
 func (x *SelectCharacter) Reset() {
 	*x = SelectCharacter{}
-	mi := &file_account_proto_msgTypes[11]
+	mi := &file_account_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -818,7 +896,7 @@ func (x *SelectCharacter) String() string {
 func (*SelectCharacter) ProtoMessage() {}
 
 func (x *SelectCharacter) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[11]
+	mi := &file_account_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -831,7 +909,7 @@ func (x *SelectCharacter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectCharacter.ProtoReflect.Descriptor instead.
 func (*SelectCharacter) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{11}
+	return file_account_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SelectCharacter) GetCharacterId() uint64 {
@@ -852,7 +930,7 @@ type SelectCharacterResult struct {
 
 func (x *SelectCharacterResult) Reset() {
 	*x = SelectCharacterResult{}
-	mi := &file_account_proto_msgTypes[12]
+	mi := &file_account_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -864,7 +942,7 @@ func (x *SelectCharacterResult) String() string {
 func (*SelectCharacterResult) ProtoMessage() {}
 
 func (x *SelectCharacterResult) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[12]
+	mi := &file_account_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -877,7 +955,7 @@ func (x *SelectCharacterResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectCharacterResult.ProtoReflect.Descriptor instead.
 func (*SelectCharacterResult) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{12}
+	return file_account_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SelectCharacterResult) GetCode() SelectCharCode {
@@ -913,7 +991,7 @@ type CreateCharacter struct {
 
 func (x *CreateCharacter) Reset() {
 	*x = CreateCharacter{}
-	mi := &file_account_proto_msgTypes[13]
+	mi := &file_account_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -925,7 +1003,7 @@ func (x *CreateCharacter) String() string {
 func (*CreateCharacter) ProtoMessage() {}
 
 func (x *CreateCharacter) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[13]
+	mi := &file_account_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -938,7 +1016,7 @@ func (x *CreateCharacter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCharacter.ProtoReflect.Descriptor instead.
 func (*CreateCharacter) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{13}
+	return file_account_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CreateCharacter) GetName() string {
@@ -979,7 +1057,7 @@ type CreateCharacterResult struct {
 
 func (x *CreateCharacterResult) Reset() {
 	*x = CreateCharacterResult{}
-	mi := &file_account_proto_msgTypes[14]
+	mi := &file_account_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -991,7 +1069,7 @@ func (x *CreateCharacterResult) String() string {
 func (*CreateCharacterResult) ProtoMessage() {}
 
 func (x *CreateCharacterResult) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[14]
+	mi := &file_account_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1004,7 +1082,7 @@ func (x *CreateCharacterResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCharacterResult.ProtoReflect.Descriptor instead.
 func (*CreateCharacterResult) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{14}
+	return file_account_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *CreateCharacterResult) GetResult() *ActionResult {
@@ -1031,7 +1109,7 @@ type DeleteCharacter struct {
 
 func (x *DeleteCharacter) Reset() {
 	*x = DeleteCharacter{}
-	mi := &file_account_proto_msgTypes[15]
+	mi := &file_account_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1043,7 +1121,7 @@ func (x *DeleteCharacter) String() string {
 func (*DeleteCharacter) ProtoMessage() {}
 
 func (x *DeleteCharacter) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[15]
+	mi := &file_account_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1056,7 +1134,7 @@ func (x *DeleteCharacter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCharacter.ProtoReflect.Descriptor instead.
 func (*DeleteCharacter) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{15}
+	return file_account_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *DeleteCharacter) GetCharacterId() uint64 {
@@ -1082,7 +1160,7 @@ type DeleteCharacterResult struct {
 
 func (x *DeleteCharacterResult) Reset() {
 	*x = DeleteCharacterResult{}
-	mi := &file_account_proto_msgTypes[16]
+	mi := &file_account_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1094,7 +1172,7 @@ func (x *DeleteCharacterResult) String() string {
 func (*DeleteCharacterResult) ProtoMessage() {}
 
 func (x *DeleteCharacterResult) ProtoReflect() protoreflect.Message {
-	mi := &file_account_proto_msgTypes[16]
+	mi := &file_account_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1107,7 +1185,7 @@ func (x *DeleteCharacterResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCharacterResult.ProtoReflect.Descriptor instead.
 func (*DeleteCharacterResult) Descriptor() ([]byte, []int) {
-	return file_account_proto_rawDescGZIP(), []int{16}
+	return file_account_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *DeleteCharacterResult) GetResult() *ActionResult {
@@ -1158,11 +1236,16 @@ const file_account_proto_rawDesc = "" +
 	"\vgender_hair\x18\x06 \x01(\rR\n" +
 	"genderHair\x12\x12\n" +
 	"\x04slot\x18\a \x01(\rR\x04slot\"\x10\n" +
-	"\x0eListCharacters\"G\n" +
+	"\x0eListCharacters\"^\n" +
+	"\bNameRule\x12\x1b\n" +
+	"\tmin_bytes\x18\x01 \x01(\rR\bminBytes\x12\x1b\n" +
+	"\tbad_chars\x18\x02 \x01(\tR\bbadChars\x12\x18\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"t\n" +
 	"\rCharacterList\x126\n" +
 	"\n" +
 	"characters\x18\x01 \x03(\v2\x16.mir2.CharacterSummaryR\n" +
-	"characters\"4\n" +
+	"characters\x12+\n" +
+	"\tname_rule\x18\x02 \x01(\v2\x0e.mir2.NameRuleR\bnameRule\"4\n" +
 	"\x0fSelectCharacter\x12!\n" +
 	"\fcharacter_id\x18\x01 \x01(\x04R\vcharacterId\"~\n" +
 	"\x15SelectCharacterResult\x12(\n" +
@@ -1210,7 +1293,7 @@ func file_account_proto_rawDescGZIP() []byte {
 }
 
 var file_account_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_account_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_account_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_account_proto_goTypes = []any{
 	(LoginCode)(0),                // 0: mir2.LoginCode
 	(SelectCharCode)(0),           // 1: mir2.SelectCharCode
@@ -1224,34 +1307,36 @@ var file_account_proto_goTypes = []any{
 	(*CreateAccountResult)(nil),   // 9: mir2.CreateAccountResult
 	(*CharacterSummary)(nil),      // 10: mir2.CharacterSummary
 	(*ListCharacters)(nil),        // 11: mir2.ListCharacters
-	(*CharacterList)(nil),         // 12: mir2.CharacterList
-	(*SelectCharacter)(nil),       // 13: mir2.SelectCharacter
-	(*SelectCharacterResult)(nil), // 14: mir2.SelectCharacterResult
-	(*CreateCharacter)(nil),       // 15: mir2.CreateCharacter
-	(*CreateCharacterResult)(nil), // 16: mir2.CreateCharacterResult
-	(*DeleteCharacter)(nil),       // 17: mir2.DeleteCharacter
-	(*DeleteCharacterResult)(nil), // 18: mir2.DeleteCharacterResult
-	(*ActionResult)(nil),          // 19: mir2.ActionResult
-	(CharClass)(0),                // 20: mir2.CharClass
-	(Gender)(0),                   // 21: mir2.Gender
+	(*NameRule)(nil),              // 12: mir2.NameRule
+	(*CharacterList)(nil),         // 13: mir2.CharacterList
+	(*SelectCharacter)(nil),       // 14: mir2.SelectCharacter
+	(*SelectCharacterResult)(nil), // 15: mir2.SelectCharacterResult
+	(*CreateCharacter)(nil),       // 16: mir2.CreateCharacter
+	(*CreateCharacterResult)(nil), // 17: mir2.CreateCharacterResult
+	(*DeleteCharacter)(nil),       // 18: mir2.DeleteCharacter
+	(*DeleteCharacterResult)(nil), // 19: mir2.DeleteCharacterResult
+	(*ActionResult)(nil),          // 20: mir2.ActionResult
+	(CharClass)(0),                // 21: mir2.CharClass
+	(Gender)(0),                   // 22: mir2.Gender
 }
 var file_account_proto_depIdxs = []int32{
 	0,  // 0: mir2.LoginResult.code:type_name -> mir2.LoginCode
-	19, // 1: mir2.ChangePasswordResult.result:type_name -> mir2.ActionResult
-	19, // 2: mir2.CreateAccountResult.result:type_name -> mir2.ActionResult
-	20, // 3: mir2.CharacterSummary.class:type_name -> mir2.CharClass
-	21, // 4: mir2.CharacterSummary.gender:type_name -> mir2.Gender
+	20, // 1: mir2.ChangePasswordResult.result:type_name -> mir2.ActionResult
+	20, // 2: mir2.CreateAccountResult.result:type_name -> mir2.ActionResult
+	21, // 3: mir2.CharacterSummary.class:type_name -> mir2.CharClass
+	22, // 4: mir2.CharacterSummary.gender:type_name -> mir2.Gender
 	10, // 5: mir2.CharacterList.characters:type_name -> mir2.CharacterSummary
-	1,  // 6: mir2.SelectCharacterResult.code:type_name -> mir2.SelectCharCode
-	20, // 7: mir2.CreateCharacter.class:type_name -> mir2.CharClass
-	21, // 8: mir2.CreateCharacter.gender:type_name -> mir2.Gender
-	19, // 9: mir2.CreateCharacterResult.result:type_name -> mir2.ActionResult
-	19, // 10: mir2.DeleteCharacterResult.result:type_name -> mir2.ActionResult
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	12, // 6: mir2.CharacterList.name_rule:type_name -> mir2.NameRule
+	1,  // 7: mir2.SelectCharacterResult.code:type_name -> mir2.SelectCharCode
+	21, // 8: mir2.CreateCharacter.class:type_name -> mir2.CharClass
+	22, // 9: mir2.CreateCharacter.gender:type_name -> mir2.Gender
+	20, // 10: mir2.CreateCharacterResult.result:type_name -> mir2.ActionResult
+	20, // 11: mir2.DeleteCharacterResult.result:type_name -> mir2.ActionResult
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_account_proto_init() }
@@ -1266,7 +1351,7 @@ func file_account_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_account_proto_rawDesc), len(file_account_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   17,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

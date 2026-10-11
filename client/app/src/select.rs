@@ -27,6 +27,7 @@ use std::time::Instant;
 use sdl3::keyboard::Keycode;
 use sdl3::render::{FRect, TextureCreator, WindowCanvas};
 
+use mir2_core::entrance::NameRule;
 use mir2_core::select_ui as su;
 use mir2_protocol as proto;
 
@@ -139,6 +140,8 @@ pub struct Select {
     pub msg: Option<String>,
     /// 建角对话框（原版 `DCreateChr`）。`Some` 时它是**模态**：吃掉所有输入。
     newchar: Option<NewChar>,
+    /// **角色名规则**（服务端下发的那份；`None` = 还没收到 ⇒ 用内置兜底）
+    name_rule: Option<NameRule>,
     /// 鼠标位置（**设计空间** 800×600，与命中测试同一套坐标）。建角框的按钮悬停用。
     pub mouse: (f32, f32),
     /// "要确认的动作"（原版 `DMessageDlg` 的 Yes/No）：回车/[确定]才执行，其余输入 = 取消。
@@ -184,6 +187,7 @@ impl Select {
             menu_cursor: 0,
             msg: None,
             newchar: None,
+            name_rule: None,
             mouse: (0.0, 0.0),
             pending: None,
             last_phase,
@@ -330,7 +334,7 @@ impl Select {
         let Some(d) = self.newchar.take() else {
             return Action::None;
         };
-        match valid_char_name(&d.name) {
+        match valid_char_name(&d.name, self.name_rule.as_ref()) {
             Ok(name) => Action::Create {
                 name,
                 // 界面索引 → 协议值（战/法/道 = 1/2/3，男/女 = 1/2）
@@ -348,6 +352,14 @@ impl Select {
     }
 
     /// 对话框里的鼠标：只认它那几颗（框内空白无动作；框外也吃掉 —— 模态）。
+    /// **角色名规则**（服务端下发的那份）—— 建角框的本地预检照它判（D-84）。
+    ///
+    /// ⚠️ 不在这儿的后果：客户端只能用自己的内置口径，改一处忘一处 ⇒
+    /// 玩家在客户端看到"A 不行"、服务端却说"B 不行"。
+    pub fn set_name_rule(&mut self, r: NameRule) {
+        self.name_rule = Some(r);
+    }
+
     /// 按角色 id 预选（`MIR2_CHAR` 指的那个）。找不到就什么都不做。
     pub fn pick_id(&mut self, id: u64) {
         if let Some(c) = self.chars.iter().find(|c| c.id == id) {
@@ -823,20 +835,20 @@ struct NewChar {
 /// 角色名长度上限（原版 `EdChrName.MaxLength := 14`，`IntroScn.pas:1118`）。
 const NAME_MAX: usize = 14;
 
-/// 角色名的**本地校验** —— 照服务端那份规则与措辞
-///（`chargen.ValidName` + `server/internal/gamesvr/netproto.go` 的那句话）：
-/// Trim 之后**至少 3 个字节**（一个汉字算 3 个），且不含 `空格 \t / @ ? '`。
+/// 角色名的**本地校验** —— 规则与措辞**都来自服务端**（`NameRule`，D-84）。
 ///
 /// 为什么要本地先判：省一次往返、错误立刻可见。**服务端那道门照样在**（它才是权威），
-/// 这里只是把同一套规则提前说一遍 —— 两边措辞保持一致，用户不会看到两种说法。
-fn valid_char_name(raw: &str) -> Result<String, &'static str> {
-    const BAD: &str = "角色名不合适（至少 3 个字节，且不能含空格与 /@?'）";
+/// 这里只是把**同一份规则**提前说一遍 —— 措辞也用服务端给的，玩家不会看到两种说法。
+///
+/// ⚠️ 服务端没下发规则（老服务端 / 还没收到列表）⇒ 退回到内置的同一套口径，
+/// 宁可"可能说得不一样"，也不能把人卡住不让他建角。
+fn valid_char_name(raw: &str, rule: Option<&NameRule>) -> Result<String, String> {
+    let fallback = NameRule::builtin();
+    let r = rule.unwrap_or(&fallback);
     let name = raw.trim();
-    let has_bad = name
-        .chars()
-        .any(|c| c == ' ' || c == '\t' || "/@?'".contains(c));
-    if name.len() < 3 || has_bad {
-        return Err(BAD);
+    let has_bad = name.chars().any(|c| r.bad_chars.contains(&c));
+    if name.len() < r.min_bytes || has_bad {
+        return Err(r.message.clone());
     }
     Ok(name.to_string())
 }
@@ -1293,12 +1305,19 @@ mod tests {
     /// 角色名的本地校验必须**跟服务端同规则**（`chargen.ValidName`：≥3 字节、不含 `" \t/@?'"`）。
     #[test]
     fn 角色名校验照服务端() {
-        assert!(valid_char_name("abc").is_ok());
-        assert!(valid_char_name("勇士").is_ok(), "一个汉字 3 字节 ⇒ 够 3");
-        assert_eq!(valid_char_name("  abc  ").unwrap(), "abc", "两端空白 Trim");
-        assert!(valid_char_name("ab").is_err());
+        assert!(valid_char_name("abc", None).is_ok());
+        assert!(
+            valid_char_name("勇士", None).is_ok(),
+            "一个汉字 3 字节 ⇒ 够 3"
+        );
+        assert_eq!(
+            valid_char_name("  abc  ", None).unwrap(),
+            "abc",
+            "两端空白 Trim"
+        );
+        assert!(valid_char_name("ab", None).is_err());
         for bad in ["a b", "a\tb", "a/b", "a@b", "a?b", "a'b"] {
-            assert!(valid_char_name(bad).is_err(), "「{bad}」不该放行");
+            assert!(valid_char_name(bad, None).is_err(), "「{bad}」不该放行");
         }
     }
 

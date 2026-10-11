@@ -885,7 +885,7 @@ func (ps *protoSession) onCreateCharacter(m *protocol.CreateCharacter) bool {
 	name := strings.TrimSpace(m.GetName())
 	if !chargen.ValidName(name) {
 		return ps.sendCreateResult(
-			false, createBadName, "角色名不合适（至少 3 个字节，且不能含空格与 /@?'）", 0,
+			false, createBadName, chargen.BadNameMessage(), 0,
 		) == nil
 	}
 	// 重名（**全局**唯一：原版也是全局查重）
@@ -1014,6 +1014,13 @@ func (ps *protoSession) onListCharacters() bool {
 		return ps.sendServerError(protoErrInternal, "读取角色列表失败") == nil
 	}
 	out := &protocol.CharacterList{}
+	// 名字规则**一并下发** ⇒ 客户端预检与服务端这道门同源同措辞（D-84）
+	r := chargen.NameRule()
+	out.NameRule = &protocol.NameRule{
+		MinBytes: r.MinBytes,
+		BadChars: r.BadChars,
+		Message:  r.Message,
+	}
 	for _, cs := range slots {
 		if cs.Char == nil {
 			continue

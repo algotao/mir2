@@ -136,8 +136,25 @@ message CharacterSummary {
 
 message ListCharacters {}
 
+// 角色名的规则（**服务端下发**，客户端照它做预检）—— 2026-10-11（D-84）。
+//
+// ⚠️ 为什么不由客户端自己写一份：规则（最少几个字节、禁用哪些字符）和
+// **报错文案**原本两端各抄了一遍，改一处忘一处 ⇒ 玩家会在两端看到两种说法。
+// 服务端是权威（真正的那道门在那边），所以让它把规则一起发下来，
+// 客户端只做"立刻可见"的预检，措辞也用服务端给的。
+message NameRule {
+  // 最短**字节数**（按字节，不按字符：1 个汉字 = 3 字节）。
+  uint32 min_bytes = 1;
+  // 不允许出现的字符（原样给字符串，客户端逐字符比对）。
+  string bad_chars = 2;
+  // 不合规时报给玩家的那句话。
+  string message = 3;
+}
+
 message CharacterList {
   repeated CharacterSummary characters = 1;
+  // 建角时要用的名字规则（**单一来源在服务端**）。
+  NameRule name_rule = 2;
 }
 
 message SelectCharacter {

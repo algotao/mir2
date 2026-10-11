@@ -900,9 +900,11 @@ func (x *PickupItem) GetClientTick() uint32 {
 }
 
 type EquipItem struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Slot          uint32                 `protobuf:"varint,1,opt,name=slot,proto3" json:"slot,omitempty"`
-	ClientTick    uint32                 `protobuf:"varint,2,opt,name=client_tick,json=clientTick,proto3" json:"client_tick,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// **背包槽位下标**（0-based；与 legacy 不同，客户端不提交目标装备槽；服务端按物品
+	// StdMode 推导目标槽并重新校验）。
+	Slot          uint32 `protobuf:"varint,1,opt,name=slot,proto3" json:"slot,omitempty"`
+	ClientTick    uint32 `protobuf:"varint,2,opt,name=client_tick,json=clientTick,proto3" json:"client_tick,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -952,9 +954,10 @@ func (x *EquipItem) GetClientTick() uint32 {
 }
 
 type UnequipItem struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	EquipSlot     uint32                 `protobuf:"varint,1,opt,name=equip_slot,json=equipSlot,proto3" json:"equip_slot,omitempty"`
-	ClientTick    uint32                 `protobuf:"varint,2,opt,name=client_tick,json=clientTick,proto3" json:"client_tick,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 装备槽位下标（0-based；见 `internal/proto/contract.go` 的 Slot*）。
+	EquipSlot     uint32 `protobuf:"varint,1,opt,name=equip_slot,json=equipSlot,proto3" json:"equip_slot,omitempty"`
+	ClientTick    uint32 `protobuf:"varint,2,opt,name=client_tick,json=clientTick,proto3" json:"client_tick,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
