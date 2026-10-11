@@ -411,6 +411,14 @@ pub(crate) const BAG_GRID_Y: f32 = 8.0;
 /// 所以**要翻页**：滚轮在窗内翻页，页码画在网格右下角。
 pub(crate) const BAG_PAGE_SLOTS: usize = BAG_COLS * BAG_ROWS;
 
+/// 当前物品数需要几页（空背包也保留第 0 页）。
+///
+/// ⚠️ 画页码、滚轮翻页、`Pager` 夹取都走这一个算法；以前三处各算一遍，且滚轮
+/// 的空背包页数是 0（虽然 `.max(1)` 勉强兜住了），容易以后只改一处。
+pub(crate) fn bag_pages(items: usize) -> usize {
+    items.div_ceil(BAG_PAGE_SLOTS).max(1)
+}
+
 /// 关闭按钮（`X`）在窗口内的位置 —— 素材右下角那个红叉。
 ///
 /// ⚠️ 坐标是**拿 `wzldump` 导出 `Prguse[3]` 逐像素量出来的**（2026-10-10 第二次量，
@@ -477,4 +485,18 @@ pub(crate) fn bag_slot_at(local: (f32, f32)) -> Option<usize> {
         crate::space::Lpx(local.0),
         crate::space::Lpx(local.1),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 背包页数边界统一且至少一页() {
+        assert_eq!(bag_pages(0), 1, "空背包也有第 0 页");
+        assert_eq!(bag_pages(1), 1);
+        assert_eq!(bag_pages(BAG_PAGE_SLOTS), 1);
+        assert_eq!(bag_pages(BAG_PAGE_SLOTS + 1), 2);
+        assert_eq!(bag_pages(46), 2, "服务端背包 46 格 ⇒ 两页");
+    }
 }

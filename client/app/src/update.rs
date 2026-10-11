@@ -14,6 +14,12 @@ use crate::hud;
 
 /// 一帧里"该发生什么"（不含画）。
 pub(crate) fn tick(app: &mut AppState) {
+    // 背包条目减少（使用/卖出/服务端重排）后，统一夹回仍存在的页。
+    // 否则 hud::bag_geom 会偷偷画第 0 页，但鼠标命中仍按旧页算，出现「画第 0 页、
+    // 点第 2 页」的分裂。滚轮/绘制/命中共用 layout::bag_pages，状态在此归一。
+    let bag_items = app.net.as_ref().map_or(0, |n| n.world.bag.len());
+    app.bag_page.step(0, crate::layout::bag_pages(bag_items));
+
     // 货架**新到了一份**（seq 变了）⇒ 开窗、翻回第一页、清选中；
     // 顺手把**包裹也打开**（原版买东西时包裹就在旁边开着，用户第 7 条）。
     let shop_seq_now = app.net.as_ref().map_or(0, |n| n.world.shop_seq);

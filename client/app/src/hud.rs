@@ -397,7 +397,7 @@ pub(crate) fn bag_geom(
     shop_open: bool,
 ) -> ((f32, f32, f32, f32), usize) {
     let (x, y) = crate::layout::bag_pos(shop_open);
-    let pages = bag_len.div_ceil(crate::layout::BAG_PAGE_SLOTS).max(1);
+    let pages = crate::layout::bag_pages(bag_len);
     let page = page.min(pages - 1);
     ((x, y, crate::layout::BAG_W, crate::layout::BAG_H), page)
 }
@@ -623,7 +623,7 @@ pub(crate) fn draw_bag<'a, T>(
         )?;
     }
     // 页码（多于 1 页才画）
-    let pages = n.world.bag.len().div_ceil(crate::layout::BAG_PAGE_SLOTS);
+    let pages = crate::layout::bag_pages(n.world.bag.len());
     if pages > 1 {
         texts.draw(
             canvas,

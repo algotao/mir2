@@ -930,10 +930,7 @@ pub(crate) fn handle_mouse_wheel(app: &mut AppState, y: f32) {
             let pages = app
                 .net
                 .as_ref()
-                .map_or(1, |n| {
-                    n.world.bag.len().div_ceil(crate::layout::BAG_PAGE_SLOTS)
-                })
-                .max(1);
+                .map_or(1, |n| crate::layout::bag_pages(n.world.bag.len()));
             if y > 0.0 {
                 app.bag_page.step(1, pages);
             } else if y < 0.0 {
