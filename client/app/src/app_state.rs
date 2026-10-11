@@ -31,6 +31,23 @@ pub(crate) enum MoveButton {
     Run,
 }
 
+/// 登录/选角状态机接受的**平台无关按键**。
+///
+/// SDL `Keycode` 只在 keyboard 适配层映射成它；表单状态机和测试不依赖 SDL。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SceneKey {
+    Tab,
+    Backspace,
+    Enter,
+    Escape,
+    Left,
+    Right,
+    Up,
+    Down,
+    Space,
+    Other,
+}
+
 /// 可变客户端会话状态（SDL 资源不在此处）。
 pub(crate) struct AppState {
     // Scene/session

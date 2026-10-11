@@ -111,7 +111,7 @@ pub(crate) fn required() -> Vec<Req> {
     add("Prguse", crate::shop::BUY_NEXT_HOVER, "交易 [右] 高亮");
     add("Prguse", crate::shop::SELL_SLOT_IMG, "卖货窗底图");
     add("Prguse", crate::shop::SELL_OK_IMG, "卖货窗 [OK] 高亮");
-    add("Prguse", crate::input::DIALOG_BG, "对话窗背板");
+    add("Prguse", crate::dialog::DIALOG_BG, "对话窗背板");
     v
 }
 

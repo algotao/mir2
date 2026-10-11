@@ -69,7 +69,7 @@ const C_SEL: (u8, u8, u8) = (255, 230, 130);
 /// 包裹窗在商店开着时会让位到右边（`layout::bag_pos`），正好把这个位置让出来 ——
 /// 与原版截图同款布局：左上对话、左下商品列表、右侧包裹。
 pub(crate) fn panel() -> (f32, f32, f32, f32) {
-    let (dx, dy, dw, dh) = crate::input::dialog_panel();
+    let (dx, dy, dw, dh) = crate::dialog::dialog_panel();
     // 与卖窗同一条：**右对齐**上方对话窗
     (dx + dw - W, dy + dh + 8.0, W, H)
 }
@@ -291,7 +291,7 @@ const C_PRICE_COL: (u8, u8, u8) = (232, 220, 96);
 
 /// 卖货窗的落点与尺寸 = 素材 `Prguse[392]` 的原生尺寸（140×181），不再自留边距。
 pub(crate) fn sell_panel() -> (f32, f32, f32, f32) {
-    let (dx, dy, dw, dh) = crate::input::dialog_panel();
+    let (dx, dy, dw, dh) = crate::dialog::dialog_panel();
     // **右对齐**上方对话窗（用户 2026-10-10）：右缘跟对话窗的右缘齐平
     (
         dx + dw - SELL_SLOT.2,

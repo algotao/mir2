@@ -59,7 +59,7 @@ pub(crate) fn draw_hud<'a, T>(
     net: Option<&Net>,
     // 地图名（容器里的标题；空则退回服务端那个代号）
     map_title: &str,
-    // NPC 对话窗卷到第几行（见 `input::dialog_max_scroll`）
+    // NPC 对话窗卷到第几行（见 `dialog::dialog_max_scroll`）
     dialog_scroll: usize,
     // 控件引擎（hover / 按下都由它算；规范见 `widget` 模块头）
     widget_ui: &crate::widget::Ui,
@@ -645,22 +645,26 @@ pub(crate) fn draw_bag<'a, T>(
 /// 返回 `(面板矩形, 正文行, **夹过的**滚动位置)`；没对话 ⇒ `None`。
 ///
 /// 正文折行后**常常超出背板**（298 个脚本里 114 个超一屏）⇒ 超出的部分靠**滚动**
-/// 看，不是截掉（截掉 = 「退出」点不到，见 `crate::input::dialog_max_scroll`）。
+/// 看，不是截掉（截掉 = 「退出」点不到，见 `crate::dialog::dialog_max_scroll`）。
 /// `dialog_geom` 的返回值：`(面板矩形, 正文行, 夹过的滚动位置)`。
 ///
 /// 抽出来的理由：这个三元组在画与命中两条路上都要写一遍，嵌套的 `Vec<Vec<…>>`
 /// 让签名一眼看不懂（clippy 也嫌它"very complex type"）。
-pub(crate) type DialogGeom = ((f32, f32, f32, f32), Vec<Vec<crate::input::DialSeg>>, usize);
+pub(crate) type DialogGeom = (
+    (f32, f32, f32, f32),
+    Vec<Vec<crate::dialog::DialSeg>>,
+    usize,
+);
 
 pub(crate) fn dialog_geom(net: Option<&Net>, scroll: usize) -> Option<DialogGeom> {
     let n = net?;
     let d = n.world.dialog.as_ref()?;
     // 正文切成"行 → 片段"：行内链接留在原行（用户 2026-10-09 要的「打开 交易市场」一行）；
     // 正文没有标记时把 `options` 排成底部列表（老服务端/简易脚本）。
-    let lines = crate::input::dialog_lines(&d.text, &d.options);
+    let lines = crate::dialog::dialog_lines(&d.text, &d.options);
     // 滚动位置**就地夹回**：换了一段更短的对话时，旧的偏移可能已经越界。
-    let scroll = crate::input::dialog_scroll_clamp(scroll, lines.len());
-    Some((crate::input::dialog_panel(), lines, scroll))
+    let scroll = crate::dialog::dialog_scroll_clamp(scroll, lines.len());
+    Some((crate::dialog::dialog_panel(), lines, scroll))
 }
 
 /// 画 NPC 对话窗：官方 `Prguse[384]` 背板（左上角、原生尺寸）+ 正文 + 可点选项。
@@ -683,13 +687,13 @@ fn draw_dialog<'a, T>(
     canvas.set_blend_mode(BlendMode::Blend);
     // 背板：`Prguse[384]`（416×176，**原生尺寸不缩放**）。素材取不到就退回
     // "半透明黑底 + 描边"——版式不变，只是不好看（开发机上常见）。
-    if ui.size(dir, "Prguse", crate::input::DIALOG_BG).is_some() {
+    if ui.size(dir, "Prguse", crate::dialog::DIALOG_BG).is_some() {
         ui.draw_src(
             canvas,
             tc,
             dir,
             "Prguse",
-            crate::input::DIALOG_BG,
+            crate::dialog::DIALOG_BG,
             FRect::new(0.0, 0.0, w, h),
             FRect::new(x, y, w, h),
             255,
@@ -704,17 +708,17 @@ fn draw_dialog<'a, T>(
     // 正文 + **行内可点文字**。先排版（只读字体量宽）、再落笔（可变借用）—— 两段借用分开。
     // ⚠️ 只排**看得见**的那些行（滚动窗口内的行号从 0 起）—— 直接拿 `lines` 的下标
     // 当行号的话，滚到第 9 行之后所有行都会落在窗外的 y 上（画不出来也点不到）。
-    let layout: Vec<Vec<crate::input::DialPiece>> = {
+    let layout: Vec<Vec<crate::dialog::DialPiece>> = {
         let mut measure = |t: &str| texts.width(t);
-        crate::input::dialog_visible_lines(&lines, scroll)
-            .map(|(row, segs)| crate::input::dialog_line_pieces(panel, row, segs, &mut measure))
+        crate::dialog::dialog_visible_lines(&lines, scroll)
+            .map(|(row, segs)| crate::dialog::dialog_line_pieces(panel, row, segs, &mut measure))
             .collect()
     };
     for pieces in &layout {
         for p in pieces {
             let (rx, ry, _rw, rh) = p.rect;
             match &p.seg {
-                crate::input::DialSeg::Text(t) => {
+                crate::dialog::DialSeg::Text(t) => {
                     texts.draw(
                         canvas,
                         tc,
@@ -725,7 +729,7 @@ fn draw_dialog<'a, T>(
                         Some((0, 0, 0)),
                     )?;
                 }
-                crate::input::DialSeg::Link { text, .. } => {
+                crate::dialog::DialSeg::Link { text, .. } => {
                     // 官方样式：绿方块 + 黄字（方块也算在这片的命中矩形里）
                     canvas.set_draw_color(Color::RGB(90, 205, 90));
                     canvas.fill_rect(FRect::new(rx + 1.0, ry + rh / 2.0 - 2.5, 5.0, 5.0))?;
@@ -743,9 +747,9 @@ fn draw_dialog<'a, T>(
         }
     }
     // 滚动条：正文装不下时才画（298 个脚本里 114 个超一屏 ⇒ 「退出」常常落在第 9 行以后）。
-    // 光有一块高背板解决不了：最长的对话折行后有 **46 行**（`input::dialog_max_scroll`）。
-    if let Some((bx, by, bw, bh)) = crate::input::dialog_scroll_thumb(panel, lines.len(), scroll) {
-        let (tx, ty, tw, th) = crate::input::dialog_bar_track(panel);
+    // 光有一块高背板解决不了：最长的对话折行后有 **46 行**（`dialog::dialog_max_scroll`）。
+    if let Some((bx, by, bw, bh)) = crate::dialog::dialog_scroll_thumb(panel, lines.len(), scroll) {
+        let (tx, ty, tw, th) = crate::dialog::dialog_bar_track(panel);
         canvas.set_draw_color(Color::RGB(52, 44, 32));
         canvas.fill_rect(FRect::new(tx, ty, tw, th))?;
         canvas.set_draw_color(Color::RGB(198, 176, 112));

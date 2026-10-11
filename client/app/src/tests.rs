@@ -1337,16 +1337,16 @@ fn npc_精灵图号() {
 /// 而 `hud::draw_dialog` 画的是同一份。
 #[test]
 fn 对话正文的行内链接() {
-    let panel = input::dialog_panel();
+    let panel = dialog::dialog_panel();
     let (x, y, w, h) = panel;
     // 官方版式：背板 = `Prguse[384]` 的原生尺寸、固定在屏幕左上角
     assert_eq!((w, h), (416.0, 176.0), "背板尺寸 = Prguse[384] 原生尺寸");
     assert_eq!((x, y), (8.0, 4.0), "贴左上角（留 8/4 的缝）");
-    assert_eq!(input::DIALOG_BG, 384, "背板图号");
+    assert_eq!(dialog::DIALOG_BG, 384, "背板图号");
 
     // 真实脚本（`market_def/7Gst-0.txt` 的 [@main]）下发后的样子
     let text = "欢迎. 我可以为你做什么吗?\n\n <打开/@1> 交易市场\n <购买/@2>  物品\n <退出/@5>";
-    let lines = input::dialog_lines(text, &[]);
+    let lines = dialog::dialog_lines(text, &[]);
     // 「打开」与「交易市场」必须在**同一行**，且切成了"空白 / 链接 / 文字"
     let third = lines[2].clone();
     assert_eq!(
@@ -1355,25 +1355,25 @@ fn 对话正文的行内链接() {
         "第 3 行应是 [空白, 链接, 文字]，实得 {third:?}"
     );
     assert!(
-        matches!(&third[1], input::DialSeg::Link { index, text } if *index == 1 && text == "打开")
+        matches!(&third[1], dialog::DialSeg::Link { index, text } if *index == 1 && text == "打开")
     );
-    assert!(matches!(&third[2], input::DialSeg::Text(t) if t.trim() == "交易市场"));
+    assert!(matches!(&third[2], dialog::DialSeg::Text(t) if t.trim() == "交易市场"));
 
     // 命中：点「打开」⇒ 序号 1；点同一行右边的正文 ⇒ 不该命中
     let mut measure = |t: &str| t.chars().count() as f32 * 14.0; // 等宽假字体
-    let pieces = input::dialog_line_pieces(panel, 2, &third, &mut measure);
+    let pieces = dialog::dialog_line_pieces(panel, 2, &third, &mut measure);
     let link = pieces
         .iter()
-        .find(|p| matches!(&p.seg, input::DialSeg::Link { .. }))
+        .find(|p| matches!(&p.seg, dialog::DialSeg::Link { .. }))
         .expect("这一行有链接");
     let (lx, ly, lw, lh) = link.rect;
     assert_eq!(
-        input::dialog_link_at(panel, &lines, (lx + 2.0, ly + lh / 2.0), 0, &mut measure),
+        dialog::dialog_link_at(panel, &lines, (lx + 2.0, ly + lh / 2.0), 0, &mut measure),
         Some(1),
         "点「打开」要选中序号 1"
     );
     assert_eq!(
-        input::dialog_link_at(
+        dialog::dialog_link_at(
             panel,
             &lines,
             (lx + lw + 3.0, ly + lh / 2.0),
@@ -1384,29 +1384,29 @@ fn 对话正文的行内链接() {
         "点链接右边的正文不该弹对话"
     );
     assert_eq!(
-        input::dialog_link_at(panel, &lines, (x + 1.0, y + 1.0), 0, &mut measure),
+        dialog::dialog_link_at(panel, &lines, (x + 1.0, y + 1.0), 0, &mut measure),
         None,
         "点面板空白处不命中"
     );
-    assert!(input::dialog_hit(panel, (x + 4.0, y + 4.0)));
-    assert!(!input::dialog_hit(panel, (0.0, 0.0)));
+    assert!(dialog::dialog_hit(panel, (x + 4.0, y + 4.0)));
+    assert!(!dialog::dialog_hit(panel, (0.0, 0.0)));
 
     // 背板固定高 ⇒ 超出行数上限的链接**画不出来也不该点到**
-    let many: Vec<Vec<input::DialSeg>> = (0..input::DIALOG_MAX_LINES + 3)
+    let many: Vec<Vec<dialog::DialSeg>> = (0..dialog::DIALOG_MAX_LINES + 3)
         .map(|_| {
-            vec![input::DialSeg::Link {
+            vec![dialog::DialSeg::Link {
                 index: 9,
                 text: "x".into(),
             }]
         })
         .collect();
     let beyond_y =
-        y + input::DIALOG_PAD_Y + (input::DIALOG_MAX_LINES as f32 + 1.0) * input::DIALOG_LINE_H;
+        y + dialog::DIALOG_PAD_Y + (dialog::DIALOG_MAX_LINES as f32 + 1.0) * dialog::DIALOG_LINE_H;
     assert_eq!(
-        input::dialog_link_at(
+        dialog::dialog_link_at(
             panel,
             &many,
-            (x + input::DIALOG_PAD_X + 2.0, beyond_y),
+            (x + dialog::DIALOG_PAD_X + 2.0, beyond_y),
             0,
             &mut measure
         ),
@@ -1415,14 +1415,14 @@ fn 对话正文的行内链接() {
     );
 
     // 折行：纯文字行按字数折、`\n` 强制换行
-    assert_eq!(input::wrap_text("abcdef", 3), vec!["abc", "def"]);
-    assert_eq!(input::wrap_text("a\nb", 5), vec!["a", "b"]);
-    assert_eq!(input::wrap_text("", 5), vec![""]);
+    assert_eq!(dialog::wrap_text("abcdef", 3), vec!["abc", "def"]);
+    assert_eq!(dialog::wrap_text("a\nb", 5), vec!["a", "b"]);
+    assert_eq!(dialog::wrap_text("", 5), vec![""]);
 
     // 正文里没有标记 ⇒ 退回"选项各排一行"（老服务端 / 没有行内链接的脚本）
-    let plain = input::dialog_lines("你好", &[(1, "买".into()), (2, "卖".into())]);
+    let plain = dialog::dialog_lines("你好", &[(1, "买".into()), (2, "卖".into())]);
     assert_eq!(plain.len(), 3, "1 行正文 + 2 行选项");
-    assert!(matches!(&plain[1][0], input::DialSeg::Link { index, .. } if *index == 1));
+    assert!(matches!(&plain[1][0], dialog::DialSeg::Link { index, .. } if *index == 1));
 }
 
 /// 对话窗**滚动**：正文超出背板时能滚着看 —— 「退出」常常落在第 9 行以后。
@@ -1433,30 +1433,31 @@ fn 对话正文的行内链接() {
 /// 滚不动的直接后果：装不下的行**画不出也点不到** ⇒ 「退出」点不动。
 #[test]
 fn 对话正文装不下时要能滚() {
-    let panel = input::dialog_panel();
+    let panel = dialog::dialog_panel();
     let (x, y, _, _) = panel;
     let mut measure = |t: &str| t.chars().count() as f32 * 14.0; // 等宽假字体
 
     // 造一段 12 行的对话：8 行可见 + 4 行要滚
-    let lines: Vec<Vec<input::DialSeg>> = (0..12)
+    let lines: Vec<Vec<dialog::DialSeg>> = (0..12)
         .map(|i| {
-            vec![input::DialSeg::Link {
+            vec![dialog::DialSeg::Link {
                 index: i as u32 + 1,
                 text: format!("选项{i}"),
             }]
         })
         .collect();
-    assert_eq!(input::DIALOG_MAX_LINES, 8, "一屏 8 行（背板几何算出来的）");
-    assert_eq!(input::dialog_max_scroll(12), 4, "12 行 ⇒ 最多滚 4 行");
-    assert_eq!(input::dialog_max_scroll(5), 0, "装得下就不用滚");
+    assert_eq!(dialog::DIALOG_MAX_LINES, 8, "一屏 8 行（背板几何算出来的）");
+    assert_eq!(dialog::dialog_max_scroll(12), 4, "12 行 ⇒ 最多滚 4 行");
+    assert_eq!(dialog::dialog_max_scroll(5), 0, "装得下就不用滚");
 
     // 没滚时：第 9 行（index 9）在窗外 ⇒ 点不到
-    let row9_y = y + input::DIALOG_PAD_Y + 8.0 * input::DIALOG_LINE_H + input::DIALOG_LINE_H / 2.0;
+    let row9_y =
+        y + dialog::DIALOG_PAD_Y + 8.0 * dialog::DIALOG_LINE_H + dialog::DIALOG_LINE_H / 2.0;
     assert_eq!(
-        input::dialog_link_at(
+        dialog::dialog_link_at(
             panel,
             &lines,
-            (x + input::DIALOG_PAD_X + 6.0, row9_y),
+            (x + dialog::DIALOG_PAD_X + 6.0, row9_y),
             0,
             &mut measure
         ),
@@ -1465,11 +1466,12 @@ fn 对话正文装不下时要能滚() {
     );
     // 行在第 `i` 行 ⇒ 序号 `i+1`；滚 `s` 行后它排在窗口第 `i-s` 行
     let mut at_row = |row: f32, s: usize| {
-        let my = y + input::DIALOG_PAD_Y + row * input::DIALOG_LINE_H + input::DIALOG_LINE_H / 2.0;
-        input::dialog_link_at(
+        let my =
+            y + dialog::DIALOG_PAD_Y + row * dialog::DIALOG_LINE_H + dialog::DIALOG_LINE_H / 2.0;
+        dialog::dialog_link_at(
             panel,
             &lines,
-            (x + input::DIALOG_PAD_X + 6.0, my),
+            (x + dialog::DIALOG_PAD_X + 6.0, my),
             s,
             &mut measure,
         )
@@ -1488,18 +1490,18 @@ fn 对话正文装不下时要能滚() {
     assert_eq!(at_row(7.0, 4), Some(12), "窗口末行是最后一行（序号 12）");
 
     // 滚轮：往上滚（y>0）减小、往下滚（y<0）增大，两端都夹住
-    assert_eq!(input::dialog_scroll_step(0, 12, 1.0), 0, "已经在顶了");
-    assert_eq!(input::dialog_scroll_step(0, 12, -1.0), 1, "往下滚一行");
-    assert_eq!(input::dialog_scroll_step(9, 12, -1.0), 4, "滚到底就夹住");
-    assert_eq!(input::dialog_scroll_clamp(99, 12), 4, "越界要夹回");
-    assert_eq!(input::dialog_scroll_clamp(3, 5), 0, "换了段短对话也要夹回");
+    assert_eq!(dialog::dialog_scroll_step(0, 12, 1.0), 0, "已经在顶了");
+    assert_eq!(dialog::dialog_scroll_step(0, 12, -1.0), 1, "往下滚一行");
+    assert_eq!(dialog::dialog_scroll_step(9, 12, -1.0), 4, "滚到底就夹住");
+    assert_eq!(dialog::dialog_scroll_clamp(99, 12), 4, "越界要夹回");
+    assert_eq!(dialog::dialog_scroll_clamp(3, 5), 0, "换了段短对话也要夹回");
 
     // 可见窗口：`(窗口内行号, 行)` —— 行号必须从 0 起，否则会排到窗外
-    let rows: Vec<(usize, String)> = input::dialog_visible_lines(&lines, 4)
+    let rows: Vec<(usize, String)> = dialog::dialog_visible_lines(&lines, 4)
         .map(|(row, segs)| {
             let t = match &segs[0] {
-                input::DialSeg::Link { text, .. } => text.clone(),
-                input::DialSeg::Text(t) => t.clone(),
+                dialog::DialSeg::Link { text, .. } => text.clone(),
+                dialog::DialSeg::Text(t) => t.clone(),
             };
             (row, t)
         })
@@ -1513,9 +1515,9 @@ fn 对话正文装不下时要能滚() {
     assert_eq!(rows[7], (7, "选项11".to_string()));
 
     // 滚动条：装得下不画、装不下才画；滑块随滚动位置下移
-    assert_eq!(input::dialog_scroll_thumb(panel, 5, 0), None, "装得下不画");
-    let (_, ty0, _, th) = input::dialog_scroll_thumb(panel, 12, 0).expect("装不下要画");
-    let (_, ty4, _, th4) = input::dialog_scroll_thumb(panel, 12, 4).expect("装不下要画");
+    assert_eq!(dialog::dialog_scroll_thumb(panel, 5, 0), None, "装得下不画");
+    let (_, ty0, _, th) = dialog::dialog_scroll_thumb(panel, 12, 0).expect("装不下要画");
+    let (_, ty4, _, th4) = dialog::dialog_scroll_thumb(panel, 12, 4).expect("装不下要画");
     assert_eq!(th, th4, "滑块高度不随位置变");
     assert!(ty4 > ty0, "滚下去 ⇒ 滑块往下走");
     assert!(th >= 12.0, "滑块别缩得看不见（46 行时按比例只有 ~4px）");
@@ -1530,7 +1532,7 @@ fn 商店窗几何与命中() {
     let (x, y, w, h) = crate::shop::panel();
     // ① 位置：**对话窗正下面**（对话窗占上排 8..424；商店开着时背包让位到右边 ⇒
     // 这个位置正好空出来给商品列表）
-    let (dx, dy, dw, dh) = input::dialog_panel();
+    let (dx, dy, dw, dh) = dialog::dialog_panel();
     assert_eq!(
         x + w,
         dx + dw,
@@ -1603,7 +1605,7 @@ fn 商店窗几何与命中() {
 fn 背包窗在商店开着时紧贴卖窗右侧() {
     let (nx, ny) = crate::layout::bag_pos(false);
     let (sx, sy) = crate::layout::bag_pos(true);
-    assert_eq!((nx, ny), (8.0, 4.0 + input::DIALOG_H + 8.0));
+    assert_eq!((nx, ny), (8.0, 4.0 + dialog::DIALOG_H + 8.0));
 
     let (wx, wy, ww, wh) = crate::shop::sell_panel();
     assert_eq!(sx, wx + ww + 12.0, "包裹紧贴卖窗右侧（间距 12px）");
@@ -1882,19 +1884,19 @@ fn 对话行数上限装得下官方那段() {
     // 服务端下发的样子（见 `server/internal/script` 的 `Label.Lines`）
     let text = "欢迎. 我可以为你做什么吗?\n\n <打开/@1> 交易市场\n <购买/@2>  物品\n \
                 <出售/@3>  物品\n <询问/@4> 物品详细情况\n <退出/@5>";
-    let lines = input::dialog_lines(text, &[]);
+    let lines = dialog::dialog_lines(text, &[]);
     assert_eq!(lines.len(), 7, "该段共 7 行，实得 {lines:?}");
     assert!(
-        input::DIALOG_MAX_LINES >= lines.len(),
+        dialog::DIALOG_MAX_LINES >= lines.len(),
         "背板能画 {} 行，但这只要 {} 行 —— 「退出」会被截掉",
-        input::DIALOG_MAX_LINES,
+        dialog::DIALOG_MAX_LINES,
         lines.len()
     );
     // 最后一行必须是「退出」（序号 5）
     let last_link = lines[6]
         .iter()
         .find_map(|seg| match seg {
-            input::DialSeg::Link { index, text } => Some((*index, text.clone())),
+            dialog::DialSeg::Link { index, text } => Some((*index, text.clone())),
             _ => None,
         })
         .expect("第 7 行该有个链接");
@@ -1902,10 +1904,10 @@ fn 对话行数上限装得下官方那段() {
     // 每一行的行内选项都排得下（不越出背板右边界）
     let mut measure = |t: &str| t.chars().count() as f32 * 14.0;
     for (i, segs) in lines.iter().enumerate() {
-        for p in input::dialog_line_pieces(input::dialog_panel(), i, segs, &mut measure) {
+        for p in dialog::dialog_line_pieces(dialog::dialog_panel(), i, segs, &mut measure) {
             let (px, _, pw, _) = p.rect;
             assert!(
-                px + pw <= input::DIALOG_X + input::DIALOG_W,
+                px + pw <= dialog::DIALOG_X + dialog::DIALOG_W,
                 "第 {} 行的片段超出背板右边界",
                 i + 1
             );
@@ -1918,16 +1920,16 @@ fn 对话行数上限装得下官方那段() {
 /// 命中框是从 `Prguse[384]` 的像素量出来的（红叉在面板内 x 401..411 / y 0..15）。
 #[test]
 fn 对话窗右上角的关闭叉() {
-    let panel = input::dialog_panel();
+    let panel = dialog::dialog_panel();
     let (px, py, _, _) = panel;
     // 红叉中心 ⇒ 命中
-    let cx = px + input::DIALOG_CLOSE_X + input::DIALOG_CLOSE_W / 2.0;
-    let cy = py + input::DIALOG_CLOSE_Y + input::DIALOG_CLOSE_H / 2.0;
-    assert!(input::dialog_close_hit(panel, (cx, cy)), "点红叉要关窗");
+    let cx = px + dialog::DIALOG_CLOSE_X + dialog::DIALOG_CLOSE_W / 2.0;
+    let cy = py + dialog::DIALOG_CLOSE_Y + dialog::DIALOG_CLOSE_H / 2.0;
+    assert!(dialog::dialog_close_hit(panel, (cx, cy)), "点红叉要关窗");
     // 面板左上角（正文区）⇒ 不命中
-    assert!(!input::dialog_close_hit(panel, (px + 20.0, py + 20.0)));
+    assert!(!dialog::dialog_close_hit(panel, (px + 20.0, py + 20.0)));
     // 面板**外面**右上（屏幕角落那点）⇒ 不命中
-    assert!(!input::dialog_close_hit(panel, (px + 500.0, py + 4.0)));
+    assert!(!dialog::dialog_close_hit(panel, (px + 500.0, py + 4.0)));
 }
 
 /// 挥刀声按**武器形状**取（用户 2026-10-09 第 3 条：「木剑攻击声音不对，更像挖矿」）。
@@ -2135,7 +2137,7 @@ fn 点怪优先锁悬停的那只() {
 fn 卖货窗的浮件几何与命中() {
     let (x, y, w, h) = crate::shop::sell_panel();
     // ① 窗 = 素材 `Prguse[392]` 的原生尺寸（140×181），**右对齐**上方对话窗
-    let (dx, dy, dw, dh) = input::dialog_panel();
+    let (dx, dy, dw, dh) = dialog::dialog_panel();
     assert_eq!(
         (w, h),
         (crate::shop::SELL_SLOT.2, crate::shop::SELL_SLOT.3),

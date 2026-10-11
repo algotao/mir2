@@ -83,6 +83,7 @@ pub(crate) use geom::*;
 pub(crate) mod tiles;
 pub(crate) use tiles::*;
 pub(crate) mod debug;
+mod dialog;
 pub(crate) use debug::*;
 pub(crate) mod actor;
 pub(crate) use actor::*;

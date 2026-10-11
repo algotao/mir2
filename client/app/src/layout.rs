@@ -457,7 +457,7 @@ pub(crate) fn bag_pos(shop_open: bool) -> (f32, f32) {
         let y = (sy + sh - BAG_H).max(4.0);
         (x, y)
     } else {
-        (8.0, 4.0 + crate::input::DIALOG_H + 8.0)
+        (8.0, 4.0 + crate::dialog::DIALOG_H + 8.0)
     }
 }
 

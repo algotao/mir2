@@ -5,6 +5,23 @@ use sdl3::keyboard::{Keycode, Mod};
 use crate::app_state::AppState;
 use crate::*;
 
+/// SDL 按键 → 登录/选角状态机的无平台键值。
+fn scene_key(k: Keycode) -> crate::app_state::SceneKey {
+    use crate::app_state::SceneKey as K;
+    match k {
+        Keycode::Tab => K::Tab,
+        Keycode::Backspace => K::Backspace,
+        Keycode::Return | Keycode::KpEnter => K::Enter,
+        Keycode::Escape => K::Escape,
+        Keycode::Left => K::Left,
+        Keycode::Right => K::Right,
+        Keycode::Up => K::Up,
+        Keycode::Down => K::Down,
+        Keycode::Space => K::Space,
+        _ => K::Other,
+    }
+}
+
 /// 处理键盘事件。`true` 表示请求退出主循环（原 `break 'run`）。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_key_down(
@@ -137,7 +154,7 @@ pub(crate) fn handle_key_down(
         _ if app.scene == crate::app_state::Scene::Select => {
             if let Some(k) = keycode {
                 let act = match app.select_scene.as_mut() {
-                    Some(s) => s.on_key(k),
+                    Some(s) => s.on_key(scene_key(k)),
                     None => select::Action::None,
                 };
                 if do_select_action(act, &mut app.net, &mut app.select_scene, sound, sounds)? {
@@ -149,7 +166,7 @@ pub(crate) fn handle_key_down(
         // 它给出的动作翻译成"接下来干什么"。
         _ if app.scene == crate::app_state::Scene::Login => {
             if let Some(k) = keycode {
-                let act = app.login.on_key(k);
+                let act = app.login.on_key(scene_key(k));
                 // 按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` ⇒ 103）
                 if act != login::Action::None {
                     sfx(sound, sounds, mir2_core::sound::idx::NORM_BUTTON_CLICK);

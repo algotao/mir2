@@ -24,7 +24,6 @@
 use std::path::Path;
 use std::time::Instant;
 
-use sdl3::keyboard::Keycode;
 use sdl3::render::{FRect, TextureCreator, WindowCanvas};
 
 use mir2_core::entrance::NameRule;
@@ -293,30 +292,34 @@ impl Select {
     }
 
     /// 建角对话框的按键（模态，全吃）。
-    fn newchar_key(&mut self, k: Keycode) -> Action {
+    fn newchar_key(&mut self, k: crate::app_state::SceneKey) -> Action {
         if self.newchar.is_none() {
             return Action::None;
         }
         match k {
-            Keycode::Escape => {
+            crate::app_state::SceneKey::Escape => {
                 self.newchar = None;
                 Action::None
             }
-            Keycode::Return | Keycode::KpEnter => self.confirm_newchar(),
-            Keycode::Tab => {
+            crate::app_state::SceneKey::Enter => self.confirm_newchar(),
+            crate::app_state::SceneKey::Tab => {
                 let d = self.newchar.as_mut().expect("上面判过");
                 d.focus = (d.focus + 1) % 3;
                 Action::None
             }
-            Keycode::Backspace => {
+            crate::app_state::SceneKey::Backspace => {
                 let d = self.newchar.as_mut().expect("上面判过");
                 if d.focus == 0 {
                     d.name.pop();
                 }
                 Action::None
             }
-            Keycode::Left | Keycode::Right => {
-                let dir = if k == Keycode::Right { 1 } else { -1 };
+            crate::app_state::SceneKey::Left | crate::app_state::SceneKey::Right => {
+                let dir = if k == crate::app_state::SceneKey::Right {
+                    1
+                } else {
+                    -1
+                };
                 let d = self.newchar.as_mut().expect("上面判过");
                 match d.focus {
                     1 => d.job = (d.job as i32 + dir).rem_euclid(3) as usize,
@@ -484,7 +487,7 @@ impl Select {
     }
 
     /// 键盘（**我们的扩展**）。
-    pub fn on_key(&mut self, k: Keycode) -> Action {
+    pub fn on_key(&mut self, k: crate::app_state::SceneKey) -> Action {
         // ① 建角对话框（模态）：所有按键都归它
         if self.newchar.is_some() {
             return self.newchar_key(k);
@@ -492,7 +495,7 @@ impl Select {
         // ② "要确认的动作"（删角）：回车 = 执行，其它键 = 取消
         if let Some(act) = self.pending.take() {
             self.msg = None;
-            return if matches!(k, Keycode::Return | Keycode::KpEnter) {
+            return if matches!(k, crate::app_state::SceneKey::Enter) {
                 act
             } else {
                 Action::None
@@ -504,24 +507,24 @@ impl Select {
         }
         match k {
             // 左右 = 换槽（布局就是左右两块面板）
-            Keycode::Left => {
+            crate::app_state::SceneKey::Left => {
                 self.move_pick(-1);
                 Action::None
             }
-            Keycode::Right => {
+            crate::app_state::SceneKey::Right => {
                 self.move_pick(1);
                 Action::None
             }
             // 上下 = 换菜单项（布局就是中间竖排）
-            Keycode::Up => {
+            crate::app_state::SceneKey::Up => {
                 self.menu_cursor = (self.menu_cursor + su::MENU.len() - 1) % su::MENU.len();
                 Action::None
             }
-            Keycode::Down => {
+            crate::app_state::SceneKey::Down => {
                 self.menu_cursor = (self.menu_cursor + 1) % su::MENU.len();
                 Action::None
             }
-            Keycode::Return | Keycode::KpEnter | Keycode::Space => {
+            crate::app_state::SceneKey::Enter | crate::app_state::SceneKey::Space => {
                 self.activate(Hit::Menu(self.menu_cursor))
             }
             _ => Action::None,
@@ -1111,23 +1114,23 @@ mod tests {
             ]
         };
         let mut s = Select::new(two());
-        s.on_key(Keycode::Right);
+        s.on_key(crate::app_state::SceneKey::Right);
         assert_eq!(s.picked_char().map(|c| c.id), Some(22));
-        s.on_key(Keycode::Left);
+        s.on_key(crate::app_state::SceneKey::Left);
         assert_eq!(s.picked_char().map(|c| c.id), Some(11));
 
         // 菜单光标：默认第 0 项（开始），↓ 走一项、↑ 转回最后一项
         assert_eq!(s.menu_cursor, 0);
-        s.on_key(Keycode::Down);
+        s.on_key(crate::app_state::SceneKey::Down);
         assert_eq!(s.menu_cursor, 1);
-        s.on_key(Keycode::Up);
+        s.on_key(crate::app_state::SceneKey::Up);
         assert_eq!(s.menu_cursor, 0);
-        s.on_key(Keycode::Up);
+        s.on_key(crate::app_state::SceneKey::Up);
         assert_eq!(s.menu_cursor, su::MENU.len() - 1);
 
         // 只有一个角色时，左右都停在它身上（空槽跳过）
         let mut s = Select::new(vec![c_slot(11, "甲", 0)]);
-        s.on_key(Keycode::Right);
+        s.on_key(crate::app_state::SceneKey::Right);
         assert_eq!(s.picked_char().map(|c| c.id), Some(11));
     }
 
@@ -1136,38 +1139,41 @@ mod tests {
     fn 菜单项行为() {
         let mut s = Select::new(vec![c_slot(11, "甲", 0)]);
         // 第 0 项 = 开始
-        assert_eq!(s.on_key(Keycode::Return), Action::Enter(11));
+        assert_eq!(
+            s.on_key(crate::app_state::SceneKey::Enter),
+            Action::Enter(11)
+        );
 
         // 第 1 项 = 新建角色：开建角对话框（原版 `DCreateChr`），不再有那套占位提示
-        s.on_key(Keycode::Down);
-        assert_eq!(s.on_key(Keycode::Return), Action::None);
+        s.on_key(crate::app_state::SceneKey::Down);
+        assert_eq!(s.on_key(crate::app_state::SceneKey::Enter), Action::None);
         assert!(s.newchar_open(), "该开建角对话框");
-        s.on_key(Keycode::Escape); // 关掉它
+        s.on_key(crate::app_state::SceneKey::Escape); // 关掉它
         assert!(!s.newchar_open() && s.msg.is_none());
 
         // 第 2 项 = 删除角色：弹确认（措辞照原版），ESC 取消
-        s.on_key(Keycode::Down);
-        s.on_key(Keycode::Return);
+        s.on_key(crate::app_state::SceneKey::Down);
+        s.on_key(crate::app_state::SceneKey::Enter);
         assert!(s.msg.clone().unwrap().contains("删除角色是不可以恢复的"));
-        s.on_key(Keycode::Escape);
+        s.on_key(crate::app_state::SceneKey::Escape);
         assert!(s.msg.is_none() && s.pending.is_none(), "取消要把确认清干净");
 
         // 第 3 项 = 制作群
-        s.on_key(Keycode::Down);
-        s.on_key(Keycode::Return);
+        s.on_key(crate::app_state::SceneKey::Down);
+        s.on_key(crate::app_state::SceneKey::Enter);
         assert!(s.msg.clone().unwrap().contains("制作群"));
 
         // 第 4 项 = 退出
-        s.on_key(Keycode::Escape); // 关掉"制作群"那句
-        s.on_key(Keycode::Down);
-        assert_eq!(s.on_key(Keycode::Return), Action::Exit);
+        s.on_key(crate::app_state::SceneKey::Escape); // 关掉"制作群"那句
+        s.on_key(crate::app_state::SceneKey::Down);
+        assert_eq!(s.on_key(crate::app_state::SceneKey::Enter), Action::Exit);
     }
 
     /// [开始] 在空账号上要弹提示（原版那句 + 我们的现状）。
     #[test]
     fn 空账号提示() {
         let mut s = Select::new(vec![]);
-        assert_eq!(s.on_key(Keycode::Return), Action::None);
+        assert_eq!(s.on_key(crate::app_state::SceneKey::Enter), Action::None);
         let m = s.msg.clone().expect("该弹提示");
         assert!(m.contains("创建"), "{m}");
         // 现在**真能建**了 ⇒ 提示要指路（中间菜单那颗），不再指向 `mir2cli`
@@ -1235,9 +1241,13 @@ mod tests {
         };
         // ① 删角的确认：点 [Ok] = 真删
         let mut s = Select::new(vec![c(1, "甲"), c(2, "乙")]);
-        s.on_key(Keycode::Down);
-        s.on_key(Keycode::Down); // 菜单光标到「删除人物」
-        assert_eq!(s.on_key(Keycode::Return), Action::None, "先弹确认框");
+        s.on_key(crate::app_state::SceneKey::Down);
+        s.on_key(crate::app_state::SceneKey::Down); // 菜单光标到「删除人物」
+        assert_eq!(
+            s.on_key(crate::app_state::SceneKey::Enter),
+            Action::None,
+            "先弹确认框"
+        );
         let ok = b.ok.center();
         assert_eq!(
             tap(&mut s, &l, Some(b), ok, ok),
@@ -1250,7 +1260,7 @@ mod tests {
         );
 
         // ② 点框内**别处**（不是 [Ok]）= 取消
-        s.on_key(Keycode::Return);
+        s.on_key(crate::app_state::SceneKey::Enter);
         assert!(s.pending.is_some());
         let elsewhere = (b.frame.x + 10.0, b.frame.y + 10.0);
         assert_eq!(
@@ -1261,7 +1271,7 @@ mod tests {
         assert!(s.msg.is_none() && s.pending.is_none(), "取消也要清干净");
 
         // ③ "从别处**拖到** [Ok] 上松手"不算点中：删角不可恢复，只认一次干净的点击
-        s.on_key(Keycode::Return);
+        s.on_key(crate::app_state::SceneKey::Enter);
         assert!(s.pending.is_some());
         assert_eq!(
             tap(&mut s, &l, Some(b), elsewhere, ok),
@@ -1271,7 +1281,7 @@ mod tests {
         assert!(s.pending.is_none(), "这一下只算取消");
 
         // ④ 量不到弹窗素材（`None`）时**不认**那颗按钮：只关掉，不会误删
-        s.on_key(Keycode::Return);
+        s.on_key(crate::app_state::SceneKey::Enter);
         assert_eq!(
             tap(&mut s, &l, None, ok, ok),
             Action::None,
@@ -1327,8 +1337,8 @@ mod tests {
     fn 建角对话框走完出动作() {
         let mut s = Select::new(Vec::new());
         assert!(!s.newchar_open());
-        s.on_key(Keycode::Down); // 光标挪到 MENU[1] = 新建角色
-        assert_eq!(s.on_key(Keycode::Return), Action::None);
+        s.on_key(crate::app_state::SceneKey::Down); // 光标挪到 MENU[1] = 新建角色
+        assert_eq!(s.on_key(crate::app_state::SceneKey::Enter), Action::None);
         assert!(s.newchar_open(), "点「新建角色」该开对话框");
         // 打字：超长按原版 `MaxLength = 14`（字符数）截断
         s.on_text("ABCDEFGHIJKLMNOPQRST"); // 20 个 ⇒ 只留 14
@@ -1340,11 +1350,11 @@ mod tests {
         s.newchar.as_mut().unwrap().name.clear();
         s.on_text("勇者一号");
         // Tab 到职业、右移一格 ⇒ 法师；Tab 到性别、右移一格 ⇒ 女
-        s.on_key(Keycode::Tab);
-        s.on_key(Keycode::Right);
-        s.on_key(Keycode::Tab);
-        s.on_key(Keycode::Right);
-        match s.on_key(Keycode::Return) {
+        s.on_key(crate::app_state::SceneKey::Tab);
+        s.on_key(crate::app_state::SceneKey::Right);
+        s.on_key(crate::app_state::SceneKey::Tab);
+        s.on_key(crate::app_state::SceneKey::Right);
+        match s.on_key(crate::app_state::SceneKey::Enter) {
             Action::Create {
                 name,
                 class,
@@ -1366,16 +1376,19 @@ mod tests {
     #[test]
     fn 建角名字不合规就不出动作() {
         let mut s = Select::new(Vec::new());
-        s.on_key(Keycode::Down);
-        s.on_key(Keycode::Return);
+        s.on_key(crate::app_state::SceneKey::Down);
+        s.on_key(crate::app_state::SceneKey::Enter);
         s.on_text("ab"); // 少于 3 字节
-        assert_eq!(s.on_key(Keycode::Return), Action::None);
+        assert_eq!(s.on_key(crate::app_state::SceneKey::Enter), Action::None);
         assert!(s.newchar_open(), "校验不过不该关掉对话框");
         assert!(s.msg.is_some(), "校验不过要弹一句为什么");
         // 补成合法的，再确定
         s.msg = None;
         s.on_text("c");
-        assert!(matches!(s.on_key(Keycode::Return), Action::Create { .. }));
+        assert!(matches!(
+            s.on_key(crate::app_state::SceneKey::Enter),
+            Action::Create { .. }
+        ));
     }
 
     /// 删角：**得先选中一个角色**，再弹确认；回车才真删，其它键 = 取消。
@@ -1383,29 +1396,43 @@ mod tests {
     fn 删角要确认且要选中角色() {
         // 没有角色 ⇒ 直接提示，不开确认
         let mut empty = Select::new(Vec::new());
-        empty.on_key(Keycode::Down);
-        empty.on_key(Keycode::Down); // MENU[2] = 删除角色
-        assert_eq!(empty.on_key(Keycode::Return), Action::None);
+        empty.on_key(crate::app_state::SceneKey::Down);
+        empty.on_key(crate::app_state::SceneKey::Down); // MENU[2] = 删除角色
+        assert_eq!(
+            empty.on_key(crate::app_state::SceneKey::Enter),
+            Action::None
+        );
         assert!(empty.msg.is_some(), "没角色可删该提示一句");
 
         let mut s = Select::new(vec![c(1, "甲"), c(2, "乙")]);
-        s.on_key(Keycode::Down);
-        s.on_key(Keycode::Down);
-        assert_eq!(s.on_key(Keycode::Return), Action::None, "只是弹确认框");
+        s.on_key(crate::app_state::SceneKey::Down);
+        s.on_key(crate::app_state::SceneKey::Down);
+        assert_eq!(
+            s.on_key(crate::app_state::SceneKey::Enter),
+            Action::None,
+            "只是弹确认框"
+        );
         assert!(s.msg.is_some(), "该弹确认框");
-        assert_eq!(s.on_key(Keycode::Escape), Action::None, "ESC = 取消");
+        assert_eq!(
+            s.on_key(crate::app_state::SceneKey::Escape),
+            Action::None,
+            "ESC = 取消"
+        );
         assert!(s.msg.is_none() && s.pending.is_none(), "取消要把确认清干净");
         // 再来一次，回车 = 真删（默认选中的是槽 0 ⇒ id=1）
-        s.on_key(Keycode::Return);
-        assert_eq!(s.on_key(Keycode::Return), Action::Delete(1));
+        s.on_key(crate::app_state::SceneKey::Enter);
+        assert_eq!(
+            s.on_key(crate::app_state::SceneKey::Enter),
+            Action::Delete(1)
+        );
     }
 
     /// 槽满了不让建（原版：每个账号只能创建两个角色）。
     #[test]
     fn 满槽不让建() {
         let mut s = Select::new(vec![c(1, "甲"), c(2, "乙")]);
-        s.on_key(Keycode::Down);
-        assert_eq!(s.on_key(Keycode::Return), Action::None);
+        s.on_key(crate::app_state::SceneKey::Down);
+        assert_eq!(s.on_key(crate::app_state::SceneKey::Enter), Action::None);
         assert!(!s.newchar_open(), "满了不该开对话框");
         assert!(s.msg.is_some(), "该说一句为什么");
     }

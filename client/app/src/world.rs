@@ -115,7 +115,7 @@ pub(crate) fn draw_map_view<'a, T>(
     net: Option<&Net>,
     // 锁定中的攻击目标（`None` = 没锁）—— 只用来给它的名字换色，让人看得出在打谁。
     combat_target: Option<u64>,
-    // NPC 对话窗卷到第几行（正文常常超出背板 ⇒ 要能滚，见 `input::dialog_max_scroll`）
+    // NPC 对话窗卷到第几行（正文常常超出背板 ⇒ 要能滚，见 `dialog::dialog_max_scroll`）
     dialog_scroll: usize,
     // 控件引擎（底栏按钮的 hover / 按下）—— 见 `widget`
     widget_ui: &crate::widget::Ui,

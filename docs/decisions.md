@@ -5289,3 +5289,21 @@ Go 同 package 的文件共享 handler/helpers，不会引入 import cycle）：
 `MoveButton::{Walk, Run}`：SDL 鼠标按钮只在输入适配层翻译，不再泄漏进运行状态。
 
 **验收**：客户端 156/148/7/3，clippy 0。
+
+---
+
+## D-101 架构方向 ① 续：登录/选角按键脱 SDL，纯对话模型独立成模块（2026-10-11）
+
+两块此前已能测，但平台输入与逻辑还在同一模块：
+
+1. **`login::Login` / `select::Select` 的键盘 reducer** 原来直接吃 SDL `Keycode`，单元测试
+   也因此依赖平台类型。新增平台无关 `SceneKey`（Tab/Backspace/Enter/Escape/方向键/Space），
+   SDL 转换只留在 `keyboard::scene_key`，登录/选角状态机只处理语义按键。
+2. **对话纯模型**从大杂烩 `input.rs` 拆到 `dialog.rs`：正文标记解析、折行、滚动/滑块几何、
+   `DialSeg`/`DialPiece`、可见行、行内链接命中都不碰 SDL。字宽仍由调用方注入，绘制留在 HUD，
+   输入事件留在 `world_input`；同一 `DialPiece` 几何继续供画与命中共用。
+
+`input.rs` 从 655 行降到 311 行；新 `dialog.rs` 348 行。此步不改视觉（用户已确认链接不加 hover），
+是纯模块边界移动。
+
+**验收**：客户端 156/148/7/3，clippy 0；Go 25 包。

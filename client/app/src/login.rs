@@ -25,7 +25,6 @@
 
 use std::time::Instant;
 
-use sdl3::keyboard::Keycode;
 use sdl3::render::{TextureCreator, WindowCanvas};
 
 use mir2_core::login_ui::{Art, Layout, Rect};
@@ -222,11 +221,11 @@ impl Login {
         self.focus = 0;
     }
 
-    pub fn on_key(&mut self, k: Keycode) -> Action {
+    pub fn on_key(&mut self, k: crate::app_state::SceneKey) -> Action {
         // 报错弹窗是**模态**的
         if self.error.is_some() {
             return match k {
-                Keycode::Return | Keycode::KpEnter | Keycode::Escape => {
+                crate::app_state::SceneKey::Enter | crate::app_state::SceneKey::Escape => {
                     self.error = None;
                     Action::Dismiss
                 }
@@ -234,13 +233,13 @@ impl Login {
             };
         }
         match k {
-            Keycode::Tab => {
+            crate::app_state::SceneKey::Tab => {
                 // 建号面板三个框（账号/口令/确认），登录面板两个
                 let n = if self.signup() { 3 } else { 2 };
                 self.focus = (self.focus + 1) % n;
                 Action::None
             }
-            Keycode::Backspace => {
+            crate::app_state::SceneKey::Backspace => {
                 match (self.mode, self.focus) {
                     (_, 0) => {
                         self.account.pop();
@@ -255,7 +254,7 @@ impl Login {
                 }
                 Action::None
             }
-            Keycode::Return | Keycode::KpEnter => {
+            crate::app_state::SceneKey::Enter => {
                 // 原版 `IntroScn.pas:583-611`：**账号框回车只把焦点跳到密码框**
                 //（`m_EdPasswd.SetFocus`），**密码框回车才发 `SendLogin`**（两框都非空时）。
                 // 我们原来任何框回车都直接提交 ⇒ 账号还没打完就发起登录了。
@@ -268,7 +267,7 @@ impl Login {
                     Action::Submit
                 }
             }
-            Keycode::Escape => {
+            crate::app_state::SceneKey::Escape => {
                 if self.signup() {
                     self.leave_signup();
                     Action::CancelSignup
@@ -703,15 +702,18 @@ mod tests {
         let mut l = Login::new();
         l.on_text("hero");
         assert_eq!(l.account, "hero");
-        assert_eq!(l.on_key(Keycode::Tab), Action::None);
+        assert_eq!(l.on_key(crate::app_state::SceneKey::Tab), Action::None);
         assert_eq!(l.focus, 1);
         l.on_text("pw");
         assert_eq!(l.password, "pw");
-        assert_eq!(l.on_key(Keycode::Backspace), Action::None);
+        assert_eq!(
+            l.on_key(crate::app_state::SceneKey::Backspace),
+            Action::None
+        );
         assert_eq!(l.password, "p", "退格只能删当前框");
         assert_eq!(l.account, "hero");
-        assert_eq!(l.on_key(Keycode::Return), Action::Submit);
-        assert_eq!(l.on_key(Keycode::Escape), Action::Quit);
+        assert_eq!(l.on_key(crate::app_state::SceneKey::Enter), Action::Submit);
+        assert_eq!(l.on_key(crate::app_state::SceneKey::Escape), Action::Quit);
     }
 
     /// 长度上限照原版（用户名 14、密码 10），且**只收 ASCII**。
@@ -720,7 +722,7 @@ mod tests {
         let mut l = Login::new();
         l.on_text("0123456789abcdefGHIJ");
         assert_eq!(l.account.chars().count(), Art::MAX_ACCOUNT);
-        l.on_key(Keycode::Tab);
+        l.on_key(crate::app_state::SceneKey::Tab);
         l.on_text("0123456789abc");
         assert_eq!(l.password.chars().count(), Art::MAX_PASSWORD);
         // 中文/控制字符进不来（字体认不了，进来只会画成乱码）
@@ -733,11 +735,11 @@ mod tests {
     fn 弹窗模态() {
         let mut l = Login::new();
         l.error = Some("Please enter your account name.".into());
-        assert_eq!(l.on_key(Keycode::Tab), Action::None);
+        assert_eq!(l.on_key(crate::app_state::SceneKey::Tab), Action::None);
         assert_eq!(l.focus, 0, "弹窗时不切焦点");
         l.on_text("hero");
         assert!(l.account.is_empty(), "弹窗时不能往框里打字");
-        assert_eq!(l.on_key(Keycode::Return), Action::Dismiss);
+        assert_eq!(l.on_key(crate::app_state::SceneKey::Enter), Action::Dismiss);
         assert!(l.error.is_none());
     }
 
@@ -802,25 +804,32 @@ mod tests {
         l.account = "ab".into();
         l.password = "pw123".into();
         l.confirm = "pw123".into();
-        assert_eq!(l.on_key(Keycode::Return), Action::None, "账号太短不该提交");
+        assert_eq!(
+            l.on_key(crate::app_state::SceneKey::Enter),
+            Action::None,
+            "账号太短不该提交"
+        );
         assert!(l.error.is_some(), "该弹模态框说原因");
         l.error = None;
         // 口令太短
         l.account = "newbie".into();
         l.password = "pw".into();
         l.confirm = "pw".into();
-        assert_eq!(l.on_key(Keycode::Return), Action::None);
+        assert_eq!(l.on_key(crate::app_state::SceneKey::Enter), Action::None);
         assert!(l.error.is_some());
         l.error = None;
         // 两次不一致
         l.password = "pw123".into();
         l.confirm = "pw124".into();
-        assert_eq!(l.on_key(Keycode::Return), Action::None);
+        assert_eq!(l.on_key(crate::app_state::SceneKey::Enter), Action::None);
         assert!(l.error.is_some());
         l.error = None;
         // 都对 ⇒ 提交（发送是 main 的事）
         l.confirm = "pw123".into();
-        assert_eq!(l.on_key(Keycode::Return), Action::SubmitSignup);
+        assert_eq!(
+            l.on_key(crate::app_state::SceneKey::Enter),
+            Action::SubmitSignup
+        );
     }
 
     /// 建号面板：三个框的焦点轮转、确认框能打字、"取消"回登录。
@@ -829,26 +838,29 @@ mod tests {
         let mut l = Login::new();
         l.enter_signup();
         assert_eq!(l.focus, 0);
-        l.on_key(Keycode::Tab);
-        l.on_key(Keycode::Tab);
+        l.on_key(crate::app_state::SceneKey::Tab);
+        l.on_key(crate::app_state::SceneKey::Tab);
         assert_eq!(l.focus, 2, "建号面板有三个框");
         // 焦点在确认框时，打字进的是确认框
         l.on_text("a");
         assert_eq!((l.password.as_str(), l.confirm.as_str()), ("", "a"));
-        l.on_key(Keycode::Tab);
+        l.on_key(crate::app_state::SceneKey::Tab);
         assert_eq!(l.focus, 0, "转回第一个");
 
         // ESC = 关掉面板回登录（不是退出程序）
         l.password = "x".into();
         l.confirm = "x".into();
-        assert_eq!(l.on_key(Keycode::Escape), Action::CancelSignup);
+        assert_eq!(
+            l.on_key(crate::app_state::SceneKey::Escape),
+            Action::CancelSignup
+        );
         assert!(!l.signup(), "该切回登录面板");
         assert!(
             l.password.is_empty() && l.confirm.is_empty(),
             "回登录要清掉建号那两格"
         );
         assert_eq!(
-            l.on_key(Keycode::Escape),
+            l.on_key(crate::app_state::SceneKey::Escape),
             Action::Quit,
             "登录面板的 ESC 才是退出"
         );

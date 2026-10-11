@@ -556,7 +556,7 @@ pub(crate) fn handle_world_mouse_down<'a>(
                 if let Some((panel, lines, scroll)) =
                     hud::dialog_geom(app.net.as_ref(), app.dlg_scroll.scroll())
                 {
-                    // **行内可点文字**：命中矩形由 `input::dialog_line_pieces`
+                    // **行内可点文字**：命中矩形由 `dialog::dialog_line_pieces`
                     // 算（与 `draw_dialog` 是同一份 ⇒ 画哪点哪），
                     // 片段自带**选项序号**（服务端把 `<打开/@trading>` 改写成了
                     // `<打开/@1>`），直接拿它回包。
@@ -564,14 +564,14 @@ pub(crate) fn handle_world_mouse_down<'a>(
                         let mut measure = |t: &str| ui_texts.width(t);
                         // ⚠️ 命中要带上**滚动位置**：画的是卷过之后的那几行，
                         // 拿未卷的行号去判就会点空/点到隔壁（画与命中同源）。
-                        input::dialog_link_at(panel, &lines, (x, y), scroll, &mut measure)
+                        dialog::dialog_link_at(panel, &lines, (x, y), scroll, &mut measure)
                     };
                     if let Some(idx) = hit {
                         if let Some(d) = n.world.dialog.as_ref() {
                             n.npc_select(d.npc_id, idx);
                             println!("[net] 对话选项 {idx}");
                         }
-                    } else if input::dialog_close_hit(panel, (x, y)) {
+                    } else if dialog::dialog_close_hit(panel, (x, y)) {
                         // 右上角那个红 X（用户 2026-10-09 第 1 条：
                         // 「对话窗口右上角有个X按钮，现在你没有接上"关闭/退出"」）
                         // ⚠️ 与点「退出」/按 ESC **完全同一条路**
@@ -592,7 +592,7 @@ pub(crate) fn handle_world_mouse_down<'a>(
                     // 等于把整个屏幕都变成"对话区"。原版的对话窗是**非模态**的
                     //（`NPCDialog` 就是个窗口，`DrawScrn.pas` 里它跟世界各画各的），
                     // 外面照常点：此时才拦。
-                    if input::dialog_hit(panel, (x, y)) {
+                    if dialog::dialog_hit(panel, (x, y)) {
                         app.combat_target = None;
                         app.move_target = None;
                         app.press_at = None;
@@ -947,7 +947,7 @@ pub(crate) fn handle_mouse_wheel(app: &mut AppState, y: f32) {
     if !done && app.net.is_some() {
         if let Some((panel, lines, _)) = hud::dialog_geom(app.net.as_ref(), app.dlg_scroll.scroll())
         {
-            if input::dialog_hit(panel, app.mouse) {
+            if dialog::dialog_hit(panel, app.mouse) {
                 app.dlg_scroll.wheel(y, lines.len());
                 done = true;
             }

@@ -3,7 +3,7 @@
 //! ⚠️ 不碰 SDL：只有"滚到第几行"，于是"正文变短了怎么办""换了一段新对话要不要
 //! 归零"这类规则能进测试。
 //!
-//! 滚动的**几何**（滑块多大、轨道在哪）已经在 `input::dialog_*` 里；这里管的
+//! 滚动的**几何**（滑块多大、轨道在哪）已经在 `dialog::dialog_*` 里；这里管的
 //! 只是那个行号本身。
 
 /// 一段正文的滚动位置。
@@ -32,12 +32,12 @@ impl ScrollView {
 
     /// 正文行数变了 ⇒ 把位置夹回合法范围（不能停在已经不存在的行）。
     pub(crate) fn clamp(&mut self, lines: usize) {
-        self.scroll = crate::input::dialog_scroll_clamp(self.scroll, lines);
+        self.scroll = crate::dialog::dialog_scroll_clamp(self.scroll, lines);
     }
 
     /// 滚轮：`y` 是 SDL 的滚轮量（**> 0 = 往上滚**）。
     pub(crate) fn wheel(&mut self, y: f32, lines: usize) {
-        self.scroll = crate::input::dialog_scroll_step(self.scroll, lines, y);
+        self.scroll = crate::dialog::dialog_scroll_step(self.scroll, lines, y);
     }
 
     /// **新的一段对话来了吗**（`seq` 是服务端那段对话的序号）。
