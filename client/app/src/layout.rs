@@ -117,17 +117,76 @@ impl HudBtn {
     }
 }
 
+/// 面板中间那段的**横向拉伸比**（左右两段 1:1，只有中间被拉宽到窗口宽）。
+pub(crate) fn hud_mid_scale() -> f32 {
+    let src = HUD_BOARD_W - 2.0 * HUD_SIDE_W;
+    let dst = (crate::window::WIN_W as f32 - 2.0 * HUD_SIDE_W).max(src);
+    dst / src
+}
+
 /// 面板局部 x → 屏幕 x。
 ///
-/// ⚠️ 面板是**三段贴**的（左右 1:1、中间拉宽到窗口宽）⇒ 局部 x 落在右段时，
-/// 要换成右段那块的落点，不然 1024 窗口下按钮会跑到面板外。
+/// ⚠️ 面板是**三段贴**的（`hud.rs` 的 `draw_hud`）：左右两段 1:1、**中间那段拉宽**
+/// ⇒ 局部 x 落在右段要换落点、落在中段要乘拉伸比，不然 1024 窗口下按钮/格子
+/// 会跑到面板外（或错位到邻格）。
 pub(crate) fn hud_local_x(local: f32) -> f32 {
-    let left = HUD_BOARD_W - HUD_SIDE_W;
-    if local >= left {
-        hud_right_x() + (local - left)
+    let right = HUD_BOARD_W - HUD_SIDE_W;
+    if local >= right {
+        hud_right_x() + (local - right)
+    } else if local > HUD_SIDE_W {
+        HUD_SIDE_W + (local - HUD_SIDE_W) * hud_mid_scale()
     } else {
         local
     }
+}
+
+// ---------- 快捷（腰带）栏 ----------
+//
+// 原版 `DBelt1..DBelt6`（`FState.pas:1340-1369`）：6 个格，x 285/328/371/415/459/503
+// （间距 43）、y 59、每格 32×29；框**已经印在底栏 `Prguse[1]` 里** ⇒ 我们只画
+// 物品图标（居中）和格号（`DBelt1DirectPaint`，`FState.pas:4010-4027`）。
+//
+// ⚠️ 数据是**客户端本地**的 `g_ItemArr[0..5]`（官方 `DBelt1Click` 直接读写它，
+// 不发包）⇒ 我们也不用动协议：记住物品实例号，用时回背包找当前格位。
+
+/// 快捷栏格数（原版 6 格，对应数字键 1..6）。
+pub(crate) const BELT_SLOTS: usize = 6;
+/// 首格在**面板坐标**里的落点。
+pub(crate) const BELT_AT: (f32, f32) = (285.0, 59.0);
+/// 格间距 / 格尺寸（面板坐标）。
+pub(crate) const BELT_STEP: f32 = 43.0;
+pub(crate) const BELT_W: f32 = 32.0;
+pub(crate) const BELT_H: f32 = 29.0;
+
+/// 快捷栏一格记住的东西（**只是引用**，不是物品本身）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BeltSlot {
+    /// 物品**实例号**（`UserItem.MakeIndex`）：用它回背包找当前格位
+    /// （背包会被服务端重排 ⇒ 不能存格位号）。与 `BagItem::make_index` 同型（`i32`）。
+    pub make_index: i32,
+    /// 图标（`Items` 库的图号）—— 画出来用。
+    pub looks: u32,
+}
+
+/// 第 `i` 格的命中框（**屏幕坐标**）。
+///
+/// ⚠️ 这 6 格落在面板**中间那段**（会被拉宽）⇒ 宽度也要跟着乘拉伸比。
+pub(crate) fn belt_slot_rect(i: usize) -> (f32, f32, f32, f32) {
+    let s = hud_mid_scale();
+    (
+        hud_local_x(BELT_AT.0 + i as f32 * BELT_STEP),
+        crate::window::WIN_H as f32 - HUD_BOARD_H + BELT_AT.1,
+        BELT_W * s,
+        BELT_H,
+    )
+}
+
+/// 屏幕坐标落在快捷栏哪一格（没中 ⇒ `None`）。
+pub(crate) fn belt_slot_at(p: (f32, f32)) -> Option<usize> {
+    (0..BELT_SLOTS).find(|i| {
+        let (x, y, w, h) = belt_slot_rect(*i);
+        p.0 >= x && p.0 < x + w && p.1 >= y && p.1 < y + h
+    })
 }
 
 /// 屏幕坐标点中了哪个功能按钮（没中 ⇒ `None`）。

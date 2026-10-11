@@ -739,3 +739,56 @@ fn draw_dialog<'a, T>(
     }
     Ok(())
 }
+
+/// 画**快捷（腰带）栏**的 6 格：框是底栏 `Prguse[1]` 自带的 ⇒ 这里只画
+/// **物品图标（居中）** 与格号 1..6（原版 `DBelt1DirectPaint`，`FState.pas:4010-4027`）。
+///
+/// ⚠️ 数据是客户端本地的（官方 `g_ItemArr`）⇒ 只认 `BeltSlot` 里那两个字段，
+/// 物品真身始终在背包里；背包重排后由调用方把失效的格清掉。
+pub(crate) fn draw_belt<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    ui: &mut ui::UiCache<'a>,
+    texts: &mut font::TextCache<'a>,
+    dir: &Path,
+    belt: &[Option<crate::layout::BeltSlot>; crate::layout::BELT_SLOTS],
+    mouse: (f32, f32),
+) -> Result<(), sdl3::Error> {
+    let hovered = crate::layout::belt_slot_at(mouse);
+    for (i, slot) in belt.iter().enumerate() {
+        let (x, y, w, h) = crate::layout::belt_slot_rect(i);
+        // 悬停时给个浅色底（原版没有，但"哪一格被指着"得看得出来）
+        if hovered == Some(i) {
+            canvas.set_blend_mode(BlendMode::Blend);
+            canvas.set_draw_color(sdl3::pixels::Color::RGBA(255, 236, 140, 46));
+            let _ = canvas.fill_rect(FRect::new(x, y, w, h));
+            canvas.set_blend_mode(BlendMode::None);
+        }
+        if let Some(b) = slot {
+            if let Some((iw, ih)) = ui.size(dir, "Items", b.looks) {
+                let (iw, ih) = (iw as f32, ih as f32);
+                let _ = ui.draw_src(
+                    canvas,
+                    tc,
+                    dir,
+                    "Items",
+                    b.looks,
+                    FRect::new(0.0, 0.0, iw, ih),
+                    FRect::new(x + (w - iw) / 2.0, y + (h - ih) / 2.0, iw, ih),
+                    255,
+                );
+            }
+        }
+        // 格号（原版 `PomiTextOut(Left+13, Top+19)`）
+        texts.draw(
+            canvas,
+            tc,
+            &format!("{}", i + 1),
+            x + 3.0,
+            y + h - 12.0,
+            (214, 200, 150),
+            Some((0, 0, 0)),
+        )?;
+    }
+    Ok(())
+}

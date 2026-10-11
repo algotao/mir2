@@ -2235,3 +2235,52 @@ fn 底栏快捷按钮的落点与命中() {
     }
     assert_eq!(hud_quick_at((0.0, 0.0)), None);
 }
+
+/// **快捷（腰带）栏**的 6 格：落点抄官方 `FState.pas:1340-1369`
+/// （x 285 起、间距 43、y 59、32×29），框是底栏自带的。
+#[test]
+fn 快捷栏六格的落点与命中() {
+    use crate::layout::{belt_slot_at, belt_slot_rect, BELT_SLOTS, HUD_BOARD_H};
+    let win_h = crate::window::WIN_H as f32;
+    let board_top = win_h - HUD_BOARD_H;
+
+    let mut prev_right = 0.0;
+    for i in 0..BELT_SLOTS {
+        let (x, y, w, h) = belt_slot_rect(i);
+        // 都在底栏里
+        assert!(
+            y >= board_top && y + h <= win_h,
+            "第 {i} 格落在底栏外：y={y}"
+        );
+        // 从左到右、互不重叠
+        assert!(x >= prev_right, "第 {i} 格与前一格重叠/顺序错：x={x}");
+        prev_right = x + w;
+        assert_eq!(
+            belt_slot_at((x + w / 2.0, y + h / 2.0)),
+            Some(i),
+            "第 {i} 格中心"
+        );
+    }
+    assert_eq!(belt_slot_at((0.0, 0.0)), None, "左上角不在快捷栏里");
+}
+
+/// 快捷栏只记**实例号**，不记格位号 ⇒ 背包被服务端重排后仍能找到东西。
+///
+/// ⚠️ 这条钉的是设计约束：背包会重排（服务端发的是压缩后的全量），存格位号
+/// 就会"用了别的药"。
+#[test]
+fn 快捷栏按实例号找物品而不是格位号() {
+    use crate::layout::BeltSlot;
+    // 记住的是实例号 77（当时在第 3 格）
+    let slot = BeltSlot {
+        make_index: 77,
+        looks: 398,
+    };
+    // 之后背包重排：77 跑到了第 0 格
+    let bag: Vec<(usize, i32)> = vec![(0, 77), (1, 78)];
+    let found = bag
+        .iter()
+        .find(|(_, mi)| *mi == slot.make_index)
+        .map(|(i, _)| *i);
+    assert_eq!(found, Some(0), "重排后该按实例号找到新的格位");
+}

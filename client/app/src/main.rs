@@ -121,6 +121,56 @@ fn toggle_status(status_open: &mut bool) {
     println!("[ui] 状态窗 {}", if *status_open { "打开" } else { "关闭" });
 }
 
+/// 用快捷栏第 `i` 格：按实例号回**背包**找当前格位再用（背包会被重排 ⇒
+/// 不能存格位号）。找不到就清掉那一格并明说一句。
+fn belt_use(
+    net: &mut Option<Net>,
+    belt: &mut [Option<crate::layout::BeltSlot>; crate::layout::BELT_SLOTS],
+    i: usize,
+    make_index: i32,
+) {
+    let Some(n) = net.as_mut() else {
+        return;
+    };
+    match n
+        .world
+        .bag
+        .iter()
+        .position(|it| it.as_ref().is_some_and(|b| b.make_index == make_index))
+    {
+        Some(slot) => {
+            let name = n.world.bag[slot]
+                .as_ref()
+                .map(|b| b.name.clone())
+                .unwrap_or_default();
+            n.bag_use(slot as u32);
+            println!("[ui] 快捷栏 {} ⇒ 使用 {}", i + 1, name);
+        }
+        None => {
+            belt[i] = None;
+            n.chat.push(
+                format!("快捷栏 {} 的东西已经不在背包里了。", i + 1),
+                C_CHAT_SYS,
+            );
+        }
+    }
+}
+
+/// 数字键 1..6 ⇒ 用快捷栏那一格（**与点它同一个动作**）。空就明说一句。
+fn belt_key(
+    net: &mut Option<Net>,
+    belt: &mut [Option<crate::layout::BeltSlot>; crate::layout::BELT_SLOTS],
+    i: usize,
+) {
+    match belt[i] {
+        Some(b) => belt_use(net, belt, i, b.make_index),
+        None => ui_say(
+            net.as_mut(),
+            &format!("快捷栏 {i} 是空的（把物品拖进去）。"),
+        ),
+    }
+}
+
 /// 开关小地图（**Tab 与底栏那颗 [小地图] 都走这里** —— 鼠标与键盘同一个动作）。
 fn toggle_minimap(minimap_on: &mut bool) {
     *minimap_on = !*minimap_on;
@@ -369,6 +419,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut music_on = true;
     // 小地图（Tab）/ 大地图（M）—— 原版 1.76 的键位，默认都关（原版也要按才出来）
+    // **快捷（腰带）栏**：6 格，客户端本地（原版 `g_ItemArr`，不发包）。
+    // 只记实例号 + 图标 ⇒ 背包被服务端重排后仍能找到东西（失效的格会被清掉）。
+    let mut belt: [Option<crate::layout::BeltSlot>; crate::layout::BELT_SLOTS] =
+        [None; crate::layout::BELT_SLOTS];
     let mut minimap_on = false;
     let mut bigmap_on = false;
     // 音效开关：原版是**两个独立开关**（音效 / 音乐，`MShare.pas:213-214`），
@@ -476,6 +530,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         Some(Keycode::Escape) if mode != 1 && mode != 4 => break 'main,
+                        // 数字键 1..6 = **用快捷栏**（与点那一格同一个动作）
+                        Some(Keycode::_1) if mode == 2 => belt_key(&mut net, &mut belt, 0),
+                        Some(Keycode::_2) if mode == 2 => belt_key(&mut net, &mut belt, 1),
+                        Some(Keycode::_3) if mode == 2 => belt_key(&mut net, &mut belt, 2),
+                        Some(Keycode::_4) if mode == 2 => belt_key(&mut net, &mut belt, 3),
+                        Some(Keycode::_5) if mode == 2 => belt_key(&mut net, &mut belt, 4),
+                        Some(Keycode::_6) if mode == 2 => belt_key(&mut net, &mut belt, 5),
                         // ⚠️ **开发键让开原版键位**（口径见 `docs/use.md`）：F1~F8 是技能、
                         // F9~F12 是包裹/属性/技能/内挂、M 是大地图、Tab 是小地图、数字是快捷物品
                         // ⇒ 这些"开发查看器"入口统统收进 **Ctrl+**，原版键位留给真功能。
@@ -807,6 +868,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     // 目标清掉，**本次点击不再穿透到世界**（与其它浮窗
                                     // 同一条纪律：命中就 `continue`，不然人还会走）。
+                                    combat_target = None;
+                                    move_target = None;
+                                    press_at = None;
+                                    pending_pickup = None;
+                                    held_move = None;
+                                    continue;
+                                }
+                                // **快捷（腰带）栏**：手上拿着东西 ⇒ 放进这格；
+                                // 空手 ⇒ 使用这格里的东西（原版单击是"拿起"，
+                                // 但快捷栏的意义就是快速使用 ⇒ 单击即用）。
+                                if let Some(i) = crate::layout::belt_slot_at(mouse) {
+                                    if let Some(held) = sell_held.take() {
+                                        if let Some(Some(it)) =
+                                            net.as_ref().and_then(|n| n.world.bag.get(held))
+                                        {
+                                            belt[i] = Some(crate::layout::BeltSlot {
+                                                make_index: it.make_index,
+                                                looks: it.looks,
+                                            });
+                                            println!("[ui] 快捷栏 {} = {}", i + 1, it.name);
+                                        }
+                                        sell_placed = None;
+                                    } else if let Some(b) = belt[i] {
+                                        belt_use(&mut net, &mut belt, i, b.make_index);
+                                    }
                                     combat_target = None;
                                     move_target = None;
                                     press_at = None;
@@ -2012,6 +2098,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        // **快捷栏的失效格清理**：背包被服务端重排/物品用光后，实例号找不到了
+        // ⇒ 那一格留着就是"点了没反应"，清掉。
+        if let Some(n) = net.as_ref() {
+            for slot in belt.iter_mut() {
+                let gone = slot.is_some_and(|b| {
+                    !n.world
+                        .bag
+                        .iter()
+                        .flatten()
+                        .any(|it| it.make_index == b.make_index)
+                });
+                if gone {
+                    *slot = None;
+                }
+            }
+        }
+
         // **按住 Alt 持续挖**（用户 2026-10-10 第 1 条）：锁定了尸体且 Alt 没松 ⇒
         // 到点就发一刀（服务端还有转身间隔节流兜底）。皮革度要挖好几刀才归零
         //（鸡 50，一刀 -5..20），一次点击出不了肉 —— 原版就是"按住不放持续挖"。
@@ -2096,6 +2199,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 combat_target,
                 dialog_scroll,
             )?;
+            // **快捷（腰带）栏**：画在世界与 HUD 之上（框在底栏里、内容在这里）。
+            if mode == 2 {
+                if let Some(dir) = asset_dir.as_deref() {
+                    hud::draw_belt(
+                        &mut canvas,
+                        &tex_creator,
+                        &mut ui,
+                        &mut ui_texts,
+                        dir,
+                        &belt,
+                        mouse,
+                    )?;
+                }
+            }
             // 背包窗画在**世界与 HUD 之上**（它是浮窗；原版也是最后贴）。
             // 素材目录缺失时和 `draw_map_view` 一样什么都不画（那屏已经打了横幅提示）。
             if bag_open {
