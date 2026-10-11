@@ -5191,3 +5191,17 @@ Go 同 package 的文件共享 handler/helpers，不会引入 import cycle）：
 测试覆盖以既有套件为主；没有为"文件搬家"新增行为断言，避免把重构与逻辑改动混在一起。
 
 **验收**：`go vet ./...` 通过，Go 25 包全过。
+
+---
+
+## D-95 架构方向 ⑥ 续：键盘分发迁到 `keyboard.rs`（2026-10-11）
+
+键盘事件的分发从 `runtime.rs` 拆成 `keyboard::handle_key_down`：统一接收按键 +
+`AppState` + 必要的平台/诊断资源，返回是否请求退出。`runtime` 事件 match 留下
+一段委派代码，不再同时承载所有键位业务。
+
+键盘 helper 复用 `world_input` 里已有的窗口 toggle / 腰带使用逻辑（避免鼠标和键盘
+两套动作再次分叉）。SDL 事件泵与退出 loop label 仍由 `runtime` 持有：helper 用 bool
+表达退出，不把控制流越层传递。
+
+**验收**：客户端 154/148/7/4，clippy 0。
