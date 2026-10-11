@@ -475,24 +475,3 @@ pub(crate) fn sell_buttons(ox: f32, oy: f32) -> [crate::widget::Button; 3] {
         ),
     ]
 }
-
-/// **关掉购买窗**那一下的纯规则（抽出来是为了能单测；事件循环里不好造 `Event`）。
-pub(crate) mod shop_close {
-    /// 关购买窗时，**包裹要不要一起关**。
-    ///
-    /// 只关"因为买东西才自动开起来"的那一份（`bag_by_shop`）—— 玩家自己按 F9 开的
-    /// 包裹不该被顺手关掉。用户 2026-10-10 第 1 条要的是**收摊**：
-    /// 「购买对话框关闭时，物品列表及包裹窗口也关闭」。
-    pub fn should_close_bag(bag_by_shop: bool) -> bool {
-        bag_by_shop
-    }
-
-    /// 商品列表本身：货架没了（`world.shop == None`）⇒ `draw` 什么都不画。
-    ///
-    /// ⚠️ 这条是**注释性的**（真正的判据在 `draw` 开头的那个 `let Some(shop) = …`
-    /// 早退）—— 留着它是为了把"收摊时两个窗一起没"这条规则写全，别只记得包裹。
-    #[allow(dead_code)]
-    pub fn should_close_list(shop_is_none: bool) -> bool {
-        shop_is_none
-    }
-}

@@ -93,6 +93,7 @@ mod pager;
 pub(crate) mod shop;
 mod shopui;
 pub(crate) mod status;
+mod windows;
 pub(crate) use minimap::*;
 pub(crate) mod net;
 pub(crate) use net::*;
@@ -140,9 +141,9 @@ fn ui_say(net: Option<&mut Net>, msg: &str) {
 }
 
 /// 开关状态窗（F10 与底栏那颗 [人物] 都走这里 —— 鼠标与键盘必须同一个动作）。
-fn toggle_status(status_open: &mut bool) {
-    *status_open = !*status_open;
-    println!("[ui] 状态窗 {}", if *status_open { "打开" } else { "关闭" });
+fn toggle_status(win: &mut windows::Windows) {
+    win.toggle_status();
+    println!("[ui] 状态窗 {}", if win.status() { "打开" } else { "关闭" });
 }
 
 /// 用快捷栏第 `i` 格：按实例号回**背包**找当前格位再用（背包会被重排 ⇒
@@ -205,10 +206,10 @@ fn toggle_minimap(minimap_on: &mut bool) {
 ///
 /// ⚠️ 原来 F9 那支还顺手把 `bag_page` 归零 —— 抽出来就是为了"点按钮"和"按 F9"
 /// **一模一样**（用户 2026-10-11：鼠标行为与键盘行为要一致），别一处归零一处不归。
-fn toggle_bag(bag_open: &mut bool, bag_page: &mut pager::Pager) {
-    *bag_open = !*bag_open;
+fn toggle_bag(win: &mut windows::Windows, bag_page: &mut pager::Pager) {
+    win.toggle_bag();
     bag_page.reset();
-    println!("[ui] 背包窗 {}", if *bag_open { "打开" } else { "关闭" });
+    println!("[ui] 背包窗 {}", if win.bag() { "打开" } else { "关闭" });
 }
 
 /// 执行 `bagdrag` 给的动作（**两个窗共用**）：发包 + 乐观更新。
@@ -430,24 +431,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut hint_pushed = false;
     // 背包窗（F9）与它的页码 —— **纯客户端窗口状态**，不跟服务端同步
     //（原版背包也是本地开合；服务端只管背包内容）。
-    let mut bag_open = false;
+    // 三个浮窗的开关与**联动**（规则在 `windows`，不碰 SDL ⇒ 有测试）
+    let mut win = windows::Windows::new();
     let mut bag_page = pager::Pager::new();
     // 状态窗（F10）—— 同样是**纯客户端窗口状态**：数据全在 `world.ability` / `world.equip` 里
     //（服务端一直在下发，见 `status.rs` 的说明），开关不跟服务端同步。
-    let mut status_open = false;
     // 状态窗的页码（官方 4 页，我们做 2 页：0 装备 / 1 属性）
     let mut status_page = pager::Pager::new();
     // 商店窗：**收到货架（`shop_seq` 变了）就开**。
     // ⚠️ 不能按 npc_id 判"开过没有"——同一个商人第二次点"购买"，窗口也得重开
     //（用户 2026-10-10 第 5 条：对话结束后再到"购买"，购买窗口无法打开）。
     let mut shop_seen_seq: u64 = 0;
-    let mut shop_open = false;
     // 商店窗（买）：翻页 + 选中哪一行（规则在 `shopui`，不碰 SDL ⇒ 有测试）
     // 选中的商品（**绝对下标**，跨页有效）：点行选中、点 OK 才买（原版口径）
     let mut shop_ui = shopui::ShopUi::new();
     // 包裹是**因为打开购买窗**才开起来的吗（是 ⇒ 关购买窗时一起收走；
     // 玩家自己按 F9 开的 ⇒ 别替他关，用户 2026-10-10 第 1 条）
-    let mut bag_by_shop = false;
     // 按住 Alt 吗（挖肉的修饰键；SDL 的鼠标事件不带 keymod ⇒ 从键盘事件自己记）
     let mut alt_down = false;
     // **界面点击的统一状态机**（OnClick 规范：左键按下+松开在同一控件才触发；
@@ -593,9 +592,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             confirm_quit = None
                         }
                         // 背包窗开着 ⇒ ESC **先关背包**
-                        Some(Keycode::Escape) if mode == 2 && bag_open => bag_open = false,
+                        Some(Keycode::Escape) if mode == 2 && win.bag() => win.close_bag(),
                         // 状态窗同理 ⇒ ESC **先关状态窗**（别顺手把客户端退了）
-                        Some(Keycode::Escape) if mode == 2 && status_open => status_open = false,
+                        Some(Keycode::Escape) if mode == 2 && win.status() => win.close_status(),
                         // NPC 对话开着 ⇒ ESC **先关对话**（原版 `@exit`），别顺手退了客户端
                         Some(Keycode::Escape)
                             if mode == 2
@@ -612,13 +611,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         // 商店窗同理 ⇒ ESC **先关商店窗**，并把"因买东西才开的"包裹一起收走
                         //（用户 2026-10-10 第 1 条：购买窗关闭 ⇒ 物品列表与包裹一起关）
-                        Some(Keycode::Escape) if mode == 2 && shop_open => {
-                            shop_open = false;
+                        Some(Keycode::Escape) if mode == 2 && win.shop() => {
+                            win.close_shop();
                             shop_ui.close();
-                            if crate::shop::shop_close::should_close_bag(bag_by_shop) {
-                                bag_open = false;
-                                bag_by_shop = false;
-                            }
                         }
                         Some(Keycode::Escape) if mode != 1 && mode != 4 => break 'main,
                         // 数字键 1..6 = **用快捷栏**（与点那一格同一个动作）
@@ -632,11 +627,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // F9~F12 是包裹/属性/技能/内挂、M 是大地图、Tab 是小地图、数字是快捷物品
                         // ⇒ 这些"开发查看器"入口统统收进 **Ctrl+**，原版键位留给真功能。
                         // F9 = 背包窗（原版键位，见上面那条注释的口径）
-                        Some(Keycode::F9) if mode == 2 => toggle_bag(&mut bag_open, &mut bag_page),
+                        Some(Keycode::F9) if mode == 2 => toggle_bag(&mut win, &mut bag_page),
                         // F10 = 状态窗（原版键位：F9 包裹 / F10 属性 / F11 技能 / F12 内挂）。
                         // ⚠️ macOS 上要 **Fn+F10**（F10 默认是 App Exposé）—— 2026-10-10
                         // 用户确认 Fn+F10 能用；曾加过的备用键 Ctrl+C 已撤（不再占 C）。
-                        Some(Keycode::F10) if mode == 2 => toggle_status(&mut status_open),
+                        Some(Keycode::F10) if mode == 2 => toggle_status(&mut win),
                         Some(Keycode::F1) if ctrl(keymod) => mode = 1,
                         Some(Keycode::F2) if ctrl(keymod) => mode = 2,
                         Some(Keycode::F3) if ctrl(keymod) => mode = 3,
@@ -863,8 +858,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Event::MouseWheel { y, .. } if mode == 2 => {
                     let mut done = false;
                     // ① 背包窗内滚轮翻页（服务端背包 46 格 = 2 页，窗口一次只画 24 格）
-                    if bag_open {
-                        let (bx, by) = crate::layout::bag_pos(shop_open);
+                    if win.bag() {
+                        let (bx, by) = crate::layout::bag_pos(win.shop());
                         let inside = mouse.0 >= bx
                             && mouse.0 < bx + crate::layout::BAG_W
                             && mouse.1 >= by
@@ -897,7 +892,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     // ③ 商店窗内滚轮翻页（一个商人最多 20 件商品 ⇒ 2 页）
-                    if !done && shop_open {
+                    if !done && win.shop() {
                         if let Some(n) = net.as_ref() {
                             if let Some(sh) = n.world.shop.as_ref() {
                                 let (wx, wy, ww, wh) = crate::shop::panel();
@@ -1048,9 +1043,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // 包裹操作（普通/卖出共用）：单击拾取，双击可穿戴物品=穿、
                             // 其他物品=使用；拿起后点空格=移动、点已有物品=交换。
                             let mut bag_handled = false;
-                            if mouse_btn == MouseButton::Left && bag_open {
+                            if mouse_btn == MouseButton::Left && win.bag() {
                                 if let Some(n) = net.as_ref() {
-                                    let (bx, by) = crate::layout::bag_pos(shop_open);
+                                    let (bx, by) = crate::layout::bag_pos(win.shop());
                                     let lx = x - bx;
                                     let ly = y - by;
                                     if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
@@ -1210,7 +1205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             // ②″ F10 状态窗：点 X = 关窗、点箭头 = 翻页、点槽 = 报一下那件；
                             // 点在窗里别处 = 吞掉（与背包窗同一套）
-                            if status_open {
+                            if win.status() {
                                 if let Some(dir) = asset_dir.as_deref() {
                                     if let Some(bg) =
                                         ui.size(dir, crate::status::BG_LIB, crate::status::BG)
@@ -1294,8 +1289,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             // ②′ 背包窗：左键抓起；双击可穿戴物品 = 穿、其他物品 = 使用；
                             // 拿着物品点空格 = 移动、点已有物品 = 交换。卖出模式复用同一只手。
-                            if bag_open {
-                                let (bx, by) = crate::layout::bag_pos(shop_open);
+                            if win.bag() {
+                                let (bx, by) = crate::layout::bag_pos(win.shop());
                                 let inside = x >= bx
                                     && x < bx + crate::layout::BAG_W
                                     && y >= by
@@ -1355,7 +1350,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             //（原版口径，用户 2026-10-10 第 7 条）；点在窗里别走路
                             // ⚠️ 买/卖是**两个窗**：只有"买"模式才走商品列表窗
                             //（卖模式下面那个窗出的是放物品的槽）
-                            if shop_open {
+                            if win.shop() {
                                 if let Some(n) = net.as_ref() {
                                     if let Some(sh) = n.world.shop.as_ref().filter(|s| !s.is_sell())
                                     {
@@ -1409,8 +1404,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             // ②‴ 卖货窗：点圈 = 放下手上的东西；点 OK = 卖掉圈里那件
                             //（原版拖放式，用户 2026-10-10 第 3 条）；点在窗里别走路。
-                            if shop_open
-                                && bag_open
+                            if win.shop()
+                                && win.bag()
                                 && net
                                     .as_ref()
                                     .and_then(|n| n.world.shop.as_ref())
@@ -1506,9 +1501,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(k) = ui_click.release((x, y)) {
                             match k {
                                 Press::Hud(b) => match b {
-                                    crate::layout::HudBtn::State => toggle_status(&mut status_open),
+                                    crate::layout::HudBtn::State => toggle_status(&mut win),
                                     crate::layout::HudBtn::Bag => {
-                                        toggle_bag(&mut bag_open, &mut bag_page)
+                                        toggle_bag(&mut win, &mut bag_page)
                                     }
                                     crate::layout::HudBtn::Magic => {
                                         ui_say(net.as_mut(), "技能窗还没做（原版 F11）。")
@@ -1563,11 +1558,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 Press::BagClose => {
-                                    bag_open = false;
+                                    win.close_bag();
                                     println!("[ui] 背包窗关闭（点 X）");
                                 }
                                 Press::Status(crate::status::Hit::Close) => {
-                                    status_open = false;
+                                    win.close_status();
                                     println!("[ui] 状态窗关闭（点 X）");
                                 }
                                 Press::Status(crate::status::Hit::Arrow(d)) => {
@@ -1607,14 +1602,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 Press::Shop(crate::shop::Hit::Close) => {
-                                    shop_open = false;
+                                    win.close_shop();
                                     shop_ui.close();
                                     println!("[ui] 商店窗关闭（素材关闭钮）");
                                 }
                                 Press::Shop(_) => {}
                                 Press::Sell(crate::shop::SellHit::Close) => {
-                                    shop_open = false;
-                                    bag_open = false;
+                                    win.close_sell();
                                     drag.clear();
                                     println!("[ui] 卖货窗关闭（同步收包裹）");
                                 }
@@ -1660,9 +1654,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 net = None;
                                                 mode = 1;
                                                 belt = [None; crate::layout::BELT_SLOTS];
-                                                shop_open = false;
-                                                bag_open = false;
-                                                status_open = false;
+                                                win.close_all();
                                             }
                                             QuitAct::Exit => break 'main,
                                         }
@@ -2227,10 +2219,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if shop_seq_now != shop_seen_seq {
             shop_seen_seq = shop_seq_now;
             shop_ui.close();
-            shop_open = shop_seq_now > 0;
-            if shop_open && !bag_open {
-                bag_open = true;
-                bag_by_shop = true; // 记住是"因为买东西才开的" ⇒ 收摊时要一起收走
+            if shop_seq_now > 0 {
+                win.open_shop(); // 顺带把包裹打开（原版买东西时包裹就在旁边）
             }
         }
         // 商品列表可能变短（换商人 / 服务端刷新）⇒ 页码与选中夹回合法范围，
@@ -2240,14 +2230,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         // 货架被收走（对话关了 / 换图）⇒ **商品列表与包裹一起关**
         //（用户 2026-10-10 第 1 条：购买对话框关闭时，物品列表及包裹窗口也关闭）
-        if net.as_ref().is_none_or(|n| n.world.shop.is_none()) && shop_open {
-            shop_open = false;
+        if net.as_ref().is_none_or(|n| n.world.shop.is_none()) && win.shop() {
+            win.shop_gone();
             shop_ui.close();
             drag.clear();
-            if bag_by_shop {
-                bag_open = false;
-                bag_by_shop = false;
-            }
         }
 
         // **快捷栏的失效格清理**：背包被服务端重排/物品用光后，实例号找不到了
@@ -2398,7 +2384,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             // 背包窗画在**世界与 HUD 之上**（它是浮窗；原版也是最后贴）。
             // 素材目录缺失时和 `draw_map_view` 一样什么都不画（那屏已经打了横幅提示）。
-            if bag_open {
+            if win.bag() {
                 if let Some(dir) = asset_dir.as_deref() {
                     // 抓在手上 / 放进卖窗圆槽的那件 ⇒ 原格子隐藏（用户 2026-10-10）
                     let mut hide = Vec::new();
@@ -2417,7 +2403,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         dir,
                         net.as_ref(),
                         bag_page.page(),
-                        shop_open,
+                        win.shop(),
                         &hide,
                         &ui_click,
                     )?;
@@ -2433,7 +2419,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .is_some_and(|s| s.is_sell());
             if let Some(dir) = asset_dir.as_deref() {
                 // ① 商店窗（买）：商品列表
-                if shop_open && !shop_is_sell {
+                if win.shop() && !shop_is_sell {
                     // 商店窗的悬停（OK 按钮的 hover 态要用）
                     // 高亮只在**按住**时展现（原版 `Downed`；不是 hover）
                     shop::draw(
@@ -2449,7 +2435,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                 }
                 // ② 卖货窗（卖）：放物品的槽 + OK（hover 时叠高亮素材 393）
-                if shop_open && bag_open && shop_is_sell {
+                if win.shop() && win.bag() && shop_is_sell {
                     shop::draw_sell(
                         &mut canvas,
                         &tex_creator,
@@ -2462,9 +2448,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                 }
                 // ③ 物品悬停提示：鼠标压在包裹格上 ⇒ 显示名字/类别/耐久/卖价
-                if bag_open {
+                if win.bag() {
                     if let Some(n) = net.as_ref() {
-                        let (bx, by) = crate::layout::bag_pos(shop_open);
+                        let (bx, by) = crate::layout::bag_pos(win.shop());
                         let lx = mouse.0 - bx;
                         let ly = mouse.1 - by;
                         if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
@@ -2548,7 +2534,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             // 状态窗（F10）画在**小地图之后**：两者都在右上（官方也是贴右缘），
             // 窗口该压在小地图上面，否则标题栏与关闭 X 会被盖住（命中与视觉就不一致了）。
-            if status_open {
+            if win.status() {
                 if let Some(dir) = asset_dir.as_deref() {
                     // 关闭钮的高亮 371 只在**按住**时叠（原版 `DCloseState` 走 `Downed`）
                     status::draw(

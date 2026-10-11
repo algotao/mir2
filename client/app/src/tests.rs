@@ -1593,11 +1593,22 @@ fn 背包窗在商店开着时紧贴卖窗右侧() {
 #[test]
 fn 关购买窗时包裹跟着收走() {
     assert!(
-        crate::shop::shop_close::should_close_bag(true),
+        {
+            let mut w = crate::windows::Windows::new();
+            w.open_shop();
+            w.close_shop();
+            !w.bag() // 因为买东西开的包裹 ⇒ 收摊一起关
+        },
         "包裹是因购买才开的 ⇒ 收摊时一起关"
     );
     assert!(
-        !crate::shop::shop_close::should_close_bag(false),
+        {
+            let mut w = crate::windows::Windows::new();
+            w.toggle_bag(); // 自己开的
+            w.open_shop();
+            w.close_shop();
+            w.bag() // 自己开的 ⇒ 收摊不动它
+        },
         "玩家自己按 F9 开的包裹，别替他关"
     );
     // 商品列表本身：货架没了（`world.shop == None`）⇒ `shop::draw` 什么都不画
