@@ -5453,3 +5453,34 @@ SDL 纹理与 WZL 句柄仍由 runtime/render 管；素材绘制将归一结果�
 拒步计数、发日志与继续走世界阶段。新增测试钉住首次/二次阻挡节拍、失败锁与重复计数不重放。
 
 **验收**：客户端 169/149/7/3，clippy 0；Go 25 包。
+
+---
+
+## D-112 架构方向 ① 完成：UI/场景/世界交互状态不再散在 SDL 主循环（2026-10-11）
+
+这一轮把 D-76 的第一项收口。**`runtime` 的可变局部现在全是 SDL/GPU 资源与 renderer cache**：
+`UiCache`、字体/名字缓存、WZL、纹理、图块/精灵缓存、`FrameState`、绘制列表；不再有登录/选角、
+浮窗、翻页、对话、拖拽、世界目标这类会话行为状态。
+
+### 状态与转换现归属
+
+| 模块 | 责任 |
+|---|---|
+| `AppState` | 唯一运行态所有者；不导入 SDL 类型 |
+| `scene` / `flow` | Scene 枚举、可测转场决策；Login/Select 的状态机接受 `SceneKey`，SDL `Keycode` 只在 keyboard 转换 |
+| `overlay_state` | Press → 窗口/分页/确认/拖拽状态转换 + `Effect`；Net/日志副作用由输入适配器执行 |
+| `widget_state` | 纯 OnClick 按下/抬起/命中；`widget.rs` 只画按钮 |
+| `bagdrag` / `pager` / `shopui` / `windows` / `scrollview` / `confirm` | 各自纯状态机 |
+| `dialog` | 无 SDL 的脚本正文解析、折行、滚动、链接排版/命中几何 |
+| `login.rs` / `select.rs` | 表单/选角状态机，不持 SDL renderer；SDL 视图分别在 `login_view` / `select_view` |
+| `world_control` | 移动/追打/绕障/挖肉/待拾取控制状态；拒步 reducer 与输入清理均有测试 |
+| `render::FrameState` | hover/系统光标/选角素材落点等**视图缓存**，不混进 AppState |
+
+`render::draw_frame` 收 `&AppState`，只输出/更新 `FrameState`；场景转场与动画推进在 update 阶段。
+`world_input` / `keyboard` / `scene_input` 保留 SDL→语义事件的**适配**及 Net/audio side effects，
+不再持有自己的平行状态副本。
+
+**排除项（有意）**：世界/服务端权威数据、SDL 窗口/纹理/字体等平台生命周期、以及 `mir2-e2e`
+独立素材观察器的本地循环，不属于游戏 UI 状态机迁移。
+
+**验收**：客户端 169/149/7/3，clippy 0；Go `go vet ./...` + 25 包全过。
