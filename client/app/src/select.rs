@@ -138,8 +138,6 @@ pub struct Select {
     /// 小人 / 光效的**落点备忘**（见 `su::SlotPlace`）：基准是"站立第 0 帧"，
     /// 石化帧再叠原版的手调量 —— 逐帧按包围盒对齐会让"已经站定的脚"随上半身摆动左右挪，
     /// 而拿石化图自己的包围盒去居中又会差 0.5~3.5px（用户两轮都报过）。
-    place: su::SlotPlace,
-    fx_place: su::SlotPlace,
     last: Instant,
 }
 
@@ -175,8 +173,6 @@ impl Select {
             name_rule: None,
             pending: None,
             last_phase,
-            place: su::SlotPlace::default(),
-            fx_place: su::SlotPlace::default(),
             last: Instant::now(),
         }
     }

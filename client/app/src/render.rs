@@ -272,13 +272,14 @@ pub(crate) fn draw_frame<'a, T>(
             }
         }
     } else if app.scene == crate::app_state::Scene::Select {
-        if let Some(scene) = app.select_scene.as_mut() {
+        if let Some(scene) = app.select_scene.as_ref() {
             // 鼠标位置（**设计空间**）⇒ 只作为视图参数传入，不写回运行态
             let mouse = {
                 let p = ui::ui_inv_pt(app.mouse);
                 (p.0 .0, p.1 .0)
             };
             scene.draw(
+                &mut app.select_view,
                 canvas,
                 tex_creator,
                 ui,

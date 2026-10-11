@@ -53,6 +53,8 @@ pub(crate) struct AppState {
     // Scene/session
     pub login: login::Login,
     pub select_scene: Option<select::Select>,
+    /// 选角素材的惰性几何缓存（视图状态，不属于角色选择 reducer）。
+    pub select_view: select::view::ViewState,
     pub scene: Scene,
     pub net: Option<crate::net::Net>,
 
@@ -116,6 +118,7 @@ impl AppState {
         Self {
             login: login::Login::new(),
             select_scene: None,
+            select_view: select::view::ViewState::default(),
             scene: Scene::Login,
             net: None,
 

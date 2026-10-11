@@ -25,11 +25,20 @@ pub(crate) fn msgbox_geom(ui: &mut UiCache, dir: &Path, win: (u32, u32)) -> Opti
     let ok = ui.size(dir, "Prguse", 363).unwrap_or((0, 0));
     Some(su::MsgBox::build(win, frame, ok))
 }
+
+/// 视图专属的惰性素材几何缓存；不属于角色选择状态。
+#[derive(Default)]
+pub(crate) struct ViewState {
+    place: su::SlotPlace,
+    fx_place: su::SlotPlace,
+}
+
 impl Select {
-    /// 画一帧。
+    /// 画一帧（只读场景状态；惰性几何缓存单独归 `ViewState`）。
     #[allow(clippy::too_many_arguments)]
     pub fn draw<'a, T>(
-        &mut self,
+        &self,
+        view_state: &mut ViewState,
         canvas: &mut WindowCanvas,
         tc: &'a TextureCreator<T>,
         ui: &mut UiCache<'a>,
@@ -110,9 +119,10 @@ impl Select {
             // 站定的脚推着挪；而槽一进来就是石化的，拿当前帧当基准还会"选中那一刻跳一下"。
             // 石化帧 = 这个基准 + 原版的手调量（`su::frozen_offset`），见 `su::SlotPlace`。
             if let Some(stand0) = ui.bbox(dir, su::Art::CHR, su::stand_index(c.job(), c.sex, 0)) {
-                let (sx, sy) = self
-                    .place
-                    .of(slot, c.job(), c.sex, f.at_frozen, stand0, anchor);
+                let (sx, sy) =
+                    view_state
+                        .place
+                        .of(slot, c.job(), c.sex, f.at_frozen, stand0, anchor);
                 ui.draw_tint(
                     canvas,
                     tc,
@@ -133,7 +143,7 @@ impl Select {
             // 结果光效偏右、也不在脚下（用户实测报的）。
             if let Some(e) = f.effect {
                 if let Some(eb) = ui.bbox(dir, su::Art::CHR, e) {
-                    let (ex, ey) = self.fx_place.fx(slot, eb, anchor);
+                    let (ex, ey) = view_state.fx_place.fx(slot, eb, anchor);
                     ui.draw_tint(canvas, tc, dir, su::Art::CHR, e, ex, ey, C_SEL_HL);
                 }
             }

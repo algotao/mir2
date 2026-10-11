@@ -5363,7 +5363,21 @@ Go 同 package 的文件共享 handler/helpers，不会引入 import cycle）：
 SDL renderer、`UiCache`、`TextCache` 或坐标缩放函数。
 
 `msgbox_geom` 是素材尺寸驱动的视图几何，移动到 `select::view`；`scene_input` 通过该视图几何
-做事件边界适配。`draw` 仍需 `&mut Select`，仅用于 `SlotPlace` 的惰性落点缓存；槽动画 tick 已在
+做事件边界适配。后续将 `SlotPlace` 落点缓存单独提成 `select::view::ViewState`，所以 `draw`
+现在只读 `&Select`，仅修改独立视图缓存；角色选择状态本身不会被绘制改写。槽动画 tick 已在
 D-104 移到更新阶段，鼠标 hover 改为绘制参数。
+
+**验收**：客户端 161/149/7/3，clippy 0；Go 25 包。
+
+---
+
+## D-106 架构方向 ① 续：选角的视图落点缓存移出 Select reducer（2026-10-11）
+
+继续收紧 D-105 的边界：`Select::draw` 从 `&mut self` 改为**只读 `&self`**；用于避免站立/石化
+包围盒抖动的 `SlotPlace` 缓存移入 `select::view::ViewState`，由 `AppState.select_view` 单独拥有。
+重建角色列表、进选角或离开选角时重置此缓存。
+
+现在绘制能改的是**视图缓存**，不是角色选择状态（选中槽、菜单光标、模态框、建角输入等）。
+这把绘制边界也真正变成了只读状态输入 + 独立 view cache。
 
 **验收**：客户端 161/149/7/3，clippy 0；Go 25 包。
