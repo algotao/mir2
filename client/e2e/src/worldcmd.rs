@@ -49,6 +49,13 @@ struct Args {
     expect_damage: u64,
     /// 攻击目标打完之后应当死掉（`-attack` 配套）。
     expect_kill: bool,
+    /// 打完之后**捡起**这个地面物品（原版 `CM_PICKUP`；服务端要求人站在物品那格上）。
+    ///
+    /// ⚠️ 驱动方负责把玩家放到那一格（或把掉落物生成在玩家脚下）—— 这条命令本身
+    /// 不做寻路，它只验"捡起来 → 进背包"这段。
+    pickup: Option<u64>,
+    /// 至少要有这么多件东西在背包里（配合 `-pickup` 断言"真的捡到了"）。
+    expect_bag: Option<usize>,
     expect_map: Option<String>,
     expect_pos: Option<(i32, i32)>,
     expect_entities: Option<usize>,
@@ -63,6 +70,8 @@ impl Args {
         let (mut timeout_ms, mut move_steps) = (8000u64, 0u32);
         let (mut attack, mut expect_damage, mut expect_kill) = (None, 0u64, false);
         let mut pick = None;
+        let mut pickup = None;
+        let mut expect_bag = None;
         let (mut expect_map, mut expect_pos, mut expect_entities) = (None, None, None);
         let mut expect_entity_at = None;
 
@@ -92,6 +101,8 @@ impl Args {
                 "-expect-entities" => {
                     expect_entities = Some(parse(&val("个数")?, "-expect-entities")?)
                 }
+                "-pickup" => pickup = Some(parse(&val("地面物品 gid")?, "-pickup")?),
+                "-expect-bag" => expect_bag = Some(parse(&val("件数")?, "-expect-bag")?),
                 "-expect-entity-at" => expect_entity_at = Some(parse_pos(&val("X,Y")?)?),
                 other => return Err(format!("未知参数 {other}（-h 看用法）")),
             }
@@ -109,6 +120,8 @@ impl Args {
             pick,
             expect_damage,
             expect_kill,
+            pickup,
+            expect_bag,
             expect_map,
             expect_pos,
             expect_entities,
@@ -207,8 +220,17 @@ fn run(argv: &[String]) -> Result<(), String> {
         ));
     }
 
+    // **捡东西**（`-pickup`）：服务端要求"人站在物品那格上"，所以驱动方得先把
+    // 玩家放到那一格（或把掉落物生成在玩家脚下）。这里只发一次，成败看下面的断言。
+    if let Some(gid) = a.pickup {
+        sess.cmds
+            .send(Cmd::PickupItem { ground_id: gid })
+            .map_err(|_| "命令通道已关闭".to_string())?;
+        println!("[world] 捡起地面物品 gid={gid}");
+    }
+
     // 再收一小会儿：驱动方（Go 契约测试）会在玩家进图后推一条实体事件，
-    // 攻击的伤害/血量/死亡应答也是在这一段里到齐的。
+    // 攻击的伤害/血量/死亡应答、捡东西后的背包刷新也是在这一段里到齐的。
     let mut damages = Vec::new();
     let tail = Instant::now() + Duration::from_millis(1500);
     while Instant::now() < tail {
@@ -274,6 +296,15 @@ fn run(argv: &[String]) -> Result<(), String> {
                 return Err(format!("目标 ActorId={target} 已经不在视野里了"));
             }
         }
+    }
+    if let Some(want) = a.expect_bag {
+        let got = world.bag.iter().flatten().count();
+        if got < want {
+            return Err(format!(
+                "背包里只有 {got} 件，应为至少 {want} 件（`-pickup` 捡到了吗？）"
+            ));
+        }
+        println!("[world] 背包：{got} 件（要求至少 {want} 件）");
     }
     if world.unknown > 0 {
         return Err(format!(

@@ -1700,3 +1700,62 @@ func TestEntityMoveCarriesRun(t *testing.T) {
 		t.Fatal("没投出信封")
 	}
 }
+
+// TestProtoRustPickup **打怪 → 掉落 → 捡起 → 进背包**这条链（架构方向 ④）。
+//
+// ⚠️ 它跑的是**真的 Rust 客户端**（`mir2-e2e world`），走与 `client/app` 同一份
+// `core` + `net` ⇒ 不是测试专用捷径（D-18）。之前只有"打怪"这一段有 e2e，
+// "捡起来进背包"只被服务端单测盖着；这里把它接到真客户端上。
+func TestProtoRustPickup(t *testing.T) {
+	bin, why := findE2EBin()
+	if bin == "" {
+		t.Skip("跳过（找不到 mir2-e2e）：" + why)
+	}
+	s, store, addr := protoContractServer(t)
+	sessionID, charID := seedAccount(t, store)
+
+	// 一只紧贴玩家的怪（对角相邻），15 血、玩家 DC 20-25 ⇒ 一刀毙命
+	mon := newTestMonster(1_000_002, "鸡", 15)
+	mon.Object.SetPlace(s.world.defaultMap, 2, 2, entity.DirDown)
+	s.world.monsters[mon.ID] = mon
+	s.world.monsterIdx.Add(mon)
+
+	// 打死之后**手动放一件掉落物在玩家脚下**：服务端 `CM_PICKUP` 要求
+	// "人站在物品那格上"（玩家在 (1,1)），掉落表是随机的，测试要确定性。
+	gid := uint32(900_001)
+	s.world.ground[gid] = &GroundItem{
+		ID:        gid,
+		Name:      "金创药(小量)",
+		Item:      &pb.UserItem{Index: 1, MakeIndex: 77_001, Dura: 1, DuraMax: 0},
+		Map:       s.world.defaultMap,
+		X:         1,
+		Y:         1,
+		Owner:     0, // 无归属 ⇒ 谁站上去都能捡（免得踩到 2 分钟归属窗口）
+		CreatedAt: time.Now(),
+	}
+
+	cmd := exec.Command(bin, "world",
+		"-addr", addr,
+		"-session", strconv.Itoa(int(sessionID)),
+		"-char", strconv.FormatUint(charID, 10),
+		"-expect-map", "0",
+		"-expect-pos", "1,1",
+		"-attack", strconv.FormatUint(uint64(mon.ID), 10),
+		"-expect-kill",
+		"-pickup", strconv.FormatUint(uint64(gid), 10),
+		"-expect-bag", "1",
+		"-timeout-ms", "8000",
+	)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Rust 捡东西剧本失败：%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "世界状态通过") {
+		t.Errorf("剧本没打通过标记，输出：\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "背包：") {
+		t.Errorf("输出里没有背包断言：\n%s", out.String())
+	}
+}
