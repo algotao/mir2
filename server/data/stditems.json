@@ -10809,7 +10809,7 @@
     "source": 0,
     "reserved": 0,
     "looks": 444,
-    "dura_max": 4000,
+    "dura_max": 0,
     "ac": {
       "min": 0,
       "max": 0
