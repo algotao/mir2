@@ -216,6 +216,7 @@ pub(crate) fn handle_world_mouse_down<'a>(
     ui_texts: &mut font::TextCache<'a>,
     draws: &[TileDraw],
     tiles: &HashMap<TileKey, TileTex<'a>>,
+    hover: Option<u64>,
 ) {
     let in_world = app.net.as_ref().is_some_and(|n| n.world.in_world());
     match mouse_btn {
@@ -403,7 +404,7 @@ pub(crate) fn handle_world_mouse_down<'a>(
                 // 直到它死掉或消失）；点空地 ⇒ 走/跑到那一格。
                 app.net
                     .as_ref()
-                    .map(|n| mouse_intent(&n.world, cell, run, app.hover))
+                    .map(|n| mouse_intent(&n.world, cell, run, hover))
                     .unwrap_or((None, None))
             };
             app.combat_target = ct;
@@ -740,8 +741,7 @@ pub(crate) fn handle_world_mouse_down<'a>(
             //   2. 兜底再用格子（光标正好压在它脚下那格时，`hover` 可能为空）。
             if !ui_consumed {
                 if let Some(n) = app.net.as_ref() {
-                    let hit = app
-                        .hover
+                    let hit = hover
                         .filter(|id| n.world.npc_kind(*id))
                         .or_else(|| n.world.npc_at(cell.0, cell.1));
                     if let Some(id) = hit {
@@ -776,6 +776,7 @@ pub(crate) fn handle_world_mouse_up(
     mouse_btn: MouseButton,
     x: f32,
     y: f32,
+    hover: Option<u64>,
 ) -> MouseUpOutcome {
     // ① **OnClick**：左键按下 + 松开在**同一控件**才执行
     //（规范见 `widget` 模块头的表：拖出控件再松开 / 右键 / 只有
@@ -806,7 +807,7 @@ pub(crate) fn handle_world_mouse_up(
                                 n.world.self_pos,
                                 app.press_cell,
                                 false,
-                                app.hover,
+                                hover,
                             )
                         };
                         if ct.is_some() || mt.is_some() {

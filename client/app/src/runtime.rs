@@ -32,6 +32,8 @@ pub(crate) fn run_app<T>(
     let mut img_idx: usize = 0;
     let mut loaded: Option<(usize, Wzl)> = None;
     let mut sprite_tex: Option<Texture<'_>> = None;
+    // hover / 系统光标 / 懒素材几何是 renderer 的 view cache，不属于游戏 AppState。
+    let mut frame_state = render::FrameState::default();
 
     // SDL / GPU 资源（有平台句柄或缓存生命周期，不属于纯运行态）
     let cursor_arrow = Cursor::from_system(SystemCursor::Arrow)?;
@@ -136,6 +138,7 @@ pub(crate) fn run_app<T>(
                         &mut ui_texts,
                         &draws,
                         &tiles,
+                        frame_state.hover,
                     );
                 }
                 // 松开：**停止"按住"那条重取目标的链**，但**不清走法目标**。
@@ -156,7 +159,13 @@ pub(crate) fn run_app<T>(
                 } if app.scene == crate::app_state::Scene::World
                     && matches!(mouse_btn, MouseButton::Left | MouseButton::Right) =>
                 {
-                    match world_input::handle_world_mouse_up(&mut app, mouse_btn, x, y) {
+                    match world_input::handle_world_mouse_up(
+                        &mut app,
+                        mouse_btn,
+                        x,
+                        y,
+                        frame_state.hover,
+                    ) {
                         world_input::MouseUpOutcome::Quit => break 'run,
                         world_input::MouseUpOutcome::Consumed => continue,
                         world_input::MouseUpOutcome::Continue => {}
@@ -244,7 +253,8 @@ pub(crate) fn run_app<T>(
         // 固定定时器、与帧率无关）。所以这里按**真实时间**算，而不是每帧 +1 ——
         // 否则灯会随机器性能忽快忽慢。
         render::draw_frame(
-            &mut app,
+            &app,
+            &mut frame_state,
             &mut canvas,
             &tex_creator,
             &mut ui,

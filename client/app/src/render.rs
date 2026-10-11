@@ -1,7 +1,7 @@
 //! **画一帧**（架构方向 ⑥）：把 UI/世界/选角/登录/素材浏览器的绘制从 `main()` 拆开。
 //!
 //! `AppState` 是纯运行态，SDL/纹理缓存作为显式参数传入；函数只负责画，除光标模式与
-//! `app.hover/app.mode/app.cursor_is_cross` 这些本来就是 draw 结果的状态外不改游戏数据。
+//! 场景状态只读；hover 与系统光标只作为帧输出/本地 view cache，不写回游戏 AppState。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,9 +19,18 @@ use crate::tiles::TileTex;
 use crate::ui::UiCache;
 use crate::*;
 
+/// 纯视图缓存：鼠标命中、光标选择与懒计算素材落点。生命周期属于 renderer，不属于游戏状态。
+#[derive(Default)]
+pub(crate) struct FrameState {
+    pub hover: Option<u64>,
+    cursor_is_cross: bool,
+    select_view: select::view::ViewState,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_frame<'a, T>(
-    app: &mut AppState,
+    app: &AppState,
+    frame: &mut FrameState,
     canvas: &mut WindowCanvas,
     tex_creator: &'a TextureCreator<T>,
     ui: &mut UiCache<'a>,
@@ -44,10 +53,12 @@ pub(crate) fn draw_frame<'a, T>(
 
     canvas.set_draw_color(C_BG);
     canvas.clear();
+    // 命中结果是本帧的渲染/输入适配数据，不写进游戏 AppState。
+    let mut hover = None;
 
     // 悬停的那个实体（由 `draw_map_view` 按精灵落点算出来）—— 光标/高亮都用它
     if app.scene == crate::app_state::Scene::World {
-        app.hover = draw_map_view(
+        hover = draw_map_view(
             canvas,
             tex_creator,
             names,
@@ -215,7 +226,7 @@ pub(crate) fn draw_frame<'a, T>(
         }
         // 光标跟着悬停状态走：悬停的是**怪**才换准星（原版悬停谁都不换光标，
         // 这是 Crystal 那套；换成"能打的东西"上才有意义）
-        let want_cross = app.hover.is_some_and(|id| {
+        let want_cross = hover.is_some_and(|id| {
             app.net.as_ref().is_some_and(|n| {
                 n.world
                     .entities
@@ -223,8 +234,8 @@ pub(crate) fn draw_frame<'a, T>(
                     .is_some_and(|e| e.kind == mir2_core::world::KIND_MONSTER)
             })
         });
-        if want_cross != app.cursor_is_cross {
-            app.cursor_is_cross = want_cross;
+        if want_cross != frame.cursor_is_cross {
+            frame.cursor_is_cross = want_cross;
             if want_cross {
                 cursor_cross.set();
             } else {
@@ -278,7 +289,7 @@ pub(crate) fn draw_frame<'a, T>(
                 (p.0 .0, p.1 .0)
             };
             scene.draw(
-                &mut app.select_view,
+                &mut frame.select_view,
                 canvas,
                 tex_creator,
                 ui,
@@ -317,5 +328,6 @@ pub(crate) fn draw_frame<'a, T>(
         )?;
     }
 
+    frame.hover = hover;
     Ok(())
 }

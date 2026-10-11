@@ -53,8 +53,6 @@ pub(crate) struct AppState {
     // Scene/session
     pub login: login::Login,
     pub select_scene: Option<select::Select>,
-    /// 选角素材的惰性几何缓存（视图状态，不属于角色选择 reducer）。
-    pub select_view: select::view::ViewState,
     pub scene: Scene,
     pub net: Option<crate::net::Net>,
     /// 供登录/资产观察器与开发诊断显示的状态文字。
@@ -71,7 +69,6 @@ pub(crate) struct AppState {
     pub detour: Option<u8>,
     pub last_self_pos: (i32, i32),
     pub move_block_until: Instant,
-    pub hover: Option<u64>,
     pub hint_pushed: bool,
     pub alt_down: bool,
     pub butch_target: Option<u64>,
@@ -110,7 +107,6 @@ pub(crate) struct AppState {
     // Timers / ambient effects
     pub sfx_rng: u32,
     pub last_monster_sfx: Instant,
-    pub cursor_is_cross: bool,
     pub started: Instant,
 }
 
@@ -120,7 +116,6 @@ impl AppState {
         Self {
             login: login::Login::new(),
             select_scene: None,
-            select_view: select::view::ViewState::default(),
             scene: Scene::Login,
             net: None,
             status: String::from("READY"),
@@ -135,7 +130,6 @@ impl AppState {
             detour: None,
             last_self_pos: (0, 0),
             move_block_until: now,
-            hover: None,
             hint_pushed: false,
             alt_down: false,
             butch_target: None,
@@ -171,7 +165,6 @@ impl AppState {
 
             sfx_rng: 0x1234_5678,
             last_monster_sfx: now,
-            cursor_is_cross: false,
             started: now,
         }
     }
