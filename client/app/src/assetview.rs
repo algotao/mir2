@@ -1,36 +1,30 @@
-//! **素材观察器**：把 `mir2c/data` 下的 `.wzl` 图库摊成一格一格的缩略图，
-//! 鼠标悬停高亮、点击即显示该图的 **ID**（窗口最下方，自动复制到剪贴板）。
+//! **素材观察器**（内嵌在客户端里：`mir2-app --assetview [库名]`）。
 //!
-//! 找素材的痛点：图号是散落在代码里的魔法数字（`Prguse[384]`、`Items[398]`…），
-//! 人眼认不出"第 384 张长什么样"。这个工具把图库摊开，点一下就知道 ID，
-//! 还能直接复制（默认复制纯数字 `123`，按 `Shift+C` 复制 `库名[123]`）。
+//! 把 `mir2c/data` 下的 `.wzl` 图库摊成缩略图：鼠标指向哪张、点一下 ⇒
+//! 窗口最下方显示它的 **ID / 尺寸 / 锚点**，并**复制到剪贴板**。
 //!
-//! # 用法
-//! ```text
-//! cargo run -p mir2-assetview -- --dir /path/to/mir2c/data --lib Prguse
-//! # 不传参就按环境变量（MIR2_ASSET_DIR / MIR2C_DATA）找素材目录，库默认 Prguse
-//! ```
-//!
-//! # 键位
-//! - 滚轮 / `PageUp`/`PageDown` / `Home`/`End`：翻页
-//! - `[` / `]`（或 `,` / `.`）：切换上一个 / 下一个图库
-//! - 点图 ⇒ 选中并复制 ID；`C` 复制纯数字、`Shift+C` 复制 `库名[ID]`
-//! - `Esc` / `Q`：退出
+//! # 键位（**没有滚轮**：翻页用键盘，用户 2026-10-11「滚轮容易误操作」）
+//! - `PageDown`/`PageUp`（或 `↓`/`↑`）翻页 / 翻一行；`Home`/`End` 到头/到尾
+//! - `[` `]`（或 `,` `.`）切换图库
+//! - 点图 ⇒ 选中并复制 ID；`C` 复制数字、`Shift+C` 复制 `库名[ID]`
+//! - `Esc` / `Q` 退出
 
 use std::collections::HashMap;
 use std::error::Error;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use sdl3::clipboard::ClipboardUtil;
 use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod};
-use sdl3::pixels::{Color, PixelFormat};
+use sdl3::pixels::Color;
+use sdl3::pixels::PixelFormat;
 use sdl3::render::{
     BlendMode, FRect, ScaleMode, Texture, TextureAccess, TextureCreator, WindowCanvas,
 };
 
-use mir2_core::text::{Face, Glyph};
 use mir2_core::wzl::Wzl;
+
+use crate::font::TextCache;
 
 // ---------- 布局 ----------
 const WIN_W: u32 = 1280;
@@ -46,117 +40,6 @@ fn cols() -> usize {
 }
 fn rows() -> usize {
     (((WIN_H as f32 - BAR_H - PAD * 2.0) / (CELL + GAP)).floor() as usize).max(1)
-}
-
-// ---------- 字形（照 app/src/font.rs 的精简版：白色字形纹理 + 颜色在绘制时打） ----------
-struct GlyphTex<'a> {
-    tex: Texture<'a>,
-    w: f32,
-    h: f32,
-}
-
-struct Text<'a> {
-    face: Option<Face>,
-    texs: HashMap<(char, u32), GlyphTex<'a>>,
-}
-
-impl<'a> Text<'a> {
-    fn new() -> Self {
-        Text {
-            face: Face::load(),
-            texs: HashMap::new(),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn draw<T>(
-        &mut self,
-        canvas: &mut WindowCanvas,
-        tc: &'a TextureCreator<T>,
-        s: &str,
-        x: f32,
-        y: f32,
-        color: (u8, u8, u8),
-        px: f32,
-    ) -> Result<(), sdl3::Error> {
-        let Some(face) = self.face.as_ref() else {
-            canvas.set_draw_color(Color::RGB(color.0, color.1, color.2));
-            let _ = canvas.draw_debug_text(s, sdl3::render::FPoint::new(x, y));
-            return Ok(());
-        };
-        let ascent = face.metrics(px).ascent;
-        let mut pen = x;
-        for ch in s.chars() {
-            let g = face.glyph(ch, px);
-            ensure_glyph(&mut self.texs, tc, ch, px, &g);
-            let top = ascent - (g.ymin as f32 + g.h as f32);
-            if let Some(t) = self.texs.get_mut(&(ch, px.to_bits())) {
-                if t.w > 0.0 {
-                    t.tex.set_color_mod(color.0, color.1, color.2);
-                    canvas.copy(
-                        &t.tex,
-                        None::<FRect>,
-                        FRect::new((pen + g.xmin as f32).round(), y + top.round(), t.w, t.h),
-                    )?;
-                }
-            }
-            pen += g.advance;
-        }
-        Ok(())
-    }
-}
-
-fn ensure_glyph<'a, T>(
-    texs: &mut HashMap<(char, u32), GlyphTex<'a>>,
-    tc: &'a TextureCreator<T>,
-    ch: char,
-    px: f32,
-    g: &Glyph,
-) {
-    let key = (ch, px.to_bits());
-    if texs.contains_key(&key) {
-        return;
-    }
-    if texs.len() >= 512 {
-        texs.clear();
-    }
-    if g.w == 0 || g.h == 0 {
-        if let Ok(tex) = tc.create_texture(PixelFormat::RGBA32, TextureAccess::Static, 1, 1) {
-            texs.insert(
-                key,
-                GlyphTex {
-                    tex,
-                    w: 0.0,
-                    h: 0.0,
-                },
-            );
-        }
-        return;
-    }
-    let mut rgba = Vec::with_capacity(g.cov.len() * 4);
-    for c in &g.cov {
-        rgba.extend_from_slice(&[255, 255, 255, *c]);
-    }
-    let Ok(mut tex) = tc.create_texture(PixelFormat::RGBA32, TextureAccess::Static, g.w, g.h)
-    else {
-        return;
-    };
-    tex.set_blend_mode(BlendMode::Blend);
-    tex.set_scale_mode(ScaleMode::Nearest);
-    if tex
-        .update(None::<sdl3::rect::Rect>, &rgba, g.w as usize * 4)
-        .is_err()
-    {
-        return;
-    }
-    texs.insert(
-        key,
-        GlyphTex {
-            tex,
-            w: g.w as f32,
-            h: g.h as f32,
-        },
-    );
 }
 
 // ---------- 网格里的一个格 ----------
@@ -184,35 +67,7 @@ fn hit_cell(x: f32, y: f32) -> Option<usize> {
     Some(cy as usize * c + cx as usize)
 }
 
-struct Args {
-    dir: Option<PathBuf>,
-    lib: Option<String>,
-}
-
-fn parse_args() -> Args {
-    let mut a = Args {
-        dir: None,
-        lib: None,
-    };
-    let v: Vec<String> = std::env::args().collect();
-    let mut i = 1;
-    while i < v.len() {
-        match v[i].as_str() {
-            "--dir" | "-d" => {
-                a.dir = v.get(i + 1).map(PathBuf::from);
-                i += 2;
-            }
-            "--lib" | "-l" => {
-                a.lib = v.get(i + 1).cloned();
-                i += 2;
-            }
-            _ => i += 1,
-        }
-    }
-    a
-}
-
-fn list_libs(dir: &Path) -> Vec<String> {
+pub(crate) fn list_libs(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(dir) else {
         return out;
@@ -229,32 +84,7 @@ fn list_libs(dir: &Path) -> Vec<String> {
     out
 }
 
-fn main() {
-    let args = parse_args();
-    let dir = args
-        .dir
-        .clone()
-        .or_else(mir2_core::paths::asset_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    if !dir.is_dir() {
-        eprintln!("素材目录不存在：{dir:?}（用 --dir 指定，或设 MIR2_ASSET_DIR）");
-        std::process::exit(2);
-    }
-    let libs = list_libs(&dir);
-    if libs.is_empty() {
-        eprintln!("{dir:?} 下没有 .wzl 图库");
-        std::process::exit(2);
-    }
-    let start_lib = args.lib.unwrap_or_else(|| "Prguse".to_string());
-    let lib_idx = libs.iter().position(|l| *l == start_lib).unwrap_or(0);
-
-    if let Err(e) = run(&dir, &libs, lib_idx) {
-        eprintln!("运行失败: {e}");
-        std::process::exit(1);
-    }
-}
-
-fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), Box<dyn Error>> {
+pub(crate) fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), Box<dyn Error>> {
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
     let window = video
@@ -265,7 +95,7 @@ fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), Box<dyn Erro
         .map_err(|e| format!("建窗口失败: {e}"))?;
     let mut canvas = window.into_canvas();
     let tc = canvas.texture_creator();
-    let mut text = Text::new();
+    let mut text = TextCache::new(mir2_core::text::UI_PX);
     let clipboard = video.clipboard();
 
     let mut lib_idx = start_idx;
@@ -288,11 +118,8 @@ fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), Box<dyn Erro
                     break;
                 }
                 Event::MouseMotion { x, y, .. } => mouse = (x, y),
-                Event::MouseWheel { y, .. } => {
-                    let step = if y >= 1.0 { y as usize } else { 1 };
-                    scroll = scroll.saturating_sub(step * cols());
-                    scroll_changed = true;
-                }
+                // ⚠️ **故意不接滚轮**：翻页一律用键盘（用户 2026-10-11：
+                // 「素材预览不要支持鼠标滚动，这很容易误操作」）。
                 Event::MouseButtonDown {
                     mouse_btn: sdl3::mouse::MouseButton::Left,
                     x,
@@ -339,6 +166,14 @@ fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), Box<dyn Erro
                         }
                         Some(Keycode::PageUp) => {
                             scroll = scroll.saturating_sub(cols() * rows());
+                            scroll_changed = true;
+                        }
+                        Some(Keycode::Down) => {
+                            scroll += cols();
+                            scroll_changed = true;
+                        }
+                        Some(Keycode::Up) => {
+                            scroll = scroll.saturating_sub(cols());
                             scroll_changed = true;
                         }
                         Some(Keycode::Home) => {
@@ -413,7 +248,7 @@ fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), Box<dyn Erro
             14.0,
             WIN_H as f32 - BAR_H + 10.0,
             (210, 210, 210),
-            16.0,
+            Some((0, 0, 0)),
         )?;
 
         let line2 = match selected {
@@ -435,7 +270,7 @@ fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), Box<dyn Erro
             14.0,
             WIN_H as f32 - BAR_H + 38.0,
             (90, 200, 255),
-            16.0,
+            Some((0, 0, 0)),
         )?;
 
         canvas.present();

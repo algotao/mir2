@@ -4153,3 +4153,30 @@ NPC 说话（浮窗画在世界之上，本来就该吃掉这些点击）。
 且都要脚本头声明过对应标签。
 
 **验收**：Go 25 包 + 客户端 92/146/7/3，clippy 0；新增 `修理模式随对话开合`。
+
+
+---
+
+## D-53 素材观察器**内嵌进客户端** + 去掉滚轮 + `script/run-client.sh`
+
+用户 2026-10-11 两条（外加把上次"内置"的指示落实）：
+
+1. **内置**：素材观察器不再是一个独立 crate（`client/tools/assetview` 已删），
+   搬成 `client/app/src/assetview.rs`，用**命令参数**打开：
+
+   ```text
+   mir2-app --assetview          # 默认 Prguse
+   mir2-app --assetview Mon1
+   script/run-client.sh --assetview Items
+   ```
+
+   字体/图缓存复用 app 自己的 `font::TextCache` / `ui::UiCache`（不再各带一份）。
+2. **不接滚轮**：用户「素材预览不要支持鼠标滚动，这很容易误操作」⇒ 翻页一律
+   用键盘：`PageDown/PageUp` 翻页、`↓/↑` 翻一行、`Home/End` 到头/到尾。
+3. **`script/run-client.sh`**：起客户端（`MIR2_SERVER` + `MIR2_ASSET_DIR`），
+   `--assetview [库名]` 透传、`--release`、`--status`（只看服务端在不在）。
+   旧的 `script/assetview.sh` 随之删除。
+
+⚠️ shell 坑（两个脚本都记了）：macOS 自带的 bash 3.2 在**变量紧跟中文**时会把
+多字节字符当成变量名的一部分（`echo "图库 $LIB（素材目录…"` ⇒ `LIB（素材目录`:
+unbound variable）⇒ 一律写 `${LIB}`。

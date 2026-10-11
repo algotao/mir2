@@ -68,6 +68,7 @@ use sdl3::EventPump;
 // 现在按职责切开，本文件只留**入口与主循环**（下一步可以把主循环再收进一个 `Game` 状态机）。
 pub(crate) mod window;
 pub(crate) use window::*;
+
 pub(crate) mod assets;
 pub(crate) use assets::*;
 pub(crate) mod colors;
@@ -84,6 +85,7 @@ pub(crate) mod debug;
 pub(crate) use debug::*;
 pub(crate) mod actor;
 pub(crate) use actor::*;
+pub(crate) mod assetview;
 pub(crate) mod hud;
 pub(crate) mod minimap;
 pub(crate) mod shop;
@@ -112,6 +114,28 @@ fn toggle_status(status_open: &mut bool) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // ---------- 命令行：`--assetview [库名]` ⇒ 打开**素材观察器**而不是进游戏 ----------
+    //
+    // 找素材用的：图号是散在代码里的魔法数字（`Prguse[385]`…），人眼认不出第 N 张
+    // 长什么样。摊开图库、点一下就显示 ID 并复制。
+    let argv: Vec<String> = std::env::args().collect();
+    if let Some(pos) = argv.iter().position(|a| a == "--assetview" || a == "-a") {
+        let lib = argv.get(pos + 1).filter(|s| !s.starts_with('-')).cloned();
+        let dir = mir2_core::paths::asset_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        if !dir.is_dir() {
+            eprintln!("素材目录不存在：{dir:?}（设 MIR2_ASSET_DIR 指定）");
+            std::process::exit(2);
+        }
+        let libs = assetview::list_libs(&dir);
+        if libs.is_empty() {
+            eprintln!("{dir:?} 下没有 .wzl 图库");
+            std::process::exit(2);
+        }
+        let want = lib.unwrap_or_else(|| "Prguse".to_string());
+        let idx = libs.iter().position(|l| *l == want).unwrap_or(0);
+        return assetview::run(&dir, &libs, idx);
+    }
+
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
 
