@@ -56,6 +56,12 @@ struct Args {
     pickup: Option<u64>,
     /// 至少要有这么多件东西在背包里（配合 `-pickup` 断言"真的捡到了"）。
     expect_bag: Option<usize>,
+    /// 点这个 NPC 开对话（`-sell` 的前置：服务端要求**正在跟这个商人谈**）。
+    npc: Option<u64>,
+    /// 把刚捡到的那件卖给 `npc`（按**实例号**认物，见 D-75）。
+    sell: bool,
+    /// 至少要有这么多金币（配合 `-sell` 断言"真的卖出去了"）。
+    expect_gold: Option<u64>,
     expect_map: Option<String>,
     expect_pos: Option<(i32, i32)>,
     expect_entities: Option<usize>,
@@ -72,6 +78,8 @@ impl Args {
         let mut pick = None;
         let mut pickup = None;
         let mut expect_bag = None;
+        let mut npc = None;
+        let (mut sell, mut expect_gold) = (false, None);
         let (mut expect_map, mut expect_pos, mut expect_entities) = (None, None, None);
         let mut expect_entity_at = None;
 
@@ -103,6 +111,9 @@ impl Args {
                 }
                 "-pickup" => pickup = Some(parse(&val("地面物品 gid")?, "-pickup")?),
                 "-expect-bag" => expect_bag = Some(parse(&val("件数")?, "-expect-bag")?),
+                "-npc" => npc = Some(parse(&val("NPC ActorId")?, "-npc")?),
+                "-sell" => sell = true,
+                "-expect-gold" => expect_gold = Some(parse(&val("金币数")?, "-expect-gold")?),
                 "-expect-entity-at" => expect_entity_at = Some(parse_pos(&val("X,Y")?)?),
                 other => return Err(format!("未知参数 {other}（-h 看用法）")),
             }
@@ -122,6 +133,9 @@ impl Args {
             expect_kill,
             pickup,
             expect_bag,
+            npc,
+            sell,
+            expect_gold,
             expect_map,
             expect_pos,
             expect_entities,
@@ -228,6 +242,13 @@ fn run(argv: &[String]) -> Result<(), String> {
             .map_err(|_| "命令通道已关闭".to_string())?;
         println!("[world] 捡起地面物品 gid={gid}");
     }
+    // **开对话**（`-npc`）：卖出要求"正在跟这个商人谈"（服务端 `dialogMerchant`）。
+    if let Some(id) = a.npc {
+        sess.cmds
+            .send(Cmd::NpcClick(id))
+            .map_err(|_| "命令通道已关闭".to_string())?;
+        println!("[world] 点 NPC ActorId={id} 开对话");
+    }
 
     // 再收一小会儿：驱动方（Go 契约测试）会在玩家进图后推一条实体事件，
     // 攻击的伤害/血量/死亡应答、捡东西后的背包刷新也是在这一段里到齐的。
@@ -241,6 +262,38 @@ fn run(argv: &[String]) -> Result<(), String> {
             damages.extend(world.take_damage());
         }
     }
+    if a.sell {
+        let npc_id = a.npc.unwrap_or(0);
+        // ⚠️ 认物**只认实例号**（D-75）：背包会被服务端重排，下标会漂。
+        let make = world
+            .bag
+            .iter()
+            .flatten()
+            .map(|it| it.make_index)
+            .max()
+            .unwrap_or(0);
+        if make == 0 {
+            return Err("背包里没有可卖的东西（`-sell` 得配 `-pickup`）".to_string());
+        }
+        sess.cmds
+            .send(Cmd::ShopSell {
+                npc_id,
+                make_index: make,
+                count: 1,
+            })
+            .map_err(|_| "命令通道已关闭".to_string())?;
+        println!("[world] 卖给 NPC={npc_id}：实例号 {make} ×1");
+        // 再收一小会儿：卖出的回执（金币 + 背包刷新）在这一段到齐
+        let tail2 = Instant::now() + Duration::from_millis(1500);
+        while Instant::now() < tail2 {
+            if let Ok(Ev::Envelope(env)) = sess.evs.recv_timeout(Duration::from_millis(50)) {
+                if world.apply(&env) == Change::World {
+                    changes += 1;
+                }
+            }
+        }
+    }
+
     for d in &damages {
         println!(
             "[world] 伤害：ActorId={} 打了 ActorId={} {} 点",
@@ -305,6 +358,15 @@ fn run(argv: &[String]) -> Result<(), String> {
             ));
         }
         println!("[world] 背包：{got} 件（要求至少 {want} 件）");
+    }
+    if let Some(want) = a.expect_gold {
+        let gold = world.ability.as_ref().map_or(0, |ab| ab.gold);
+        if gold < want {
+            return Err(format!(
+                "金币只有 {gold}，应为至少 {want}（`-sell` 卖出去了吗？）"
+            ));
+        }
+        println!("[world] 金币：{gold}（要求至少 {want}）");
     }
     if world.unknown > 0 {
         return Err(format!(

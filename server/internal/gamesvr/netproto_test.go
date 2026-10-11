@@ -25,6 +25,7 @@ import (
 
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/frame"
+	"github.com/algotao/mir2/server/internal/script"
 	"github.com/algotao/mir2/server/internal/storage"
 	"github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/internal/storage/sqlite"
@@ -1726,7 +1727,7 @@ func TestProtoRustPickup(t *testing.T) {
 	s.world.ground[gid] = &GroundItem{
 		ID:        gid,
 		Name:      "金创药(小量)",
-		Item:      &pb.UserItem{Index: 1, MakeIndex: 77_001, Dura: 1, DuraMax: 0},
+		Item:      &pb.UserItem{Index: 2, MakeIndex: 77_001, Dura: 1, DuraMax: 1}, // 2 = 金创药(小量)
 		Map:       s.world.defaultMap,
 		X:         1,
 		Y:         1,
@@ -1757,5 +1758,77 @@ func TestProtoRustPickup(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "背包：") {
 		t.Errorf("输出里没有背包断言：\n%s", out.String())
+	}
+}
+
+// TestProtoRustSell **捡起 → 卖给商人 → 金币增加**这条链（架构方向 ④ 第二环）。
+//
+// ⚠️ 同样跑**真的 Rust 客户端**。卖出的前置是"正在跟这个商人谈"
+// （`dialogMerchant`）+ 脚本头声明 `@sell` ⇒ 这里注入一个屠夫并给它一份脚本。
+func TestProtoRustSell(t *testing.T) {
+	bin, why := findE2EBin()
+	if bin == "" {
+		t.Skip("跳过（找不到 mir2-e2e）：" + why)
+	}
+	s, store, addr := protoContractServer(t)
+	sessionID, charID := seedAccount(t, store)
+
+	// 玩家在 (1,1)；商人挨着他放 (2,1)（距离 1，满足 ≤ storageNpcRange）
+	const npcID = uint32(2_000_000 + 2) // proto.NpcIDBase
+	npc := newTestMonster(npcID, "屠夫", 999999)
+	npc.IsNPC = true
+	npc.Object.SetPlace(s.world.defaultMap, 2, 1, entity.DirDown)
+	s.world.monsters[npc.ID] = npc
+	s.world.monsterIdx.Add(npc)
+
+	// 脚本头声明 @trading/@buy/@sell ⇒ 这个商人**收东西**
+	s.npc.defs = []*data.NPC{{
+		ID: "1Bme", Name: "屠夫", MapID: "0", X: 2, Y: 1, IsMerchant: true, RaceImg: 11,
+	}}
+	// ⚠️ 功能声明是**括号包起来**的那一行（`script.CmdLine`），不是 [@main] 里的内容
+	sc, err := script.Parse("1Bme-0", strings.NewReader(
+		"(@trading @buy @sell)\n[@main]\n要买点什么？\\\n<买/@buy>\\\n<卖/@sell>\n"))
+	if err != nil {
+		t.Fatalf("解析测试脚本: %v", err)
+	}
+	s.npc.scripts = map[string]*script.Script{"1Bme-0": sc}
+
+	// 玩家脚下放一件**卖得掉**的东西（金创药有价）
+	gid := uint32(900_002)
+	s.world.ground[gid] = &GroundItem{
+		ID:   gid,
+		Name: "金创药(小量)",
+		// ⚠️ index 2 = 金创药(小量)（价 40 ⇒ 半价 20）。别用 index 1 —— 那是金币，卖不掉。
+		Item:      &pb.UserItem{Index: 2, MakeIndex: 77_002, Dura: 1, DuraMax: 1},
+		Map:       s.world.defaultMap,
+		X:         1,
+		Y:         1,
+		Owner:     0,
+		CreatedAt: time.Now(),
+	}
+
+	cmd := exec.Command(bin, "world",
+		"-addr", addr,
+		"-session", strconv.Itoa(int(sessionID)),
+		"-char", strconv.FormatUint(charID, 10),
+		"-expect-map", "0",
+		"-pickup", strconv.FormatUint(uint64(gid), 10),
+		// ⚠️ 没有 `-expect-bag`：卖掉之后背包本来就是空的（"捡到了"由金币断言兜住）
+		"-npc", strconv.FormatUint(uint64(npcID), 10),
+		"-sell",
+		"-expect-gold", "1",
+		"-timeout-ms", "8000",
+	)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Rust 卖出剧本失败：%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "世界状态通过") {
+		t.Errorf("剧本没打通过标记，输出：\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "金币：") {
+		t.Errorf("输出里没有金币断言：\n%s", out.String())
 	}
 }
