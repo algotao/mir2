@@ -1,0 +1,971 @@
+//! 世界/UI 鼠标交互与其共享动作（架构方向 ⑥）。
+//!
+//! 把键盘共用的快捷栏/窗口小动作，以及世界模式 MouseDown/MouseUp、滚轮的 UI 命中
+//! 从 `runtime` 的事件 match 拿出来。原分支的覆盖顺序和 early-return 保持原样：
+//! 确认框/浮窗消费的点击不会穿透成走路、挖肉或点 NPC。
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use sdl3::mouse::MouseButton;
+
+use crate::app_state::AppState;
+use crate::*;
+
+/// 往聊天区说一句（点了个"还没做"的按钮时用 —— **绝不静默**）。
+fn ui_say(net: Option<&mut Net>, msg: &str) {
+    println!("[ui] {msg}");
+    if let Some(n) = net {
+        n.chat.push(msg.to_string(), C_CHAT_SYS);
+    }
+}
+
+/// 开关状态窗（F10 与底栏那颗 [人物] 都走这里 —— 鼠标与键盘必须同一个动作）。
+pub(crate) fn toggle_status(win: &mut windows::Windows) {
+    win.toggle_status();
+    println!("[ui] 状态窗 {}", if win.status() { "打开" } else { "关闭" });
+}
+
+/// 用快捷栏第 `i` 格：按实例号回**背包**找当前格位再用（背包会被重排 ⇒
+/// 不能存格位号）。找不到就清掉那一格并明说一句。
+fn belt_use(
+    net: &mut Option<Net>,
+    belt: &mut [Option<crate::layout::BeltSlot>; crate::layout::BELT_SLOTS],
+    i: usize,
+    make_index: i32,
+) {
+    let Some(n) = net.as_mut() else {
+        return;
+    };
+    match n
+        .world
+        .bag
+        .iter()
+        .position(|it| it.as_ref().is_some_and(|b| b.make_index == make_index))
+    {
+        Some(slot) => {
+            let name = n.world.bag[slot]
+                .as_ref()
+                .map(|b| b.name.clone())
+                .unwrap_or_default();
+            n.bag_use(slot as u32);
+            println!("[ui] 快捷栏 {} ⇒ 使用 {}", i + 1, name);
+        }
+        None => {
+            belt[i] = None;
+            n.chat.push(
+                format!("快捷栏 {} 的东西已经不在背包里了。", i + 1),
+                C_CHAT_SYS,
+            );
+        }
+    }
+}
+
+/// 数字键 1..6 ⇒ 用快捷栏那一格（**与点它同一个动作**）。空就明说一句。
+pub(crate) fn belt_key(
+    net: &mut Option<Net>,
+    belt: &mut [Option<crate::layout::BeltSlot>; crate::layout::BELT_SLOTS],
+    i: usize,
+) {
+    match belt[i] {
+        Some(b) => belt_use(net, belt, i, b.make_index),
+        None => ui_say(
+            net.as_mut(),
+            &format!("快捷栏 {i} 是空的（把物品拖进去）。"),
+        ),
+    }
+}
+
+/// 开关小地图（**Tab 与底栏那颗 [小地图] 都走这里** —— 鼠标与键盘同一个动作）。
+pub(crate) fn toggle_minimap(minimap_on: &mut bool) {
+    *minimap_on = !*minimap_on;
+    println!("[ui] 小地图 {}", if *minimap_on { "打开" } else { "关闭" });
+}
+
+/// 开关背包（**F9 与底栏那颗 [包裹] 都走这里**）。
+///
+/// ⚠️ 原来 F9 那支还顺手把 `bag_page` 归零 —— 抽出来就是为了"点按钮"和"按 F9"
+/// **一模一样**（用户 2026-10-11：鼠标行为与键盘行为要一致），别一处归零一处不归。
+pub(crate) fn toggle_bag(win: &mut windows::Windows, bag_page: &mut pager::Pager) {
+    win.toggle_bag();
+    bag_page.reset();
+    println!("[ui] 背包窗 {}", if win.bag() { "打开" } else { "关闭" });
+}
+
+/// 执行 `bagdrag` 给的动作（**两个窗共用**）：发包 + 乐观更新。
+///
+/// ⚠️ **规则本身不在这里** —— 它在 `bagdrag::BagDrag`（不碰 SDL ⇒ 有单元测试）。
+/// 这里只管"决定好了之后怎么落地"。
+fn apply_bag_act(act: bagdrag::Act, net: &mut Option<Net>) {
+    let Some(n) = net.as_mut() else {
+        return;
+    };
+    match act {
+        bagdrag::Act::None => {}
+        bagdrag::Act::PutBack => println!("[ui] 放回原格"),
+        bagdrag::Act::Repair { slot } => {
+            let special = n.world.repair.unwrap_or(false);
+            if let Some(it) = n.world.bag.get(slot).and_then(|o| o.as_ref()) {
+                let name = it.name.clone();
+                n.bag_repair(slot as u32, special);
+                println!(
+                    "[net] 修理 {}（{}）",
+                    name,
+                    if special { "特修" } else { "普修" }
+                );
+            }
+        }
+        bagdrag::Act::Equip { slot } => {
+            if let Some(it) = n.world.bag.get(slot).and_then(|o| o.as_ref()) {
+                let name = it.name.clone();
+                n.bag_equip(slot as u32);
+                println!("[net] 穿戴 {}", name);
+            }
+        }
+        bagdrag::Act::Use { slot } => {
+            if let Some(it) = n.world.bag.get(slot).and_then(|o| o.as_ref()) {
+                let name = it.name.clone();
+                n.bag_use(slot as u32);
+                println!("[net] 使用 {}", name);
+            }
+        }
+        bagdrag::Act::PickUp { slot } => {
+            if let Some(it) = n.world.bag.get(slot).and_then(|o| o.as_ref()) {
+                println!("[ui] 拾起 {}", it.name);
+            }
+        }
+        bagdrag::Act::Move { from, to } => {
+            n.bag_move(from as u32, to as u32);
+            // 乐观交换/移动；服务端随后用全量 BagItems 覆盖。
+            if from < n.world.bag.len() && to < n.world.bag.len() {
+                let moved = n.world.bag[from].clone();
+                let target = n.world.bag[to].clone();
+                n.world.bag[to] = moved;
+                n.world.bag[from] = target;
+            }
+            println!("[net] 包裹 {} → {}", from, to);
+        }
+    }
+}
+
+/// 执行通用控件的 OnClick 语义（游戏模式）。
+/// 返回 `true` 表示确认了退出动作；其他按钮处理完返回 `false`。
+fn handle_ui_press(app: &mut AppState, k: Press) -> bool {
+    match k {
+        Press::Hud(b) => match b {
+            crate::layout::HudBtn::State => toggle_status(&mut app.win),
+            crate::layout::HudBtn::Bag => toggle_bag(&mut app.win, &mut app.bag_page),
+            crate::layout::HudBtn::Magic => ui_say(app.net.as_mut(), "技能窗还没做（原版 F11）。"),
+            crate::layout::HudBtn::Option => ui_say(app.net.as_mut(), "选项窗还没做。"),
+        },
+        Press::Quick(b) => match b {
+            crate::layout::QuickBtn::MiniMap => toggle_minimap(&mut app.minimap_on),
+            crate::layout::QuickBtn::Trade => ui_say(app.net.as_mut(), "玩家交易还没做。"),
+            crate::layout::QuickBtn::Guild => ui_say(app.net.as_mut(), "行会还没做。"),
+            crate::layout::QuickBtn::Group => ui_say(app.net.as_mut(), "组队还没做。"),
+            crate::layout::QuickBtn::PlusAbil => ui_say(app.net.as_mut(), "属性加点还没做。"),
+            // 这两颗不直接生效 ⇒ 弹确认框
+            crate::layout::QuickBtn::Logout => app.confirm.ask(confirm::QuitAct::Logout),
+            crate::layout::QuickBtn::Exit => app.confirm.ask(confirm::QuitAct::Exit),
+        },
+        // 快捷栏：手上拿着 ⇒ 放进这格；空手 ⇒ 使用
+        Press::Belt(i) => {
+            // 手上拿的是**背包里的东西** ⇒ 放进这一格。
+            // （从腰带/装备槽拿来的还没接线 ⇒ `bag_index()` 为 None，
+            //  那就落到下面"使用这一格"的老逻辑上。）
+            if let Some(idx) = app.drag.held_slot() {
+                if let Some(Some(it)) = app.net.as_ref().and_then(|n| n.world.bag.get(idx)) {
+                    app.belt[i] = Some(crate::layout::BeltSlot {
+                        make_index: it.make_index,
+                        looks: it.looks,
+                    });
+                    println!("[ui] 快捷栏 {} = {}", i + 1, it.name);
+                }
+                // 放进快捷栏了 ⇒ 手上与卖窗槽都清掉
+                app.drag.clear();
+            } else if let Some(b) = app.belt[i] {
+                belt_use(&mut app.net, &mut app.belt, i, b.make_index);
+            }
+        }
+        Press::BagClose => {
+            app.win.close_bag();
+            println!("[ui] 背包窗关闭（点 X）");
+        }
+        Press::Status(crate::status::Hit::Close) => {
+            app.win.close_status();
+            println!("[ui] 状态窗关闭（点 X）");
+        }
+        Press::Status(crate::status::Hit::Arrow(d)) => {
+            app.status_page.step(d, crate::status::PAGES);
+            println!("[ui] 状态窗翻到第 {} 页", app.status_page.page());
+        }
+        Press::Status(_) => {}
+        Press::Shop(crate::shop::Hit::Prev) => {
+            let n = app
+                .net
+                .as_ref()
+                .and_then(|n| n.world.shop.as_ref())
+                .map_or(0, |sh| sh.items.len());
+            app.shop_ui.page_step(-1, n);
+        }
+        Press::Shop(crate::shop::Hit::Next) => {
+            let n = app
+                .net
+                .as_ref()
+                .and_then(|n| n.world.shop.as_ref())
+                .map_or(0, |sh| sh.items.len());
+            app.shop_ui.page_step(1, n);
+        }
+        Press::Shop(crate::shop::Hit::Ok) => {
+            if let Some(sh) = app.net.as_ref().and_then(|n| n.world.shop.as_ref()) {
+                match app.shop_ui.sel().and_then(|s| sh.items.get(s)) {
+                    Some(it) => {
+                        let name = it.name.clone();
+                        let npc = sh.npc_id;
+                        if let Some(n) = app.net.as_ref() {
+                            n.shop_buy(npc, &name, 1);
+                        }
+                        println!("[net] 买入 {}", name);
+                    }
+                    None => ui_say(app.net.as_mut(), "先点一件商品再点 OK"),
+                }
+            }
+        }
+        Press::Shop(crate::shop::Hit::Close) => {
+            app.win.close_shop();
+            app.shop_ui.close();
+            println!("[ui] 商店窗关闭（素材关闭钮）");
+        }
+        Press::Shop(_) => {}
+        Press::Sell(crate::shop::SellHit::Close) => {
+            app.win.close_sell();
+            app.drag.clear();
+            println!("[ui] 卖货窗关闭（同步收包裹）");
+        }
+        Press::Sell(crate::shop::SellHit::Slot) => {
+            // 拿着东西点槽 = **放进去**；空手点槽 = **拿回手上**。
+            // 两边都 `take()` 再按情况放回去 ⇒ 不存在"同时拿着又放着"。
+            app.drag.click_slot();
+        }
+        Press::Sell(crate::shop::SellHit::Ok) => {
+            // 认物**只认实例号**（D-75）：背包随时可能被服务端重排，
+            // 槽里那件记的**下标**会漂 ⇒ 按 `make_index` 找它。
+            let Some(mk) = app.drag.placed_make() else {
+                return false;
+            };
+            let Some(n) = app.net.as_ref() else {
+                return false;
+            };
+            let Some(sh) = n.world.shop.as_ref() else {
+                return false;
+            };
+            let npc = sh.npc_id;
+            let Some(it) = n.world.bag.iter().flatten().find(|it| it.make_index == mk) else {
+                return false;
+            };
+            if it.make_index != 0 {
+                let count = it.count.max(1);
+                let mk2 = it.make_index;
+                let name = it.name.clone();
+                n.shop_sell(npc, mk2, count);
+                println!("[net] 卖出 {} x{count}", name);
+                // 真卖出去了才把它从槽里拿掉
+                app.drag.take_placed();
+            }
+        }
+        Press::Sell(_) => {}
+        Press::ConfirmOk => {
+            if let Some(act) = app.confirm.confirm() {
+                match act {
+                    confirm::QuitAct::Logout => {
+                        ui_say(app.net.as_mut(), "已注销。");
+                        app.net = None;
+                        app.mode = 1;
+                        app.belt = [None; crate::layout::BELT_SLOTS];
+                        app.win.close_all();
+                    }
+                    confirm::QuitAct::Exit => return true,
+                }
+            }
+        }
+        Press::ConfirmCancel => app.confirm.cancel(),
+        // 登录界面的按钮：不会走到这里（那是 `mode == 1` 的事，
+        // 见下面登录那条 `release`）。列出来只为穷尽匹配。
+        Press::Login(_) => {}
+        // 选角场景（那是 `mode == 4` 的事）⇒ 同上，只为穷尽匹配
+        Press::Select(_) | Press::NewChar(_) => {}
+    }
+    false
+}
+
+/// 世界模式 MouseDown：浮窗优先消费，其余再落到移动/挖肉/NPC/诊断探针。
+///
+/// 这里保留原分支的检查顺序与 early-return：特别是 modal confirm 和命中窗口后，
+/// 不能再穿透成走路或点 NPC。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_world_mouse_down<'a>(
+    app: &mut AppState,
+    mouse_btn: MouseButton,
+    x: f32,
+    y: f32,
+    ui: &mut ui::UiCache<'a>,
+    asset_dir: &Option<PathBuf>,
+    ui_texts: &mut font::TextCache<'a>,
+    draws: &[TileDraw],
+    tiles: &HashMap<TileKey, TileTex<'a>>,
+) {
+    let in_world = app.net.as_ref().is_some_and(|n| n.world.in_world());
+    match mouse_btn {
+        MouseButton::Left | MouseButton::Right if in_world => {
+            let cell = screen_to_cell(app.cam, x, y);
+            let run = mouse_btn == MouseButton::Right;
+            // 按住时每 300ms 要拿"当前鼠标位置"重取目标（见下面 `MOUSE_REPEAT_MS`
+            // 那段）⇒ 按下这一刻就得把位置记上（光等 `MouseMotion` 会漏掉
+            // "按下后一动不动"的那种按住）。
+            app.mouse = (x, y);
+            app.ui_click.set_mouse(crate::widget::canvas_pt(app.mouse));
+            // ⚠️ **本次点击是否被某个浮窗消费**（todo 第 7 条）：
+            // 浮窗是画在世界**之上**的，点在窗里就不该再穿透到世界
+            //（原来各窗只清一次移动目标，后面那步"点 NPC"照跑 ⇒
+            //  隔着窗点一下照样跟 NPC 说话）。窗命中时置 true，
+            // 下面的"世界"分支（移动/挖肉/点 NPC）统一跳过。
+            let mut ui_consumed = false;
+            // ①″ **确认框开着 ⇒ 它是模态**：只认框里的两颗按钮，
+            // 点框外/别处一律当作"取消"（不走路、不穿透到世界）。
+            if app.confirm.is_open() {
+                if mouse_btn == MouseButton::Left {
+                    if let Some(dir) = asset_dir.as_deref() {
+                        let c = hud::confirm_geom(ui, dir, (WIN_W, WIN_H));
+                        if let Some(c) = c {
+                            // OnClick 规范 ⇒ 按下只记，松开才执行（见 `widget`）
+                            if c.ok.hit(app.mouse) {
+                                app.ui_click.press(
+                                    Press::ConfirmOk,
+                                    crate::widget::canvas_rect((c.ok.x, c.ok.y, c.ok.w, c.ok.h)),
+                                );
+                            } else if c.cancel.hit(app.mouse) {
+                                app.ui_click.press(
+                                    Press::ConfirmCancel,
+                                    crate::widget::canvas_rect((
+                                        c.cancel.x, c.cancel.y, c.cancel.w, c.cancel.h,
+                                    )),
+                                );
+                            } else if !c.frame.hit(app.mouse) {
+                                // 点框外 = 收起模态（不是按钮）⇒ 即时生效
+                                app.confirm.cancel();
+                            }
+                        } else {
+                            app.confirm.cancel(); // 量不到素材 ⇒ 别把人卡住
+                        }
+                    }
+                }
+                app.combat_target = None;
+                app.move_target = None;
+                app.press_at = None;
+                app.pending_pickup = None;
+                app.held_move = None;
+                return;
+            }
+            // ①‴ **底栏右上那 4 个功能按钮**（人物/包裹/技能/选项，
+            // 图号 8-11，用户 2026-10-11）：点它们 = 按对应的功能键，
+            // 走**同一个** `toggle_*` ⇒ 鼠标与键盘行为一致。
+            // ⚠️ 面板盖在世界之上 ⇒ 点中就要 `ui_consumed`（不然人还会走）。
+            if mouse_btn == MouseButton::Left {
+                if let Some(b) = crate::layout::hud_btn_at(app.mouse) {
+                    // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
+                    app.ui_click
+                        .press(Press::Hud(b), crate::widget::canvas_rect(b.rect()));
+                    // 目标清掉，**本次点击不再穿透到世界**（与其它浮窗
+                    // 同一条纪律：命中就 `continue`，不然人还会走）。
+                    app.combat_target = None;
+                    app.move_target = None;
+                    app.press_at = None;
+                    app.pending_pickup = None;
+                    app.held_move = None;
+                    return;
+                }
+                // **快捷（腰带）栏**：手上拿着东西 ⇒ 放进这格；
+                // 空手 ⇒ 使用这格里的东西（原版单击是"拿起"，
+                // 但快捷栏的意义就是快速使用 ⇒ 单击即用）。
+                if let Some(i) = crate::layout::belt_slot_at(app.mouse) {
+                    app.ui_click.press(
+                        Press::Belt(i),
+                        crate::widget::canvas_rect(crate::layout::belt_slot_rect(i)),
+                    );
+                    app.combat_target = None;
+                    app.move_target = None;
+                    app.press_at = None;
+                    app.pending_pickup = None;
+                    app.held_move = None;
+                    return;
+                }
+                // 底栏**左下**那排快捷按钮（小地图/交易/行会/组队/属性）。
+                // 小地图那颗 = **Tab** 同一个动作（`toggle_minimap`）。
+                if let Some(b) = crate::layout::hud_quick_at(app.mouse) {
+                    // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
+                    app.ui_click
+                        .press(Press::Quick(b), crate::widget::canvas_rect(b.rect()));
+                    app.combat_target = None;
+                    app.move_target = None;
+                    app.press_at = None;
+                    app.pending_pickup = None;
+                    app.held_move = None;
+                    return;
+                }
+            }
+            // 左键才判"单击"（用户第 3 条说的是左键）；右键仍是按住=跑
+            if mouse_btn == MouseButton::Left {
+                app.press_at = Some(Instant::now());
+                app.press_cell = cell;
+            } else {
+                app.press_at = None;
+            }
+            // **挖肉锁定**（原版 `CM_BUTCH`，用户第 1 条）：**按住 Alt 点一下**
+            // 动物尸体 ⇒ 锁定为"正在挖它"，**按住不放就持续挖**（不是反复点）。
+            // 皮革度要挖好几刀才归零（鸡 50，一刀 -5..20）⇒ 一次点击出不了肉。
+            let mut did_butch = false;
+            if mouse_btn == MouseButton::Left && app.alt_down {
+                if let Some(n) = app.net.as_ref() {
+                    let corpse = n
+                        .world
+                        .entities
+                        .values()
+                        .find(|e| e.dead && (e.x, e.y) == cell);
+                    if let Some(e) = corpse {
+                        app.butch_target = Some(e.id);
+                        app.butch_next = Instant::now(); // 立刻挖第一刀
+                        println!("[net] 挖肉锁定 {}", e.name);
+                        did_butch = true;
+                        // 挖肉不是"选目标/走路"⇒ 目标清掉（下面 `(ct, mt)`
+                        // 走 None 那支），也别把这次当"单击走一格"。
+                        app.press_at = None;
+                        app.pending_pickup = None;
+                    }
+                }
+            }
+            // 包裹操作（普通/卖出共用）：单击拾取，双击可穿戴物品=穿、
+            // 其他物品=使用；拿起后点空格=移动、点已有物品=交换。
+            let mut bag_handled = false;
+            if mouse_btn == MouseButton::Left && app.win.bag() {
+                if let Some(n) = app.net.as_ref() {
+                    let (bx, by) = crate::layout::bag_pos(app.win.shop());
+                    let lx = x - bx;
+                    let ly = y - by;
+                    if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
+                        let idx = app.bag_page.page() * crate::layout::BAG_PAGE_SLOTS + slot;
+                        // —— 包裹操作规范（用户 2026-10-10，普通/卖出一致）——
+                        // 2/3. 手上拿着：放到**空格** = 移动；放到**有东西的格**
+                        //     = **交换**（那格的物品变为拾取）。服务端是权威
+                        //     （发 `MoveItem`），本地乐观更新，等全量刷新覆盖。
+                        // 5. 双击物品格 = **使用**（原版 `CM_EAT`）。
+                        // —— 包裹操作规范（用户 2026-10-10，普通/卖出一致）——
+                        // 规则全在 `bagdrag`（架构方向 ①）：那份不碰 SDL ⇒
+                        // 有单元测试；这里只负责**执行**它给的动作。
+                        let act = {
+                            let cell = |i: usize| {
+                                n.world.bag.get(i).and_then(|o| o.as_ref()).map(|it| {
+                                    bagdrag::Cell {
+                                        make: it.make_index,
+                                        std_mode: it.std_mode,
+                                    }
+                                })
+                            };
+                            app.drag
+                                .click_bag(idx, Instant::now(), n.world.repair, cell)
+                        };
+                        apply_bag_act(act, &mut app.net);
+                        // 抓在手上了 ⇒ 别再走过去 / 捡地上的东西
+                        if matches!(act, bagdrag::Act::PickUp { .. }) {
+                            app.press_at = None;
+                            app.pending_pickup = None;
+                        }
+                        bag_handled = true;
+                    }
+                }
+                if bag_handled {
+                    app.combat_target = None;
+                    app.move_target = None;
+                    app.press_at = None;
+                    app.held_move = None;
+                    return;
+                }
+            }
+            let (ct, mt) = if did_butch || app.butch_target.is_some() {
+                // 挖肉中（含"这一下就是挖肉"）⇒ **不走路、不选目标**
+                //（用户 2026-10-10 第 1 条：挖肉时人物不该动）
+                (None, None)
+            } else {
+                // 照原版 `_DXDrawMouseDown`（`ClMain.pas:2805-2878`）：
+                // **先清掉旧目标**，点到**活怪**就锁住它（之后每帧自动靠近/出手，
+                // 直到它死掉或消失）；点空地 ⇒ 走/跑到那一格。
+                app.net
+                    .as_ref()
+                    .map(|n| mouse_intent(&n.world, cell, run, app.hover))
+                    .unwrap_or((None, None))
+            };
+            app.combat_target = ct;
+            app.move_target = mt;
+            // 点在**地上有东西**的格子 ⇒ 记下"待捡"：走到那格自动捡
+            //（原版点物品也是先走过去；到了就发，见帧循环里那段）。
+            if mouse_btn == MouseButton::Left {
+                if let Some(n) = app.net.as_ref() {
+                    match n.world.ground.values().find(|g| (g.x, g.y) == cell) {
+                        Some(gi) if n.world.self_pos == cell => {
+                            n.pickup(gi.ground_id);
+                            app.pending_pickup = None;
+                        }
+                        Some(gi) => app.pending_pickup = Some((gi.ground_id, cell)),
+                        None => app.pending_pickup = None,
+                    }
+                }
+            }
+            app.attack_at = Instant::now(); // 立刻判"该出手还是该靠近"
+                                            // ⚠️ `move_at` **不清零**：原版的客户端是"停等"的
+                                            //（发一条动作后 `ActionLock := TRUE`，等服务端
+                                            // `sSTATUS_GOOD/FAIL` 才解锁并计下一拍，`ClMain.pas:3575-3584/4214-4222`）。
+                                            // 我们每次按下都清零 ⇒ 连点会把间隔压到 0 ⇒ 服务端按到达时间限流
+                                            // 直接回 `reason=1`，客户端再锁 1 秒 ⇒ "点了没反应"。
+                                            // ⚠️ **按住不放要能一直走**：原版靠 `DXDrawMouseMove`
+                                            //（`ClMain.pas:2678-2679`）—— 按住时只要距上次 >300ms 就**重跑一遍
+                                            // 按下逻辑**，于是"鼠标那一格"被反复重新当成目标。少了它，
+                                            // 目标格是按下那一刻定死的 ⇒ 走到那儿就停（用户 2026-10-08 报的
+                                            // "按住只能走数次"）。
+            app.held_move = Some(mouse_btn);
+            app.retarget_at = Instant::now();
+            match ct {
+                Some(id) => {
+                    println!("[net] 锁定目标 ActorId={id}（靠近后自动出手）");
+                }
+                None => println!(
+                    "[move] 目标格 ({},{})：{}",
+                    cell.0,
+                    cell.1,
+                    if run { "跑" } else { "走" }
+                ),
+            }
+            // ② 对话开着：点选项 = 选它；点面板别处 = 什么也别做（**别走路**）
+            //
+            // ⚠️ 这两条排在"走路/锁怪"那段**之后**，靠"清掉已写好的意图"
+            // 实现（把上面那一大段包进 if 会多一层缩进、更容易漏改）。
+            if let Some(n) = app.net.as_ref() {
+                if let Some((panel, lines, scroll)) =
+                    hud::dialog_geom(app.net.as_ref(), app.dlg_scroll.scroll())
+                {
+                    // **行内可点文字**：命中矩形由 `input::dialog_line_pieces`
+                    // 算（与 `draw_dialog` 是同一份 ⇒ 画哪点哪），
+                    // 片段自带**选项序号**（服务端把 `<打开/@trading>` 改写成了
+                    // `<打开/@1>`），直接拿它回包。
+                    let hit = {
+                        let mut measure = |t: &str| ui_texts.width(t);
+                        // ⚠️ 命中要带上**滚动位置**：画的是卷过之后的那几行，
+                        // 拿未卷的行号去判就会点空/点到隔壁（画与命中同源）。
+                        input::dialog_link_at(panel, &lines, (x, y), scroll, &mut measure)
+                    };
+                    if let Some(idx) = hit {
+                        if let Some(d) = n.world.dialog.as_ref() {
+                            n.npc_select(d.npc_id, idx);
+                            println!("[net] 对话选项 {idx}");
+                        }
+                    } else if input::dialog_close_hit(panel, (x, y)) {
+                        // 右上角那个红 X（用户 2026-10-09 第 1 条：
+                        // 「对话窗口右上角有个X按钮，现在你没有接上"关闭/退出"」）
+                        // ⚠️ 与点「退出」/按 ESC **完全同一条路**
+                        //（用户 2026-10-10 第 2 条：点 X 也要关掉
+                        // 物品列表与包裹）—— 所以复用同一个出口：
+                        // 发 `NpcClose` + 本地 `close_dialog()`（它连带收货架）。
+                        if let Some(d) = n.world.dialog.as_ref() {
+                            n.npc_close(d.npc_id);
+                        }
+                        if let Some(n) = app.net.as_mut() {
+                            n.world.close_dialog();
+                        }
+                        println!("[net] 对话关闭（点 X，与退出同一条路）");
+                    }
+                    // ⚠️ **只有点在面板里**才吞掉这次点击。
+                    // 用户 2026-10-09：「对话期间应仍能操作（走、跑、打架），
+                    // 现在不能跑不能走，人被定在那里」—— 原来是无条件清空意图，
+                    // 等于把整个屏幕都变成"对话区"。原版的对话窗是**非模态**的
+                    //（`NPCDialog` 就是个窗口，`DrawScrn.pas` 里它跟世界各画各的），
+                    // 外面照常点：此时才拦。
+                    if input::dialog_hit(panel, (x, y)) {
+                        app.combat_target = None;
+                        app.move_target = None;
+                        app.press_at = None;
+                        app.held_move = None;
+                        ui_consumed = true;
+                    }
+                }
+            }
+            // ②″ F10 状态窗：点 X = 关窗、点箭头 = 翻页、点槽 = 报一下那件；
+            // 点在窗里别处 = 吞掉（与背包窗同一套）
+            if app.win.status() {
+                if let Some(dir) = asset_dir.as_deref() {
+                    if let Some(bg) = ui.size(dir, crate::status::BG_LIB, crate::status::BG) {
+                        let (wx, wy, ww, wh) = crate::status::panel(bg);
+                        if x >= wx && x < wx + ww && y >= wy && y < wy + wh {
+                            ui_consumed = true;
+                            match crate::status::hit((x - wx, y - wy)) {
+                                // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
+                                crate::status::Hit::Close => {
+                                    let c = crate::status::CLOSE;
+                                    app.ui_click.press(
+                                        Press::Status(crate::status::Hit::Close),
+                                        crate::widget::canvas_rect((wx + c.0, wy + c.1, c.2, c.3)),
+                                    );
+                                }
+                                crate::status::Hit::Arrow(d) => {
+                                    let a = if d < 0 {
+                                        crate::status::ARROW_UP_RECT
+                                    } else {
+                                        crate::status::ARROW_DOWN_RECT
+                                    };
+                                    app.ui_click.press(
+                                        Press::Status(crate::status::Hit::Arrow(d)),
+                                        crate::widget::canvas_rect((wx + a.0, wy + a.1, a.2, a.3)),
+                                    );
+                                }
+                                crate::status::Hit::Slot(slot) => {
+                                    if let Some(n) = app.net.as_ref() {
+                                        let name = crate::status::slot_name(slot);
+                                        if app.status_page.page() == 0 {
+                                            if let Some(Some(it)) = n.world.equip.get(slot) {
+                                                n.equip_unequip(slot as u32);
+                                                println!("[net] 脱下 {}（{}）", it.name, name);
+                                            } else {
+                                                println!(
+                                                    "[ui] 装备槽 {}（{}）是空的",
+                                                    slot + 1,
+                                                    name
+                                                );
+                                            }
+                                        } else {
+                                            let msg = match n.world.equip.get(slot) {
+                                                Some(Some(it)) => format!(
+                                                    "装备槽 {}（{}）：{}",
+                                                    slot + 1,
+                                                    name,
+                                                    it.name
+                                                ),
+                                                _ => {
+                                                    format!("装备槽 {}（{}）是空的", slot + 1, name)
+                                                }
+                                            };
+                                            println!("[ui] {msg}");
+                                            if let Some(n) = app.net.as_mut() {
+                                                n.chat.push(trunc(&msg, 30), C_CHAT_SYS);
+                                            }
+                                        }
+                                    }
+                                }
+                                crate::status::Hit::None => {}
+                            }
+                            app.combat_target = None;
+                            app.move_target = None;
+                            app.press_at = None;
+                            app.held_move = None;
+                        }
+                    }
+                }
+            }
+            // ②′ 背包窗：左键抓起；双击可穿戴物品 = 穿、其他物品 = 使用；
+            // 拿着物品点空格 = 移动、点已有物品 = 交换。卖出模式复用同一只手。
+            if app.win.bag() {
+                let (bx, by) = crate::layout::bag_pos(app.win.shop());
+                let inside = x >= bx
+                    && x < bx + crate::layout::BAG_W
+                    && y >= by
+                    && y < by + crate::layout::BAG_H;
+                if inside {
+                    ui_consumed = true;
+                    let (lx, ly) = (x - bx, y - by);
+                    let on_close = (crate::layout::BAG_CLOSE_X
+                        ..crate::layout::BAG_CLOSE_X + crate::layout::BAG_CLOSE_W)
+                        .contains(&lx)
+                        && (crate::layout::BAG_CLOSE_Y
+                            ..crate::layout::BAG_CLOSE_Y + crate::layout::BAG_CLOSE_H)
+                            .contains(&ly);
+                    if on_close {
+                        app.ui_click.press(
+                            Press::BagClose,
+                            crate::widget::canvas_rect((
+                                bx + crate::layout::BAG_CLOSE_X,
+                                by + crate::layout::BAG_CLOSE_Y,
+                                crate::layout::BAG_CLOSE_W,
+                                crate::layout::BAG_CLOSE_H,
+                            )),
+                        );
+                    } else if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
+                        let idx = app.bag_page.page() * crate::layout::BAG_PAGE_SLOTS + slot;
+                        // 与上面那处**同一份规则**（`bagdrag`），不再各写一遍
+                        if let Some(n) = app.net.as_ref() {
+                            let act = {
+                                let cell = |i: usize| {
+                                    n.world.bag.get(i).and_then(|o| o.as_ref()).map(|it| {
+                                        bagdrag::Cell {
+                                            make: it.make_index,
+                                            std_mode: it.std_mode,
+                                        }
+                                    })
+                                };
+                                app.drag
+                                    .click_bag(idx, Instant::now(), n.world.repair, cell)
+                            };
+                            apply_bag_act(act, &mut app.net);
+                        }
+                    }
+                    app.combat_target = None;
+                    app.move_target = None;
+                    app.press_at = None;
+                    app.held_move = None;
+                }
+            }
+            // ②″″ 商店窗：点行=**选中**、点箭头=翻页、点 OK=买选中的
+            //（原版口径，用户 2026-10-10 第 7 条）；点在窗里别走路
+            // ⚠️ 买/卖是**两个窗**：只有"买"模式才走商品列表窗
+            //（卖模式下面那个窗出的是放物品的槽）
+            if app.win.shop() {
+                if let Some(n) = app.net.as_ref() {
+                    if let Some(sh) = n.world.shop.as_ref().filter(|s| !s.is_sell()) {
+                        let (wx, wy, ww, wh) = crate::shop::panel();
+                        if x >= wx && x < wx + ww && y >= wy && y < wy + wh {
+                            ui_consumed = true;
+                            let base = app.shop_ui.page() * crate::shop::ROWS;
+                            let rows = sh.items.len().saturating_sub(base);
+                            match crate::shop::hit((x - wx, y - wy), rows) {
+                                crate::shop::Hit::Row(r) => {
+                                    app.shop_ui.click_row(r);
+                                }
+                                // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
+                                crate::shop::Hit::Prev => {
+                                    let p = crate::shop::PREV_R;
+                                    app.ui_click.press(
+                                        Press::Shop(crate::shop::Hit::Prev),
+                                        crate::widget::canvas_rect((wx + p.0, wy + p.1, p.2, p.3)),
+                                    );
+                                }
+                                crate::shop::Hit::Next => {
+                                    let p = crate::shop::NEXT_R;
+                                    app.ui_click.press(
+                                        Press::Shop(crate::shop::Hit::Next),
+                                        crate::widget::canvas_rect((wx + p.0, wy + p.1, p.2, p.3)),
+                                    );
+                                }
+                                crate::shop::Hit::Ok => {
+                                    let p = crate::shop::OK;
+                                    app.ui_click.press(
+                                        Press::Shop(crate::shop::Hit::Ok),
+                                        crate::widget::canvas_rect((wx + p.0, wy + p.1, p.2, p.3)),
+                                    );
+                                }
+                                crate::shop::Hit::Close => {
+                                    let p = crate::shop::CLOSE;
+                                    app.ui_click.press(
+                                        Press::Shop(crate::shop::Hit::Close),
+                                        crate::widget::canvas_rect((wx + p.0, wy + p.1, p.2, p.3)),
+                                    );
+                                }
+                                crate::shop::Hit::None => {}
+                            }
+                            app.combat_target = None;
+                            app.move_target = None;
+                            app.press_at = None;
+                            app.held_move = None;
+                        }
+                    }
+                }
+            }
+            // ②‴ 卖货窗：点圈 = 放下手上的东西；点 OK = 卖掉圈里那件
+            //（原版拖放式，用户 2026-10-10 第 3 条）；点在窗里别走路。
+            if app.win.shop()
+                && app.win.bag()
+                && app
+                    .net
+                    .as_ref()
+                    .and_then(|n| n.world.shop.as_ref())
+                    .is_some_and(|s| s.is_sell())
+            {
+                let (sx, sy, sw, sh) = crate::shop::sell_panel();
+                if x >= sx && x < sx + sw && y >= sy && y < sy + sh {
+                    ui_consumed = true;
+                    match crate::shop::sell_hit((x - sx, y - sy)) {
+                        // 右上角的**红色关闭叉**（素材自带）⇒ 关卖窗。
+                        // ⚠️ **同时关包裹**（用户 2026-10-11 第 3 条）：
+                        // 卖窗就是"卖出"这件事的入口，它关了包裹留着没意义，
+                        // 原版关卖窗时包裹也是一起收的。
+                        // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
+                        crate::shop::SellHit::Close => {
+                            let p = crate::shop::SELL_CLOSE;
+                            app.ui_click.press(
+                                Press::Sell(crate::shop::SellHit::Close),
+                                crate::widget::canvas_rect((sx + p.0, sy + p.1, p.2, p.3)),
+                            );
+                        }
+                        // 圆槽：**手上拿着 ⇒ 放下；已经放着 ⇒ 再拿起来**
+                        //（用户 2026-10-10：物品放下后还可以再次拾起、放回包裹）
+                        crate::shop::SellHit::Slot => {
+                            let p = crate::shop::SELL_SLOT;
+                            app.ui_click.press(
+                                Press::Sell(crate::shop::SellHit::Slot),
+                                crate::widget::canvas_rect((sx + p.0, sy + p.1, p.2, p.3)),
+                            );
+                        }
+                        crate::shop::SellHit::Ok => {
+                            let p = crate::shop::SELL_OK;
+                            app.ui_click.press(
+                                Press::Sell(crate::shop::SellHit::Ok),
+                                crate::widget::canvas_rect((sx + p.0, sy + p.1, p.2, p.3)),
+                            );
+                        }
+                        crate::shop::SellHit::None => {}
+                    }
+                    app.combat_target = None;
+                    app.move_target = None;
+                    app.press_at = None;
+                    app.held_move = None;
+                }
+            }
+            // ③ 点 NPC ⇒ **说话**，不是往它那格走。
+            //
+            // ⚠️ 判据分两层（用户 2026-10-09 报"点 NPC 没反应"）：
+            //   1. `hover`（上一帧用 `actor_rect` = **画出来的框**算的）——
+            //      NPC 的精灵比格子高，点它的头/肩时格子是**上面那一格**，
+            //      只看格子就是"点了没反应、人还往那边走"；
+            //   2. 兜底再用格子（光标正好压在它脚下那格时，`hover` 可能为空）。
+            if !ui_consumed {
+                if let Some(n) = app.net.as_ref() {
+                    let hit = app
+                        .hover
+                        .filter(|id| n.world.npc_kind(*id))
+                        .or_else(|| n.world.npc_at(cell.0, cell.1));
+                    if let Some(id) = hit {
+                        n.npc_click(id);
+                        app.combat_target = None;
+                        app.move_target = None;
+                        app.press_at = None; // 松开时别再改判成"走一格"
+                        app.held_move = None;
+                        println!("[net] 点 NPC ActorId={id}（等 NpcSay）");
+                    }
+                }
+            }
+        }
+        MouseButton::Left => probe_at(x, y, app.cam, draws, tiles, app.layers),
+        _ => {}
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MouseUpOutcome {
+    /// 继续下游事件（可能退出主循环）。
+    Continue,
+    /// 点击了 UI 控件，不能再落成世界走路。
+    Consumed,
+    /// 已确认退出。
+    Quit,
+}
+
+/// 世界模式 MouseUp：通用控件点击优先；未被 UI 消费时再处理单击走一格。
+pub(crate) fn handle_world_mouse_up(
+    app: &mut AppState,
+    mouse_btn: MouseButton,
+    x: f32,
+    y: f32,
+) -> MouseUpOutcome {
+    // ① **OnClick**：左键按下 + 松开在**同一控件**才执行
+    //（规范见 `widget` 模块头的表：拖出控件再松开 / 右键 / 只有
+    // MouseDown ⇒ 都不触发）。右键不会走到这里（`release` 只对左键调）。
+    if mouse_btn == MouseButton::Left {
+        if let Some(k) = app.ui_click.release(crate::widget::canvas_pt((x, y))) {
+            if handle_ui_press(app, k) {
+                return MouseUpOutcome::Quit;
+            }
+            return MouseUpOutcome::Consumed;
+        }
+    }
+    app.held_move = None;
+    // ⚠️ 单击 = 走**一格**（用户 2026-10-09 第 3 条）：按下那一刻已经把
+    // "走到光标那格"当成目标了（`mouse_intent`），够快松手就把它换成
+    // **紧邻那一格** ⇒ 一步之后"到达"、目标自清。按住（> `CLICK_MS`）
+    // 仍是一路走过去。
+    if mouse_btn == MouseButton::Left {
+        if let Some(t) = app.press_at.take() {
+            if t.elapsed() < Duration::from_millis(input::CLICK_MS) {
+                if let Some(n) = app.net.as_mut() {
+                    if n.world.in_world() {
+                        let (ct, mt) = if app.butch_target.is_some() {
+                            (None, None) // 挖肉中 ⇒ 松手也不走一格
+                        } else {
+                            input::click_step(
+                                &n.world,
+                                n.world.self_pos,
+                                app.press_cell,
+                                false,
+                                app.hover,
+                            )
+                        };
+                        if ct.is_some() || mt.is_some() {
+                            app.combat_target = ct;
+                            app.move_target = mt;
+                            app.attack_at = Instant::now();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    MouseUpOutcome::Continue
+}
+
+/// 处理背包 / 对话 / 商店三个窗的滚轮，按覆盖顺序只让最上层命中的一个消费。
+pub(crate) fn handle_mouse_wheel(app: &mut AppState, y: f32) {
+    let mut done = false;
+    // ① 背包窗内滚轮翻页（服务端背包 46 格 = 2 页，窗口一次只画 24 格）
+    if app.win.bag() {
+        let (bx, by) = crate::layout::bag_pos(app.win.shop());
+        let inside = app.mouse.0 >= bx
+            && app.mouse.0 < bx + crate::layout::BAG_W
+            && app.mouse.1 >= by
+            && app.mouse.1 < by + crate::layout::BAG_H;
+        if inside {
+            let pages = app
+                .net
+                .as_ref()
+                .map_or(1, |n| {
+                    n.world.bag.len().div_ceil(crate::layout::BAG_PAGE_SLOTS)
+                })
+                .max(1);
+            if y > 0.0 {
+                app.bag_page.step(1, pages);
+            } else if y < 0.0 {
+                app.bag_page.step(-1, pages);
+            }
+            done = true;
+        }
+    }
+    // ② 对话窗内滚轮卷行（正文折行后常常超出背板：298 个脚本里 114 个超一屏）
+    if !done && app.net.is_some() {
+        if let Some((panel, lines, _)) = hud::dialog_geom(app.net.as_ref(), app.dlg_scroll.scroll())
+        {
+            if input::dialog_hit(panel, app.mouse) {
+                app.dlg_scroll.wheel(y, lines.len());
+                done = true;
+            }
+        }
+    }
+    // ③ 商店窗内滚轮翻页（一个商人最多 20 件商品 ⇒ 2 页）
+    if !done && app.win.shop() {
+        if let Some(n) = app.net.as_ref() {
+            if let Some(sh) = n.world.shop.as_ref() {
+                let (wx, wy, ww, wh) = crate::shop::panel();
+                if app.mouse.0 >= wx
+                    && app.mouse.0 < wx + ww
+                    && app.mouse.1 >= wy
+                    && app.mouse.1 < wy + wh
+                {
+                    app.shop_ui
+                        .wheel(if y > 0.0 { 1 } else { -1 }, sh.items.len());
+                }
+            }
+        }
+    }
+}

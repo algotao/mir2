@@ -5147,3 +5147,23 @@ scene_input.rs  100 行：登录/选角鼠标空间适配
 清理的顺序原样，不在搬运时顺手改交互。
 
 **验收**：客户端 154/148/7/4，clippy 0；Go 25 包。
+
+---
+
+## D-93 架构方向 ⑥ 续：世界输入域独立到 `world_input.rs`（2026-10-11）
+
+继续把 `runtime.rs` 从"巨型 match"拆成按输入域负责的 helper：
+
+- `handle_world_mouse_down`（约 627 行）：模态确认 → HUD/腰带 → 状态/包裹/商店/卖窗 →
+  对话链接 → NPC → 世界走/打/挖。保留原顺序；任何浮窗消费都会**提前返回**，不会穿透到世界。
+- `handle_world_mouse_up` + `MouseUpOutcome`：控件 OnClick 优先；已消费/退出/继续世界
+  三种结果显式表达，原来的 `continue`/`break 'run` 不泄漏到 helper。
+- `handle_ui_press`：所有通用 Widget `Press` 的语义动作集中在 `world_input`。
+- `handle_mouse_wheel`：仍在同一模块，背包/对话/商店滚轮优先级集中。
+- 快捷栏与小窗共用动作（`belt_use` / toggle / `apply_bag_act`）一并移入。
+
+尺寸变化：`runtime.rs` 2,038 → **976 行**；世界输入规则在 `world_input.rs`（971 行），
+前端登录/选角鼠标坐标边界在 `scene_input.rs`（100 行）。这不是只搬文件：复杂的
+优先级与 early-return 现在由 `world_input` 自己持有，运行时 match 只需委派。
+
+**验收**：客户端 154/148/7/4，clippy 0；Go 25 包。
