@@ -67,7 +67,7 @@ pub(crate) fn select_down(
         return;
     };
     let p = design_xy(canvas_xy);
-    let msg = select::msgbox_geom(ui_cache, dir, crate::window::UI_WIN);
+    let msg = select::view::msgbox_geom(ui_cache, dir, crate::window::UI_WIN);
     if let Some(layout) = mir2_core::select_ui::Layout::build(crate::window::UI_WIN, |lib, idx| {
         ui_cache.size(dir, lib, idx)
     }) {

@@ -5352,3 +5352,18 @@ Go 同 package 的文件共享 handler/helpers，不会引入 import cycle）：
 和登录表单规则混在一起。
 
 **验收**：客户端 161/149/7/3，clippy 0；Go 25 包。
+
+---
+
+## D-105 架构方向 ① 续：选角 SDL 视图从状态机拆到 `select_view`（2026-10-11）
+
+`select.rs` 原来仍同时放选角状态/键盘 reducer 和约 360 行 SDL 绘制；现在将 `Select::draw`、
+建角框/消息框绘制与素材尺寸测量移到嵌套子模块 `select::view`（文件 `select_view.rs`）。
+父模块 `select.rs` 保留角色选择、建角/删角、键鼠语义动作、名字规则等状态机逻辑，**不再导入**
+SDL renderer、`UiCache`、`TextCache` 或坐标缩放函数。
+
+`msgbox_geom` 是素材尺寸驱动的视图几何，移动到 `select::view`；`scene_input` 通过该视图几何
+做事件边界适配。`draw` 仍需 `&mut Select`，仅用于 `SlotPlace` 的惰性落点缓存；槽动画 tick 已在
+D-104 移到更新阶段，鼠标 hover 改为绘制参数。
+
+**验收**：客户端 161/149/7/3，clippy 0；Go 25 包。
