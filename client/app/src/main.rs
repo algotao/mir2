@@ -107,10 +107,28 @@ pub(crate) use world::*;
 #[cfg(test)]
 mod tests;
 
-/// 开关状态窗（F10 与备用键 `Ctrl+C` 都走这里）。
+/// 往聊天区说一句（点了个"还没做"的按钮时用 —— **绝不静默**）。
+fn ui_say(net: Option<&mut Net>, msg: &str) {
+    println!("[ui] {msg}");
+    if let Some(n) = net {
+        n.chat.push(msg.to_string(), C_CHAT_SYS);
+    }
+}
+
+/// 开关状态窗（F10 与底栏那颗 [人物] 都走这里 —— 鼠标与键盘必须同一个动作）。
 fn toggle_status(status_open: &mut bool) {
     *status_open = !*status_open;
     println!("[ui] 状态窗 {}", if *status_open { "打开" } else { "关闭" });
+}
+
+/// 开关背包（**F9 与底栏那颗 [包裹] 都走这里**）。
+///
+/// ⚠️ 原来 F9 那支还顺手把 `bag_page` 归零 —— 抽出来就是为了"点按钮"和"按 F9"
+/// **一模一样**（用户 2026-10-11：鼠标行为与键盘行为要一致），别一处归零一处不归。
+fn toggle_bag(bag_open: &mut bool, bag_page: &mut usize) {
+    *bag_open = !*bag_open;
+    *bag_page = 0;
+    println!("[ui] 背包窗 {}", if *bag_open { "打开" } else { "关闭" });
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -456,11 +474,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // F9~F12 是包裹/属性/技能/内挂、M 是大地图、Tab 是小地图、数字是快捷物品
                         // ⇒ 这些"开发查看器"入口统统收进 **Ctrl+**，原版键位留给真功能。
                         // F9 = 背包窗（原版键位，见上面那条注释的口径）
-                        Some(Keycode::F9) if mode == 2 => {
-                            bag_open = !bag_open;
-                            bag_page = 0;
-                            println!("[ui] 背包窗 {}", if bag_open { "打开" } else { "关闭" });
-                        }
+                        Some(Keycode::F9) if mode == 2 => toggle_bag(&mut bag_open, &mut bag_page),
                         // F10 = 状态窗（原版键位：F9 包裹 / F10 属性 / F11 技能 / F12 内挂）。
                         // ⚠️ macOS 上要 **Fn+F10**（F10 默认是 App Exposé）—— 2026-10-10
                         // 用户确认 Fn+F10 能用；曾加过的备用键 Ctrl+C 已撤（不再占 C）。
@@ -763,6 +777,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             //  隔着窗点一下照样跟 NPC 说话）。窗命中时置 true，
                             // 下面的"世界"分支（移动/挖肉/点 NPC）统一跳过。
                             let mut ui_consumed = false;
+                            // ①‴ **底栏右上那 4 个功能按钮**（人物/包裹/技能/选项，
+                            // 图号 8-11，用户 2026-10-11）：点它们 = 按对应的功能键，
+                            // 走**同一个** `toggle_*` ⇒ 鼠标与键盘行为一致。
+                            // ⚠️ 面板盖在世界之上 ⇒ 点中就要 `ui_consumed`（不然人还会走）。
+                            if mouse_btn == MouseButton::Left {
+                                if let Some(b) = crate::layout::hud_btn_at(mouse) {
+                                    match b {
+                                        crate::layout::HudBtn::State => {
+                                            toggle_status(&mut status_open)
+                                        }
+                                        crate::layout::HudBtn::Bag => {
+                                            toggle_bag(&mut bag_open, &mut bag_page)
+                                        }
+                                        // 技能/选项这两个窗还没做 ⇒ **明说一句**（静默
+                                        // 吞掉点击的表现就是"点了没反应"，最难查）
+                                        crate::layout::HudBtn::Magic => {
+                                            ui_say(net.as_mut(), "技能窗还没做（原版 F11）。")
+                                        }
+                                        crate::layout::HudBtn::Option => {
+                                            ui_say(net.as_mut(), "选项窗还没做。")
+                                        }
+                                    }
+                                    // 目标清掉，**本次点击不再穿透到世界**（与其它浮窗
+                                    // 同一条纪律：命中就 `continue`，不然人还会走）。
+                                    combat_target = None;
+                                    move_target = None;
+                                    press_at = None;
+                                    pending_pickup = None;
+                                    held_move = None;
+                                    continue;
+                                }
+                            }
                             // 左键才判"单击"（用户第 3 条说的是左键）；右键仍是按住=跑
                             if mouse_btn == MouseButton::Left {
                                 press_at = Some(Instant::now());

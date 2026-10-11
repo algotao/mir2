@@ -2144,3 +2144,52 @@ fn 可穿戴物品分类映射装备槽() {
     assert_eq!(slot(0), None, "药品双击应走 UseItem，不是 EquipItem");
     assert_eq!(slot(40), None, "肉双击应走 UseItem，不是 EquipItem");
 }
+
+/// **底栏右上那 4 个功能按钮**（人物/包裹/技能/选项，图号 8-11）。
+///
+/// 落点抄官方 `FState.pas:1290-1301`（面板坐标 643/682/722/764 + 61/41/21/11），
+/// 这条把它们钉住：都在底栏内、互不重叠、点得中。
+#[test]
+fn 底栏功能按钮的落点与命中() {
+    use crate::layout::{hud_btn_at, HudBtn, HUD_BOARD_H, HUD_SIDE_W};
+    let win_h = crate::window::WIN_H as f32;
+    let win_w = crate::window::WIN_W as f32;
+    let board_top = win_h - HUD_BOARD_H;
+
+    for (b, want_local) in [
+        (HudBtn::State, (643.0, 61.0)),
+        (HudBtn::Bag, (682.0, 41.0)),
+        (HudBtn::Magic, (722.0, 21.0)),
+        (HudBtn::Option, (764.0, 11.0)),
+    ] {
+        assert_eq!(b.at(), want_local, "{b:?} 的面板坐标");
+        let (x, y, w, h) = b.rect();
+        // 在底栏里、且在右半边（那四颗在底栏右上）
+        assert!(y >= board_top && y + h <= win_h, "{b:?} 落在底栏外：y={y}");
+        assert!(
+            x >= win_w - HUD_SIDE_W,
+            "{b:?} 该在底栏右侧那块里：x={x}（右块左边缘 {}）",
+            win_w - HUD_SIDE_W
+        );
+        // 点中心要能命中自己
+        assert_eq!(
+            hud_btn_at((x + w / 2.0, y + h / 2.0)),
+            Some(b),
+            "{b:?} 的中心点不命中自己"
+        );
+    }
+    // 四颗互不重叠（否则"点包裹"会变成"点技能"）
+    for a in HudBtn::ALL {
+        for c in HudBtn::ALL {
+            if a == c {
+                continue;
+            }
+            let (ax, ay, aw, ah) = a.rect();
+            let (cx, cy, cw, ch) = c.rect();
+            let overlap = ax < cx + cw && cx < ax + aw && ay < cy + ch && cy < ay + ah;
+            assert!(!overlap, "{a:?} 与 {c:?} 的命中框重叠了");
+        }
+    }
+    // 世界中间（不在按钮区）⇒ 不命中
+    assert_eq!(hud_btn_at((win_w / 2.0, win_h / 2.0)), None);
+}

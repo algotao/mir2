@@ -59,6 +59,85 @@ pub(crate) const HUD_DIGIT0: u32 = 30;
 /// 球在**面板坐标**里的落点（原版 `(40, btop+91)`）。
 pub(crate) const ORB_AT: (f32, f32) = (40.0, 91.0);
 
+/// 底部面板的宽度（`Prguse[1]` 实测 800×251；与 `HUD_BOARD_H` 成对）。
+pub(crate) const HUD_BOARD_W: f32 = 800.0;
+
+// ---------- 底栏右上那 4 个功能按钮 ----------
+//
+// 原版 `DMyState / DMyBag / DMyMagic / DOption`（`FState.pas:1289-1301`）；
+// 图号是用户 2026-10-11 给的 **8 / 9 / 10 / 11**。
+//
+// ⚠️ 这四张图是**高亮态**：常态就画在底栏 `Prguse[1]` 里，官方只在
+// `Downed`（按下）时才把这张叠上去（`DMyStateDirectPaint`，`FState.pas:3912-3926`）。
+// 我们扩成"悬停**或**按下都高亮" —— 与交易窗/背包关闭钮那几个同一套手感。
+
+/// 底栏右上的 4 个功能按钮。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HudBtn {
+    /// 人物 = 状态窗（与 **F10** 同一个动作）。
+    State,
+    /// 包裹（与 **F9** 同一个动作）。
+    Bag,
+    /// 技能（原版 F11；我们这边窗口还没做）。
+    Magic,
+    /// 选项（窗口还没做）。
+    Option,
+}
+
+impl HudBtn {
+    pub const ALL: [Self; 4] = [Self::State, Self::Bag, Self::Magic, Self::Option];
+
+    /// 高亮图的图号。
+    pub fn img(self) -> u32 {
+        match self {
+            Self::State => 8,
+            Self::Bag => 9,
+            Self::Magic => 10,
+            Self::Option => 11,
+        }
+    }
+
+    /// 在**面板坐标**里的落点（官方 `FState.pas:1290-1301` 的 `Left/Top`，
+    /// 它们是相对 `DBottom` 的，而 `DBottom.Left=0 / Top=SCREENHEIGHT-h`）。
+    ///
+    /// 四个是斜着往上排的：人物最下、选项最上。
+    pub fn at(self) -> (f32, f32) {
+        match self {
+            Self::State => (643.0, 61.0),
+            Self::Bag => (682.0, 41.0),
+            Self::Magic => (722.0, 21.0),
+            Self::Option => (764.0, 11.0),
+        }
+    }
+
+    /// 命中框（**屏幕坐标**；统一 24×24，比图略大一点好点）。
+    pub fn rect(self) -> (f32, f32, f32, f32) {
+        let (lx, ly) = self.at();
+        (hud_local_x(lx), WIN_H as f32 - HUD_BOARD_H + ly, 24.0, 24.0)
+    }
+}
+
+/// 面板局部 x → 屏幕 x。
+///
+/// ⚠️ 面板是**三段贴**的（左右 1:1、中间拉宽到窗口宽）⇒ 局部 x 落在右段时，
+/// 要换成右段那块的落点，不然 1024 窗口下按钮会跑到面板外。
+pub(crate) fn hud_local_x(local: f32) -> f32 {
+    let left = HUD_BOARD_W - HUD_SIDE_W;
+    if local >= left {
+        hud_right_x() + (local - left)
+    } else {
+        local
+    }
+}
+
+/// 屏幕坐标点中了哪个功能按钮（没中 ⇒ `None`）。
+pub(crate) fn hud_btn_at(p: (f32, f32)) -> Option<HudBtn> {
+    HudBtn::ALL.into_iter().find(|b| {
+        let (x, y, w, h) = b.rect();
+        p.0 >= x && p.0 < x + w && p.1 >= y && p.1 < y + h
+    })
+}
+
 /// 单球（只有血量那一支）的球底与血条美术，以及落点。
 ///
 /// 官方对「**武士** 且 **等级 < 28**」用另一套：`Prguse[5]` 是球底、`Prguse[6]` 是血条

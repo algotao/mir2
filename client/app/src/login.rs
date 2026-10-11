@@ -32,10 +32,15 @@ use mir2_core::login_ui::{Art, Layout, Rect};
 
 use crate::font::{Rgb, TextCache};
 use crate::ui::{ui_inv_px, ui_px, uifill, UiCache};
-use crate::{center_x, text, C_BG, C_DIM, C_ERR, C_FIELD, C_OK};
+use crate::{center_x, text, C_BG, C_ERR, C_FIELD};
 
 /// 光标闪烁周期（原版是系统 `TEdit` 的光标；这里 500ms 闪一下）。
 const CARET_MS: u128 = 500;
+
+/// "连接中"那行提示的文字（真字体 ⇒ 可以是中文）。
+const BUSY_TEXT: &str = "正在连接服务器";
+/// "连接中"三点循环的步进（毫秒）：每 300ms 多一个点，0→1→2→3→0。
+const BUSY_DOT_MS: u128 = 300;
 
 /// 弹窗文字那套配色（**真字体**那条路用 `Rgb`；本文件其余地方用的 `C_*` 是 SDL 的 `Color`）。
 const RGB_TEXT: Rgb = (255, 255, 255);
@@ -590,24 +595,38 @@ impl Login {
         }
 
         // ⑦ busy / 提示（原版没有；这是开发查看器需要的可见性）
-        // ⚠️ `text()` 是 8×8 调试字体（**直接画在画布上**，不走 `UiCache`）⇒ 这里得自己
-        // 把设计坐标换成画布坐标；`winf` 收的也是设计尺寸（见 `draw` 的 `win` 说明）。
+        //
+        // ⚠️ 2026-10-11：这两行原来是 8×8 调试字体（`text()`，**只认 ASCII**）⇒
+        // 只能写英文大写，和画面完全不搭。现在走**真字体 + 中文**，与弹窗/字段
+        // 那套一致（`texts.draw` 收画布像素 ⇒ 设计坐标先 `ui_px`）。
         if self.busy {
-            text(
+            // 「正在连接服务器」+ 三点循环（每 300ms 多一个点，到 3 个再回 0）
+            // —— 静止不动的话看不出"还在忙"，动的点才是"等待"的意思。
+            let n = (started.elapsed().as_millis() / BUSY_DOT_MS) % 4;
+            let mut s = String::from(BUSY_TEXT);
+            for _ in 0..n {
+                s.push('·');
+            }
+            texts.draw(
                 canvas,
-                "CONNECTING ...",
+                tc,
+                &s,
                 ui_px(l.dialog.x + 8.0),
-                ui_px(l.dialog.y + l.dialog.h - 16.0),
-                C_OK,
+                ui_px(l.dialog.y + l.dialog.h - 20.0),
+                RGB_DIM,
+                Some(RGB_SHADOW),
             )?;
         } else if self.error.is_none() {
-            let tip = "TAB NEXT   ENTER LOGIN";
-            text(
+            let tip = "TAB 下一项   ENTER 登录";
+            let w = texts.width(tip);
+            texts.draw(
                 canvas,
+                tc,
                 tip,
-                ui_px(center_x(tip, 0.0, winf.0)),
+                (ui_px(winf.0) - w) / 2.0,
                 ui_px(winf.1) - 44.0,
-                C_DIM,
+                RGB_DIM,
+                Some(RGB_SHADOW),
             )?;
         }
         Ok(())

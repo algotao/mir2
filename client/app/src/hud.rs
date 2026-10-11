@@ -62,6 +62,9 @@ pub(crate) fn draw_hud<'a, T>(
     map_title: &str,
     // NPC 对话窗卷到第几行（见 `input::dialog_max_scroll`）
     dialog_scroll: usize,
+    // ⚠️ 鼠标位置（画布坐标）：底栏右上那 4 个功能按钮的**高亮**要它
+    //（原版只在 `Downed` 时画那张图，我们扩成悬停也高亮）。
+    mouse: (f32, f32),
 ) -> Result<(), sdl3::Error> {
     let (bw, bh) = ui.size(dir, "Prguse", HUD_BOARD).unwrap_or((800, 251));
     let (bw, bh) = (bw as f32, bh as f32);
@@ -89,6 +92,16 @@ pub(crate) fn draw_hud<'a, T>(
             FRect::new(dx, board_y, dw, bh),
             255,
         );
+    }
+
+    // **底栏右上那 4 个功能按钮**（人物/包裹/技能/选项，图号 8-11）：
+    // 常态就在底栏 `Prguse[1]` 里 ⇒ 只在**悬停**时把高亮图叠上去。
+    let hovered = crate::layout::hud_btn_at(mouse);
+    for b in crate::layout::HudBtn::ALL {
+        if hovered == Some(b) {
+            let (x, y, _, _) = b.rect();
+            let _ = ui.draw(canvas, tc, dir, "Prguse", b.img(), x, y);
+        }
     }
 
     // 血 / 魔法球。官方分**两支**（`FState.pas:3606-3640`）：

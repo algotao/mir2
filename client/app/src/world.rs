@@ -472,6 +472,7 @@ pub(crate) fn draw_map_view<'a, T>(
         net,
         &m.title,
         dialog_scroll,
+        mouse,
     )?;
 
     // 悬停结果还给主循环：光标要跟着它换（Crystal 的 Attack 光标）
