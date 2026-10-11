@@ -58,6 +58,10 @@ struct Args {
     expect_bag: Option<usize>,
     /// 点这个 NPC 开对话（`-sell` 的前置：服务端要求**正在跟这个商人谈**）。
     npc: Option<u64>,
+    /// 与 `-npc` 配套：选择对话里的 1-based 选项（例如点「卖」）。
+    npc_select: Option<u32>,
+    /// 要求 CharacterList 确实带有服务端下发的角色名规则（D-84）。
+    expect_name_rule: bool,
     /// 把刚捡到的那件卖给 `npc`（按**实例号**认物，见 D-75）。
     sell: bool,
     /// 至少要有这么多金币（配合 `-sell` 断言"真的卖出去了"）。
@@ -79,6 +83,8 @@ impl Args {
         let mut pickup = None;
         let mut expect_bag = None;
         let mut npc = None;
+        let mut npc_select = None;
+        let mut expect_name_rule = false;
         let (mut sell, mut expect_gold) = (false, None);
         let (mut expect_map, mut expect_pos, mut expect_entities) = (None, None, None);
         let mut expect_entity_at = None;
@@ -112,6 +118,8 @@ impl Args {
                 "-pickup" => pickup = Some(parse(&val("地面物品 gid")?, "-pickup")?),
                 "-expect-bag" => expect_bag = Some(parse(&val("件数")?, "-expect-bag")?),
                 "-npc" => npc = Some(parse(&val("NPC ActorId")?, "-npc")?),
+                "-npc-select" => npc_select = Some(parse(&val("1-based 选项")?, "-npc-select")?),
+                "-expect-name-rule" => expect_name_rule = true,
                 "-sell" => sell = true,
                 "-expect-gold" => expect_gold = Some(parse(&val("金币数")?, "-expect-gold")?),
                 "-expect-entity-at" => expect_entity_at = Some(parse_pos(&val("X,Y")?)?),
@@ -134,6 +142,8 @@ impl Args {
             pickup,
             expect_bag,
             npc,
+            npc_select,
+            expect_name_rule,
             sell,
             expect_gold,
             expect_map,
@@ -226,6 +236,20 @@ fn run(argv: &[String]) -> Result<(), String> {
         }
     }
 
+    if a.expect_name_rule {
+        let rule = entrance
+            .name_rule
+            .as_ref()
+            .ok_or_else(|| "CharacterList 没有下发 NameRule（D-84）".to_string())?;
+        if rule.min_bytes == 0 || rule.bad_chars.is_empty() || rule.message.is_empty() {
+            return Err(format!("服务端下发的 NameRule 不完整：{rule:?}"));
+        }
+        println!(
+            "[world] 角色名规则来自服务端：min_bytes={} bad_chars={:?}",
+            rule.min_bytes, rule.bad_chars
+        );
+    }
+
     if !entrance.in_world() {
         return Err(format!(
             "超时（{}ms）还没进世界：握手停在 {:?}",
@@ -248,6 +272,12 @@ fn run(argv: &[String]) -> Result<(), String> {
             .send(Cmd::NpcClick(id))
             .map_err(|_| "命令通道已关闭".to_string())?;
         println!("[world] 点 NPC ActorId={id} 开对话");
+        if let Some(index) = a.npc_select {
+            sess.cmds
+                .send(Cmd::NpcSelect { npc_id: id, index })
+                .map_err(|_| "命令通道已关闭".to_string())?;
+            println!("[world] 选择 NPC 对话选项 #{index}");
+        }
     }
 
     // 再收一小会儿：驱动方（Go 契约测试）会在玩家进图后推一条实体事件，

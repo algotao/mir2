@@ -5099,3 +5099,21 @@ update.rs     121 行：网络与每帧状态推进
 硬塞进同一个结构。
 
 **验收**：客户端 154/148/7/4，clippy 0；Go 25 包。
+
+---
+
+## D-91 e2e 再补两道契约：真实选择 NPC 选项 + 验证名字规则下发（2026-10-11）
+
+`mir2-e2e world` 增加：
+
+- `-npc-select <1-based index>`：在 `-npc` 开启对话后，真正选择脚本选项（不只点开 NPC）；
+- `-expect-name-rule`：断言客户端从 `CharacterList.name_rule` 收到了完整规则。
+
+Go 的 `TestProtoRustSell` 现在走：**捡起 → 点屠夫 → 选择「卖」选项 → ShopSell → 金币增加**。
+`TestProtoRustLogin` 顺手加 `-expect-name-rule`，把 D-84 的 schema → 服务端填包 → Rust 客户端
+`Entrance` 解码存储这段用真客户端 E2E 钉住。
+
+⚠️ **协议版本仍冻结 1**（D-84 查到的项目约定）；schema 的测试由 `gen.sh` 两端重生成守，
+GoldenFrame 字节测试会保证线上版本字段不被悄悄改。
+
+**验收**：客户端 154/148/7/4，clippy 0；Go 25 包（含 Rust 客户端契约）。

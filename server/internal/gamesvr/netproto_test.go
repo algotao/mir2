@@ -1330,6 +1330,7 @@ func TestProtoRustLogin(t *testing.T) {
 		"-addr", addr,
 		"-account", "tester",
 		"-password", "pw",
+		"-expect-name-rule",
 		"-expect-map", "0",
 		"-expect-pos", "1,1",
 		// 这条验的是**登录**那条路（视野里没有别人 ⇒ 0 个实体）
@@ -1815,6 +1816,7 @@ func TestProtoRustSell(t *testing.T) {
 		"-pickup", strconv.FormatUint(uint64(gid), 10),
 		// ⚠️ 没有 `-expect-bag`：卖掉之后背包本来就是空的（"捡到了"由金币断言兜住）
 		"-npc", strconv.FormatUint(uint64(npcID), 10),
+		"-npc-select", "2", // 选择脚本里第二项「卖」
 		"-sell",
 		"-expect-gold", "1",
 		"-timeout-ms", "8000",
