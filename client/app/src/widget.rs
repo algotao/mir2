@@ -14,27 +14,51 @@
 //! 抓 `&mut` 一堆状态，在这套"几何在 `layout.rs`、动作在主循环里 match"的结构下
 //! 会非常别扭。控件**只是数据**（属性），交互由 [`Ui`] 这一个引擎统一算。
 //!
-//! 坐标：**一律画布坐标**（1024×768）。登录/选角那两屏是设计坐标 800×600，
-//! 换算只在它们自己那一处做 —— `UI_SCALE` 不许出现在控件层（踩过：D-64）。
+//! 坐标：**控件引擎一律 `CPt/CRect` 画布坐标**（1024×768）。登录/选角的布局仍在
+//! 设计空间 800×600 中计算，但进入 `Ui::press` **之前**显式转成画布 `CRect`，
+//! 鼠标始终以画布 `CPt` 进入引擎；设计/画布/窗口局部三种坐标不能混用（D-64）。
 
 use crate::ui::UiCache;
 use sdl3::render::{FRect, TextureCreator, WindowCanvas};
 use std::path::Path;
 
-/// 矩形 `(x, y, w, h)`。
-pub(crate) type Rect = (f32, f32, f32, f32);
+/// 按钮的全局画布矩形（设计空间矩形或窗口局部矩形不能直接传进来）。
+pub(crate) type Rect = crate::space::CRect;
 
 /// 一张界面图（容器 + 图号）—— 官方的 `WLib` + `FaceIndex`。
 pub(crate) type Img = (&'static str, u32);
 
 /// `p` 落在 `r` 里吗（**半开区间**：右/下边界不算 —— 与官方 `InRange` 同口径）。
-pub(crate) fn hit(r: Rect, p: (f32, f32)) -> bool {
-    p.0 >= r.0 && p.0 < r.0 + r.2 && p.1 >= r.1 && p.1 < r.1 + r.3
+pub(crate) fn hit(r: Rect, p: crate::space::CPt) -> bool {
+    crate::space::hit(r, p)
 }
 
-/// 把 `r` 整体挪 `(dx, dy)` —— 官方的 `SurfaceX/SurfaceY`（父窗口偏移）。
-pub(crate) fn offset(r: Rect, dx: f32, dy: f32) -> Rect {
-    (r.0 + dx, r.1 + dy, r.2, r.3)
+/// 由已确认处于逻辑画布空间的外部坐标构造按钮矩形。
+///
+/// ⚠️ `f32` 输入只允许留在 SDL/layout 边界；设计坐标应使用 [`design_rect`]，
+/// 面板局部几何应使用 [`local_rect`] + [`offset_local_to_canvas`]。
+pub(crate) fn canvas_rect(r: (f32, f32, f32, f32)) -> Rect {
+    crate::space::canvas_rect(r.0, r.1, r.2, r.3)
+}
+
+/// SDL 逻辑画布坐标边界转成强类型点。
+pub(crate) fn canvas_pt(p: (f32, f32)) -> crate::space::CPt {
+    crate::space::CPt(crate::space::Cpx(p.0), crate::space::Cpx(p.1))
+}
+
+/// 由设计空间几何建立画布矩形（显式做一次 800×600 → 画布转换）。
+pub(crate) fn design_rect(r: (f32, f32, f32, f32)) -> Rect {
+    crate::space::Dpx::rect_to_canvas((
+        crate::space::Dpx(r.0),
+        crate::space::Dpx(r.1),
+        crate::space::Dpx(r.2),
+        crate::space::Dpx(r.3),
+    ))
+}
+
+/// 局部面板矩形 + 全局画布原点 ⇒ 全局画布矩形。
+pub(crate) fn offset_local_to_canvas(r: (f32, f32, f32, f32), origin: crate::space::CPt) -> Rect {
+    crate::space::local_rect_to_canvas(crate::space::local_rect(r.0, r.1, r.2, r.3), origin)
 }
 
 /// 一次交互的结果（**立即模式**：不用回调，主循环里 match 它）。
@@ -94,8 +118,8 @@ pub(crate) enum Press {
 /// | 右键 / 中键 | ❌（只有 MouseDown/MouseUp） |
 /// | 只有 MouseDown 没有 MouseUp | ❌ |
 pub(crate) struct Ui {
-    /// 鼠标位置（画布坐标）。
-    mouse: (f32, f32),
+    /// 鼠标位置（全局**画布**坐标；设计空间必须先转换）。
+    mouse: crate::space::CPt,
     /// 按下时记下的（控件 + **它的矩形**）。
     ///
     /// ⚠️ 记矩形是为了松开时不必再算一遍"点中了谁"：只有落在**同一块**才算数，
@@ -106,7 +130,7 @@ pub(crate) struct Ui {
 impl Default for Ui {
     fn default() -> Self {
         Self {
-            mouse: (0.0, 0.0),
+            mouse: crate::space::CPt(crate::space::Cpx(0.0), crate::space::Cpx(0.0)),
             down: None,
         }
     }
@@ -118,7 +142,7 @@ impl Ui {
     }
 
     /// 每帧（或每个鼠标事件后）更新鼠标位置。
-    pub(crate) fn set_mouse(&mut self, p: (f32, f32)) {
+    pub(crate) fn set_mouse(&mut self, p: crate::space::CPt) {
         self.mouse = p;
     }
 
@@ -128,7 +152,7 @@ impl Ui {
     }
 
     /// **MouseUp**（只认左键）⇒ 落在同一个控件上才返回它（**这就是 OnClick**）。
-    pub(crate) fn release(&mut self, p: (f32, f32)) -> Option<Press> {
+    pub(crate) fn release(&mut self, p: crate::space::CPt) -> Option<Press> {
         let (k, r) = self.down.take()?;
         if !hit(r, p) {
             return None; // 拖出去再松开 ⇒ 不触发
@@ -270,7 +294,7 @@ pub(crate) fn draw_button<'a, T>(
         lib,
         idx,
         FRect::new(0.0, 0.0, iw as f32, ih as f32),
-        FRect::new(b.rect.0, b.rect.1, iw as f32, ih as f32),
+        FRect::new(b.rect.0 .0, b.rect.1 .0, iw as f32, ih as f32),
         255,
     );
 }
@@ -280,29 +304,27 @@ pub(crate) fn draw_button<'a, T>(
 /// 网格（`TDGrid`）：列数/行数 + 格子尺寸 ⇒ `cell_rect(i)` / `hit_cell(p)`。
 ///
 /// ⚠️ 官方的 `TDGrid` 语义是**选中 / 拖拽起点**，不是 `OnClick` 按钮 ⇒
-/// 它不进 [`Press`]；命中是**几何**，不是按下记录。
+/// 它不进 [`Press`]；而且背包网格的原点是**窗口局部坐标**，所以使用 `LRect/LPt`，
+/// 不能把它伪装成按钮使用的全局画布 `Rect`。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Grid {
-    /// 第一格左上角（画布坐标）。
-    pub x: f32,
-    pub y: f32,
-    pub cols: usize,
-    pub rows: usize,
-    pub cell_w: f32,
-    pub cell_h: f32,
+    origin: crate::space::LPt,
+    cols: usize,
+    rows: usize,
+    cell_w: crate::space::Lpx,
+    cell_h: crate::space::Lpx,
 }
 
 impl Grid {
     pub(crate) fn new(
-        (x, y): (f32, f32),
+        origin: crate::space::LPt,
         cols: usize,
         rows: usize,
-        cell_w: f32,
-        cell_h: f32,
+        cell_w: crate::space::Lpx,
+        cell_h: crate::space::Lpx,
     ) -> Self {
         Self {
-            x,
-            y,
+            origin,
             cols,
             rows,
             cell_w,
@@ -315,20 +337,20 @@ impl Grid {
         self.cols * self.rows
     }
 
-    /// 第 `i` 格的矩形。
-    pub(crate) fn cell_rect(&self, i: usize) -> Rect {
+    /// 第 `i` 格的**窗口局部**矩形。
+    pub(crate) fn cell_rect(&self, i: usize) -> crate::space::LRect {
         let (c, r) = (i % self.cols, i / self.cols);
         (
-            self.x + c as f32 * self.cell_w,
-            self.y + r as f32 * self.cell_h,
+            crate::space::Lpx(self.origin.0 .0 + c as f32 * self.cell_w.0),
+            crate::space::Lpx(self.origin.1 .0 + r as f32 * self.cell_h.0),
             self.cell_w,
             self.cell_h,
         )
     }
 
     /// `p` 落在第几格（`None` = 不在网格里）。与 [`Grid::cell_rect`] **同源**。
-    pub(crate) fn hit_cell(&self, p: (f32, f32)) -> Option<usize> {
-        (0..self.len()).find(|i| hit(self.cell_rect(*i), p))
+    pub(crate) fn hit_cell(&self, p: crate::space::LPt) -> Option<usize> {
+        (0..self.len()).find(|i| crate::space::hit_local(self.cell_rect(*i), p))
     }
 }
 
@@ -420,20 +442,50 @@ mod grid_tests {
 
     #[test]
     fn 网格的格子排布与命中() {
-        let g = Grid::new((10.0, 20.0), 6, 4, 35.5, 32.5);
+        let g = Grid::new(
+            crate::space::LPt(crate::space::Lpx(10.0), crate::space::Lpx(20.0)),
+            6,
+            4,
+            crate::space::Lpx(35.5),
+            crate::space::Lpx(32.5),
+        );
         assert_eq!(g.len(), 24);
-        // 第 0 格
-        assert_eq!(g.cell_rect(0), (10.0, 20.0, 35.5, 32.5));
+        // 第 0 格（窗口局部空间）
+        assert_eq!(
+            g.cell_rect(0),
+            (
+                crate::space::Lpx(10.0),
+                crate::space::Lpx(20.0),
+                crate::space::Lpx(35.5),
+                crate::space::Lpx(32.5)
+            )
+        );
         // 第 6 格 = 第二行第一列
-        assert_eq!(g.cell_rect(6), (10.0, 52.5, 35.5, 32.5));
+        assert_eq!(g.cell_rect(6).0, crate::space::Lpx(10.0));
+        assert_eq!(g.cell_rect(6).1, crate::space::Lpx(52.5));
         // 第 7 格 = 第二行第二列
-        assert_eq!(g.cell_rect(7), (45.5, 52.5, 35.5, 32.5));
+        assert_eq!(g.cell_rect(7).0, crate::space::Lpx(45.5));
+        assert_eq!(g.cell_rect(7).1, crate::space::Lpx(52.5));
         // 命中与矩形同源
         for i in 0..g.len() {
             let (x, y, w, h) = g.cell_rect(i);
-            assert_eq!(g.hit_cell((x + w / 2.0, y + h / 2.0)), Some(i), "第 {i} 格");
+            assert_eq!(
+                g.hit_cell(crate::space::LPt(
+                    crate::space::Lpx(x.0 + w.0 / 2.0),
+                    crate::space::Lpx(y.0 + h.0 / 2.0),
+                )),
+                Some(i),
+                "第 {i} 格"
+            );
         }
-        assert_eq!(g.hit_cell((0.0, 0.0)), None, "网格外 ⇒ None");
+        assert_eq!(
+            g.hit_cell(crate::space::LPt(
+                crate::space::Lpx(0.0),
+                crate::space::Lpx(0.0)
+            )),
+            None,
+            "网格外 ⇒ None"
+        );
     }
 
     #[test]
@@ -476,24 +528,33 @@ mod grid_tests {
 mod tests {
     use super::*;
 
-    const R: Rect = (10.0, 10.0, 20.0, 20.0);
+    const R: Rect = (
+        crate::space::Cpx(10.0),
+        crate::space::Cpx(10.0),
+        crate::space::Cpx(20.0),
+        crate::space::Cpx(20.0),
+    );
+    const IN: crate::space::CPt =
+        crate::space::CPt(crate::space::Cpx(15.0), crate::space::Cpx(15.0));
+    const OUT: crate::space::CPt =
+        crate::space::CPt(crate::space::Cpx(99.0), crate::space::Cpx(99.0));
     const A: Press = Press::BagClose;
 
     #[test]
     fn 按下与松开在同一控件才算点击() {
         let mut ui = Ui::new();
         ui.press(A, R);
-        ui.set_mouse((15.0, 15.0));
-        assert_eq!(ui.release((15.0, 15.0)), Some(A));
-        assert_eq!(ui.release((15.0, 15.0)), None, "松开过就该清掉");
+        ui.set_mouse(IN);
+        assert_eq!(ui.release(IN), Some(A));
+        assert_eq!(ui.release(IN), None, "松开过就该清掉");
     }
 
     #[test]
     fn 拖出控件再松开不触发() {
         let mut ui = Ui::new();
         ui.press(A, R);
-        ui.set_mouse((99.0, 99.0));
-        assert_eq!(ui.release((99.0, 99.0)), None);
+        ui.set_mouse(OUT);
+        assert_eq!(ui.release(OUT), None);
         assert_eq!(ui.held(), None);
     }
 
@@ -501,20 +562,23 @@ mod tests {
     fn 只按下不松开不触发() {
         let mut ui = Ui::new();
         ui.press(A, R);
-        ui.set_mouse((15.0, 15.0));
+        ui.set_mouse(IN);
         assert_eq!(ui.held(), Some(A), "按着没松 ⇒ 高亮还在");
-        assert_eq!(ui.release((99.0, 99.0)), None);
+        assert_eq!(ui.release(OUT), None);
     }
 
     #[test]
     fn 高亮随拖出而灭() {
         let mut ui = Ui::new();
         ui.press(A, R);
-        ui.set_mouse((15.0, 15.0));
+        ui.set_mouse(IN);
         assert_eq!(ui.held(), Some(A));
-        ui.set_mouse((50.0, 50.0));
+        ui.set_mouse(crate::space::CPt(
+            crate::space::Cpx(50.0),
+            crate::space::Cpx(50.0),
+        ));
         assert_eq!(ui.held(), None, "拖出去 ⇒ 灭");
-        ui.set_mouse((15.0, 15.0));
+        ui.set_mouse(IN);
         assert_eq!(ui.held(), Some(A), "拖回来 ⇒ 又亮");
     }
 
@@ -597,8 +661,28 @@ mod tests {
 
     #[test]
     fn 矩形是半开区间() {
-        assert!(hit(R, (10.0, 10.0)));
-        assert!(!hit(R, (30.0, 30.0)));
-        assert_eq!(offset(R, 5.0, -1.0), (15.0, 9.0, 20.0, 20.0));
+        assert!(hit(
+            R,
+            crate::space::CPt(crate::space::Cpx(10.0), crate::space::Cpx(10.0))
+        ));
+        assert!(!hit(
+            R,
+            crate::space::CPt(crate::space::Cpx(30.0), crate::space::Cpx(30.0))
+        ));
+    }
+
+    #[test]
+    fn 设计空间按钮矩形与画布鼠标同空间判定() {
+        let r = design_rect((10.0, 10.0, 20.0, 20.0));
+        let p = crate::ui::ui_pt((15.0, 15.0));
+        let mut ui = Ui::new();
+        ui.set_mouse(p);
+        ui.press(A, r);
+        assert_eq!(
+            ui.held(),
+            Some(A),
+            "设计矩形须显式换到画布，才能和鼠标同空间命中"
+        );
+        assert_eq!(ui.release(p), Some(A));
     }
 }

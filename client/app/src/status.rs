@@ -79,7 +79,10 @@ pub(crate) fn buttons(ox: f32, oy: f32) -> [crate::widget::Button; 3] {
     use crate::widget::{Button, ButtonArt};
     let mk = |r: (f32, f32, f32, f32), k: Hit, art: ButtonArt| Button {
         key: crate::Press::Status(k),
-        rect: crate::widget::offset(r, ox, oy),
+        rect: crate::widget::offset_local_to_canvas(
+            r,
+            crate::space::CPt(crate::space::Cpx(ox), crate::space::Cpx(oy)),
+        ),
         art,
         enabled: true,
     };

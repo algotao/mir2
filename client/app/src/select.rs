@@ -369,26 +369,26 @@ impl Select {
     }
 
     /// 命中 + **那块的矩形**（给控件引擎：按下记矩形，松开就不用再算一遍）。
-    fn hit_rect(&self, p: (f32, f32), l: &su::Layout) -> Option<(Hit, crate::widget::Rect)> {
+    fn hit_rect(&self, p: (f32, f32), l: &su::Layout) -> Option<(Hit, su::Rect)> {
         // 先判"点角色本体"（凹槽整块）—— 与下面那两类不重叠，顺序无所谓（见 `su::slot_at`）
         if let Some(i) = su::slot_at(p, l.bg) {
             let r = su::slot_rect(i, l.bg);
-            return Some((Hit::Slot(i), (r.x, r.y, r.w, r.h)));
+            return Some((Hit::Slot(i), r));
         }
         for (i, r) in l.sel.iter().enumerate() {
             if r.hit(p) {
-                return Some((Hit::Sel(i), (r.x, r.y, r.w, r.h)));
+                return Some((Hit::Sel(i), *r));
             }
         }
         // ⚠️ 「开始」那颗**石台**（83×40）比钮本身（44×21）大得多 ⇒ 先按台子判一次，
         // 否则"看得见台子、点不中"（用户 2026-10-09 第 1 条里那份观感）。
         let plate = su::start_plate_at(l.menu[0]);
         if plate.hit(p) {
-            return Some((Hit::Menu(0), (plate.x, plate.y, plate.w, plate.h)));
+            return Some((Hit::Menu(0), plate));
         }
         for (i, r) in l.menu.iter().enumerate() {
             if r.hit(p) {
-                return Some((Hit::Menu(i), (r.x, r.y, r.w, r.h)));
+                return Some((Hit::Menu(i), *r));
             }
         }
         None
@@ -411,23 +411,20 @@ impl Select {
         if self.newchar.is_some() {
             let b = su::DialogBox::build((l.win.0 as u32, l.win.1 as u32));
             if let Some(dh) = b.hit(p) {
-                ui.press(crate::Press::NewChar(dh), dlg_rect(&b, dh));
+                ui.press(crate::Press::NewChar(dh), design_rect(dlg_rect(&b, dh)));
             }
             return;
         }
         if self.pending.is_some() || self.msg.is_some() {
             if let Some(m) = msg {
                 if m.hit_ok(p) {
-                    ui.press(
-                        crate::Press::Select(Hit::MsgOk),
-                        (m.ok.x, m.ok.y, m.ok.w, m.ok.h),
-                    );
+                    ui.press(crate::Press::Select(Hit::MsgOk), design_rect(m.ok));
                 }
             }
             return;
         }
         if let Some((h, r)) = self.hit_rect(p, l) {
-            ui.press(crate::Press::Select(h), r);
+            ui.press(crate::Press::Select(h), design_rect(r));
         }
     }
 
@@ -1027,16 +1024,20 @@ fn wrap(s: &str, cols: usize) -> Vec<String> {
     out
 }
 
-/// 建角框里某个控件对应的矩形（给控件引擎）。
-fn dlg_rect(b: &su::DialogBox, h: su::DialogHit) -> crate::widget::Rect {
-    let r = match h {
+/// 建角框里某个控件对应的**设计空间**矩形。
+fn dlg_rect(b: &su::DialogBox, h: su::DialogHit) -> su::Rect {
+    match h {
         su::DialogHit::Name => b.name,
         su::DialogHit::Job(i) => b.job[i],
         su::DialogHit::Sex(i) => b.sex[i],
         su::DialogHit::Ok => b.ok,
         su::DialogHit::Close => b.close,
-    };
-    (r.x, r.y, r.w, r.h)
+    }
+}
+
+/// 设计空间矩形进入全局 widget 引擎前，显式转换到画布空间。
+fn design_rect(r: su::Rect) -> crate::widget::Rect {
+    crate::widget::design_rect((r.x, r.y, r.w, r.h))
 }
 
 #[cfg(test)]
@@ -1051,9 +1052,9 @@ mod tests {
         up_at: (f32, f32),
     ) -> Action {
         let mut ui = crate::widget::Ui::new();
-        ui.set_mouse(down_at);
+        ui.set_mouse(crate::ui::ui_pt(down_at));
         s.on_down(down_at, l, msg, &mut ui);
-        match ui.release(up_at) {
+        match ui.release(crate::ui::ui_pt(up_at)) {
             Some(crate::Press::Select(h)) => s.click_select(h, l),
             Some(crate::Press::NewChar(dh)) => s.click_newchar(dh),
             _ => s.click_outside(),

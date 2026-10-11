@@ -856,7 +856,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 鼠标位置（已在循环头换算成界面的 800×600 空间）
                 Event::MouseMotion { x, y, .. } => {
                     mouse = (x, y);
-                    ui_click.set_mouse(mouse);
+                    ui_click.set_mouse(crate::widget::canvas_pt(mouse));
                 }
                 // 滚轮：两个**固定高**的窗都靠它翻内容 —— 背包窗翻页、对话窗卷行。
                 //
@@ -929,7 +929,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // 那段）⇒ 按下这一刻就得把位置记上（光等 `MouseMotion` 会漏掉
                             // "按下后一动不动"的那种按住）。
                             mouse = (x, y);
-                            ui_click.set_mouse(mouse);
+                            ui_click.set_mouse(crate::widget::canvas_pt(mouse));
                             // ⚠️ **本次点击是否被某个浮窗消费**（todo 第 7 条）：
                             // 浮窗是画在世界**之上**的，点在窗里就不该再穿透到世界
                             //（原来各窗只清一次移动目标，后面那步"点 NPC"照跑 ⇒
@@ -947,15 +947,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             if c.ok.hit(mouse) {
                                                 ui_click.press(
                                                     Press::ConfirmOk,
-                                                    (c.ok.x, c.ok.y, c.ok.w, c.ok.h),
+                                                    crate::widget::canvas_rect((
+                                                        c.ok.x, c.ok.y, c.ok.w, c.ok.h,
+                                                    )),
                                                 );
                                             } else if c.cancel.hit(mouse) {
                                                 ui_click.press(
                                                     Press::ConfirmCancel,
-                                                    (
+                                                    crate::widget::canvas_rect((
                                                         c.cancel.x, c.cancel.y, c.cancel.w,
                                                         c.cancel.h,
-                                                    ),
+                                                    )),
                                                 );
                                             } else if !c.frame.hit(mouse) {
                                                 // 点框外 = 收起模态（不是按钮）⇒ 即时生效
@@ -980,7 +982,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if mouse_btn == MouseButton::Left {
                                 if let Some(b) = crate::layout::hud_btn_at(mouse) {
                                     // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
-                                    ui_click.press(Press::Hud(b), b.rect());
+                                    ui_click
+                                        .press(Press::Hud(b), crate::widget::canvas_rect(b.rect()));
                                     // 目标清掉，**本次点击不再穿透到世界**（与其它浮窗
                                     // 同一条纪律：命中就 `continue`，不然人还会走）。
                                     combat_target = None;
@@ -994,8 +997,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // 空手 ⇒ 使用这格里的东西（原版单击是"拿起"，
                                 // 但快捷栏的意义就是快速使用 ⇒ 单击即用）。
                                 if let Some(i) = crate::layout::belt_slot_at(mouse) {
-                                    ui_click
-                                        .press(Press::Belt(i), crate::layout::belt_slot_rect(i));
+                                    ui_click.press(
+                                        Press::Belt(i),
+                                        crate::widget::canvas_rect(crate::layout::belt_slot_rect(
+                                            i,
+                                        )),
+                                    );
                                     combat_target = None;
                                     move_target = None;
                                     press_at = None;
@@ -1007,7 +1014,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // 小地图那颗 = **Tab** 同一个动作（`toggle_minimap`）。
                                 if let Some(b) = crate::layout::hud_quick_at(mouse) {
                                     // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
-                                    ui_click.press(Press::Quick(b), b.rect());
+                                    ui_click.press(
+                                        Press::Quick(b),
+                                        crate::widget::canvas_rect(b.rect()),
+                                    );
                                     combat_target = None;
                                     move_target = None;
                                     press_at = None;
@@ -1225,7 +1235,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     let c = crate::status::CLOSE;
                                                     ui_click.press(
                                                         Press::Status(crate::status::Hit::Close),
-                                                        (wx + c.0, wy + c.1, c.2, c.3),
+                                                        crate::widget::canvas_rect((
+                                                            wx + c.0,
+                                                            wy + c.1,
+                                                            c.2,
+                                                            c.3,
+                                                        )),
                                                     );
                                                 }
                                                 crate::status::Hit::Arrow(d) => {
@@ -1236,7 +1251,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     };
                                                     ui_click.press(
                                                         Press::Status(crate::status::Hit::Arrow(d)),
-                                                        (wx + a.0, wy + a.1, a.2, a.3),
+                                                        crate::widget::canvas_rect((
+                                                            wx + a.0,
+                                                            wy + a.1,
+                                                            a.2,
+                                                            a.3,
+                                                        )),
                                                     );
                                                 }
                                                 crate::status::Hit::Slot(slot) => {
@@ -1314,12 +1334,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if on_close {
                                         ui_click.press(
                                             Press::BagClose,
-                                            (
+                                            crate::widget::canvas_rect((
                                                 bx + crate::layout::BAG_CLOSE_X,
                                                 by + crate::layout::BAG_CLOSE_Y,
                                                 crate::layout::BAG_CLOSE_W,
                                                 crate::layout::BAG_CLOSE_H,
-                                            ),
+                                            )),
                                         );
                                     } else if let Some(slot) = crate::layout::bag_slot_at((lx, ly))
                                     {
@@ -1374,28 +1394,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     let p = crate::shop::PREV_R;
                                                     ui_click.press(
                                                         Press::Shop(crate::shop::Hit::Prev),
-                                                        (wx + p.0, wy + p.1, p.2, p.3),
+                                                        crate::widget::canvas_rect((
+                                                            wx + p.0,
+                                                            wy + p.1,
+                                                            p.2,
+                                                            p.3,
+                                                        )),
                                                     );
                                                 }
                                                 crate::shop::Hit::Next => {
                                                     let p = crate::shop::NEXT_R;
                                                     ui_click.press(
                                                         Press::Shop(crate::shop::Hit::Next),
-                                                        (wx + p.0, wy + p.1, p.2, p.3),
+                                                        crate::widget::canvas_rect((
+                                                            wx + p.0,
+                                                            wy + p.1,
+                                                            p.2,
+                                                            p.3,
+                                                        )),
                                                     );
                                                 }
                                                 crate::shop::Hit::Ok => {
                                                     let p = crate::shop::OK;
                                                     ui_click.press(
                                                         Press::Shop(crate::shop::Hit::Ok),
-                                                        (wx + p.0, wy + p.1, p.2, p.3),
+                                                        crate::widget::canvas_rect((
+                                                            wx + p.0,
+                                                            wy + p.1,
+                                                            p.2,
+                                                            p.3,
+                                                        )),
                                                     );
                                                 }
                                                 crate::shop::Hit::Close => {
                                                     let p = crate::shop::CLOSE;
                                                     ui_click.press(
                                                         Press::Shop(crate::shop::Hit::Close),
-                                                        (wx + p.0, wy + p.1, p.2, p.3),
+                                                        crate::widget::canvas_rect((
+                                                            wx + p.0,
+                                                            wy + p.1,
+                                                            p.2,
+                                                            p.3,
+                                                        )),
                                                     );
                                                 }
                                                 crate::shop::Hit::None => {}
@@ -1430,7 +1470,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let p = crate::shop::SELL_CLOSE;
                                             ui_click.press(
                                                 Press::Sell(crate::shop::SellHit::Close),
-                                                (sx + p.0, sy + p.1, p.2, p.3),
+                                                crate::widget::canvas_rect((
+                                                    sx + p.0,
+                                                    sy + p.1,
+                                                    p.2,
+                                                    p.3,
+                                                )),
                                             );
                                         }
                                         // 圆槽：**手上拿着 ⇒ 放下；已经放着 ⇒ 再拿起来**
@@ -1439,14 +1484,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let p = crate::shop::SELL_SLOT;
                                             ui_click.press(
                                                 Press::Sell(crate::shop::SellHit::Slot),
-                                                (sx + p.0, sy + p.1, p.2, p.3),
+                                                crate::widget::canvas_rect((
+                                                    sx + p.0,
+                                                    sy + p.1,
+                                                    p.2,
+                                                    p.3,
+                                                )),
                                             );
                                         }
                                         crate::shop::SellHit::Ok => {
                                             let p = crate::shop::SELL_OK;
                                             ui_click.press(
                                                 Press::Sell(crate::shop::SellHit::Ok),
-                                                (sx + p.0, sy + p.1, p.2, p.3),
+                                                crate::widget::canvas_rect((
+                                                    sx + p.0,
+                                                    sy + p.1,
+                                                    p.2,
+                                                    p.3,
+                                                )),
                                             );
                                         }
                                         crate::shop::SellHit::None => {}
@@ -1504,7 +1559,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     //（规范见 `widget` 模块头的表：拖出控件再松开 / 右键 / 只有
                     // MouseDown ⇒ 都不触发）。右键不会走到这里（`release` 只对左键调）。
                     if mouse_btn == MouseButton::Left {
-                        if let Some(k) = ui_click.release((x, y)) {
+                        if let Some(k) = ui_click.release(crate::widget::canvas_pt((x, y))) {
                             match k {
                                 Press::Hud(b) => match b {
                                     crate::layout::HudBtn::State => toggle_status(&mut win),
@@ -1735,14 +1790,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     y,
                     ..
                 } if mode == 4 => {
-                    let (x, y) = {
-                        let p = ui::ui_inv_pt((x, y));
-                        (p.0 .0, p.1 .0)
-                    }; // 设计空间（见上面那条）
+                    let canvas_p = crate::widget::canvas_pt((x, y));
                     let act = match (asset_dir.as_ref(), select_scene.as_mut()) {
                         (Some(dir), Some(scene)) => {
                             // OnClick 交给引擎判（拖出去松开就不算）⇒ 这里只执行
-                            let key = ui_click.release((x, y));
+                            let key = ui_click.release(canvas_p);
                             match mir2_core::select_ui::Layout::build(UI_WIN, |c, i| {
                                 ui.size(dir, c, i)
                             }) {
@@ -1787,16 +1839,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     y,
                     ..
                 } if mode == 1 => {
-                    let (x, y) = {
-                        let p = ui::ui_inv_pt((x, y));
-                        (p.0 .0, p.1 .0)
-                    }; // 设计空间（见上面那条）
+                    let canvas_p = crate::widget::canvas_pt((x, y));
                     if let Some(dir) = asset_dir.as_ref() {
                         let l =
                             mir2_core::login_ui::Layout::build(UI_WIN, |c, i| ui.size(dir, c, i));
                         if let Some(l) = l {
                             // OnClick 交给引擎判（拖出去松开就不算）⇒ 这里只映射动作
-                            let act = match ui_click.release((x, y)) {
+                            let act = match ui_click.release(canvas_p) {
                                 Some(Press::Login(b)) => login.click(b, &l),
                                 _ => login::Action::None,
                             };

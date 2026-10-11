@@ -90,7 +90,8 @@ pub(crate) enum Btn {
 ///
 /// `widget::Rect` 是 `(x, y, w, h)`，而 `login_ui::Rect` 是结构体 ⇒ 在这里换一次。
 fn pick(r: mir2_core::login_ui::Rect, p: (f32, f32), b: Btn) -> Option<(Btn, crate::widget::Rect)> {
-    r.hit(p).then_some((b, (r.x, r.y, r.w, r.h)))
+    r.hit(p)
+        .then_some((b, crate::widget::design_rect((r.x, r.y, r.w, r.h))))
 }
 
 /// 登录界面的状态。
@@ -684,9 +685,11 @@ mod tests {
     /// ⇒ 拖出去松开就不算点中，跟游戏里那条路是同一套。
     fn tap(s: &mut Login, l: &Layout, down_at: (f32, f32), up_at: (f32, f32)) -> Action {
         let mut ui = crate::widget::Ui::new();
-        ui.set_mouse(down_at);
+        let down_canvas = crate::ui::ui_pt(down_at);
+        let up_canvas = crate::ui::ui_pt(up_at);
+        ui.set_mouse(down_canvas);
         s.on_down(down_at, l, &mut ui);
-        match ui.release(up_at) {
+        match ui.release(up_canvas) {
             Some(crate::Press::Login(b)) => s.click(b, l),
             _ => Action::None,
         }

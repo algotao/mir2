@@ -5032,3 +5032,32 @@ ui_inv_pt(p) 画布 → 设计   ⇒ 返回 DPt
    商人不收货、且**没有任何日志**（静默拒）。
 
 **验收**：客户端 152/148/7/3 + Go 25 包，clippy 0。
+
+---
+
+## D-89 架构方向 ② 收尾：Widget 按钮矩形/鼠标点全类型化（2026-10-11）
+
+之前 `widget::Rect=(f32,f32,f32,f32)`，`Ui.mouse=(f32,f32)`：全局画布、800×600
+设计坐标、窗口局部坐标三者都能直接塞进去，**编译器完全不知道**。
+
+现在：
+
+- `Button.rect` / `Ui.down` / `Ui::press` / `Ui::release` / `Ui::mouse` ⇒ `CRect` / `CPt`
+  —— 全局**画布空间**，设计/局部矩形不能直接传。
+- 登录/选角仍在设计空间做原有命中；只在进入 `Ui::press` 前走
+  `widget::design_rect`（`Dpx → Cpx`）。`Ui.mouse` 与 release 始终保留**原始画布点**。
+  这修正了此前的隐患：登录/选角的 `press/release` 是设计空间，但 `Ui.mouse`
+  已是画布空间 ⇒ `held()` 按下高亮会空间错位。
+- 背包 `Grid` 用 `LRect/LPt`（窗口**局部**），不再谎称是画布坐标。
+  `layout::bag_cell_rect` / `bag_slot_at` 是显式的局部边界转换。
+- status/shop/bag 的面板局部按钮几何通过 `offset_local_to_canvas` 才能成为全局 `CRect`；
+  SDL/layout 画布边界用 `widget::canvas_rect`。
+
+命名 API 刻意把转换写出来：`canvas_rect` / `design_rect` /
+`offset_local_to_canvas`。错误空间的值无法直接通过类型检查。
+
+新增测试：`设计空间按钮矩形与画布鼠标同空间判定` + `局部矩形加画布原点后才是全局画布矩形`。
+
+**② 结案**：`Dpx/Cpx` 长度、`DPt/CPt` 点、`DRect/CRect` 矩形、Widget 命中四层均有空间类型。
+
+**验收**：客户端 154/148/7/4，clippy 0；Go 25 包。

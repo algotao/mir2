@@ -105,7 +105,7 @@ pub(crate) fn draw_hud<'a, T>(
         // 常态画在底栏里 ⇒ 只有高亮（按下）图是单独的
         let btn = crate::widget::Button {
             key: crate::Press::Hud(b),
-            rect: b.rect(),
+            rect: crate::widget::canvas_rect(b.rect()),
             art: crate::widget::ButtonArt::highlight_only(("Prguse", b.img())),
             enabled: true,
         };
@@ -119,7 +119,7 @@ pub(crate) fn draw_hud<'a, T>(
         // 左下这排是**两态**按钮：常态图 + 按下图(+1)（官方 `DBotGroupDirectPaint`）
         let btn = crate::widget::Button {
             key: crate::Press::Quick(b),
-            rect: b.rect(),
+            rect: crate::widget::canvas_rect(b.rect()),
             art: crate::widget::ButtonArt::two_state(("Prguse", b.img()), ("Prguse", b.img() + 1)),
             enabled: true,
         };
@@ -544,15 +544,14 @@ pub(crate) fn draw_bag<'a, T>(
     // 常态那个红叉印在底图 `Prguse[3]` 里 ⇒ 只在按下时叠）。
     let close_btn = crate::widget::Button {
         key: crate::Press::BagClose,
-        rect: crate::widget::offset(
+        rect: crate::widget::offset_local_to_canvas(
             (
                 crate::layout::BAG_CLOSE_X,
                 crate::layout::BAG_CLOSE_Y,
                 crate::layout::BAG_CLOSE_W,
                 crate::layout::BAG_CLOSE_H,
             ),
-            x,
-            y,
+            crate::space::CPt(crate::space::Cpx(x), crate::space::Cpx(y)),
         ),
         art: crate::widget::ButtonArt::highlight_only(("Prguse", crate::layout::BAG_CLOSE_IMG)),
         enabled: true,

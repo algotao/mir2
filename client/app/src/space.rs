@@ -75,8 +75,47 @@ impl CPt {
 pub type DRect = (Dpx, Dpx, Dpx, Dpx);
 
 /// 画布像素的矩形（`(x, y, w, h)`）—— 画与命中都用它，两者才不会跑偏。
-#[allow(dead_code)] // 同上
 pub type CRect = (Cpx, Cpx, Cpx, Cpx);
+
+/// 面板/窗口**局部**长度（尚未加画布原点，不可直接绘制/命中全局鼠标）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd)]
+pub struct Lpx(pub f32);
+
+/// 面板/窗口局部点。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LPt(pub Lpx, pub Lpx);
+
+/// 面板/窗口局部矩形。
+pub type LRect = (Lpx, Lpx, Lpx, Lpx);
+
+/// 从未标注的 SDL/布局数值建立**画布**矩形。调用点必须确认数值已在逻辑画布空间。
+#[inline]
+pub fn canvas_rect(x: f32, y: f32, w: f32, h: f32) -> CRect {
+    (Cpx(x), Cpx(y), Cpx(w), Cpx(h))
+}
+
+/// 从未标注的面板布局数值建立局部矩形；返回类型明确禁止直接拿去画全局画布。
+#[inline]
+pub fn local_rect(x: f32, y: f32, w: f32, h: f32) -> LRect {
+    (Lpx(x), Lpx(y), Lpx(w), Lpx(h))
+}
+
+/// 将已确认的面板局部矩形平移到画布（`origin` 是全局画布点）。
+#[inline]
+pub fn local_rect_to_canvas(r: LRect, origin: CPt) -> CRect {
+    (
+        Cpx(origin.0 .0 + r.0 .0),
+        Cpx(origin.1 .0 + r.1 .0),
+        Cpx(r.2 .0),
+        Cpx(r.3 .0),
+    )
+}
+
+/// 局部点命中局部矩形（仍用半开区间；不允许跟全局 `CPt` 混用）。
+#[inline]
+pub fn hit_local(r: LRect, p: LPt) -> bool {
+    p.0 .0 >= r.0 .0 && p.0 .0 < r.0 .0 + r.2 .0 && p.1 .0 >= r.1 .0 && p.1 .0 < r.1 .0 + r.3 .0
+}
 
 impl Dpx {
     /// 矩形整体换算（画之前过这一道）。
@@ -157,6 +196,15 @@ mod tests {
     /// ⚠️ **D-64 那条**：HUD 按钮被乘了两次 `UI_SCALE` 推出画布。
     /// 这条钉住"换算只能过一道" —— 类型让它过不了第二道（第二次得显式写
     /// `Cpx(..)`，那就是在明说，手滑做不到）。
+    #[test]
+    fn 局部矩形加画布原点后才是全局画布矩形() {
+        let local = local_rect(4.0, 6.0, 20.0, 12.0);
+        let screen = local_rect_to_canvas(local, CPt(Cpx(100.0), Cpx(200.0)));
+        assert_eq!(screen, (Cpx(104.0), Cpx(206.0), Cpx(20.0), Cpx(12.0)));
+        assert!(hit(screen, CPt(Cpx(105.0), Cpx(207.0))));
+        assert!(!hit(screen, CPt(Cpx(99.0), Cpx(207.0))));
+    }
+
     #[test]
     fn 换算不能过第二道() {
         let once = Dpx(50.0).to_canvas();
