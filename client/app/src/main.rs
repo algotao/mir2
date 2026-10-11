@@ -87,9 +87,11 @@ pub(crate) mod actor;
 pub(crate) use actor::*;
 pub(crate) mod assetview;
 mod bagdrag;
+mod confirm;
 pub(crate) mod hud;
 pub(crate) mod minimap;
 mod pager;
+mod scrollview;
 pub(crate) mod shop;
 mod shopui;
 pub(crate) mod status;
@@ -112,25 +114,6 @@ pub(crate) use world::*;
 mod tests;
 mod widget;
 pub(crate) use widget::{Press, Ui};
-
-/// 待确认的"退出类"动作（底栏那两颗 [注销] / [退出] 用）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QuitAct {
-    /// 注销：断线回登录界面（原版 `AppLogOut`）。
-    Logout,
-    /// 退出：关掉客户端（原版 `AppExit`）。
-    Exit,
-}
-
-impl QuitAct {
-    /// 确认框上那句话。
-    fn ask(self) -> &'static str {
-        match self {
-            Self::Logout => "要注销、回到登录界面吗？",
-            Self::Exit => "要退出游戏吗？",
-        }
-    }
-}
 
 /// 往聊天区说一句（点了个"还没做"的按钮时用 —— **绝不静默**）。
 fn ui_say(net: Option<&mut Net>, msg: &str) {
@@ -467,7 +450,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pending_pickup: Option<(u64, (i32, i32))> = None;
     // NPC 对话窗**卷到第几行**（正文常常超出那块固定高的背板 ⇒ 要能滚，
     // 见 `input::dialog_max_scroll`）：滚轮改它，换了段新对话就归零。
-    let mut dialog_scroll = 0usize;
+    // 对话正文的滚动位置（规则在 `scrollview`，不碰 SDL ⇒ 有测试）
+    let mut dlg_scroll = scrollview::ScrollView::new();
     // 上次看到的对话版本号（`World::dialog_seq`）—— 变了就说明是**另一段**对话
     let mut dialog_seq_seen = 0u64;
     // 怪声音的随机源（`sfx::monster_ambient` 的 1/8 判定；不为这一处引 rand 依赖）
@@ -508,7 +492,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // **退出 / 注销**的待确认动作（`None` = 没在确认）。
     // ⚠️ 官方那两颗按钮点了就直接生效（`DBotExitClick` ⇒ `AppExit`），但一下
     // 把游戏关了误触代价太大 ⇒ 我们加一道确认框。
-    let mut confirm_quit: Option<QuitAct> = None;
+    // 退出/注销的确认框（规则在 `confirm`）
+    let mut confirm = confirm::Confirm::new();
     let mut minimap_on = false;
     let mut bigmap_on = false;
     // 音效开关：原版是**两个独立开关**（音效 / 音乐，`MShare.pas:213-214`），
@@ -588,9 +573,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // 现在放它们落到下面的 mode 分支去；场景要退（`Action::Exit` /
                         // `Action::Quit`）才真退。其余模式（世界/素材浏览器）保持原样。
                         // 确认框开着 ⇒ ESC **先关它**（别顺手把窗/客户端关了）
-                        Some(Keycode::Escape) if mode == 2 && confirm_quit.is_some() => {
-                            confirm_quit = None
-                        }
+                        Some(Keycode::Escape) if mode == 2 && confirm.is_open() => confirm.cancel(),
                         // 背包窗开着 ⇒ ESC **先关背包**
                         Some(Keycode::Escape) if mode == 2 && win.bag() => win.close_bag(),
                         // 状态窗同理 ⇒ ESC **先关状态窗**（别顺手把客户端退了）
@@ -882,11 +865,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // ② 对话窗内滚轮卷行（正文折行后常常超出背板：298 个脚本里 114 个超一屏）
                     if !done && net.is_some() {
                         if let Some((panel, lines, _)) =
-                            hud::dialog_geom(net.as_ref(), dialog_scroll)
+                            hud::dialog_geom(net.as_ref(), dlg_scroll.scroll())
                         {
                             if input::dialog_hit(panel, mouse) {
-                                dialog_scroll =
-                                    input::dialog_scroll_step(dialog_scroll, lines.len(), y);
+                                dlg_scroll.wheel(y, lines.len());
                                 done = true;
                             }
                         }
@@ -932,7 +914,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let mut ui_consumed = false;
                             // ①″ **确认框开着 ⇒ 它是模态**：只认框里的两颗按钮，
                             // 点框外/别处一律当作"取消"（不走路、不穿透到世界）。
-                            if confirm_quit.is_some() {
+                            if confirm.is_open() {
                                 if mouse_btn == MouseButton::Left {
                                     if let Some(dir) = asset_dir.as_deref() {
                                         let c = hud::confirm_geom(&mut ui, dir, (WIN_W, WIN_H));
@@ -953,10 +935,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 );
                                             } else if !c.frame.hit(mouse) {
                                                 // 点框外 = 收起模态（不是按钮）⇒ 即时生效
-                                                confirm_quit = None;
+                                                confirm.cancel();
                                             }
                                         } else {
-                                            confirm_quit = None; // 量不到素材 ⇒ 别把人卡住
+                                            confirm.cancel(); // 量不到素材 ⇒ 别把人卡住
                                         }
                                     }
                                 }
@@ -1150,7 +1132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // 实现（把上面那一大段包进 if 会多一层缩进、更容易漏改）。
                             if let Some(n) = net.as_ref() {
                                 if let Some((panel, lines, scroll)) =
-                                    hud::dialog_geom(net.as_ref(), dialog_scroll)
+                                    hud::dialog_geom(net.as_ref(), dlg_scroll.scroll())
                                 {
                                     // **行内可点文字**：命中矩形由 `input::dialog_line_pieces`
                                     // 算（与 `draw_dialog` 是同一份 ⇒ 画哪点哪），
@@ -1530,10 +1512,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     // 这两颗不直接生效 ⇒ 弹确认框
                                     crate::layout::QuickBtn::Logout => {
-                                        confirm_quit = Some(QuitAct::Logout)
+                                        confirm.ask(confirm::QuitAct::Logout)
                                     }
                                     crate::layout::QuickBtn::Exit => {
-                                        confirm_quit = Some(QuitAct::Exit)
+                                        confirm.ask(confirm::QuitAct::Exit)
                                     }
                                 },
                                 // 快捷栏：手上拿着 ⇒ 放进这格；空手 ⇒ 使用
@@ -1647,20 +1629,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 Press::Sell(_) => {}
                                 Press::ConfirmOk => {
-                                    if let Some(act) = confirm_quit.take() {
+                                    if let Some(act) = confirm.confirm() {
                                         match act {
-                                            QuitAct::Logout => {
+                                            confirm::QuitAct::Logout => {
                                                 ui_say(net.as_mut(), "已注销。");
                                                 net = None;
                                                 mode = 1;
                                                 belt = [None; crate::layout::BELT_SLOTS];
                                                 win.close_all();
                                             }
-                                            QuitAct::Exit => break 'main,
+                                            confirm::QuitAct::Exit => break 'main,
                                         }
                                     }
                                 }
-                                Press::ConfirmCancel => confirm_quit = None,
+                                Press::ConfirmCancel => confirm.cancel(),
                                 // 登录界面的按钮：不会走到这里（那是 `mode == 1` 的事，
                                 // 见下面登录那条 `release`）。列出来只为穷尽匹配。
                                 Press::Login(_) => {}
@@ -2310,9 +2292,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 不归零的话：在商人 A 那儿滚到第 20 行，再去点商人 B，B 的正文会直接从
         // 第 20 行开始显示 —— 看着像"这段对话是空的"。
         if let Some(n) = net.as_ref() {
-            if n.world.dialog_seq != dialog_seq_seen {
+            if dlg_scroll.on_new_text(n.world.dialog_seq, dialog_seq_seen) {
                 dialog_seq_seen = n.world.dialog_seq;
-                dialog_scroll = 0;
+            }
+            // 正文行数会变（窗口尺寸 / 服务端改了内容）⇒ 滚动位置夹回合法范围，
+            // 别停在已经不存在的行上（`scrollview` 有测试）。
+            if let Some((_, lines, _)) = hud::dialog_geom(net.as_ref(), dlg_scroll.scroll()) {
+                dlg_scroll.clamp(lines.len());
             }
         }
 
@@ -2348,7 +2334,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ani_count,
                 net.as_ref(),
                 combat_target,
-                dialog_scroll,
+                dlg_scroll.scroll(),
                 &ui_click, // 控件引擎（底栏按钮的 hover/按下）
             )?;
             // **快捷（腰带）栏**：画在世界与 HUD 之上（框在底栏里、内容在这里）。
@@ -2369,7 +2355,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             // **退出 / 注销的确认框**（模态）⇒ 画在所有窗之上
-            if let (2, Some(act)) = (mode, confirm_quit) {
+            if let (2, Some(act)) = (mode, confirm.pending()) {
                 if let Some(dir) = asset_dir.as_deref() {
                     hud::draw_confirm(
                         &mut canvas,
@@ -2378,7 +2364,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &mut ui_texts,
                         dir,
                         (WIN_W, WIN_H),
-                        act.ask(),
+                        act.prompt(),
                     )?;
                 }
             }
