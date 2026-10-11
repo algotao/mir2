@@ -58,6 +58,7 @@ impl Art {
     pub const MSGBOX: (&'static str, u32) = ("Prguse", 360);
     /// 消息框的 [Ok]。
     pub const MSGBOX_OK: (&'static str, u32) = ("Prguse", 363);
+
     /// 输入框最多几个字符（`IntroScn.pas:269/283`）。
     pub const MAX_ACCOUNT: usize = 14;
     pub const MAX_PASSWORD: usize = 10;

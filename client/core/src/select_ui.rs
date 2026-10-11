@@ -101,6 +101,26 @@ impl Art {
     /// ⚠️ 别把它当"按下态"用：它是**常态**。（1.76 原版的菜单图 `Prguse[68..72]` 是纯文字、
     /// 且 `TDControl.DirectPaint` 不判 `Downed` ⇒ 原版这几项本来就没有"按下换图"。）
     pub const START_PLATE: (&'static str, u32) = ("Prguse2", 480);
+    // ---------- 建角窗（原版 `DCreateChr`，`FState.pas:957-1001`）----------
+    //
+    // 图号是用户 2026-10-11 给的；控件坐标是**从官方源码抄的**，不是量出来的：
+    // `FState.pas:977-1001` 给了战/法/道、男/女、发型左右、[确定]、[关闭] 的位置，
+    // 姓名框在 `IntroScn.pas:1377-1378`（`DCreateChr.Left + 71 / Top + 107`）。
+    /// 建角窗**背景**（300×417，官方 `DCreateChr.Left/Top` 是**居中**摆的）。
+    pub const NEW_CHR_BG: (&'static str, u32) = ("Prguse", 73);
+    /// 职业按钮的**高亮**：`+0/+1/+2` = 战士/法师/道士（常态画在底图 73 里）。
+    pub const NEW_CHR_JOB: (&'static str, u32) = ("Prguse", 74);
+    /// 性别按钮的**高亮**：`+0/+1` = 男/女（同上）。
+    pub const NEW_CHR_SEX: (&'static str, u32) = ("Prguse", 77);
+    /// 发型**上一款**（`DccLeftHair`）。⚠️ 官方是**空实现**
+    /// （`IntroScn.pas:1450-1452` 函数体是空的）⇒ 我们也不用它，只登记图号。
+    pub const NEW_CHR_HAIR_PREV: (&'static str, u32) = ("Prguse", 79);
+    /// 发型**下一款**（`DccRightHair`），同上（空实现）。
+    pub const NEW_CHR_HAIR_NEXT: (&'static str, u32) = ("Prguse", 80);
+    /// 建角窗的 [确定]（76×33）。
+    pub const NEW_CHR_OK: (&'static str, u32) = ("Prguse", 62);
+    /// 建角窗右上角的 [关闭]（红叉，16×23）。
+    pub const NEW_CHR_CLOSE: (&'static str, u32) = ("Prguse", 64);
 }
 
 /// 中间菜单的 5 项（顺序 = 从上到下 = [`Art::MENU_DOWN`] 的顺序）。
@@ -654,12 +674,12 @@ pub enum DialogHit {
     Close,
 }
 
-/// 「新建角色」对话框的版式（原版 `DCreateChr`，`IntroScn.pas:1268-1288`）。
+/// 「新建角色」对话框的版式（原版 `DCreateChr`）。
 ///
-/// ⚠️ **不依赖素材**：原版那个窗口的尺寸与控件坐标在 `FState.pas:932-965`，是 800×600
-/// 的老界面；我们这套界面是 1024×768，而 `Prguse[73]`（那扇窗口的背景图）也还没接进
-/// `Art` ⇒ 这里用**固定尺寸居中**画一个功能同构的小框（姓名行 + 职业三颗 + 性别两颗 +
-/// 确定/关闭）。**没有逐像素对拍过** —— 记在这儿，免得以后有人当它是"照原版搬的"。
+/// ⚠️ 2026-10-11 起**照官方源码摆**：窗口就是 `Prguse[73]`（300×417，居中），
+/// 控件坐标抄 `FState.pas:977-1001`、姓名框抄 `IntroScn.pas:1377-1378`
+/// （`Left+71 / Top+107`）—— 不再是自绘的固定几何。
+/// 职业/性别的**常态画在底图里**，高亮图（74-78）只在选中/悬停时叠上去。
 ///
 /// 为什么几何要放在 core：它得在**画**和**命中测试**两处用同一份坐标，而命中测试那条路
 /// （`Select::on_up`）只有 `Layout` ⇒ 见 [`Layout::win`]。
@@ -675,51 +695,51 @@ pub struct DialogBox {
 }
 
 impl DialogBox {
+    /// 窗口尺寸 = `Prguse[73]` 的原生尺寸（300×417）。
+    pub const W: f32 = 300.0;
+    pub const H: f32 = 417.0;
+
     /// 居中排一个（窗口再小也不会把框挤出屏幕外）。
     pub fn build(win: (u32, u32)) -> Self {
-        const W: f32 = 360.0;
-        const H: f32 = 236.0;
-        let bx = ((win.0 as f32 - W) / 2.0).max(8.0);
-        let by = ((win.1 as f32 - H) / 2.0).max(8.0);
-        let pad = 24.0;
+        let bx = ((win.0 as f32 - Self::W) / 2.0).max(4.0);
+        let by = ((win.1 as f32 - Self::H) / 2.0).max(4.0);
+        // 官方控件坐标（**窗口内**）—— `FState.pas:977-1001`
         let name = Rect {
-            x: bx + pad,
-            y: by + 52.0,
-            w: W - pad * 2.0,
-            h: 26.0,
+            x: bx + 71.0,
+            y: by + 106.0,
+            w: 158.0,
+            h: 22.0,
         };
-        let bw = 68.0;
         let job = std::array::from_fn(|i| Rect {
-            x: bx + pad + i as f32 * (bw + 10.0),
-            y: name.y + name.h + 26.0,
-            w: bw,
-            h: 24.0,
+            x: bx + 48.0 + i as f32 * 45.0,
+            y: by + 157.0,
+            w: 44.0,
+            h: 36.0,
         });
         let sex = std::array::from_fn(|i| Rect {
-            x: bx + pad + i as f32 * (bw + 10.0),
-            y: job[0].y + job[0].h + 20.0,
-            w: bw,
-            h: 24.0,
+            x: bx + 93.0 + i as f32 * 45.0,
+            y: by + 231.0,
+            w: 44.0,
+            h: 35.0,
         });
-        let btn_w = 76.0;
         let ok = Rect {
-            x: bx + W / 2.0 - btn_w - 8.0,
-            y: by + H - 38.0,
-            w: btn_w,
-            h: 26.0,
+            x: bx + 101.0,
+            y: by + 359.0,
+            w: 76.0,
+            h: 33.0,
         };
         let close = Rect {
-            x: bx + W / 2.0 + 8.0,
-            y: ok.y,
-            w: btn_w,
-            h: 26.0,
+            x: bx + 247.0,
+            y: by + 30.0,
+            w: 16.0,
+            h: 23.0,
         };
         Self {
             frame: Rect {
                 x: bx,
                 y: by,
-                w: W,
-                h: H,
+                w: Self::W,
+                h: Self::H,
             },
             name,
             job,
@@ -1595,5 +1615,29 @@ mod tests {
             ours_there < 30.0,
             "1.76 底图那块的差别是 {ours_there:.1} —— 难道它本来就有台子？那就不用搬了"
         );
+    }
+
+    /// **建角窗的控件坐标是抄官方源码的**（`FState.pas:977-1001` +
+    /// `IntroScn.pas:1377`）—— 这条把它们钉住，免得以后有人当成随手排的版式。
+    #[test]
+    fn 建角窗几何照官方源码() {
+        let b = DialogBox::build((800, 600));
+        // 窗 = Prguse[73] 的原生尺寸，居中
+        assert_eq!((b.frame.w, b.frame.h), (300.0, 417.0));
+        assert_eq!(b.frame.x, (800.0 - 300.0) / 2.0);
+        assert_eq!(b.frame.y, (600.0 - 417.0) / 2.0);
+        let rel = |r: Rect| (r.x - b.frame.x, r.y - b.frame.y);
+        // 姓名框：`EdChrName.Left/Top := DCreateChr.Left/Top + 71/107`
+        assert_eq!(rel(b.name), (71.0, 106.0));
+        // 战/法/道：48 / 93 / 138，同一行 y=157
+        for (i, x) in [48.0, 93.0, 138.0].iter().enumerate() {
+            assert_eq!(rel(b.job[i]), (*x, 157.0), "职业 {i}");
+        }
+        // 男/女：93 / 138，y=231
+        for (i, x) in [93.0, 138.0].iter().enumerate() {
+            assert_eq!(rel(b.sex[i]), (*x, 231.0), "性别 {i}");
+        }
+        assert_eq!(rel(b.ok), (101.0, 359.0));
+        assert_eq!(rel(b.close), (247.0, 30.0));
     }
 }

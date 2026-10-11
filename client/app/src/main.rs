@@ -2212,6 +2212,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         } else if mode == 4 {
             if let Some(scene) = select_scene.as_mut() {
+                // 鼠标位置（**设计空间**）⇒ 建角框的按钮悬停要它
+                scene.mouse = ui::ui_inv_pt(mouse);
                 scene.draw(
                     &mut canvas,
                     &tex_creator,

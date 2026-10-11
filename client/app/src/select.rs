@@ -25,18 +25,18 @@ use std::path::Path;
 use std::time::Instant;
 
 use sdl3::keyboard::Keycode;
-use sdl3::pixels::Color;
-use sdl3::render::{TextureCreator, WindowCanvas};
+use sdl3::render::{FRect, TextureCreator, WindowCanvas};
 
 use mir2_core::select_ui as su;
 use mir2_protocol as proto;
 
 use crate::font::{Rgb, TextCache};
-use crate::ui::{ui_inv_px, ui_px, uifill, UiCache};
+use crate::ui::{ui_inv_px, ui_px, UiCache};
 
 /// 名字/等级/职业 的字色（原版 `clWhite` + `clBlack` 描边，`IntroScn.pas:1519`）。
 const C_TEXT: Rgb = (255, 255, 255);
 /// 次要文字（对话框里的字段标签与操作提示）。
+#[allow(dead_code)] // 建角窗改成官方素材后不再自绘标签；留着给以后用
 const C_DIM: Rgb = (176, 172, 164);
 const C_SHADOW: Rgb = (0, 0, 0);
 /// 键盘选中的菜单项用**它的按下态图**当高亮（这套素材没有单独的"选中"图）。
@@ -139,6 +139,8 @@ pub struct Select {
     pub msg: Option<String>,
     /// 建角对话框（原版 `DCreateChr`）。`Some` 时它是**模态**：吃掉所有输入。
     newchar: Option<NewChar>,
+    /// 鼠标位置（**设计空间** 800×600，与命中测试同一套坐标）。建角框的按钮悬停用。
+    pub mouse: (f32, f32),
     /// "要确认的动作"（原版 `DMessageDlg` 的 Yes/No）：回车/[确定]才执行，其余输入 = 取消。
     /// 目前只有删角用它 —— 删除不可恢复，宁可要求一个明确的"是"。
     pending: Option<Action>,
@@ -183,6 +185,7 @@ impl Select {
             menu_cursor: 0,
             msg: None,
             newchar: None,
+            mouse: (0.0, 0.0),
             pending: None,
             down: None,
             last_phase,
@@ -774,7 +777,8 @@ impl Select {
 
         // 建角对话框（模态；原版 `DCreateChr`）—— 画在弹窗下面一层
         if let Some(d) = self.newchar.as_ref() {
-            draw_newchar(canvas, tc, text, win, d)?;
+            let hover = su::DialogBox::build(win).hit(self.mouse);
+            draw_newchar(canvas, tc, ui, text, dir, win, d, hover)?;
         }
 
         // 弹窗
@@ -834,157 +838,96 @@ fn hair_roll() -> u32 {
     1 + n % 5
 }
 
-/// 画建角对话框（原版 `DCreateChr`；几何见 [`su::DialogBox`]）。
+/// 画建角对话框（原版 `DCreateChr`）。
 ///
-/// ⚠️ 素材里**没有**这扇窗口的背景图（原版是 `Prguse[73]`，还没接进 `Art`）⇒ 这里是
-/// 实心框 + 边框，**不是照原版搬的窗口**；文字走真字体（中文姓名/职业名要能画）。
+/// ⚠️ 2026-10-11 起**用官方素材**：窗底图 `Prguse[73]`（300×417 居中），职业/性别的
+/// 高亮图 74-78 只在**选中或悬停**时叠上去（常态就在底图里），[确定] = 62、
+/// [关闭] = 64。坐标全部来自 [`su::DialogBox`]（抄 `FState.pas:977-1001`）。
+#[allow(clippy::too_many_arguments)]
 fn draw_newchar<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
+    ui: &mut UiCache<'a>,
     text: &mut TextCache<'a>,
+    dir: &Path,
     win: (u32, u32),
     d: &NewChar,
+    hover: Option<su::DialogHit>,
 ) -> Result<(), sdl3::Error> {
     let b = su::DialogBox::build(win);
-    let f = b.frame;
-    uifill(
-        canvas,
-        f.x - 2.0,
-        f.y - 2.0,
-        f.w + 4.0,
-        f.h + 4.0,
-        Color::RGB(0, 0, 0),
-    )?;
-    uifill(canvas, f.x, f.y, f.w, f.h, Color::RGB(32, 28, 24))?;
-    text.draw_ui(
-        canvas,
-        tc,
-        "新建角色",
-        f.x + 24.0,
-        f.y + 16.0,
-        C_TEXT,
-        Some(C_SHADOW),
-    )?;
-    // 姓名（唯一输入框：光标用一个方块代替闪动 —— 够用就好）
-    text.draw_ui(canvas, tc, "姓名", f.x + 24.0, b.name.y + 4.0, C_DIM, None)?;
-    uifill(
-        canvas,
-        b.name.x,
-        b.name.y,
-        b.name.w,
-        b.name.h,
-        Color::RGB(14, 14, 18),
-    )?;
-    text.draw_ui(
-        canvas,
-        tc,
-        &format!("{}▌", d.name),
-        b.name.x + 6.0,
-        b.name.y + 4.0,
-        C_TEXT,
-        None,
-    )?;
-    // 职业（选中那颗用亮底）
-    text.draw_ui(
-        canvas,
-        tc,
-        "职业",
-        f.x + 24.0,
-        b.job[0].y + 4.0,
-        C_DIM,
-        None,
-    )?;
+    // ① 窗底图（`Prguse[73]`）
+    if let Some((iw, ih)) = ui.size(dir, su::Art::NEW_CHR_BG.0, su::Art::NEW_CHR_BG.1) {
+        let _ = ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            su::Art::NEW_CHR_BG.0,
+            su::Art::NEW_CHR_BG.1,
+            FRect::new(0.0, 0.0, iw as f32, ih as f32),
+            FRect::new(b.frame.x, b.frame.y, iw as f32, ih as f32),
+            255,
+        );
+    }
+    // ② 职业 / 性别的高亮（选中**或**悬停）
     for (i, r) in b.job.iter().enumerate() {
-        if d.job == i {
-            uifill(canvas, r.x, r.y, r.w, r.h, Color::RGB(92, 72, 40))?;
+        if d.job == i || hover == Some(su::DialogHit::Job(i)) {
+            let _ = ui.draw(
+                canvas,
+                tc,
+                dir,
+                su::Art::NEW_CHR_JOB.0,
+                su::Art::NEW_CHR_JOB.1 + i as u32,
+                r.x,
+                r.y,
+            );
         }
-        text.draw_ui(
-            canvas,
-            tc,
-            su::class_name(i as i32 + 1),
-            r.x + 6.0,
-            r.y + 4.0,
-            C_TEXT,
-            None,
-        )?;
     }
-    // 性别
-    text.draw_ui(
+    for (i, r) in b.sex.iter().enumerate() {
+        if d.sex == i || hover == Some(su::DialogHit::Sex(i)) {
+            let _ = ui.draw(
+                canvas,
+                tc,
+                dir,
+                su::Art::NEW_CHR_SEX.0,
+                su::Art::NEW_CHR_SEX.1 + i as u32,
+                r.x,
+                r.y,
+            );
+        }
+    }
+    // ③ [确定] / [关闭]（这两颗不在底图里 ⇒ 常态就画）
+    let _ = ui.draw(
         canvas,
         tc,
-        "性别",
-        f.x + 24.0,
-        b.sex[0].y + 4.0,
-        C_DIM,
-        None,
-    )?;
-    for (i, r) in b.sex.iter().enumerate() {
-        if d.sex == i {
-            uifill(canvas, r.x, r.y, r.w, r.h, Color::RGB(92, 72, 40))?;
-        }
-        text.draw_ui(
-            canvas,
-            tc,
-            if i == 0 { "男" } else { "女" },
-            r.x + 6.0,
-            r.y + 4.0,
-            C_TEXT,
-            None,
-        )?;
-    }
-    // 两颗按钮
-    uifill(
-        canvas,
+        dir,
+        su::Art::NEW_CHR_OK.0,
+        su::Art::NEW_CHR_OK.1,
         b.ok.x,
         b.ok.y,
-        b.ok.w,
-        b.ok.h,
-        Color::RGB(74, 62, 40),
-    )?;
-    text.draw_ui(
+    );
+    let _ = ui.draw(
         canvas,
         tc,
-        "确定",
-        b.ok.x + 20.0,
-        b.ok.y + 4.0,
-        C_TEXT,
-        None,
-    )?;
-    uifill(
-        canvas,
+        dir,
+        su::Art::NEW_CHR_CLOSE.0,
+        su::Art::NEW_CHR_CLOSE.1,
         b.close.x,
         b.close.y,
-        b.close.w,
-        b.close.h,
-        Color::RGB(52, 46, 40),
-    )?;
+    );
+
+    // ④ 姓名（唯一的输入框；光标用方块代替闪动）
     text.draw_ui(
         canvas,
         tc,
-        "关闭",
-        b.close.x + 20.0,
-        b.close.y + 4.0,
+        &format!("{}\u{2588}", d.name),
+        b.name.x + 4.0,
+        b.name.y + 3.0,
         C_TEXT,
-        None,
-    )?;
-    // 操作提示（键盘为主；鼠标也能点那几颗）
-    text.draw_ui(
-        canvas,
-        tc,
-        "TAB 切换   ←→ 改   回车确定   ESC 取消",
-        f.x + 24.0,
-        f.y + f.h - 60.0,
-        C_DIM,
         None,
     )?;
     Ok(())
 }
 
-/// 消息框（`Prguse[360]` + `[363]` 的 [Ok]，居中）—— 与登录界面同一套素材。
-///
-/// ⚠️ 几何走 [`su::MsgBox`]（**同一份**也用于命中测试）：绘制与点击必须同一个矩形，
-/// 否则就是"看得见、点不中"（用户 2026-10-08 报的）。`login.rs` 那边是 `login_ui::Layout`
-/// 内联算的同一套规则。
 fn draw_msgbox<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
