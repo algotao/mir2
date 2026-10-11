@@ -22,6 +22,14 @@ pub(crate) fn tick(app: &mut AppState) {
         }
     }
 
+    // 选角动画是**模拟状态**，由更新阶段推进；`render` 只读当前帧，不因帧率/绘制调用
+    // 次数改变动画速度。
+    if app.scene == Scene::Select {
+        if let Some(select) = app.select_scene.as_mut() {
+            select.tick(app.started);
+        }
+    }
+
     // 背包条目减少（使用/卖出/服务端重排）后，统一夹回仍存在的页。
     // 否则 hud::bag_geom 会偷偷画第 0 页，但鼠标命中仍按旧页算，出现「画第 0 页、
     // 点第 2 页」的分裂。滚轮/绘制/命中共用 layout::bag_pages，状态在此归一。

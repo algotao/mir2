@@ -578,7 +578,7 @@ impl SlotAnim {
         self.phase = SlotPhase::Freezing;
     }
 
-    /// 推进 `dt_ms` 毫秒；返回这一帧该画什么。
+    /// 推进 `dt_ms` 毫秒并返回当前画格（**更新阶段**调用，不要塞进绘制）。
     pub fn tick(&mut self, dt_ms: u32, selected: bool) -> SlotFrame {
         self.acc += dt_ms;
         let step = match self.phase {
@@ -590,6 +590,22 @@ impl SlotAnim {
             self.k += 1;
         }
         match self.phase {
+            SlotPhase::Unfreezing if self.k >= Art::FREEZE_FRAMES => {
+                self.phase = SlotPhase::Stand;
+                self.k = 0;
+            }
+            SlotPhase::Freezing if self.k >= Art::FREEZE_FRAMES => {
+                self.phase = SlotPhase::Freeze;
+                self.k = 0;
+            }
+            _ => {}
+        }
+        self.frame(selected)
+    }
+
+    /// 只读地取当前画格（**绘制阶段调用**，不推进计时或改变相位）。
+    pub fn frame(&self, selected: bool) -> SlotFrame {
+        match self.phase {
             SlotPhase::Stand => {
                 let k = if selected { self.k } else { 0 };
                 SlotFrame {
@@ -598,35 +614,25 @@ impl SlotAnim {
                     effect: None,
                 }
             }
-            SlotPhase::Unfreezing => {
-                if self.k >= Art::FREEZE_FRAMES {
-                    self.phase = SlotPhase::Stand;
-                    self.k = 0;
-                    return self.tick(0, selected);
-                }
-                SlotFrame {
-                    index: freeze_index(self.job, self.sex, self.k),
-                    at_frozen: true,
-                    effect: Some(effect_index(self.k)),
-                }
-            }
+            SlotPhase::Unfreezing => SlotFrame {
+                index: freeze_index(self.job, self.sex, self.k.min(Art::FREEZE_FRAMES - 1)),
+                at_frozen: true,
+                effect: Some(effect_index(self.k.min(Art::FREEZE_FRAMES - 1))),
+            },
             SlotPhase::Freeze => SlotFrame {
                 index: freeze_index(self.job, self.sex, 0),
                 at_frozen: true,
                 effect: None,
             },
-            SlotPhase::Freezing => {
-                if self.k >= Art::FREEZE_FRAMES {
-                    self.phase = SlotPhase::Freeze;
-                    self.k = 0;
-                    return self.tick(0, selected);
-                }
-                SlotFrame {
-                    index: freeze_index(self.job, self.sex, Art::FREEZE_FRAMES - 1 - self.k),
-                    at_frozen: true,
-                    effect: None,
-                }
-            }
+            SlotPhase::Freezing => SlotFrame {
+                index: freeze_index(
+                    self.job,
+                    self.sex,
+                    Art::FREEZE_FRAMES - 1 - self.k.min(Art::FREEZE_FRAMES - 1),
+                ),
+                at_frozen: true,
+                effect: None,
+            },
         }
     }
 }
@@ -1093,6 +1099,19 @@ mod tests {
         let a = s.tick(1000, false);
         assert_eq!(a, s.tick(1000, false));
         assert_eq!(a.index, stand_index(0, 0, 0));
+    }
+
+    #[test]
+    fn 只读取当前画格不会推进动画() {
+        let mut s = SlotAnim::new(0, 0);
+        s.select();
+        s.tick(150, true);
+        let phase = s.phase();
+        let a = s.frame(true);
+        let b = s.frame(true);
+        assert_eq!(a, b, "渲染重复读取应是纯读");
+        assert_eq!(s.phase(), phase, "frame() 不得改变相位");
+        assert_eq!(a, s.tick(0, true), "tick(0) 返回与只读画格一致");
     }
 
     /// 点空处不算命中。

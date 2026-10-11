@@ -141,8 +141,6 @@ pub struct Select {
     newchar: Option<NewChar>,
     /// **角色名规则**（服务端下发的那份；`None` = 还没收到 ⇒ 用内置兜底）
     name_rule: Option<NameRule>,
-    /// 鼠标位置（**设计空间** 800×600，与命中测试同一套坐标）。建角框的按钮悬停用。
-    pub mouse: (f32, f32),
     /// "要确认的动作"（原版 `DMessageDlg` 的 Yes/No）：回车/[确定]才执行，其余输入 = 取消。
     /// 目前只有删角用它 —— 删除不可恢复，宁可要求一个明确的"是"。
     pending: Option<Action>,
@@ -187,12 +185,23 @@ impl Select {
             msg: None,
             newchar: None,
             name_rule: None,
-            mouse: (0.0, 0.0),
             pending: None,
             last_phase,
             place: su::SlotPlace::default(),
             fx_place: su::SlotPlace::default(),
             last: Instant::now(),
+        }
+    }
+
+    /// 推进选角动画（**更新阶段调用**；绘制只读 `SlotAnim::frame`，不会改变相位）。
+    pub(crate) fn tick(&mut self, now: Instant) {
+        let dt = now.saturating_duration_since(self.last).as_millis() as u32;
+        self.last = now;
+        for slot in 0..su::Art::SLOTS {
+            let occupied = self.chars.iter().any(|c| c.slot as usize == slot);
+            if occupied {
+                let _ = self.anims[slot].tick(dt, slot == self.picked);
+            }
         }
     }
 
@@ -611,7 +620,7 @@ impl Select {
         text: &mut TextCache<'a>,
         asset_dir: &Option<std::path::PathBuf>,
         win: (u32, u32),
-        now: Instant,
+        mouse: (f32, f32),
         // 控件引擎：按下态问它（不再自存 `down`）
         widget_ui: &crate::widget::Ui,
     ) -> Result<(), sdl3::Error> {
@@ -674,15 +683,11 @@ impl Select {
             );
         }
 
-        // 这一帧的动画（dt 用真实时间；`tick` 内部按 300/50ms 进帧）
-        let dt = now.saturating_duration_since(self.last).as_millis() as u32;
-        self.last = now;
-
         for slot in 0..su::Art::SLOTS {
             let Some(c) = self.char_at_slot(slot).cloned() else {
                 continue; // 空槽：什么都不画（删掉的那个位置就留空）
             };
-            let f = self.anims[slot].tick(dt, slot == self.picked);
+            let f = self.anims[slot].frame(slot == self.picked);
             let anchor = su::slot_anchor(slot, l.bg);
             // ⚠️ 落点的**基准永远是"站立第 0 帧"**，不是当前这一帧：
             // 站立 16 帧的上半身在摆（包围盒中点游走，战士女最多 13.5px）⇒ 逐帧对齐会把
@@ -804,7 +809,7 @@ impl Select {
 
         // 建角对话框（模态；原版 `DCreateChr`）—— 画在弹窗下面一层
         if let Some(d) = self.newchar.as_ref() {
-            let hover = su::DialogBox::build(win).hit(self.mouse);
+            let hover = su::DialogBox::build(win).hit(mouse);
             draw_newchar(canvas, tc, ui, text, dir, win, d, hover)?;
         }
 

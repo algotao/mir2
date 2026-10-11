@@ -5336,3 +5336,19 @@ Go 同 package 的文件共享 handler/helpers，不会引入 import cycle）：
 兼容路径，调用点无需全量改名。`AppState` 的 `Ui` 类型由纯状态模块提供。
 
 **验收**：客户端 161/148/7/3，clippy 0。
+
+---
+
+## D-104 架构方向 ① 续：登录视图外置、选角动画改为更新阶段推进（2026-10-11）
+
+- `Login::draw` 与输入框绘制从 `login.rs` 移至 `login_view.rs`；`login.rs` 留表单状态、按键/按钮
+  reducer 与校验。状态模块不再导入 SDL renderer、`UiCache` 或字体缓存。
+- 选角动画原来在 `Select::draw` 内调用 `SlotAnim::tick(dt)`，即**是否推进动画取决于本帧有没有绘制**。
+  新增 `Select::tick(now)`，由 `update::tick` 在选角场景推进；绘制改用只读 `SlotAnim::frame`。
+  鼠标悬停位置改成 draw 参数，不再写回 `Select` 运行态。
+- core 的 `SlotAnim::frame` 是纯读查询，补测试确保重复取帧不会推进相位。
+
+这样定时/交互状态在 update 阶段变化，render 只消费状态与几何；登录模块也不再把 SDL 实现
+和登录表单规则混在一起。
+
+**验收**：客户端 161/149/7/3，clippy 0；Go 25 包。

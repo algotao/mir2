@@ -56,6 +56,7 @@ use sdl3::mouse::{Cursor, MouseButton, SystemCursor};
 mod audio;
 mod font;
 mod login;
+mod login_view;
 mod select;
 mod ui;
 // 注：`WindowContext` 在 sdl3 里是私有类型、不可具名，

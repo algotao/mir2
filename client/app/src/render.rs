@@ -273,8 +273,8 @@ pub(crate) fn draw_frame<'a, T>(
         }
     } else if app.scene == crate::app_state::Scene::Select {
         if let Some(scene) = app.select_scene.as_mut() {
-            // 鼠标位置（**设计空间**）⇒ 建角框的按钮悬停要它
-            scene.mouse = {
+            // 鼠标位置（**设计空间**）⇒ 只作为视图参数传入，不写回运行态
+            let mouse = {
                 let p = ui::ui_inv_pt(app.mouse);
                 (p.0 .0, p.1 .0)
             };
@@ -286,7 +286,7 @@ pub(crate) fn draw_frame<'a, T>(
                 asset_dir,
                 // ⚠️ 给的是**设计尺寸**（800×600）：版式算在设计空间里，画的时候整体乘 1.28
                 UI_WIN,
-                app.started,
+                mouse,
                 &app.ui_click,
             )?;
         }
