@@ -4,7 +4,7 @@
 //! 用了 `use crate::*;` —— 本 crate 顶层项改名/搬家时这里会**编译期**报出来。
 
 use crate::*;
-use mir2_core::map::Layer;
+use mir2_core::map::{Layer, Map};
 use mir2_core::world::Entity;
 use sdl3::render::FRect;
 // ⚠️ 这条被 `cargo fix` 当成「没用到的导入」删过一次（它只在各个 `#[test]` 体里才用到）

@@ -5061,3 +5061,41 @@ ui_inv_pt(p) 画布 → 设计   ⇒ 返回 DPt
 **② 结案**：`Dpx/Cpx` 长度、`DPt/CPt` 点、`DRect/CRect` 矩形、Widget 命中四层均有空间类型。
 
 **验收**：客户端 154/148/7/4，clippy 0；Go 25 包。
+
+---
+
+## D-90 架构方向 ⑥ 继续：`AppState` + `render.rs` + `runtime.rs`（2026-10-11）
+
+上一刀只有 `update.rs`（D-85），`main()` 仍然持有几十个分散的 `let mut`，
+渲染也还挤在它里面。这轮按职责再切三步：
+
+### 1. `AppState`：会话运行态的单一所有者
+
+`app_state.rs` 收拢场景/登录、世界交互、浮窗、背包/拖拽、翻页、对话、地图/相机、
+调试与音频开关等**可变运行态**。SDL/画布/纹理缓存仍留外层（有平台句柄与生命周期），
+不硬塞进一个生命周期难懂的巨型结构。
+
+### 2. `render.rs`：整帧绘制独立
+
+地图/世界、腰带、背包、商店、状态、登录/选角、素材浏览器的绘制集中在
+`render::draw_frame(&mut AppState, SDL/GPU resources...)`。`main` 不再包含 300 行绘制分支。
+
+### 3. `runtime.rs`：事件泵 + 主循环搬出入口
+
+`main.rs` 现在**264 行**：SDL 初始化、素材自检、创建 `AppState` 并调用 `runtime::run_app`。
+原先约 2,300 行的事件循环与逐帧编排搬到了 `runtime.rs`（约 2,039 行）；这是有意的
+职责移动，不谎称已经把运行循环本身拆成了很多小 handler。
+
+```text
+main.rs       264 行：平台启动/资源创建/调用 runtime
+runtime.rs  2,039 行：事件分发/循环编排
+render.rs     333 行：画一帧
+app_state.rs  144 行：会话状态
+update.rs     121 行：网络与每帧状态推进
+```
+
+下一轮若继续 ⑥，应先把 `runtime.rs` 的**事件域**拆为键盘 / 鼠标世界 / 鼠标 UI，
+再考虑包成 `RuntimeResources`；不要为了"文件短"把 35 个生命周期敏感的 SDL 句柄
+硬塞进同一个结构。
+
+**验收**：客户端 154/148/7/4，clippy 0；Go 25 包。
