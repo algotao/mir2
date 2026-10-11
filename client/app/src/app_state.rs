@@ -11,7 +11,8 @@
 use std::time::Instant;
 
 use crate::{
-    assetview_state, bagdrag, confirm, login, pager, scrollview, select, shopui, windows, Ui,
+    assetview_state, bagdrag, confirm, login, pager, scrollview, select, shopui, windows,
+    world_control, Ui,
 };
 use mir2_core::map::Map;
 
@@ -24,13 +25,6 @@ pub(crate) enum Scene {
     World,
     AssetView,
     Select,
-}
-
-/// 世界模式下鼠标按住的移动意图（不把 SDL 的 MouseButton 泄漏进运行态）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MoveButton {
-    Walk,
-    Run,
 }
 
 /// 登录/选角状态机接受的**平台无关按键**。
@@ -62,25 +56,10 @@ pub(crate) struct AppState {
     /// F3 素材观察器的纯选择状态（图库/图号；WZL 与纹理资源不在此处）。
     pub asset_view: assetview_state::AssetViewState,
 
-    // World interaction
-    pub move_target: Option<(i32, i32, bool)>,
-    pub move_at: Instant,
-    pub press_at: Option<Instant>,
-    pub press_cell: (i32, i32),
-    pub held_move: Option<MoveButton>,
-    pub retarget_at: Instant,
-    pub last_move_fail: u64,
-    pub detour: Option<u8>,
-    pub last_self_pos: (i32, i32),
-    pub move_block_until: Instant,
+    // World interaction state machine (移动/追打/挖肉/拾取)
+    pub world_control: world_control::WorldControl,
+    /// 进世界时是否已经把开发键位提示推到聊天区。
     pub hint_pushed: bool,
-    pub alt_down: bool,
-    pub butch_target: Option<u64>,
-    pub butch_next: Instant,
-    pub pending_pickup: Option<(u64, (i32, i32))>,
-    pub combat_target: Option<u64>,
-    pub attack_at: Instant,
-    pub last_foot_frame: Option<u16>,
 
     // Overlay/UI interaction
     pub win: windows::Windows,
@@ -125,24 +104,8 @@ impl AppState {
             status: String::from("READY"),
             asset_view: assetview_state::AssetViewState::default(),
 
-            move_target: None,
-            move_at: now,
-            press_at: None,
-            press_cell: (0, 0),
-            held_move: None,
-            retarget_at: now,
-            last_move_fail: 0,
-            detour: None,
-            last_self_pos: (0, 0),
-            move_block_until: now,
+            world_control: world_control::WorldControl::new(now),
             hint_pushed: false,
-            alt_down: false,
-            butch_target: None,
-            butch_next: now,
-            pending_pickup: None,
-            combat_target: None,
-            attack_at: now,
-            last_foot_frame: None,
 
             win: windows::Windows::new(),
             bag_page: pager::Pager::new(),

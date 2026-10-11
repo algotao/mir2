@@ -5422,3 +5422,22 @@ SDL 纹理与 WZL 句柄仍由 runtime/render 管；素材绘制将归一结果�
 不在绘制函数里直接改 AppState。
 
 **验收**：客户端 164/149/7/3，clippy 0；Go 25 包。
+
+---
+
+## D-110 架构方向 ① 续：世界交互控制状态集中到 `WorldControl`（2026-10-11）
+
+`AppState` 的世界交互状态此前有十七个平铺字段（走法目标/限速节拍/按住与单击快照/绕障/
+拒步锁/战斗目标/攻击节拍/挖肉/待拾取/脚步帧），输入处理与每帧模拟在不同文件里直接读写。
+
+现在归组到无 SDL 的 `WorldControl`：
+
+- `AppState.world_control` 作为单一所有者；输入适配 (`world_input`/`keyboard`)、模拟 (`simulation`)、
+  持续更新 (`update`) 和 renderer 只通过它读写所需状态。
+- `MoveButton` 仍是平台无关语义（Walk/Run）；SDL 鼠标键只在 world_input 入口翻译。
+- 抽出可测试转换：`release_mouse`（松开清按住态并取单击时钟，但保留点击后目标）、
+  `consume_world_click`（浮窗命中时取消穿透到世界的目标/拾取）、`cancel_target`（拒步取消追打及绕障）。
+
+世界状态没有伪装成 UI：它仍由 WorldControl 维护，发包/权威世界数据仍在输入适配与 Net 边界。
+
+**验收**：客户端 167/149/7/3，clippy 0；Go 25 包。

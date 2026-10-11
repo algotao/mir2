@@ -105,8 +105,8 @@ pub(crate) fn run_app<T>(
                 // 松开 Alt ⇒ 挖肉的修饰键失效（SDL 的鼠标事件不带 keymod ⇒ 自己记）
                 Event::KeyUp { keycode, .. } => {
                     if matches!(keycode, Some(Keycode::LAlt) | Some(Keycode::RAlt)) {
-                        app.alt_down = false;
-                        app.butch_target = None; // 按住才持续挖；松手就停
+                        app.world_control.alt_down = false;
+                        app.world_control.butch_target = None; // 按住才持续挖；松手就停
                     }
                 }
                 // 鼠标位置（已在循环头换算成界面的 800×600 空间）

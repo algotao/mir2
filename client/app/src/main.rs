@@ -107,6 +107,7 @@ mod space;
 pub(crate) mod status;
 mod update;
 mod windows;
+mod world_control;
 pub(crate) mod world_input;
 pub(crate) use minimap::*;
 pub(crate) mod net;

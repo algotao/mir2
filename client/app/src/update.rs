@@ -95,9 +95,9 @@ pub(crate) fn tick(app: &mut AppState) {
 /// 返回 `false` 表示原循环里那条 `continue`（挖肉目标还在、但网络会话已断）；
 /// 调用方据此跳过本帧后续阶段，不把循环控制流藏进 helper。
 pub(crate) fn advance_world(app: &mut AppState) -> bool {
-    if let Some(tid) = app.butch_target {
+    if let Some(tid) = app.world_control.butch_target {
         let Some(n) = app.net.as_ref() else {
-            app.butch_target = None;
+            app.world_control.butch_target = None;
             return false;
         };
         if let Some(e) = n.world.entities.get(&tid) {
@@ -105,27 +105,29 @@ pub(crate) fn advance_world(app: &mut AppState) -> bool {
                 let (px, py) = n.world.self_pos;
                 if (e.x - px).abs() <= 2
                     && (e.y - py).abs() <= 2
-                    && app.butch_next <= Instant::now()
+                    && app.world_control.butch_next <= Instant::now()
                 {
                     let dir = crate::geom::dir_to((px, py), (e.x, e.y)).map_or(0, |d| d as i32);
                     n.butch(tid, e.x, e.y, dir);
-                    app.butch_next = Instant::now() + Duration::from_millis(450);
+                    app.world_control.butch_next = Instant::now() + Duration::from_millis(450);
                 }
             } else {
-                app.butch_target = None;
+                app.world_control.butch_target = None;
             }
         } else {
-            app.butch_target = None;
+            app.world_control.butch_target = None;
         }
     }
 
     if let Some(n) = app.net.as_ref() {
-        match app.pending_pickup {
+        match app.world_control.pending_pickup {
             Some((gid, cell)) if n.world.self_pos == cell => {
                 n.pickup(gid);
-                app.pending_pickup = None;
+                app.world_control.pending_pickup = None;
             }
-            Some((gid, _)) if !n.world.ground.contains_key(&gid) => app.pending_pickup = None,
+            Some((gid, _)) if !n.world.ground.contains_key(&gid) => {
+                app.world_control.pending_pickup = None
+            }
             _ => {}
         }
 

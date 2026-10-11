@@ -36,7 +36,7 @@ pub(crate) fn handle_key_down(
 ) -> Result<bool, Box<dyn std::error::Error>> {
     // Alt 是挖肉的修饰键（`Alt` + 左键点动物尸体）
     if matches!(keycode, Some(Keycode::LAlt) | Some(Keycode::RAlt)) {
-        app.alt_down = true;
+        app.world_control.alt_down = true;
     }
     match keycode {
         // ⚠️ **登录/选角里 ESC 先交给场景**（2026-10-09 修）。

@@ -34,20 +34,20 @@ pub(crate) fn tick(
     // 镜头不卷或者目标不重取，两样单独都做不出这个手感。
     // ⚠️ 挖肉中 ⇒ 按住/移动鼠标都**不许**变成走路（用户第 1 条）
     if app.scene == crate::app_state::Scene::World
-        && app.held_move.is_some()
-        && app.butch_target.is_none()
-        && app.retarget_at.elapsed() >= Duration::from_millis(MOUSE_REPEAT_MS)
+        && app.world_control.held_move.is_some()
+        && app.world_control.butch_target.is_none()
+        && app.world_control.retarget_at.elapsed() >= Duration::from_millis(MOUSE_REPEAT_MS)
     {
-        app.retarget_at = Instant::now();
+        app.world_control.retarget_at = Instant::now();
         if let Some(n) = app.net.as_ref().filter(|n| n.world.in_world()) {
             let cell = screen_to_cell(app.cam, app.mouse.0, app.mouse.1);
-            let run = app.held_move == Some(crate::app_state::MoveButton::Run);
+            let run = app.world_control.held_move == Some(crate::world_control::MoveButton::Run);
             // ⚠️ 用 `mouse_repeat` 而不是 `mouse_intent`：按住时**不能**因为
             // "光标不在怪身上了"就把锁住的怪丢掉（镜头跟着人走，光标一定会滑开，
             // 否则按住点怪会半路变成走路）。见 `mouse_repeat` 的说明。
-            let (ct, mt) = mouse_repeat(&n.world, cell, run, app.combat_target);
-            app.combat_target = ct;
-            app.move_target = mt;
+            let (ct, mt) = mouse_repeat(&n.world, cell, run, app.world_control.combat_target);
+            app.world_control.combat_target = ct;
+            app.world_control.move_target = mt;
         }
     }
 
@@ -60,7 +60,7 @@ pub(crate) fn tick(
     if app.scene == crate::app_state::Scene::World
         && !app.net.as_ref().is_some_and(|n| n.world.self_dead)
     {
-        if let Some(id) = app.combat_target {
+        if let Some(id) = app.world_control.combat_target {
             let step = app
                 .net
                 .as_ref()
@@ -77,8 +77,7 @@ pub(crate) fn tick(
                 // 死了 / 消失了（尸体被清）/ 自己掉线了 ⇒ 解除锁定
                 None => {
                     println!("[net] 目标不在了，解除锁定");
-                    app.combat_target = None;
-                    app.move_target = None;
+                    app.world_control.clear_targets();
                 }
                 Some(mir2_core::world::CombatStep::Attack) => {
                     // ⚠️ **这一步走完再出手** —— 原版 `CanNextAction` = `g_MySelf.IsIdle`
@@ -101,12 +100,16 @@ pub(crate) fn tick(
                         .and_then(|n| n.world.ability.as_ref().map(|a| a.level))
                         .unwrap_or(1)
                         .max(1);
-                    if can_attack(stepping || swing_busy, app.attack_at.elapsed(), level) {
+                    if can_attack(
+                        stepping || swing_busy,
+                        app.world_control.attack_at.elapsed(),
+                        level,
+                    ) {
                         if let Some(n) = app.net.as_ref() {
                             let _ = n.attack_target(id);
                             swing_sfx(n, sound, sounds);
                         }
-                        app.attack_at = Instant::now();
+                        app.world_control.attack_at = Instant::now();
                     }
                 }
                 // 够不着：复用鼠标走路那条路（步频/节流/"到了就停"都在下面那段里）
@@ -118,8 +121,8 @@ pub(crate) fn tick(
                     // ⚠️ 绕障排队期间**别覆写**：`detour` 排好的那步侧移还没走，
                     // 这儿每帧重算会把它冲掉 ⇒ 表现就是"顶着怪一遍遍推"
                     //（用户 2026-10-10 第 6 条的另一半）。
-                    if !swing_busy && app.detour.is_none() {
-                        app.move_target = Some((x, y, run));
+                    if !swing_busy && app.world_control.detour.is_none() {
+                        app.world_control.move_target = Some((x, y, run));
                     }
                 }
             }
@@ -133,20 +136,23 @@ pub(crate) fn tick(
     // 人物就"卡在那儿不动"，而且服务端日志刷满 —— "跑不到怪身边"多半有它一份。
     // 计数**变没变**就是"刚刚被拒了一次"的信号（见 `World::move_fail`）。
     let fails = app.net.as_ref().map_or(0, |n| n.world.move_fail);
-    if fails != app.last_move_fail {
+    if fails != app.world_control.last_move_fail {
         let reason = app.net.as_ref().map_or(0, |n| n.world.move_fail_reason);
-        app.last_move_fail = fails;
-        app.move_at = Instant::now();
-        if reason == 3 && app.move_target.is_some() && app.detour != Some(1) {
+        app.world_control.last_move_fail = fails;
+        app.world_control.move_at = Instant::now();
+        if reason == 3
+            && app.world_control.move_target.is_some()
+            && app.world_control.detour != Some(1)
+        {
             // **撞墙先绕一步**（原版 `ClMain.pas:1886-1923`：直走那格过不去时
             // 先试 `PrivDir`（逆时针 45°），再试 `NextDir`（顺时针 45°），
             // 能走就走），而不是像原来那样"清目标 + 锁 1 秒"——
             // 那正是用户 2026-10-09 第 4 条说的"点哪走哪"手感问题。
             // 两次都撞不上才认输（下面那条），并且**不加 1 秒锁**（只等一个正常步频）。
-            app.detour = Some(app.detour.map_or(0, |k| k + 1));
+            app.world_control.detour = Some(app.world_control.detour.map_or(0, |k| k + 1));
             println!(
                 "[move] 前方被挡（reason=3）⇒ 侧移 45° 试第 {} 次",
-                app.detour.unwrap_or(1) + 1
+                app.world_control.detour.unwrap_or(1) + 1
             );
         } else {
             // 越界(2)/超速(1)，或绕障两次都不行 ⇒ 照原版 `ActionFailed`：
@@ -155,10 +161,9 @@ pub(crate) fn tick(
             // 每帧都会把 move_target 重算回去 —— 只清 move_target 的话，
             // 下一帧又凑近、又被拒、锁完接着顶，永远停不下来。
             // 目标格被怪占着凑不近 ⇒ 就近停下，等玩家重新点。
-            app.move_target = None;
-            app.combat_target = None;
-            app.detour = None;
-            app.move_block_until = Instant::now() + Duration::from_millis(MOVE_FAIL_LOCK_MS);
+            app.world_control.cancel_target();
+            app.world_control.move_block_until =
+                Instant::now() + Duration::from_millis(MOVE_FAIL_LOCK_MS);
             println!(
                 "[move] 服务端拒绝了这一步（reason={reason}，1=超速 2=越界 3=阻挡）\
              —— 清走法目标 + 锁 {MOVE_FAIL_LOCK_MS}ms"
@@ -169,14 +174,14 @@ pub(crate) fn tick(
     // 位置一变 ⇒ 上一步走成了 ⇒ 绕障状态清掉，回到"朝目标直走"
     if let Some(n) = app.net.as_ref() {
         let p = n.world.self_pos;
-        if p != app.last_self_pos {
-            app.last_self_pos = p;
-            app.detour = None;
+        if p != app.world_control.last_self_pos {
+            app.world_control.last_self_pos = p;
+            app.world_control.detour = None;
         }
     }
 
     if app.scene == crate::app_state::Scene::World {
-        if let Some((tx, ty, run)) = app.move_target {
+        if let Some((tx, ty, run)) = app.world_control.move_target {
             let here = app
                 .net
                 .as_ref()
@@ -184,14 +189,14 @@ pub(crate) fn tick(
                 .map(|n| (n.world.self_pos.0, n.world.self_pos.1));
             match here {
                 // 没进世界（掉线/还没到）⇒ 目标作废，别攒着一堆移动
-                None => app.move_target = None,
+                None => app.world_control.move_target = None,
                 Some(pos) => match input::route_step(app.map.as_ref(), pos, (tx, ty), run) {
                     // 已经站在目标格上 ⇒ 收工（原版到点也停）
-                    None => app.move_target = None,
+                    None => app.world_control.move_target = None,
                     Some((dir, step_run)) => {
                         // 绕障：把这一步转 45°（先逆后顺），并且**用走的**
                         //（侧移一小步就够，跑一次 2 格反而更容易顶死在障碍上）。
-                        let (dir, step_run) = match app.detour {
+                        let (dir, step_run) = match app.world_control.detour {
                             Some(0) => (turn45(dir, -1), false),
                             Some(1) => (turn45(dir, 1), false),
                             _ => (dir, step_run),
@@ -199,11 +204,11 @@ pub(crate) fn tick(
                         let gap = if step_run { RUN_MS } else { WALK_MS };
                         // 被拒后的锁还没到期 ⇒ 先别发（原版 `IsUnLockAction`，
                         // `ClMain.pas:4014-4021`：锁着就一律不许动）
-                        if app.move_block_until <= Instant::now()
-                            && app.move_at.elapsed() >= Duration::from_millis(gap)
+                        if app.world_control.move_block_until <= Instant::now()
+                            && app.world_control.move_at.elapsed() >= Duration::from_millis(gap)
                         {
                             move_if_online(&app.net, dir, step_run);
-                            app.move_at = Instant::now();
+                            app.world_control.move_at = Instant::now();
                         }
                     }
                 },
@@ -279,7 +284,7 @@ pub(crate) fn tick(
     match (app.net.as_ref(), app.map.as_ref()) {
         (Some(n), Some(m)) if n.world.in_world() => match n.self_walk_frame(app.started) {
             Some((frame, running)) => {
-                if let Some(second_foot) = footstep_of(frame, app.last_foot_frame) {
+                if let Some(second_foot) = footstep_of(frame, app.world_control.last_foot_frame) {
                     let (mx, my) = (n.world.self_pos.0, n.world.self_pos.1);
                     let cell = m.at((mx.max(0) / 2 * 2) as usize, (my.max(0) / 2 * 2) as usize);
                     if let Some(c) = cell {
@@ -291,11 +296,11 @@ pub(crate) fn tick(
                         );
                     }
                 }
-                app.last_foot_frame = Some(frame);
+                app.world_control.last_foot_frame = Some(frame);
             }
-            None => app.last_foot_frame = None,
+            None => app.world_control.last_foot_frame = None,
         },
-        _ => app.last_foot_frame = None,
+        _ => app.world_control.last_foot_frame = None,
     }
 
     // 进了世界就让相机跟着自己（离线时保持手动镜头）。

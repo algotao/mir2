@@ -263,11 +263,7 @@ pub(crate) fn handle_world_mouse_down<'a>(
                         }
                     }
                 }
-                app.combat_target = None;
-                app.move_target = None;
-                app.press_at = None;
-                app.pending_pickup = None;
-                app.held_move = None;
+                app.world_control.consume_world_click();
                 return;
             }
             // ①‴ **底栏右上那 4 个功能按钮**（人物/包裹/技能/选项，
@@ -281,11 +277,7 @@ pub(crate) fn handle_world_mouse_down<'a>(
                         .press(Press::Hud(b), crate::widget::canvas_rect(b.rect()));
                     // 目标清掉，**本次点击不再穿透到世界**（与其它浮窗
                     // 同一条纪律：命中就 `continue`，不然人还会走）。
-                    app.combat_target = None;
-                    app.move_target = None;
-                    app.press_at = None;
-                    app.pending_pickup = None;
-                    app.held_move = None;
+                    app.world_control.consume_world_click();
                     return;
                 }
                 // **快捷（腰带）栏**：手上拿着东西 ⇒ 放进这格；
@@ -296,11 +288,7 @@ pub(crate) fn handle_world_mouse_down<'a>(
                         Press::Belt(i),
                         crate::widget::canvas_rect(crate::layout::belt_slot_rect(i)),
                     );
-                    app.combat_target = None;
-                    app.move_target = None;
-                    app.press_at = None;
-                    app.pending_pickup = None;
-                    app.held_move = None;
+                    app.world_control.consume_world_click();
                     return;
                 }
                 // 底栏**左下**那排快捷按钮（小地图/交易/行会/组队/属性）。
@@ -309,26 +297,22 @@ pub(crate) fn handle_world_mouse_down<'a>(
                     // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
                     app.ui_click
                         .press(Press::Quick(b), crate::widget::canvas_rect(b.rect()));
-                    app.combat_target = None;
-                    app.move_target = None;
-                    app.press_at = None;
-                    app.pending_pickup = None;
-                    app.held_move = None;
+                    app.world_control.consume_world_click();
                     return;
                 }
             }
             // 左键才判"单击"（用户第 3 条说的是左键）；右键仍是按住=跑
             if mouse_btn == MouseButton::Left {
-                app.press_at = Some(Instant::now());
-                app.press_cell = cell;
+                app.world_control.press_at = Some(Instant::now());
+                app.world_control.press_cell = cell;
             } else {
-                app.press_at = None;
+                app.world_control.press_at = None;
             }
             // **挖肉锁定**（原版 `CM_BUTCH`，用户第 1 条）：**按住 Alt 点一下**
             // 动物尸体 ⇒ 锁定为"正在挖它"，**按住不放就持续挖**（不是反复点）。
             // 皮革度要挖好几刀才归零（鸡 50，一刀 -5..20）⇒ 一次点击出不了肉。
             let mut did_butch = false;
-            if mouse_btn == MouseButton::Left && app.alt_down {
+            if mouse_btn == MouseButton::Left && app.world_control.alt_down {
                 if let Some(n) = app.net.as_ref() {
                     let corpse = n
                         .world
@@ -336,14 +320,14 @@ pub(crate) fn handle_world_mouse_down<'a>(
                         .values()
                         .find(|e| e.dead && (e.x, e.y) == cell);
                     if let Some(e) = corpse {
-                        app.butch_target = Some(e.id);
-                        app.butch_next = Instant::now(); // 立刻挖第一刀
+                        app.world_control.butch_target = Some(e.id);
+                        app.world_control.butch_next = Instant::now(); // 立刻挖第一刀
                         println!("[net] 挖肉锁定 {}", e.name);
                         did_butch = true;
                         // 挖肉不是"选目标/走路"⇒ 目标清掉（下面 `(ct, mt)`
                         // 走 None 那支），也别把这次当"单击走一格"。
-                        app.press_at = None;
-                        app.pending_pickup = None;
+                        app.world_control.press_at = None;
+                        app.world_control.pending_pickup = None;
                     }
                 }
             }
@@ -380,21 +364,21 @@ pub(crate) fn handle_world_mouse_down<'a>(
                         apply_bag_act(act, &mut app.net);
                         // 抓在手上了 ⇒ 别再走过去 / 捡地上的东西
                         if matches!(act, bagdrag::Act::PickUp { .. }) {
-                            app.press_at = None;
-                            app.pending_pickup = None;
+                            app.world_control.press_at = None;
+                            app.world_control.pending_pickup = None;
                         }
                         bag_handled = true;
                     }
                 }
                 if bag_handled {
-                    app.combat_target = None;
-                    app.move_target = None;
-                    app.press_at = None;
-                    app.held_move = None;
+                    app.world_control.combat_target = None;
+                    app.world_control.move_target = None;
+                    app.world_control.press_at = None;
+                    app.world_control.held_move = None;
                     return;
                 }
             }
-            let (ct, mt) = if did_butch || app.butch_target.is_some() {
+            let (ct, mt) = if did_butch || app.world_control.butch_target.is_some() {
                 // 挖肉中（含"这一下就是挖肉"）⇒ **不走路、不选目标**
                 //（用户 2026-10-10 第 1 条：挖肉时人物不该动）
                 (None, None)
@@ -407,8 +391,8 @@ pub(crate) fn handle_world_mouse_down<'a>(
                     .map(|n| mouse_intent(&n.world, cell, run, hover))
                     .unwrap_or((None, None))
             };
-            app.combat_target = ct;
-            app.move_target = mt;
+            app.world_control.combat_target = ct;
+            app.world_control.move_target = mt;
             // 点在**地上有东西**的格子 ⇒ 记下"待捡"：走到那格自动捡
             //（原版点物品也是先走过去；到了就发，见帧循环里那段）。
             if mouse_btn == MouseButton::Left {
@@ -416,30 +400,30 @@ pub(crate) fn handle_world_mouse_down<'a>(
                     match n.world.ground.values().find(|g| (g.x, g.y) == cell) {
                         Some(gi) if n.world.self_pos == cell => {
                             n.pickup(gi.ground_id);
-                            app.pending_pickup = None;
+                            app.world_control.pending_pickup = None;
                         }
-                        Some(gi) => app.pending_pickup = Some((gi.ground_id, cell)),
-                        None => app.pending_pickup = None,
+                        Some(gi) => app.world_control.pending_pickup = Some((gi.ground_id, cell)),
+                        None => app.world_control.pending_pickup = None,
                     }
                 }
             }
-            app.attack_at = Instant::now(); // 立刻判"该出手还是该靠近"
-                                            // ⚠️ `move_at` **不清零**：原版的客户端是"停等"的
-                                            //（发一条动作后 `ActionLock := TRUE`，等服务端
-                                            // `sSTATUS_GOOD/FAIL` 才解锁并计下一拍，`ClMain.pas:3575-3584/4214-4222`）。
-                                            // 我们每次按下都清零 ⇒ 连点会把间隔压到 0 ⇒ 服务端按到达时间限流
-                                            // 直接回 `reason=1`，客户端再锁 1 秒 ⇒ "点了没反应"。
-                                            // ⚠️ **按住不放要能一直走**：原版靠 `DXDrawMouseMove`
-                                            //（`ClMain.pas:2678-2679`）—— 按住时只要距上次 >300ms 就**重跑一遍
-                                            // 按下逻辑**，于是"鼠标那一格"被反复重新当成目标。少了它，
-                                            // 目标格是按下那一刻定死的 ⇒ 走到那儿就停（用户 2026-10-08 报的
-                                            // "按住只能走数次"）。
-            app.held_move = Some(if mouse_btn == MouseButton::Right {
-                crate::app_state::MoveButton::Run
+            app.world_control.attack_at = Instant::now(); // 立刻判"该出手还是该靠近"
+                                                          // ⚠️ `move_at` **不清零**：原版的客户端是"停等"的
+                                                          //（发一条动作后 `ActionLock := TRUE`，等服务端
+                                                          // `sSTATUS_GOOD/FAIL` 才解锁并计下一拍，`ClMain.pas:3575-3584/4214-4222`）。
+                                                          // 我们每次按下都清零 ⇒ 连点会把间隔压到 0 ⇒ 服务端按到达时间限流
+                                                          // 直接回 `reason=1`，客户端再锁 1 秒 ⇒ "点了没反应"。
+                                                          // ⚠️ **按住不放要能一直走**：原版靠 `DXDrawMouseMove`
+                                                          //（`ClMain.pas:2678-2679`）—— 按住时只要距上次 >300ms 就**重跑一遍
+                                                          // 按下逻辑**，于是"鼠标那一格"被反复重新当成目标。少了它，
+                                                          // 目标格是按下那一刻定死的 ⇒ 走到那儿就停（用户 2026-10-08 报的
+                                                          // "按住只能走数次"）。
+            app.world_control.held_move = Some(if mouse_btn == MouseButton::Right {
+                crate::world_control::MoveButton::Run
             } else {
-                crate::app_state::MoveButton::Walk
+                crate::world_control::MoveButton::Walk
             });
-            app.retarget_at = Instant::now();
+            app.world_control.retarget_at = Instant::now();
             match ct {
                 Some(id) => {
                     println!("[net] 锁定目标 ActorId={id}（靠近后自动出手）");
@@ -496,10 +480,10 @@ pub(crate) fn handle_world_mouse_down<'a>(
                     //（`NPCDialog` 就是个窗口，`DrawScrn.pas` 里它跟世界各画各的），
                     // 外面照常点：此时才拦。
                     if dialog::dialog_hit(panel, (x, y)) {
-                        app.combat_target = None;
-                        app.move_target = None;
-                        app.press_at = None;
-                        app.held_move = None;
+                        app.world_control.combat_target = None;
+                        app.world_control.move_target = None;
+                        app.world_control.press_at = None;
+                        app.world_control.held_move = None;
                         ui_consumed = true;
                     }
                 }
@@ -567,10 +551,10 @@ pub(crate) fn handle_world_mouse_down<'a>(
                                 }
                                 crate::status::Hit::None => {}
                             }
-                            app.combat_target = None;
-                            app.move_target = None;
-                            app.press_at = None;
-                            app.held_move = None;
+                            app.world_control.combat_target = None;
+                            app.world_control.move_target = None;
+                            app.world_control.press_at = None;
+                            app.world_control.held_move = None;
                         }
                     }
                 }
@@ -621,10 +605,10 @@ pub(crate) fn handle_world_mouse_down<'a>(
                             apply_bag_act(act, &mut app.net);
                         }
                     }
-                    app.combat_target = None;
-                    app.move_target = None;
-                    app.press_at = None;
-                    app.held_move = None;
+                    app.world_control.combat_target = None;
+                    app.world_control.move_target = None;
+                    app.world_control.press_at = None;
+                    app.world_control.held_move = None;
                 }
             }
             // ②″″ 商店窗：点行=**选中**、点箭头=翻页、点 OK=买选中的
@@ -674,10 +658,10 @@ pub(crate) fn handle_world_mouse_down<'a>(
                                 }
                                 crate::shop::Hit::None => {}
                             }
-                            app.combat_target = None;
-                            app.move_target = None;
-                            app.press_at = None;
-                            app.held_move = None;
+                            app.world_control.combat_target = None;
+                            app.world_control.move_target = None;
+                            app.world_control.press_at = None;
+                            app.world_control.held_move = None;
                         }
                     }
                 }
@@ -726,10 +710,10 @@ pub(crate) fn handle_world_mouse_down<'a>(
                         }
                         crate::shop::SellHit::None => {}
                     }
-                    app.combat_target = None;
-                    app.move_target = None;
-                    app.press_at = None;
-                    app.held_move = None;
+                    app.world_control.combat_target = None;
+                    app.world_control.move_target = None;
+                    app.world_control.press_at = None;
+                    app.world_control.held_move = None;
                 }
             }
             // ③ 点 NPC ⇒ **说话**，不是往它那格走。
@@ -746,10 +730,10 @@ pub(crate) fn handle_world_mouse_down<'a>(
                         .or_else(|| n.world.npc_at(cell.0, cell.1));
                     if let Some(id) = hit {
                         n.npc_click(id);
-                        app.combat_target = None;
-                        app.move_target = None;
-                        app.press_at = None; // 松开时别再改判成"走一格"
-                        app.held_move = None;
+                        app.world_control.combat_target = None;
+                        app.world_control.move_target = None;
+                        app.world_control.press_at = None; // 松开时别再改判成"走一格"
+                        app.world_control.held_move = None;
                         println!("[net] 点 NPC ActorId={id}（等 NpcSay）");
                     }
                 }
@@ -789,31 +773,31 @@ pub(crate) fn handle_world_mouse_up(
             return MouseUpOutcome::Consumed;
         }
     }
-    app.held_move = None;
+    let press_at = app.world_control.release_mouse();
     // ⚠️ 单击 = 走**一格**（用户 2026-10-09 第 3 条）：按下那一刻已经把
     // "走到光标那格"当成目标了（`mouse_intent`），够快松手就把它换成
     // **紧邻那一格** ⇒ 一步之后"到达"、目标自清。按住（> `CLICK_MS`）
     // 仍是一路走过去。
     if mouse_btn == MouseButton::Left {
-        if let Some(t) = app.press_at.take() {
+        if let Some(t) = press_at {
             if t.elapsed() < Duration::from_millis(input::CLICK_MS) {
                 if let Some(n) = app.net.as_mut() {
                     if n.world.in_world() {
-                        let (ct, mt) = if app.butch_target.is_some() {
+                        let (ct, mt) = if app.world_control.butch_target.is_some() {
                             (None, None) // 挖肉中 ⇒ 松手也不走一格
                         } else {
                             input::click_step(
                                 &n.world,
                                 n.world.self_pos,
-                                app.press_cell,
+                                app.world_control.press_cell,
                                 false,
                                 hover,
                             )
                         };
                         if ct.is_some() || mt.is_some() {
-                            app.combat_target = ct;
-                            app.move_target = mt;
-                            app.attack_at = Instant::now();
+                            app.world_control.combat_target = ct;
+                            app.world_control.move_target = mt;
+                            app.world_control.attack_at = Instant::now();
                         }
                     }
                 }

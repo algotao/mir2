@@ -78,7 +78,7 @@ pub(crate) fn draw_frame<'a, T>(
             app.mouse,
             ani_count,
             app.net.as_ref(),
-            app.combat_target,
+            app.world_control.combat_target,
             app.dlg_scroll.scroll(),
             &app.ui_click, // 控件引擎（底栏按钮的 hover/按下）
         )?;
