@@ -150,7 +150,8 @@ pub(crate) fn draw<'a, T>(
     selected: Option<usize>,
     // 鼠标**按住**着哪个控件（高亮图只在按住时展现 —— 原版 `TDButton.Downed`，
     // 用户 2026-10-11 更正：不是 hover）。
-    held: Hit,
+    // 控件引擎（hover / 按下都由它算 ⇒ 不再单独传"按住的是谁"）
+    widget_ui: &crate::widget::Ui,
 ) -> Result<(), sdl3::Error> {
     let Some(n) = net else { return Ok(()) };
     if !n.world.in_world() {
@@ -234,35 +235,10 @@ pub(crate) fn draw<'a, T>(
         )?;
     }
 
-    // 三个按钮的**常态都在底图里** ⇒ 只在 hover 时把对应的高亮素材贴上去
-    //（`Prguse[386]` = OK / 387 = 左 / 388 = 右，用户 2026-10-11 给的编号）。
-    // 素材按**原生尺寸**贴圆心/框心，不再自绘方钮压在底图上。
-    for (r, img, want) in [
-        (OK, BUY_OK_HOVER, Hit::Ok),
-        (PREV, BUY_PREV_HOVER, Hit::Prev),
-        (NEXT, BUY_NEXT_HOVER, Hit::Next),
-    ] {
-        if held != want {
-            continue;
-        }
-        let (bx, by, bw, bh) = r;
-        if let Some((iw, ih)) = ui.size(dir, "Prguse", img) {
-            let _ = ui.draw_src(
-                canvas,
-                tc,
-                dir,
-                "Prguse",
-                img,
-                FRect::new(0.0, 0.0, iw as f32, ih as f32),
-                FRect::new(
-                    x + bx + (bw - iw as f32) / 2.0,
-                    y + by + (bh - ih as f32) / 2.0,
-                    iw as f32,
-                    ih as f32,
-                ),
-                255,
-            );
-        }
+    // **三个按钮走控件层**（`widget::Button`，图号 386/387/388 是用户 2026-10-11 给的
+    // 高亮图；常态在底图里）。命中与绘制同源 —— 都由 [`buy_buttons`] 那份描述决定。
+    for b in buy_buttons(x, y) {
+        crate::widget::draw_button(canvas, tc, ui, dir, &b, &b.response(widget_ui));
     }
     // 页码（紧跟两个圆钮右边）
     let page_text = format!("{}/{}", page + 1, pages(shop.items.len()));
@@ -276,6 +252,40 @@ pub(crate) fn draw<'a, T>(
         None,
     )?;
     Ok(())
+}
+
+/// 交易窗（买）的三个按钮 + 关闭钮（**窗口内** → 屏幕坐标在这里换算一次）。
+///
+/// ⚠️ 抽出来是为了"画"和"命中"用同一份（官方 `TDControl` 的矩形即命中区）。
+pub(crate) fn buy_buttons(ox: f32, oy: f32) -> [crate::widget::Button; 4] {
+    use crate::widget::{Button, ButtonArt};
+    let mk = |r: (f32, f32, f32, f32), k: Hit, art: ButtonArt| Button {
+        key: crate::Press::Shop(k),
+        rect: crate::widget::offset(r, ox, oy),
+        art,
+        enabled: true,
+    };
+    [
+        // [OK] 的高亮图 386
+        mk(
+            OK,
+            Hit::Ok,
+            ButtonArt::highlight_only(("Prguse", BUY_OK_HOVER)),
+        ),
+        // 左 / 右翻页的高亮图 387 / 388
+        mk(
+            PREV_R,
+            Hit::Prev,
+            ButtonArt::highlight_only(("Prguse", BUY_PREV_HOVER)),
+        ),
+        mk(
+            NEXT_R,
+            Hit::Next,
+            ButtonArt::highlight_only(("Prguse", BUY_NEXT_HOVER)),
+        ),
+        // 素材自带的关闭钮（没单独高亮图）
+        mk(CLOSE, Hit::Close, ButtonArt::default()),
+    ]
 }
 
 const C_PRICE_COL: (u8, u8, u8) = (232, 220, 96);
@@ -372,7 +382,8 @@ pub(crate) fn draw_sell<'a, T>(
     net: Option<&Net>,
     placed: Option<usize>,
     // 鼠标**按住**着哪个控件（高亮图只在按住时展现；见 `Hit` 那条的说明）。
-    held: SellHit,
+    // 控件引擎（hover / 按下都由它算 ⇒ 不再单独传"按住的是谁"）
+    widget_ui: &crate::widget::Ui,
 ) -> Result<(), sdl3::Error> {
     let Some(n) = net else { return Ok(()) };
     if !n.world.in_world() || n.world.shop.is_none() {
@@ -443,30 +454,38 @@ pub(crate) fn draw_sell<'a, T>(
             }
         }
     }
-    // **OK 的高亮态**（用户 2026-10-11 第 3 条）：素材编号 **393**（24×13，蓝底
-    // 白字"OK"，比底图里那枚更亮）。常态由底图给出 ⇒ 只在**按住**时叠这一张
-    //（原版 `TDButton.Downed`；不是 hover）。
-    if held == SellHit::Ok {
-        let (ox, oy, ow, oh) = SELL_OK;
-        if let Some((iw, ih)) = ui.size(dir, "Prguse", SELL_OK_IMG) {
-            let _ = ui.draw_src(
-                canvas,
-                tc,
-                dir,
-                "Prguse",
-                SELL_OK_IMG,
-                FRect::new(0.0, 0.0, iw as f32, ih as f32),
-                FRect::new(
-                    x + sx + ox + (ow - iw as f32) / 2.0,
-                    y + sy + oy + (oh - ih as f32) / 2.0,
-                    iw as f32,
-                    ih as f32,
-                ),
-                255,
-            );
-        }
+    // **三个按钮走控件层**（`widget::Button`）：常态都画在底图 `Prguse[392]` 里，
+    // 只有 [OK] 那张高亮图 393 是单独的（用户 2026-10-11 第 3 条）。
+    // 命中与绘制同源 —— 都由 [`sell_buttons`] 那份描述决定。
+    for b in sell_buttons(x, y) {
+        crate::widget::draw_button(canvas, tc, ui, dir, &b, &b.response(widget_ui));
     }
     Ok(())
+}
+
+/// 卖货窗的三个按钮（**窗口内** → 屏幕坐标的换算在这里做一次）。
+///
+/// ⚠️ 抽出来是为了"画"和"命中"用同一份（官方 `TDControl` 的矩形即命中区）。
+pub(crate) fn sell_buttons(ox: f32, oy: f32) -> [crate::widget::Button; 3] {
+    use crate::widget::{Button, ButtonArt};
+    let mk = |r: (f32, f32, f32, f32), k: SellHit, art: ButtonArt| Button {
+        key: crate::Press::Sell(k),
+        rect: crate::widget::offset(r, ox, oy),
+        art,
+        enabled: true,
+    };
+    [
+        // 素材自带的红叉（没单独的高亮图 ⇒ 常态/按下都不额外画）
+        mk(SELL_CLOSE, SellHit::Close, ButtonArt::default()),
+        // 放物品的槽
+        mk(SELL_SLOT, SellHit::Slot, ButtonArt::default()),
+        // [OK]：393 是高亮（按下）图
+        mk(
+            SELL_OK,
+            SellHit::Ok,
+            ButtonArt::highlight_only(("Prguse", SELL_OK_IMG)),
+        ),
+    ]
 }
 
 /// **关掉购买窗**那一下的纯规则（抽出来是为了能单测；事件循环里不好造 `Event`）。

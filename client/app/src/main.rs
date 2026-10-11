@@ -106,8 +106,8 @@ pub(crate) use world::*;
 // 直接编译不过（这个坑刚踩过）。拆文件时最容易漏的一处。
 #[cfg(test)]
 mod tests;
-mod uiclick;
-pub(crate) use uiclick::{Click, UiPress};
+mod widget;
+pub(crate) use widget::{Press, Ui};
 
 /// 待确认的"退出类"动作（底栏那两颗 [注销] / [退出] 用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,8 +392,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 按住 Alt 吗（挖肉的修饰键；SDL 的鼠标事件不带 keymod ⇒ 从键盘事件自己记）
     let mut alt_down = false;
     // **界面点击的统一状态机**（OnClick 规范：左键按下+松开在同一控件才触发；
-    // 高亮只在按住期间展现）—— 见 `uiclick` 模块头的表。所有窗共用这一份。
-    let mut ui_click: Click<UiPress> = Click::new();
+    // 高亮只在按住期间展现）—— 见 `widget` 模块头的表。所有窗共用这一份。
+    let mut ui_click = Ui::new();
     // **挖肉状态**：按住 Alt 点中一具尸体 ⇒ 锁定为"正在挖它"，**按住不放就持续挖**
     //（用户 2026-10-10 第 1 条：不是反复点左键）。值 = 目标实体号；
     // Alt 松开 / 目标没了 / 人走远 ⇒ 清。
@@ -793,7 +793,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 // 鼠标位置（已在循环头换算成界面的 800×600 空间）
-                Event::MouseMotion { x, y, .. } => mouse = (x, y),
+                Event::MouseMotion { x, y, .. } => {
+                    mouse = (x, y);
+                    ui_click.set_mouse(mouse);
+                }
                 // 滚轮：两个**固定高**的窗都靠它翻内容 —— 背包窗翻页、对话窗卷行。
                 //
                 // ⚠️ 合成一条分支（原来那条只认背包）：两个窗可能同时开着，
@@ -870,6 +873,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // 那段）⇒ 按下这一刻就得把位置记上（光等 `MouseMotion` 会漏掉
                             // "按下后一动不动"的那种按住）。
                             mouse = (x, y);
+                            ui_click.set_mouse(mouse);
                             // ⚠️ **本次点击是否被某个浮窗消费**（todo 第 7 条）：
                             // 浮窗是画在世界**之上**的，点在窗里就不该再穿透到世界
                             //（原来各窗只清一次移动目标，后面那步"点 NPC"照跑 ⇒
@@ -883,15 +887,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if let Some(dir) = asset_dir.as_deref() {
                                         let c = hud::confirm_geom(&mut ui, dir, (WIN_W, WIN_H));
                                         if let Some(c) = c {
-                                            // OnClick 规范 ⇒ 按下只记，松开才执行（见 `uiclick`）
+                                            // OnClick 规范 ⇒ 按下只记，松开才执行（见 `widget`）
                                             if c.ok.hit(mouse) {
                                                 ui_click.press(
-                                                    UiPress::ConfirmOk,
+                                                    Press::ConfirmOk,
                                                     (c.ok.x, c.ok.y, c.ok.w, c.ok.h),
                                                 );
                                             } else if c.cancel.hit(mouse) {
                                                 ui_click.press(
-                                                    UiPress::ConfirmCancel,
+                                                    Press::ConfirmCancel,
                                                     (
                                                         c.cancel.x, c.cancel.y, c.cancel.w,
                                                         c.cancel.h,
@@ -920,7 +924,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if mouse_btn == MouseButton::Left {
                                 if let Some(b) = crate::layout::hud_btn_at(mouse) {
                                     // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
-                                    ui_click.press(UiPress::Hud(b), b.rect());
+                                    ui_click.press(Press::Hud(b), b.rect());
                                     // 目标清掉，**本次点击不再穿透到世界**（与其它浮窗
                                     // 同一条纪律：命中就 `continue`，不然人还会走）。
                                     combat_target = None;
@@ -935,7 +939,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // 但快捷栏的意义就是快速使用 ⇒ 单击即用）。
                                 if let Some(i) = crate::layout::belt_slot_at(mouse) {
                                     ui_click
-                                        .press(UiPress::Belt(i), crate::layout::belt_slot_rect(i));
+                                        .press(Press::Belt(i), crate::layout::belt_slot_rect(i));
                                     combat_target = None;
                                     move_target = None;
                                     press_at = None;
@@ -947,7 +951,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // 小地图那颗 = **Tab** 同一个动作（`toggle_minimap`）。
                                 if let Some(b) = crate::layout::hud_quick_at(mouse) {
                                     // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
-                                    ui_click.press(UiPress::Quick(b), b.rect());
+                                    ui_click.press(Press::Quick(b), b.rect());
                                     combat_target = None;
                                     move_target = None;
                                     press_at = None;
@@ -1214,7 +1218,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 crate::status::Hit::Close => {
                                                     let c = crate::status::CLOSE;
                                                     ui_click.press(
-                                                        UiPress::Status(crate::status::Hit::Close),
+                                                        Press::Status(crate::status::Hit::Close),
                                                         (wx + c.0, wy + c.1, c.2, c.3),
                                                     );
                                                 }
@@ -1225,9 +1229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                         crate::status::ARROW_DOWN_RECT
                                                     };
                                                     ui_click.press(
-                                                        UiPress::Status(crate::status::Hit::Arrow(
-                                                            d,
-                                                        )),
+                                                        Press::Status(crate::status::Hit::Arrow(d)),
                                                         (wx + a.0, wy + a.1, a.2, a.3),
                                                     );
                                                 }
@@ -1305,7 +1307,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             .contains(&ly);
                                     if on_close {
                                         ui_click.press(
-                                            UiPress::BagClose,
+                                            Press::BagClose,
                                             (
                                                 bx + crate::layout::BAG_CLOSE_X,
                                                 by + crate::layout::BAG_CLOSE_Y,
@@ -1422,28 +1424,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 crate::shop::Hit::Prev => {
                                                     let p = crate::shop::PREV_R;
                                                     ui_click.press(
-                                                        UiPress::Shop(crate::shop::Hit::Prev),
+                                                        Press::Shop(crate::shop::Hit::Prev),
                                                         (wx + p.0, wy + p.1, p.2, p.3),
                                                     );
                                                 }
                                                 crate::shop::Hit::Next => {
                                                     let p = crate::shop::NEXT_R;
                                                     ui_click.press(
-                                                        UiPress::Shop(crate::shop::Hit::Next),
+                                                        Press::Shop(crate::shop::Hit::Next),
                                                         (wx + p.0, wy + p.1, p.2, p.3),
                                                     );
                                                 }
                                                 crate::shop::Hit::Ok => {
                                                     let p = crate::shop::OK;
                                                     ui_click.press(
-                                                        UiPress::Shop(crate::shop::Hit::Ok),
+                                                        Press::Shop(crate::shop::Hit::Ok),
                                                         (wx + p.0, wy + p.1, p.2, p.3),
                                                     );
                                                 }
                                                 crate::shop::Hit::Close => {
                                                     let p = crate::shop::CLOSE;
                                                     ui_click.press(
-                                                        UiPress::Shop(crate::shop::Hit::Close),
+                                                        Press::Shop(crate::shop::Hit::Close),
                                                         (wx + p.0, wy + p.1, p.2, p.3),
                                                     );
                                                 }
@@ -1478,7 +1480,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         crate::shop::SellHit::Close => {
                                             let p = crate::shop::SELL_CLOSE;
                                             ui_click.press(
-                                                UiPress::Sell(crate::shop::SellHit::Close),
+                                                Press::Sell(crate::shop::SellHit::Close),
                                                 (sx + p.0, sy + p.1, p.2, p.3),
                                             );
                                         }
@@ -1487,14 +1489,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         crate::shop::SellHit::Slot => {
                                             let p = crate::shop::SELL_SLOT;
                                             ui_click.press(
-                                                UiPress::Sell(crate::shop::SellHit::Slot),
+                                                Press::Sell(crate::shop::SellHit::Slot),
                                                 (sx + p.0, sy + p.1, p.2, p.3),
                                             );
                                         }
                                         crate::shop::SellHit::Ok => {
                                             let p = crate::shop::SELL_OK;
                                             ui_click.press(
-                                                UiPress::Sell(crate::shop::SellHit::Ok),
+                                                Press::Sell(crate::shop::SellHit::Ok),
                                                 (sx + p.0, sy + p.1, p.2, p.3),
                                             );
                                         }
@@ -1550,12 +1552,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     mouse_btn, x, y, ..
                 } if mode == 2 && matches!(mouse_btn, MouseButton::Left | MouseButton::Right) => {
                     // ① **OnClick**：左键按下 + 松开在**同一控件**才执行
-                    //（规范见 `uiclick` 模块头的表：拖出控件再松开 / 右键 / 只有
+                    //（规范见 `widget` 模块头的表：拖出控件再松开 / 右键 / 只有
                     // MouseDown ⇒ 都不触发）。右键不会走到这里（`release` 只对左键调）。
                     if mouse_btn == MouseButton::Left {
                         if let Some(k) = ui_click.release((x, y)) {
                             match k {
-                                UiPress::Hud(b) => match b {
+                                Press::Hud(b) => match b {
                                     crate::layout::HudBtn::State => toggle_status(&mut status_open),
                                     crate::layout::HudBtn::Bag => {
                                         toggle_bag(&mut bag_open, &mut bag_page)
@@ -1567,7 +1569,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         ui_say(net.as_mut(), "选项窗还没做。")
                                     }
                                 },
-                                UiPress::Quick(b) => match b {
+                                Press::Quick(b) => match b {
                                     crate::layout::QuickBtn::MiniMap => {
                                         toggle_minimap(&mut minimap_on)
                                     }
@@ -1592,7 +1594,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 },
                                 // 快捷栏：手上拿着 ⇒ 放进这格；空手 ⇒ 使用
-                                UiPress::Belt(i) => {
+                                Press::Belt(i) => {
                                     if let Some(held) = sell_held.take() {
                                         if let Some(Some(it)) =
                                             net.as_ref().and_then(|n| n.world.bag.get(held))
@@ -1608,34 +1610,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         belt_use(&mut net, &mut belt, i, b.make_index);
                                     }
                                 }
-                                UiPress::BagClose => {
+                                Press::BagClose => {
                                     bag_open = false;
                                     println!("[ui] 背包窗关闭（点 X）");
                                 }
-                                UiPress::Status(crate::status::Hit::Close) => {
+                                Press::Status(crate::status::Hit::Close) => {
                                     status_open = false;
                                     println!("[ui] 状态窗关闭（点 X）");
                                 }
-                                UiPress::Status(crate::status::Hit::Arrow(d)) => {
+                                Press::Status(crate::status::Hit::Arrow(d)) => {
                                     status_page = crate::status::page_step(status_page, d);
                                     println!("[ui] 状态窗翻到第 {} 页", status_page);
                                 }
-                                UiPress::Status(_) => {}
-                                UiPress::Shop(crate::shop::Hit::Prev) => {
+                                Press::Status(_) => {}
+                                Press::Shop(crate::shop::Hit::Prev) => {
                                     let n = net
                                         .as_ref()
                                         .and_then(|n| n.world.shop.as_ref())
                                         .map_or(0, |sh| sh.items.len());
                                     shop_page = crate::shop::page_step(shop_page, -1, n);
                                 }
-                                UiPress::Shop(crate::shop::Hit::Next) => {
+                                Press::Shop(crate::shop::Hit::Next) => {
                                     let n = net
                                         .as_ref()
                                         .and_then(|n| n.world.shop.as_ref())
                                         .map_or(0, |sh| sh.items.len());
                                     shop_page = crate::shop::page_step(shop_page, 1, n);
                                 }
-                                UiPress::Shop(crate::shop::Hit::Ok) => {
+                                Press::Shop(crate::shop::Hit::Ok) => {
                                     if let Some(sh) =
                                         net.as_ref().and_then(|n| n.world.shop.as_ref())
                                     {
@@ -1652,20 +1654,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 }
-                                UiPress::Shop(crate::shop::Hit::Close) => {
+                                Press::Shop(crate::shop::Hit::Close) => {
                                     shop_open = false;
                                     shop_sel = None;
                                     println!("[ui] 商店窗关闭（素材关闭钮）");
                                 }
-                                UiPress::Shop(_) => {}
-                                UiPress::Sell(crate::shop::SellHit::Close) => {
+                                Press::Shop(_) => {}
+                                Press::Sell(crate::shop::SellHit::Close) => {
                                     shop_open = false;
                                     bag_open = false;
                                     sell_held = None;
                                     sell_placed = None;
                                     println!("[ui] 卖货窗关闭（同步收包裹）");
                                 }
-                                UiPress::Sell(crate::shop::SellHit::Slot) => {
+                                Press::Sell(crate::shop::SellHit::Slot) => {
                                     match (sell_held, sell_placed) {
                                         (Some(held), None) => {
                                             sell_placed = Some(held);
@@ -1678,7 +1680,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         _ => {}
                                     }
                                 }
-                                UiPress::Sell(crate::shop::SellHit::Ok) => {
+                                Press::Sell(crate::shop::SellHit::Ok) => {
                                     if let Some(idx) = sell_placed.take() {
                                         let Some(n) = net.as_ref() else {
                                             sell_placed = Some(idx);
@@ -1701,8 +1703,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 }
-                                UiPress::Sell(_) => {}
-                                UiPress::ConfirmOk => {
+                                Press::Sell(_) => {}
+                                Press::ConfirmOk => {
                                     if let Some(act) = confirm_quit.take() {
                                         match act {
                                             QuitAct::Logout => {
@@ -1718,7 +1720,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 }
-                                UiPress::ConfirmCancel => confirm_quit = None,
+                                Press::ConfirmCancel => confirm_quit = None,
                             }
                             continue; // 按在界面上 ⇒ 不走世界的"松手"逻辑
                         }
@@ -2383,15 +2385,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 net.as_ref(),
                 combat_target,
                 dialog_scroll,
-                // 按住的是哪颗（高亮图只在这期间展现 —— 见 `uiclick`）
-                match ui_click.held(mouse) {
-                    Some(UiPress::Hud(b)) => Some(b),
-                    _ => None,
-                },
-                match ui_click.held(mouse) {
-                    Some(UiPress::Quick(b)) => Some(b),
-                    _ => None,
-                },
+                &ui_click, // 控件引擎（底栏按钮的 hover/按下）
             )?;
             // **快捷（腰带）栏**：画在世界与 HUD 之上（框在底栏里、内容在这里）。
             if mode == 2 {
@@ -2403,8 +2397,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &mut ui_texts,
                         dir,
                         &belt,
-                        match ui_click.held(mouse) {
-                            Some(UiPress::Belt(i)) => Some(i),
+                        match ui_click.held() {
+                            Some(Press::Belt(i)) => Some(i),
                             _ => None,
                         },
                     )?;
@@ -2447,7 +2441,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         bag_page,
                         shop_open,
                         &hide,
-                        ui_click.held(mouse) == Some(UiPress::BagClose),
+                        ui_click.held() == Some(Press::BagClose),
                     )?;
                 }
             }
@@ -2464,10 +2458,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if shop_open && !shop_is_sell {
                     // 商店窗的悬停（OK 按钮的 hover 态要用）
                     // 高亮只在**按住**时展现（原版 `Downed`；不是 hover）
-                    let shop_hover = match ui_click.held(mouse) {
-                        Some(UiPress::Shop(h)) => h,
-                        _ => crate::shop::Hit::None,
-                    };
                     shop::draw(
                         &mut canvas,
                         &tex_creator,
@@ -2477,15 +2467,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         net.as_ref(),
                         shop_page,
                         shop_sel,
-                        shop_hover,
+                        &ui_click,
                     )?;
                 }
                 // ② 卖货窗（卖）：放物品的槽 + OK（hover 时叠高亮素材 393）
                 if shop_open && bag_open && shop_is_sell {
-                    let sell_hover = match ui_click.held(mouse) {
-                        Some(UiPress::Sell(h)) => h,
-                        _ => crate::shop::SellHit::None,
-                    };
                     shop::draw_sell(
                         &mut canvas,
                         &tex_creator,
@@ -2494,7 +2480,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         dir,
                         net.as_ref(),
                         sell_placed,
-                        sell_hover,
+                        &ui_click,
                     )?;
                 }
                 // ③ 物品悬停提示：鼠标压在包裹格上 ⇒ 显示名字/类别/耐久/卖价
@@ -2587,8 +2573,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if status_open {
                 if let Some(dir) = asset_dir.as_deref() {
                     // 关闭钮的高亮 371 只在**按住**时叠（原版 `DCloseState` 走 `Downed`）
-                    let st_held =
-                        ui_click.held(mouse) == Some(UiPress::Status(crate::status::Hit::Close));
+                    let st_held = ui_click.held() == Some(Press::Status(crate::status::Hit::Close));
                     status::draw(
                         &mut canvas,
                         &tex_creator,

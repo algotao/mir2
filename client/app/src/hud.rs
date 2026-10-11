@@ -61,10 +61,8 @@ pub(crate) fn draw_hud<'a, T>(
     map_title: &str,
     // NPC 对话窗卷到第几行（见 `input::dialog_max_scroll`）
     dialog_scroll: usize,
-    // **当前按住的是哪颗**（`None` = 没有/已拖出）—— 高亮图只在按住时展现
-    //（原版 `TDButton.Downed`，不是 hover；规范见 `uiclick` 模块头）。
-    held_hud: Option<crate::layout::HudBtn>,
-    held_quick: Option<crate::layout::QuickBtn>,
+    // 控件引擎（hover / 按下都由它算；规范见 `widget` 模块头）
+    widget_ui: &crate::widget::Ui,
 ) -> Result<(), sdl3::Error> {
     let (bw, bh) = ui.size(dir, "Prguse", HUD_BOARD).unwrap_or((800, 251));
     let (bw, bh) = (bw as f32, bh as f32);
@@ -102,23 +100,30 @@ pub(crate) fn draw_hud<'a, T>(
     // 而这里的矩形是按 **画布** 1024×768 算的 ⇒ 乘完就飞到画布外去了
     // （右上 4 颗 x 867→1110、左下 5 颗 y 621→795，全都看不见）
     // —— 2026-10-11 用户报"完全看不到"就是这个。底栏/球/等级一路也都是画布坐标。
-    let held = held_hud;
+
     for b in crate::layout::HudBtn::ALL {
-        if held == Some(b) {
-            hud_img(canvas, tc, ui, dir, b.img(), b.rect());
-        }
+        // 常态画在底栏里 ⇒ 只有高亮（按下）图是单独的
+        let btn = crate::widget::Button {
+            key: crate::Press::Hud(b),
+            rect: b.rect(),
+            art: crate::widget::ButtonArt::highlight_only(("Prguse", b.img())),
+            enabled: true,
+        };
+        crate::widget::draw_button(canvas, tc, ui, dir, &btn, &btn.response(widget_ui));
     }
     // **底栏左下那排快捷按钮**（小地图/交易/行会/组队/属性/注销/退出）：两态按钮
     // （常态 = `img`、按下 = `img+1`；官方 `DBotGroupDirectPaint`）⇒ **常态总是画**，
     // 悬停时换成 +1 那张（与右上那 4 颗"只在悬停叠高亮"不是同一种）。
-    let qheld = held_quick;
+
     for b in crate::layout::QuickBtn::ALL {
-        let img = if qheld == Some(b) {
-            b.img() + 1
-        } else {
-            b.img()
+        // 左下这排是**两态**按钮：常态图 + 按下图(+1)（官方 `DBotGroupDirectPaint`）
+        let btn = crate::widget::Button {
+            key: crate::Press::Quick(b),
+            rect: b.rect(),
+            art: crate::widget::ButtonArt::two_state(("Prguse", b.img()), ("Prguse", b.img() + 1)),
+            enabled: true,
         };
-        hud_img(canvas, tc, ui, dir, img, b.rect());
+        crate::widget::draw_button(canvas, tc, ui, dir, &btn, &btn.response(widget_ui));
     }
 
     // 血 / 魔法球。官方分**两支**（`FState.pas:3606-3640`）：
@@ -817,36 +822,6 @@ pub(crate) fn draw_confirm<'a, T>(
         Some((0, 0, 0)),
     )?;
     Ok(())
-}
-
-/// 在**画布坐标**的 `r` 处贴一张界面图（原生尺寸）。
-///
-/// ⚠️ 为什么非要绕这一层：HUD 这一路（底栏、球、等级、按钮）全在**画布坐标**
-/// 1024×768 里，而 `UiCache::draw` 吃的是**设计坐标** 800×600（它内部自己乘
-/// `UI_SCALE`）⇒ 直接调 `draw` 会再放大一次、把控件推出画布（2026-10-11 踩过）。
-/// 走 `draw_src`（不做任何换算）就与底栏那几段一致了。
-fn hud_img<'a, T>(
-    canvas: &mut WindowCanvas,
-    tc: &'a TextureCreator<T>,
-    ui: &mut ui::UiCache<'a>,
-    dir: &Path,
-    idx: u32,
-    (x, y, _w, _h): (f32, f32, f32, f32),
-) {
-    let Some((iw, ih)) = ui.size(dir, "Prguse", idx) else {
-        return;
-    };
-    let (iw, ih) = (iw as f32, ih as f32);
-    let _ = ui.draw_src(
-        canvas,
-        tc,
-        dir,
-        "Prguse",
-        idx,
-        FRect::new(0.0, 0.0, iw, ih),
-        FRect::new(x, y, iw, ih),
-        255,
-    );
 }
 
 /// 在**画布坐标**的 `r` 处贴一张界面图（**按 `r` 的尺寸**，不按原生尺寸）。

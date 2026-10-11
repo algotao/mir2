@@ -4508,3 +4508,47 @@ clippy 0。
 **验收**：客户端 107/148/7/3 + Go 25 包，clippy 0。
 `uiclick` 自带 7 条测试（同控件点击 / 拖出不触发 / 只按下不触发 / 高亮随拖出而灭 /
 换控件顶掉 / clear / 半开区间）。
+
+---
+
+## D-67 控件层 `widget.rs` 落地（2026-10-11）：照官方 TDControl 体系，但 Rust 化
+
+官方 `DWinCtl.pas` 的体系（我们照**语义**不照**继承**）：
+
+```text
+TDControl  rect / Visible / WLib+FaceIndex / SurfaceX(父偏移) / InRange(hit)
+           OnDirectPaint / OnMouseDown/Up/Move / OnClick(Ex) / OnDblClick / OnKeyPress
+  ├─ TDButton  Downed（按下态）
+  ├─ TDWindow  Floating（可拖）
+  └─ TDGrid    ColCount/RowCount/…（格子）
+```
+
+### 落地形态
+
+- **控件只是数据**（`Button { key, rect, art, enabled }`），官方的 property 变成字段；
+- **交互用返回值不用回调**（`Response { hovered, pressed, clicked }`）—— Rust 里闭包
+  要抓一堆 `&mut` 状态，在这套"几何在 `layout.rs`、动作在主循环 match"的结构下太别扭；
+- **一个引擎 `Ui`** 统一算 hover / 按下 / OnClick（原来的 `uiclick::Click` 收编进来，
+  `uiclick.rs` 删除）；
+- **坐标只认画布坐标**，`UI_SCALE` 不许进控件层（D-64 的坑）。
+
+### hover 的口径（用户 2026-10-11 拍板）
+
+官方**只有"常态 + 按下态"**，没有 hover ⇒ `ButtonArt.hover` **默认 `None`**：
+没配就不画，行为与官方一致；要就配。
+
+### 已转过去的窗
+
+| 窗 | 控件 | 说明 |
+|---|---|---|
+| 卖货窗 | 槽 / [OK] / 关闭 | `sell_buttons()`：命中与绘制同源 |
+| 交易窗 | [OK] / 左 / 右 / 关闭 | `buy_buttons()` |
+| 底栏 | 右上 4 颗（高亮型 8-11）、左下 7 颗（两态 130/132/… +1） | `ButtonArt::highlight_only` / `two_state` |
+
+**验收**：客户端 107/148/7/3 + Go 25 包，clippy 0；`widget` 自带 7 条测试
+（同控件点击 / 拖出不触发 / 只按下不触发 / 高亮随拖出而灭 / 禁用态 / 图的挑选顺序 / 半开区间）。
+
+### 还没转（下一步）
+
+状态窗（关闭+翻页）、背包窗（格子 + `DragSession`）、腰带、对话框/列表、登录/选角（Edit）。
+`Grid` / `ItemSlot` / `Edit` / `Window`(可拖) 这几个类还没建。
