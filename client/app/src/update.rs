@@ -9,11 +9,19 @@
 
 use std::time::{Duration, Instant};
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, Scene};
 use crate::hud;
 
 /// 一帧里"该发生什么"（不含画）。
 pub(crate) fn tick(app: &mut AppState) {
+    // **状态转换属于更新阶段，不属于绘制**：门动画播完再切屏；`render` 只读 Scene。
+    if app.scene == Scene::Login && app.login.door_done() {
+        let in_world = app.net.as_ref().is_some_and(|n| n.world.in_world());
+        if let Some(next) = crate::flow::after_login_door(app.select_scene.is_some(), in_world) {
+            app.scene = next;
+        }
+    }
+
     // 背包条目减少（使用/卖出/服务端重排）后，统一夹回仍存在的页。
     // 否则 hud::bag_geom 会偷偷画第 0 页，但鼠标命中仍按旧页算，出现「画第 0 页、
     // 点第 2 页」的分裂。滚轮/绘制/命中共用 layout::bag_pages，状态在此归一。

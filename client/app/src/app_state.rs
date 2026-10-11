@@ -10,17 +10,33 @@
 
 use std::time::Instant;
 
-use sdl3::mouse::MouseButton;
-
 use crate::{bagdrag, confirm, login, pager, scrollview, select, shopui, windows, Ui};
 use mir2_core::map::Map;
+
+/// 当前客户端场景（替代裸 `u8` 模式号）。
+///
+/// ⚠️ 输入分发和状态转换用这个枚举；渲染只读取它，不再从绘制函数里改场景。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scene {
+    Login,
+    World,
+    AssetView,
+    Select,
+}
+
+/// 世界模式下鼠标按住的移动意图（不把 SDL 的 MouseButton 泄漏进运行态）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MoveButton {
+    Walk,
+    Run,
+}
 
 /// 可变客户端会话状态（SDL 资源不在此处）。
 pub(crate) struct AppState {
     // Scene/session
     pub login: login::Login,
     pub select_scene: Option<select::Select>,
-    pub mode: u8,
+    pub scene: Scene,
     pub net: Option<crate::net::Net>,
 
     // World interaction
@@ -28,7 +44,7 @@ pub(crate) struct AppState {
     pub move_at: Instant,
     pub press_at: Option<Instant>,
     pub press_cell: (i32, i32),
-    pub held_move: Option<MouseButton>,
+    pub held_move: Option<MoveButton>,
     pub retarget_at: Instant,
     pub last_move_fail: u64,
     pub detour: Option<u8>,
@@ -83,7 +99,7 @@ impl AppState {
         Self {
             login: login::Login::new(),
             select_scene: None,
-            mode: 1,
+            scene: Scene::Login,
             net: None,
 
             move_target: None,

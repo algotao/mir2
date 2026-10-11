@@ -34,7 +34,7 @@ pub(crate) fn tick(
     // 位置不变时它对应的**格子**会往前跑 ⇒ 按住不放就是**一直走下去**（原版的"按住跑直线"）。
     // 镜头不卷或者目标不重取，两样单独都做不出这个手感。
     // ⚠️ 挖肉中 ⇒ 按住/移动鼠标都**不许**变成走路（用户第 1 条）
-    if app.mode == 2
+    if app.scene == crate::app_state::Scene::World
         && app.held_move.is_some()
         && app.butch_target.is_none()
         && app.retarget_at.elapsed() >= Duration::from_millis(MOUSE_REPEAT_MS)
@@ -42,7 +42,7 @@ pub(crate) fn tick(
         app.retarget_at = Instant::now();
         if let Some(n) = app.net.as_ref().filter(|n| n.world.in_world()) {
             let cell = screen_to_cell(app.cam, app.mouse.0, app.mouse.1);
-            let run = app.held_move == Some(MouseButton::Right);
+            let run = app.held_move == Some(crate::app_state::MoveButton::Run);
             // ⚠️ 用 `mouse_repeat` 而不是 `mouse_intent`：按住时**不能**因为
             // "光标不在怪身上了"就把锁住的怪丢掉（镜头跟着人走，光标一定会滑开，
             // 否则按住点怪会半路变成走路）。见 `mouse_repeat` 的说明。
@@ -58,7 +58,9 @@ pub(crate) fn tick(
     // 之后 `MouseTimerTimer`（`ClMain.pas:2962-2997`）**每帧**对那个目标调 `AttackTarget`
     // —— `AttackTarget`（`:2691-2743`）自己判"相邻就砍、不够近就朝它旁边那格走/跑"。
     // 也就是原版**没有"按住才打"这一说**：锁住了就一直打，直到它死掉或消失。
-    if app.mode == 2 && !app.net.as_ref().is_some_and(|n| n.world.self_dead) {
+    if app.scene == crate::app_state::Scene::World
+        && !app.net.as_ref().is_some_and(|n| n.world.self_dead)
+    {
         if let Some(id) = app.combat_target {
             let step = app
                 .net
@@ -174,7 +176,7 @@ pub(crate) fn tick(
         }
     }
 
-    if app.mode == 2 {
+    if app.scene == crate::app_state::Scene::World {
         if let Some((tx, ty, run)) = app.move_target {
             let here = app
                 .net
@@ -246,14 +248,14 @@ pub(crate) fn tick(
     // 进图音乐 `Music/<地图音乐号>.mp3` **暂时没有声音**（协议没有那个字段、
     // 手上也没有 mp3）⇒ 进地图就停掉上一首，而不是放错一首。
     // 自己死了就别停：那时该响的是 game over 那首（`Actor.pas:2373-2374`）。
-    if app.mode == 4 {
+    if app.scene == crate::app_state::Scene::Select {
         bgm(sound, sounds, mir2_core::sound::BGM_SELECT);
-    } else if app.mode == 1 {
+    } else if app.scene == crate::app_state::Scene::Login {
         // ⚠️ 开门动画期间**继续放**登录曲（原版 `PlayBGM(bmg_intro)` 一放放到换场景，
         // `IntroScn.pas:518`；门放完 `ChangeScene(stSelectChr)` 才换成选角曲）。
         // 早先这里多了个 `opened_at.is_none()` ⇒ 门一开就静音三秒（踩过）。
         bgm(sound, sounds, mir2_core::sound::BGM_LOGIN);
-    } else if app.mode == 2
+    } else if app.scene == crate::app_state::Scene::World
         && !app.net.as_ref().is_some_and(|n| n.world.self_dead)
         && sound.stop_bgm()
     {
@@ -261,7 +263,7 @@ pub(crate) fn tick(
     }
     // 怪物"正常声"：鸡叫/鹿鸣…（用户 2026-10-09 第 4 条）。
     // 官方规则与我们的近似写法见 `sfx::monster_ambient` 的说明。
-    if app.mode == 2 {
+    if app.scene == crate::app_state::Scene::World {
         if let Some(n) = app.net.as_ref() {
             monster_ambient(
                 n,

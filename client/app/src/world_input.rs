@@ -281,7 +281,7 @@ fn handle_ui_press(app: &mut AppState, k: Press) -> bool {
                     confirm::QuitAct::Logout => {
                         ui_say(app.net.as_mut(), "已注销。");
                         app.net = None;
-                        app.mode = 1;
+                        app.scene = crate::app_state::Scene::Login;
                         app.belt = [None; crate::layout::BELT_SLOTS];
                         app.win.close_all();
                     }
@@ -531,7 +531,11 @@ pub(crate) fn handle_world_mouse_down<'a>(
                                             // 按下逻辑**，于是"鼠标那一格"被反复重新当成目标。少了它，
                                             // 目标格是按下那一刻定死的 ⇒ 走到那儿就停（用户 2026-10-08 报的
                                             // "按住只能走数次"）。
-            app.held_move = Some(mouse_btn);
+            app.held_move = Some(if mouse_btn == MouseButton::Right {
+                crate::app_state::MoveButton::Run
+            } else {
+                crate::app_state::MoveButton::Walk
+            });
             app.retarget_at = Instant::now();
             match ct {
                 Some(id) => {

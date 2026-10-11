@@ -54,7 +54,7 @@ pub(crate) fn run_app<T>(
 
     // 给了会话号就说明"我已经有会话了" ⇒ 直接进地图（登录界面留给真登录用）
     if app.net.is_some() {
-        app.mode = 2;
+        app.scene = crate::app_state::Scene::World;
     }
 
     // 载入初始地图
@@ -118,7 +118,7 @@ pub(crate) fn run_app<T>(
                     app.mouse = (x, y);
                     app.ui_click.set_mouse(crate::widget::canvas_pt(app.mouse));
                 }
-                Event::MouseWheel { y, .. } if app.mode == 2 => {
+                Event::MouseWheel { y, .. } if app.scene == crate::app_state::Scene::World => {
                     world_input::handle_mouse_wheel(&mut app, y)
                 }
                 // 鼠标移动：**在世界里 ⇒ 左键走 / 右键跑**（照原版 `ClMain.pas:2246-2352`：
@@ -127,7 +127,7 @@ pub(crate) fn run_app<T>(
                 // 别和"走路"抢同一个键。
                 Event::MouseButtonDown {
                     mouse_btn, x, y, ..
-                } if app.mode == 2 => {
+                } if app.scene == crate::app_state::Scene::World => {
                     world_input::handle_world_mouse_down(
                         &mut app,
                         mouse_btn,
@@ -155,7 +155,7 @@ pub(crate) fn run_app<T>(
                 //（`MouseTimerTimer`，`ClMain.pas:2962-2997`），不是"松手就取消"。
                 Event::MouseButtonUp {
                     mouse_btn, x, y, ..
-                } if app.mode == 2
+                } if app.scene == crate::app_state::Scene::World
                     && matches!(mouse_btn, MouseButton::Left | MouseButton::Right) =>
                 {
                     match world_input::handle_world_mouse_up(&mut app, mouse_btn, x, y) {
@@ -169,7 +169,7 @@ pub(crate) fn run_app<T>(
                     x,
                     y,
                     ..
-                } if app.mode == 4 => {
+                } if app.scene == crate::app_state::Scene::Select => {
                     scene_input::select_down(&mut app, &mut ui, &asset_dir, (x, y));
                 }
                 Event::MouseButtonUp {
@@ -177,7 +177,7 @@ pub(crate) fn run_app<T>(
                     x,
                     y,
                     ..
-                } if app.mode == 4 => {
+                } if app.scene == crate::app_state::Scene::Select => {
                     let act = scene_input::select_up(&mut app, &mut ui, &asset_dir, (x, y));
                     if do_select_action(act, &mut app.net, &mut app.select_scene, &sound, &sounds)?
                     {
@@ -189,7 +189,7 @@ pub(crate) fn run_app<T>(
                     x,
                     y,
                     ..
-                } if app.mode == 1 => {
+                } if app.scene == crate::app_state::Scene::Login => {
                     scene_input::login_down(&mut app, &mut ui, &asset_dir, (x, y));
                 }
                 Event::MouseButtonUp {
@@ -197,7 +197,7 @@ pub(crate) fn run_app<T>(
                     x,
                     y,
                     ..
-                } if app.mode == 1 => {
+                } if app.scene == crate::app_state::Scene::Login => {
                     let act = scene_input::login_up(&mut app, &mut ui, &asset_dir, (x, y));
                     // 按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` ⇒ 103）
                     if act != login::Action::None {
@@ -220,10 +220,14 @@ pub(crate) fn run_app<T>(
                         login::Action::None => {}
                     }
                 }
-                Event::TextInput { text: t, .. } if app.mode == 1 => app.login.on_text(&t),
+                Event::TextInput { text: t, .. } if app.scene == crate::app_state::Scene::Login => {
+                    app.login.on_text(&t)
+                }
                 // 选角界面的**建角对话框**也吃文字（`Select::on_text` 自己判断对话框开没开、
                 // 焦点在不在姓名上）—— 少了这条，姓名框打字没反应（原版是 `TEdit` 收键）。
-                Event::TextInput { text: t, .. } if app.mode == 4 => {
+                Event::TextInput { text: t, .. }
+                    if app.scene == crate::app_state::Scene::Select =>
+                {
                     if let Some(s) = app.select_scene.as_mut() {
                         s.on_text(&t);
                     }
@@ -265,7 +269,7 @@ pub(crate) fn run_app<T>(
 
         // 底部那条**开发用**提示条撤了：现在那儿是 HUD 操作面板（字会压在按钮上）。
         // 按键提示改在**进世界时推一行到聊天区**（玩家看得到的那处）。
-        if !app.hint_pushed && app.mode == 2 {
+        if !app.hint_pushed && app.scene == crate::app_state::Scene::World {
             if let Some(n) = app.net.as_mut() {
                 if n.entered_once {
                     app.hint_pushed = true;
@@ -280,8 +284,11 @@ pub(crate) fn run_app<T>(
                             f.dress, f.weapon, f.hair, f.race_img
                         );
                     }
-                    n.chat.push(trunc(hint_text(2), 30), C_CHAT_SYS);
-                    println!("[hud] 按键提示已进聊天区：{}", trunc(hint_text(2), 30));
+                    n.chat.push(trunc(hint_text(app.scene), 30), C_CHAT_SYS);
+                    println!(
+                        "[hud] 按键提示已进聊天区：{}",
+                        trunc(hint_text(app.scene), 30)
+                    );
                 }
             }
         }

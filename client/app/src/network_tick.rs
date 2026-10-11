@@ -40,7 +40,7 @@ pub(crate) fn pump(
             app.login.opened_at = Some(Instant::now());
             app.login.busy = false;
             app.select_scene = None;
-            app.mode = 1; // 开门动画在登录屏上播（见 `login::draw` 的说明）
+            app.scene = crate::app_state::Scene::Login; // 开门动画在登录屏上播（见 `login::draw` 的说明）
             sfx(sound, sounds, mir2_core::sound::idx::ROCK_DOOR_OPEN);
         }
         // 兜底：**认领会话**那条路（没有口令登录这一步）落到世界里时才补一次开门。
@@ -48,7 +48,7 @@ pub(crate) fn pump(
             app.login.opened_at = Some(Instant::now());
             app.login.busy = false;
             app.select_scene = None;
-            app.mode = 1;
+            app.scene = crate::app_state::Scene::Login;
             sfx(sound, sounds, mir2_core::sound::idx::ROCK_DOOR_OPEN);
         }
         // 登录成功后会停在 `AwaitPick`（`set_manual_pick`）⇒ 切到选角场景。
@@ -64,7 +64,7 @@ pub(crate) fn pump(
             .map(select::CharEntry::from_summary)
             .collect();
         let p = plan(
-            app.mode,
+            app.scene,
             n.entrance.stage() == &mir2_core::entrance::Stage::AwaitPick,
             n.entrance.in_world(),
             list_changed(app.select_scene.as_ref(), &chars),
@@ -95,11 +95,11 @@ pub(crate) fn pump(
         //（`IntroScn.pas:838-847`），一上来就切会把门当场掐掉（用户看到的就是"没有开门动画"）。
         // 门放完那一刻由主循环里 `mode == 1` 那条分支接手。
         if p.enter_select {
-            app.mode = 4;
+            app.scene = crate::app_state::Scene::Select;
         }
         // 选角通过 ⇒ 换到游戏主场景（原版在这里是 `ChangeScene(stPlay)`）
         if p.enter_play {
-            app.mode = 2;
+            app.scene = crate::app_state::Scene::World;
             // 选角场景用不上了（它的槽动画也不必再跑）
             app.select_scene = None;
         }
@@ -111,8 +111,8 @@ pub(crate) fn pump(
         }
         // 在选角场景里出了**致命**错（服务端断开…）⇒ 回登录界面，
         // 用那套已有的弹窗说清楚（否则用户会在选角界面上干等）。
-        if app.mode == 4 && n.entrance.failed().is_some() {
-            app.mode = 1;
+        if app.scene == crate::app_state::Scene::Select && n.entrance.failed().is_some() {
+            app.scene = crate::app_state::Scene::Login;
         }
         if let Some(tok) = n.entrance.session_token() {
             n.session = tok;

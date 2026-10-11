@@ -5273,3 +5273,19 @@ Go 同 package 的文件共享 handler/helpers，不会引入 import cycle）：
 - 新增页数边界测试（0、1、24、25、46 件）。
 
 **验收**：客户端 155/148/7/3，clippy 0；Go 25 包。
+
+---
+
+## D-100 架构方向 ① 续：场景枚举 + 转场从 render 移出（2026-10-11）
+
+`AppState.mode: u8`（1/2/3/4）改为 `Scene::{Login, World, AssetView, Select}`，避免模式号
+撒在键盘、网络、渲染条件里的裸数字。`flow::plan` / `hint_text` 也直接吃枚举。
+
+同时修正职责边界：开门动画结束时的 `Scene` 变化以前发生在 `render::draw_frame` 内；
+现挪到 `update::tick`，决策由纯函数 `flow::after_login_door(has_select, in_world)` 给出。
+`render` 现在只读场景并画，不再因画到某一帧而改运行态。
+
+顺带把 `AppState.held_move` 从 `Option<sdl3::MouseButton>` 改为客户端自有的
+`MoveButton::{Walk, Run}`：SDL 鼠标按钮只在输入适配层翻译，不再泄漏进运行状态。
+
+**验收**：客户端 156/148/7/3，clippy 0。

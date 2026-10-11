@@ -47,7 +47,7 @@ pub(crate) fn draw_frame<'a, T>(
     canvas.clear();
 
     // 悬停的那个实体（由 `draw_map_view` 按精灵落点算出来）—— 光标/高亮都用它
-    if app.mode == 2 {
+    if app.scene == crate::app_state::Scene::World {
         app.hover = draw_map_view(
             canvas,
             tex_creator,
@@ -74,7 +74,7 @@ pub(crate) fn draw_frame<'a, T>(
             &app.ui_click, // 控件引擎（底栏按钮的 hover/按下）
         )?;
         // **快捷（腰带）栏**：画在世界与 HUD 之上（框在底栏里、内容在这里）。
-        if app.mode == 2 {
+        if app.scene == crate::app_state::Scene::World {
             if let Some(dir) = asset_dir.as_deref() {
                 hud::draw_belt(
                     canvas,
@@ -91,7 +91,7 @@ pub(crate) fn draw_frame<'a, T>(
             }
         }
         // **退出 / 注销的确认框**（模态）⇒ 画在所有窗之上
-        if let (2, Some(act)) = (app.mode, app.confirm.pending()) {
+        if let (crate::app_state::Scene::World, Some(act)) = (app.scene, app.confirm.pending()) {
             if let Some(dir) = asset_dir.as_deref() {
                 hud::draw_confirm(
                     canvas,
@@ -271,7 +271,7 @@ pub(crate) fn draw_frame<'a, T>(
                 )?;
             }
         }
-    } else if app.mode == 4 {
+    } else if app.scene == crate::app_state::Scene::Select {
         if let Some(scene) = app.select_scene.as_mut() {
             // 鼠标位置（**设计空间**）⇒ 建角框的按钮悬停要它
             scene.mouse = {
@@ -290,19 +290,7 @@ pub(crate) fn draw_frame<'a, T>(
                 &app.ui_click,
             )?;
         }
-    } else if app.mode == 1 {
-        // 开门动画播完 ⇒ **换场景**。原版换到的是**选角**
-        //（`ChangeScene(stSelectChr)`，`IntroScn.pas:838-847`），不是地图 ——
-        // 早先这里直接 `mode = 2` 是错的（等于把选角整段跳过）。
-        if app.login.door_done() {
-            if app.select_scene.is_some() {
-                app.mode = 4;
-            } else if app.net.as_ref().is_some_and(|n| n.world.in_world()) {
-                // 认领会话那条路没有选角：门放完直接进地图
-                app.mode = 2;
-            }
-            // 两个都没有 ⇒ 留在这一屏等（角色列表马上到）
-        }
+    } else if app.scene == crate::app_state::Scene::Login {
         app.login.draw(
             canvas,
             ui,

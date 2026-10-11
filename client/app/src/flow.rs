@@ -6,6 +6,7 @@ use crate::debug::{DEBUG_LAYERS, DEBUG_OVERLAY};
 use crate::net::Net;
 use crate::sfx::sfx;
 
+use crate::app_state::Scene;
 use crate::{audio, login, select};
 
 /// **每帧"网络 → 画面"的决策**（纯函数；主循环只负责执行它）。
@@ -40,8 +41,21 @@ pub(crate) struct Plan {
     pub(crate) enter_play: bool,
 }
 
+/// 开门动画结束时的场景转换（与绘制分离，纯逻辑可测）。
+///
+/// 有选角场景 ⇒ 去选角；没有选角但已在世界（认领会话）⇒ 去世界；否则留在登录屏等列表。
+pub(crate) fn after_login_door(has_select: bool, in_world: bool) -> Option<Scene> {
+    if has_select {
+        Some(Scene::Select)
+    } else if in_world {
+        Some(Scene::World)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn plan(
-    mode: u8,
+    scene: Scene,
     awaiting_pick: bool,
     in_world: bool,
     changed: bool,
@@ -55,7 +69,7 @@ pub(crate) fn plan(
         enter_select: awaiting_pick && !door_blocking,
         // ⚠️ 只从**选角屏**进游戏（门那屏由主循环里 `mode == 1` 那条分支自己接手）；
         //    缺了这条 = 只闻其声、不见其画面（bug ②）。
-        enter_play: mode == 4 && in_world,
+        enter_play: scene == Scene::Select && in_world,
     }
 }
 
@@ -172,9 +186,9 @@ pub(crate) fn do_select_action(
 ///
 /// ⚠️ 抽成函数是为了**能测**：提示条必须跟着 [`DEBUG_LAYERS`] / [`DEBUG_OVERLAY`] 走
 /// —— 关掉的功能还写在提示里，用户就会去按、然后按了没反应（那是另一种 bug 报告）。
-pub(crate) fn hint_text(mode: u8) -> &'static str {
-    match mode {
-        2 => {
+pub(crate) fn hint_text(scene: Scene) -> &'static str {
+    match scene {
+        Scene::World => {
             // ⚠️ 提示条按**原版键位**写（`docs/use.md`）：Tab 小地图、M 大地图；
             // 开发查看器入口一律 `CTRL+`（F1~F8 是技能、F9~F12 是窗口，别抢）。
             const PLAY: &str = "LMB WALK  RMB RUN  TAB MINIMAP  M BIGMAP  SPACE HIT  \
@@ -188,9 +202,9 @@ pub(crate) fn hint_text(mode: u8) -> &'static str {
                 PLAY
             }
         }
-        1 => "TAB NEXT FIELD   ENTER LOGIN   F2 MAP   F3 ASSETS   M MUSIC   ESC QUIT",
-        4 => "LEFT/RIGHT PICK   ENTER START   F1 LOGIN   F2 MAP   ESC QUIT",
-        _ => "F3 ASSETS   [ ] LIB   , . IMG   F1 LOGIN   F2 MAP   M MUSIC   ESC QUIT",
+        Scene::Login => "TAB NEXT FIELD   ENTER LOGIN   F2 MAP   F3 ASSETS   M MUSIC   ESC QUIT",
+        Scene::Select => "LEFT/RIGHT PICK   ENTER START   F1 LOGIN   F2 MAP   ESC QUIT",
+        Scene::AssetView => "[ ] LIB   , . IMG   F1 LOGIN   F2 MAP   M MUSIC   ESC QUIT",
     }
 }
 

@@ -34,14 +34,25 @@ pub(crate) fn handle_key_down(
         // 现在放它们落到下面的 mode 分支去；场景要退（`Action::Exit` /
         // `Action::Quit`）才真退。其余模式（世界/素材浏览器）保持原样。
         // 确认框开着 ⇒ ESC **先关它**（别顺手把窗/客户端关了）
-        Some(Keycode::Escape) if app.mode == 2 && app.confirm.is_open() => app.confirm.cancel(),
+        Some(Keycode::Escape)
+            if app.scene == crate::app_state::Scene::World && app.confirm.is_open() =>
+        {
+            app.confirm.cancel()
+        }
         // 背包窗开着 ⇒ ESC **先关背包**
-        Some(Keycode::Escape) if app.mode == 2 && app.win.bag() => app.win.close_bag(),
+        Some(Keycode::Escape) if app.scene == crate::app_state::Scene::World && app.win.bag() => {
+            app.win.close_bag()
+        }
         // 状态窗同理 ⇒ ESC **先关状态窗**（别顺手把客户端退了）
-        Some(Keycode::Escape) if app.mode == 2 && app.win.status() => app.win.close_status(),
+        Some(Keycode::Escape)
+            if app.scene == crate::app_state::Scene::World && app.win.status() =>
+        {
+            app.win.close_status()
+        }
         // NPC 对话开着 ⇒ ESC **先关对话**（原版 `@exit`），别顺手退了客户端
         Some(Keycode::Escape)
-            if app.mode == 2 && app.net.as_ref().is_some_and(|n| n.world.dialog.is_some()) =>
+            if app.scene == crate::app_state::Scene::World
+                && app.net.as_ref().is_some_and(|n| n.world.dialog.is_some()) =>
         {
             if let Some(n) = app.net.as_ref() {
                 if let Some(d) = n.world.dialog.as_ref() {
@@ -54,44 +65,51 @@ pub(crate) fn handle_key_down(
         }
         // 商店窗同理 ⇒ ESC **先关商店窗**，并把"因买东西才开的"包裹一起收走
         //（用户 2026-10-10 第 1 条：购买窗关闭 ⇒ 物品列表与包裹一起关）
-        Some(Keycode::Escape) if app.mode == 2 && app.win.shop() => {
+        Some(Keycode::Escape) if app.scene == crate::app_state::Scene::World && app.win.shop() => {
             app.win.close_shop();
             app.shop_ui.close();
         }
-        Some(Keycode::Escape) if app.mode != 1 && app.mode != 4 => return Ok(true),
+        Some(Keycode::Escape)
+            if app.scene != crate::app_state::Scene::Login
+                && app.scene != crate::app_state::Scene::Select =>
+        {
+            return Ok(true)
+        }
         // 数字键 1..6 = **用快捷栏**（与点那一格同一个动作）
-        Some(Keycode::_1) if app.mode == 2 => {
+        Some(Keycode::_1) if app.scene == crate::app_state::Scene::World => {
             crate::world_input::belt_key(&mut app.net, &mut app.belt, 0)
         }
-        Some(Keycode::_2) if app.mode == 2 => {
+        Some(Keycode::_2) if app.scene == crate::app_state::Scene::World => {
             crate::world_input::belt_key(&mut app.net, &mut app.belt, 1)
         }
-        Some(Keycode::_3) if app.mode == 2 => {
+        Some(Keycode::_3) if app.scene == crate::app_state::Scene::World => {
             crate::world_input::belt_key(&mut app.net, &mut app.belt, 2)
         }
-        Some(Keycode::_4) if app.mode == 2 => {
+        Some(Keycode::_4) if app.scene == crate::app_state::Scene::World => {
             crate::world_input::belt_key(&mut app.net, &mut app.belt, 3)
         }
-        Some(Keycode::_5) if app.mode == 2 => {
+        Some(Keycode::_5) if app.scene == crate::app_state::Scene::World => {
             crate::world_input::belt_key(&mut app.net, &mut app.belt, 4)
         }
-        Some(Keycode::_6) if app.mode == 2 => {
+        Some(Keycode::_6) if app.scene == crate::app_state::Scene::World => {
             crate::world_input::belt_key(&mut app.net, &mut app.belt, 5)
         }
         // ⚠️ **开发键让开原版键位**（口径见 `docs/use.md`）：F1~F8 是技能、
         // F9~F12 是包裹/属性/技能/内挂、M 是大地图、Tab 是小地图、数字是快捷物品
         // ⇒ 这些"开发查看器"入口统统收进 **Ctrl+**，原版键位留给真功能。
         // F9 = 背包窗（原版键位，见上面那条注释的口径）
-        Some(Keycode::F9) if app.mode == 2 => {
+        Some(Keycode::F9) if app.scene == crate::app_state::Scene::World => {
             crate::world_input::toggle_bag(&mut app.win, &mut app.bag_page)
         }
         // F10 = 状态窗（原版键位：F9 包裹 / F10 属性 / F11 技能 / F12 内挂）。
         // ⚠️ macOS 上要 **Fn+F10**（F10 默认是 App Exposé）—— 2026-10-10
         // 用户确认 Fn+F10 能用；曾加过的备用键 Ctrl+C 已撤（不再占 C）。
-        Some(Keycode::F10) if app.mode == 2 => crate::world_input::toggle_status(&mut app.win),
-        Some(Keycode::F1) if ctrl(keymod) => app.mode = 1,
-        Some(Keycode::F2) if ctrl(keymod) => app.mode = 2,
-        Some(Keycode::F3) if ctrl(keymod) => app.mode = 3,
+        Some(Keycode::F10) if app.scene == crate::app_state::Scene::World => {
+            crate::world_input::toggle_status(&mut app.win)
+        }
+        Some(Keycode::F1) if ctrl(keymod) => app.scene = crate::app_state::Scene::Login,
+        Some(Keycode::F2) if ctrl(keymod) => app.scene = crate::app_state::Scene::World,
+        Some(Keycode::F3) if ctrl(keymod) => app.scene = crate::app_state::Scene::AssetView,
         Some(Keycode::M) if ctrl(keymod) => {
             app.music_on = !app.music_on;
             sound.set_music_on(app.music_on);
@@ -116,7 +134,7 @@ pub(crate) fn handle_key_down(
             );
         }
         // 选角：键盘是**我们的扩展**（原版选角场景只认鼠标）
-        _ if app.mode == 4 => {
+        _ if app.scene == crate::app_state::Scene::Select => {
             if let Some(k) = keycode {
                 let act = match app.select_scene.as_mut() {
                     Some(s) => s.on_key(k),
@@ -129,7 +147,7 @@ pub(crate) fn handle_key_down(
         }
         // 登录界面：全部交互在 `login` 里（Tab/退格/回车/ESC），这里只把
         // 它给出的动作翻译成"接下来干什么"。
-        _ if app.mode == 1 => {
+        _ if app.scene == crate::app_state::Scene::Login => {
             if let Some(k) = keycode {
                 let act = app.login.on_key(k);
                 // 按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` ⇒ 103）
@@ -156,7 +174,7 @@ pub(crate) fn handle_key_down(
             }
         }
         // 素材浏览器（开发用）
-        _ if app.mode == 3 => match keycode {
+        _ if app.scene == crate::app_state::Scene::AssetView => match keycode {
             Some(Keycode::LeftBracket) => {
                 *lib_idx = (*lib_idx + LIBS.len() - 1) % LIBS.len();
                 *img_idx = 0;
@@ -171,7 +189,7 @@ pub(crate) fn handle_key_down(
             Some(Keycode::Period) | Some(Keycode::Right) => *img_idx += 1,
             _ => {}
         },
-        _ if app.mode == 2 => match keycode {
+        _ if app.scene == crate::app_state::Scene::World => match keycode {
             // 方向键：**联网且在世界里 ⇒ 走一步**（相机跟着自己）；否则平移镜头。
             Some(Keycode::Left) => {
                 if !walk_if_online(&app.net, mir2_protocol::Direction::DirLeft) {

@@ -59,7 +59,7 @@ fn 待发命令不依赖入站包() {
 /// 同步提示条，而症状是"按了没反应"（用户会当成 bug 来报）。
 #[test]
 fn 提示条跟着调试开关走() {
-    let h = hint_text(2);
+    let h = hint_text(crate::app_state::Scene::World);
     assert!(
         h.contains("WALK") && h.contains("CONNECT"),
         "正常玩法提示要还在：{h}"
@@ -451,24 +451,47 @@ fn 列表没变就不重建选角场景() {
 #[test]
 fn 换屏判定() {
     // ① **已经在选角屏**（mode 4）+ 列表变了 ⇒ 必须重建（建/删角到手的新列表）
-    let p = plan(4, true, false, true, false);
+    let p = plan(crate::app_state::Scene::Select, true, false, true, false);
     assert!(p.rebuild_select, "在选角屏里也必须按新列表重建");
     assert!(p.enter_select, "画面还得停在选角上");
     // ② 选角通过（在选角屏 + 状态机说进世界）⇒ 切游戏主场景
-    let p = plan(4, false, true, false, false);
+    let p = plan(crate::app_state::Scene::Select, false, true, false, false);
     assert!(p.enter_play, "选角通过必须换到游戏主场景");
     assert!(!p.rebuild_select && !p.enter_select);
     // ③ 门还在放 ⇒ 不切走（切了会把开门动画掐掉），但列表可以先备好
-    let p = plan(1, true, false, true, true);
+    let p = plan(crate::app_state::Scene::Login, true, false, true, true);
     assert!(!p.enter_select, "门没放完不该切走");
     assert!(p.rebuild_select, "但列表可以先建好");
     // ④ 已经在游戏里 ⇒ 什么都不动（别把玩家踢回选角）
-    let p = plan(2, false, true, false, false);
+    let p = plan(crate::app_state::Scene::World, false, true, false, false);
     assert!(!p.rebuild_select && !p.enter_select && !p.enter_play);
     // ⑤ 列表没变 ⇒ 不重建（否则每帧重建：选中位置被抹掉、日志还会刷屏）
-    assert!(!plan(4, true, false, false, false).rebuild_select);
+    assert!(!plan(crate::app_state::Scene::Select, true, false, false, false).rebuild_select);
     // ⑥ 门那屏（mode 1）收到 EnterWorld 也不该切游戏：门放完由 `mode == 1` 那条分支接手
-    assert!(!plan(1, false, true, false, false).enter_play);
+    assert!(!plan(crate::app_state::Scene::Login, false, true, false, false).enter_play);
+}
+
+#[test]
+fn 开门结束转换由纯状态决定而不依赖绘制() {
+    use crate::app_state::Scene;
+    assert_eq!(
+        crate::flow::after_login_door(true, false),
+        Some(Scene::Select)
+    );
+    assert_eq!(
+        crate::flow::after_login_door(false, true),
+        Some(Scene::World)
+    );
+    assert_eq!(
+        crate::flow::after_login_door(false, false),
+        None,
+        "列表尚未到，留在登录屏"
+    );
+    assert_eq!(
+        crate::flow::after_login_door(true, true),
+        Some(Scene::Select),
+        "选角优先于进世界"
+    );
 }
 
 /// 鼠标走路的方向：8 个方位 + "同一格没有方向"（照原版 `GetNextDirection`，
