@@ -4629,3 +4629,23 @@ TDControl  rect / Visible / WLib+FaceIndex / SurfaceX(父偏移) / InRange(hit)
 ⚠️ UCRT：mingw-w64 默认链 Universal CRT ⇒ Win10/11 直接跑，Win7 需要 KB2999226。
 ⚠️ 现在是 **console 子系统**（会带一个黑框，能看到项目里那些 `println!` 调试输出）；
 要去掉加 `-Wl,--subsystem,windows` 即可。
+
+---
+
+## D-72 建号窗的发型（Prguse 79/80）：**不实现**，以后不再复查（2026-10-11）
+
+用户拍板："发型我记忆中也没这功能，你记下来，以后不再复查。"
+
+三条证据互相印证：
+
+1. 官方客户端 `IntroScn.pas:1450-1452` 的 `SelChrNewPrevHair` / `SelChrNewNextHair`
+   **函数体是空的**（原版根本没实现，只是留了两个按钮图）；
+2. 这套素材里 **`Prguse[80]` 不存在**（Prguse 共 1851 张，导出 0 张；`Prguse[79]` 在，36×27）；
+3. 用户记忆中也没有这个功能。
+
+**结论**：建号窗就用 `Prguse[73]` 底图 + 74-76 职业 + 77-78 性别（D-57 已接好）。
+79/80 在 `core/src/select_ui.rs` 里**只登记图号、不接线** —— 不是待办，
+不要再回来复查官方代码或提议实现。
+
+（服务端其实是支持的：`CreateCharacter.hair` → `netproto.go:920` ⇒ 技术上能做，
+但"能做"不等于"要补"。）
