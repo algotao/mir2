@@ -5307,3 +5307,19 @@ Go 同 package 的文件共享 handler/helpers，不会引入 import cycle）：
 是纯模块边界移动。
 
 **验收**：客户端 156/148/7/3，clippy 0；Go 25 包。
+
+---
+
+## D-102 架构方向 ① 续：浮窗点击拆成纯 reducer + 副作用适配器（2026-10-11）
+
+`world_input::handle_ui_press` 原来一口气做两件事：改窗口/翻页/拖拽/确认等状态，随后还发包、
+写聊天、清网络会话。现在拆成：
+
+- `overlay_state::reduce(&mut AppState, Press) -> Effect`：只做状态转换/读取快照，不碰 SDL、
+  不发包、不打印；状态效果可在无网络的单测里验证。
+- `world_input::handle_ui_press`：执行 `Say/Buy/Sell/UseBelt/Logout/Exit` 等副作用适配。
+
+新测试覆盖：HUD 包裹切换、注销确认/取消、状态页循环、退出效果不直接退出、无网络时商店 OK、
+卖窗圆槽在手上/槽内搬运。
+
+**验收**：客户端 161/148/7/3，clippy 0；Go 25 包。

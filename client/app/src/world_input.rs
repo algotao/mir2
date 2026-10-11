@@ -149,152 +149,54 @@ fn apply_bag_act(act: bagdrag::Act, net: &mut Option<Net>) {
     }
 }
 
-/// 执行通用控件的 OnClick 语义（游戏模式）。
-/// 返回 `true` 表示确认了退出动作；其他按钮处理完返回 `false`。
-fn handle_ui_press(app: &mut AppState, k: Press) -> bool {
-    match k {
-        Press::Hud(b) => match b {
-            crate::layout::HudBtn::State => toggle_status(&mut app.win),
-            crate::layout::HudBtn::Bag => toggle_bag(&mut app.win, &mut app.bag_page),
-            crate::layout::HudBtn::Magic => ui_say(app.net.as_mut(), "技能窗还没做（原版 F11）。"),
-            crate::layout::HudBtn::Option => ui_say(app.net.as_mut(), "选项窗还没做。"),
-        },
-        Press::Quick(b) => match b {
-            crate::layout::QuickBtn::MiniMap => toggle_minimap(&mut app.minimap_on),
-            crate::layout::QuickBtn::Trade => ui_say(app.net.as_mut(), "玩家交易还没做。"),
-            crate::layout::QuickBtn::Guild => ui_say(app.net.as_mut(), "行会还没做。"),
-            crate::layout::QuickBtn::Group => ui_say(app.net.as_mut(), "组队还没做。"),
-            crate::layout::QuickBtn::PlusAbil => ui_say(app.net.as_mut(), "属性加点还没做。"),
-            // 这两颗不直接生效 ⇒ 弹确认框
-            crate::layout::QuickBtn::Logout => app.confirm.ask(confirm::QuitAct::Logout),
-            crate::layout::QuickBtn::Exit => app.confirm.ask(confirm::QuitAct::Exit),
-        },
-        // 快捷栏：手上拿着 ⇒ 放进这格；空手 ⇒ 使用
-        Press::Belt(i) => {
-            // 手上拿的是**背包里的东西** ⇒ 放进这一格。
-            // （从腰带/装备槽拿来的还没接线 ⇒ `bag_index()` 为 None，
-            //  那就落到下面"使用这一格"的老逻辑上。）
-            if let Some(idx) = app.drag.held_slot() {
-                if let Some(Some(it)) = app.net.as_ref().and_then(|n| n.world.bag.get(idx)) {
-                    app.belt[i] = Some(crate::layout::BeltSlot {
-                        make_index: it.make_index,
-                        looks: it.looks,
-                    });
-                    println!("[ui] 快捷栏 {} = {}", i + 1, it.name);
-                }
-                // 放进快捷栏了 ⇒ 手上与卖窗槽都清掉
-                app.drag.clear();
-            } else if let Some(b) = app.belt[i] {
-                belt_use(&mut app.net, &mut app.belt, i, b.make_index);
+/// 执行浮窗状态机给出的副作用（SDL 命中与纯状态转换已经完成）。
+fn handle_ui_press(app: &mut AppState, press: Press) -> bool {
+    use crate::overlay_state::Effect;
+
+    match crate::overlay_state::reduce(app, press) {
+        Effect::None => {}
+        Effect::Say(msg) => ui_say(app.net.as_mut(), &msg),
+        Effect::Notice(msg) => println!("[ui] {msg}"),
+        Effect::BagToggled { open } => {
+            println!("[ui] 背包窗 {}", if open { "打开" } else { "关闭" })
+        }
+        Effect::StatusToggled { open } => {
+            println!("[ui] 状态窗 {}", if open { "打开" } else { "关闭" })
+        }
+        Effect::MinimapToggled { open } => {
+            println!("[ui] 小地图 {}", if open { "打开" } else { "关闭" })
+        }
+        Effect::BoundBelt { slot, name } => println!("[ui] 快捷栏 {} = {}", slot + 1, name),
+        Effect::UseBelt { slot, make_index } => {
+            belt_use(&mut app.net, &mut app.belt, slot, make_index)
+        }
+        Effect::Buy { npc, name } => {
+            if let Some(n) = app.net.as_ref() {
+                n.shop_buy(npc, &name, 1);
+                println!("[net] 买入 {name}");
             }
         }
-        Press::BagClose => {
-            app.win.close_bag();
-            println!("[ui] 背包窗关闭（点 X）");
-        }
-        Press::Status(crate::status::Hit::Close) => {
-            app.win.close_status();
-            println!("[ui] 状态窗关闭（点 X）");
-        }
-        Press::Status(crate::status::Hit::Arrow(d)) => {
-            app.status_page.step(d, crate::status::PAGES);
-            println!("[ui] 状态窗翻到第 {} 页", app.status_page.page());
-        }
-        Press::Status(_) => {}
-        Press::Shop(crate::shop::Hit::Prev) => {
-            let n = app
-                .net
-                .as_ref()
-                .and_then(|n| n.world.shop.as_ref())
-                .map_or(0, |sh| sh.items.len());
-            app.shop_ui.page_step(-1, n);
-        }
-        Press::Shop(crate::shop::Hit::Next) => {
-            let n = app
-                .net
-                .as_ref()
-                .and_then(|n| n.world.shop.as_ref())
-                .map_or(0, |sh| sh.items.len());
-            app.shop_ui.page_step(1, n);
-        }
-        Press::Shop(crate::shop::Hit::Ok) => {
-            if let Some(sh) = app.net.as_ref().and_then(|n| n.world.shop.as_ref()) {
-                match app.shop_ui.sel().and_then(|s| sh.items.get(s)) {
-                    Some(it) => {
-                        let name = it.name.clone();
-                        let npc = sh.npc_id;
-                        if let Some(n) = app.net.as_ref() {
-                            n.shop_buy(npc, &name, 1);
-                        }
-                        println!("[net] 买入 {}", name);
-                    }
-                    None => ui_say(app.net.as_mut(), "先点一件商品再点 OK"),
-                }
-            }
-        }
-        Press::Shop(crate::shop::Hit::Close) => {
-            app.win.close_shop();
-            app.shop_ui.close();
-            println!("[ui] 商店窗关闭（素材关闭钮）");
-        }
-        Press::Shop(_) => {}
-        Press::Sell(crate::shop::SellHit::Close) => {
-            app.win.close_sell();
-            app.drag.clear();
-            println!("[ui] 卖货窗关闭（同步收包裹）");
-        }
-        Press::Sell(crate::shop::SellHit::Slot) => {
-            // 拿着东西点槽 = **放进去**；空手点槽 = **拿回手上**。
-            // 两边都 `take()` 再按情况放回去 ⇒ 不存在"同时拿着又放着"。
-            app.drag.click_slot();
-        }
-        Press::Sell(crate::shop::SellHit::Ok) => {
-            // 认物**只认实例号**（D-75）：背包随时可能被服务端重排，
-            // 槽里那件记的**下标**会漂 ⇒ 按 `make_index` 找它。
-            let Some(mk) = app.drag.placed_make() else {
-                return false;
-            };
-            let Some(n) = app.net.as_ref() else {
-                return false;
-            };
-            let Some(sh) = n.world.shop.as_ref() else {
-                return false;
-            };
-            let npc = sh.npc_id;
-            let Some(it) = n.world.bag.iter().flatten().find(|it| it.make_index == mk) else {
-                return false;
-            };
-            if it.make_index != 0 {
-                let count = it.count.max(1);
-                let mk2 = it.make_index;
-                let name = it.name.clone();
-                n.shop_sell(npc, mk2, count);
-                println!("[net] 卖出 {} x{count}", name);
-                // 真卖出去了才把它从槽里拿掉
+        Effect::Sell {
+            npc,
+            make_index,
+            count,
+            name,
+        } => {
+            if let Some(n) = app.net.as_ref() {
+                n.shop_sell(npc, make_index, count);
+                println!("[net] 卖出 {name} x{count}");
+                // 请求已排队后才清槽；reducer 在没有可卖物时不会生成 Sell effect。
                 app.drag.take_placed();
             }
         }
-        Press::Sell(_) => {}
-        Press::ConfirmOk => {
-            if let Some(act) = app.confirm.confirm() {
-                match act {
-                    confirm::QuitAct::Logout => {
-                        ui_say(app.net.as_mut(), "已注销。");
-                        app.net = None;
-                        app.scene = crate::app_state::Scene::Login;
-                        app.belt = [None; crate::layout::BELT_SLOTS];
-                        app.win.close_all();
-                    }
-                    confirm::QuitAct::Exit => return true,
-                }
-            }
+        Effect::Logout => {
+            ui_say(app.net.as_mut(), "已注销。");
+            app.net = None;
+            app.scene = crate::app_state::Scene::Login;
+            app.belt = [None; crate::layout::BELT_SLOTS];
+            app.win.close_all();
         }
-        Press::ConfirmCancel => app.confirm.cancel(),
-        // 登录界面的按钮：不会走到这里（那是 `mode == 1` 的事，
-        // 见下面登录那条 `release`）。列出来只为穷尽匹配。
-        Press::Login(_) => {}
-        // 选角场景（那是 `mode == 4` 的事）⇒ 同上，只为穷尽匹配
-        Press::Select(_) | Press::NewChar(_) => {}
+        Effect::Exit => return true,
     }
     false
 }
