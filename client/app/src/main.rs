@@ -1715,7 +1715,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ..
                 } if mode == 4 => {
                     // 这两屏的命中测试活在**设计空间**（800×600）里 ⇒ 鼠标先除回去
-                    let (x, y) = ui::ui_inv_pt((x, y));
+                    let (x, y) = {
+                        let p = ui::ui_inv_pt((x, y));
+                        (p.0 .0, p.1 .0)
+                    };
                     if let (Some(dir), Some(scene)) = (asset_dir.as_ref(), select_scene.as_mut()) {
                         // 弹窗的几何要给进去：它那颗 [确定] 也走"按下与抬起同一颗"
                         let msg = select::msgbox_geom(&mut ui, dir, UI_WIN);
@@ -1732,7 +1735,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     y,
                     ..
                 } if mode == 4 => {
-                    let (x, y) = ui::ui_inv_pt((x, y)); // 设计空间（见上面那条）
+                    let (x, y) = {
+                        let p = ui::ui_inv_pt((x, y));
+                        (p.0 .0, p.1 .0)
+                    }; // 设计空间（见上面那条）
                     let act = match (asset_dir.as_ref(), select_scene.as_mut()) {
                         (Some(dir), Some(scene)) => {
                             // OnClick 交给引擎判（拖出去松开就不算）⇒ 这里只执行
@@ -1763,7 +1769,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } if mode == 1 => {
                     // 版式每帧现算（尺寸来自容器头，不解压 ⇒ 很便宜），用于命中判定。
                     // ⚠️ 版式在**设计空间**（800×600）里 ⇒ 鼠标先除回去（见 `UI_WIN`）
-                    let (x, y) = ui::ui_inv_pt((x, y));
+                    let (x, y) = {
+                        let p = ui::ui_inv_pt((x, y));
+                        (p.0 .0, p.1 .0)
+                    };
                     if let Some(dir) = asset_dir.as_ref() {
                         let l =
                             mir2_core::login_ui::Layout::build(UI_WIN, |c, i| ui.size(dir, c, i));
@@ -1778,7 +1787,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     y,
                     ..
                 } if mode == 1 => {
-                    let (x, y) = ui::ui_inv_pt((x, y)); // 设计空间（见上面那条）
+                    let (x, y) = {
+                        let p = ui::ui_inv_pt((x, y));
+                        (p.0 .0, p.1 .0)
+                    }; // 设计空间（见上面那条）
                     if let Some(dir) = asset_dir.as_ref() {
                         let l =
                             mir2_core::login_ui::Layout::build(UI_WIN, |c, i| ui.size(dir, c, i));
@@ -2522,7 +2534,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else if mode == 4 {
             if let Some(scene) = select_scene.as_mut() {
                 // 鼠标位置（**设计空间**）⇒ 建角框的按钮悬停要它
-                scene.mouse = ui::ui_inv_pt(mouse);
+                scene.mouse = {
+                    let p = ui::ui_inv_pt(mouse);
+                    (p.0 .0, p.1 .0)
+                };
                 scene.draw(
                     &mut canvas,
                     &tex_creator,

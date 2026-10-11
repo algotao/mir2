@@ -57,18 +57,16 @@ pub fn ui_px(v: crate::space::Dpx) -> crate::space::Cpx {
 
 /// 同上，点。
 #[inline]
-pub fn ui_pt(p: (f32, f32)) -> (f32, f32) {
+pub fn ui_pt(p: (f32, f32)) -> crate::space::CPt {
     // ⚠️ 入参是**设计空间**（素材那套 800×600），出来是画布像素
-    let c = crate::space::DPt(crate::space::Dpx(p.0), crate::space::Dpx(p.1)).to_canvas();
-    (c.0 .0, c.1 .0)
+    crate::space::DPt(crate::space::Dpx(p.0), crate::space::Dpx(p.1)).to_canvas()
 }
 
 /// 画布坐标 → 设计空间（鼠标事件用的那个方向；见 [`UI_SCALE`]）。
 #[inline]
-pub fn ui_inv_pt(p: (f32, f32)) -> (f32, f32) {
+pub fn ui_inv_pt(p: (f32, f32)) -> crate::space::DPt {
     // 鼠标事件给的是画布像素 ⇒ 转成设计空间
-    let d = crate::space::CPt(crate::space::Cpx(p.0), crate::space::Cpx(p.1)).to_design();
-    (d.0 .0, d.1 .0)
+    crate::space::CPt(crate::space::Cpx(p.0), crate::space::Cpx(p.1)).to_design()
 }
 
 /// 画布长度 → 设计空间长度（**字宽/行高是画布像素**，要挪进设计坐标的算式里时用它）。

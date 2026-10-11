@@ -1216,11 +1216,19 @@ fn 设计空间拉伸正好铺满画布() {
     assert_eq!(600.0 * ui::UI_SCALE, WIN_H as f32);
     // 换算互为逆（鼠标那条路：画布 → 设计）
     for p in [(0.0, 0.0), (252.0, 173.0), (800.0, 600.0)] {
-        let back = ui::ui_inv_pt(ui::ui_pt(p));
-        assert!((back.0 - p.0).abs() < 0.01 && (back.1 - p.1).abs() < 0.01);
+        // 画布 → 设计 → 画布：来回一趟要回到原处
+        let c = ui::ui_pt(p);
+        let back = ui::ui_inv_pt((c.0 .0, c.1 .0));
+        assert!(
+            (back.0 .0 - p.0).abs() < 0.01 && (back.1 .0 - p.1).abs() < 0.01,
+            "换算不互为逆：{p:?} → {back:?}"
+        );
     }
     // 版式里那两个字面量：登录框在设计空间居中 ⇒ 画布上也居中
-    let (cx, cy) = ui::ui_pt((252.0, 173.0));
+    let (cx, cy) = {
+        let p = ui::ui_pt((252.0, 173.0));
+        (p.0 .0, p.1 .0)
+    };
     assert!(((WIN_W as f32 - 296.0 * ui::UI_SCALE) / 2.0 - cx).abs() < 0.01);
     assert!(((WIN_H as f32 - 254.0 * ui::UI_SCALE) / 2.0 - cy).abs() < 0.01);
 }

@@ -161,7 +161,10 @@ impl<'a> TextCache<'a> {
         color: Rgb,
         shadow: Option<Rgb>,
     ) -> Result<(), sdl3::Error> {
-        let (x, y) = crate::ui::ui_pt((x, y));
+        let (x, y) = {
+            let p = crate::ui::ui_pt((x, y));
+            (p.0 .0, p.1 .0)
+        };
         self.draw(canvas, tc, s, x, y, color, shadow)
     }
 
