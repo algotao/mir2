@@ -335,10 +335,35 @@ pub(crate) fn weight_at() -> (f32, f32) {
     (hud_right_x() + 66.0, WIN_H as f32 - 40.0)
 }
 
-/// 聊天文字在屏幕坐标里的落点（原版 `(209, SCREENHEIGHT-128)`）与行距。
-pub(crate) const CHAT_AT: (f32, f32) = (209.0, WIN_H as f32 - 128.0);
-
+/// 聊天行距（原版 13px）。
 pub(crate) const CHAT_LINE_H: f32 = 13.0;
+
+// ---------- 聊天区（白底那块）----------
+//
+// ⚠️ 2026-10-11 用户报：「聊天文字区没对准、偏上」「背景应是白色」。
+// 逐像素量了底栏 `Prguse[1]`（800×251）：**面板坐标 x 207..594 / y 120..243**
+// 是一整块**纯白 (255,255,255)** —— 那就是聊天区。原来我们在这块白底上又铺了一层
+// 深底（`RGB(24,24,30)`），而且文字从**白框顶部**往下排 ⇒ 只有一两行时看起来
+// "飘在上面"。
+//
+// 现在：底色不动（底栏自带白底），文字**贴着白框底边往上排**（新的一行在最下面，
+// 与原版"聊天从下往上滚"一致）。
+
+/// 聊天区在**面板坐标**里的矩形（白底那块）。
+pub(crate) const CHAT_BOX_LOCAL: (f32, f32, f32, f32) = (207.0, 120.0, 388.0, 124.0);
+
+/// 聊天区在**屏幕坐标**里的矩形（宽按底栏中段的拉伸比换算，见 `hud_local_x`）。
+pub(crate) fn chat_box() -> (f32, f32, f32, f32) {
+    let (lx, ly, lw, lh) = CHAT_BOX_LOCAL;
+    let s = hud_mid_scale();
+    (hud_local_x(lx), WIN_H as f32 - HUD_BOARD_H + ly, lw * s, lh)
+}
+
+/// 第 `i` 行（共 `shown` 行）的 y：**贴底** ⇒ 最后一行落在白框底边往上一行处。
+pub(crate) fn chat_line_y(i: usize, shown: usize) -> f32 {
+    let (_, y, _, h) = chat_box();
+    y + h - (shown - i) as f32 * CHAT_LINE_H - 3.0
+}
 
 /// **液面裁切**：按百分比取球的"下半部分"。
 ///

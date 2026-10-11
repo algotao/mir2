@@ -10,9 +10,8 @@ use sdl3::render::{BlendMode, FRect, TextureCreator, WindowCanvas};
 use crate::colors::C_HUD_COORD;
 use crate::gfx::trunc;
 use crate::layout::{
-    exp_at, gauge_band, hud_right_x, level_at, weight_at, CHAT_AT, CHAT_LINE_H, HUD_BOARD,
-    HUD_DIGIT0, HUD_EXP, HUD_ORB, HUD_ORB_SOLO, HUD_ORB_SOLO_FILL, HUD_SIDE_W, ORB_AT, ORB_SOLO_AT,
-    ORB_TEXT_DY,
+    exp_at, gauge_band, hud_right_x, level_at, weight_at, HUD_BOARD, HUD_DIGIT0, HUD_EXP, HUD_ORB,
+    HUD_ORB_SOLO, HUD_ORB_SOLO_FILL, HUD_SIDE_W, ORB_AT, ORB_SOLO_AT, ORB_TEXT_DY,
 };
 use crate::net::Net;
 use crate::window::{WIN_H, WIN_W};
@@ -278,23 +277,26 @@ pub(crate) fn draw_hud<'a, T>(
         let shown = chat.lines.len().min(CHAT_VIEW_LINES);
         if shown > 0 {
             let skip = chat.lines.len() - shown;
-            canvas.set_draw_color(Color::RGB(24, 24, 30));
-            canvas.fill_rect(FRect::new(
-                CHAT_AT.0 - 4.0,
-                CHAT_AT.1 - 2.0,
-                // 聊天框在中间那段里（面板那一段是被拉宽的 ⇒ 底色也跟着宽）
-                (WIN_W as f32 - 2.0 * HUD_SIDE_W) - 12.0,
-                shown as f32 * CHAT_LINE_H + 4.0,
-            ))?;
+            // ⚠️ **不再铺深底**：底栏 `Prguse[1]` 那块（面板坐标 x207..594/y120..243）
+            // 本来就是**纯白**的聊天区（逐像素量过）⇒ 原来再铺 `RGB(24,24,30)`
+            // 等于把白底盖掉（用户 2026-10-11：背景应是白色）。
+            // 只有量不到那块板时才补一层白底（防止文字糊在世界画面上）。
+            let (bx, by, bw, bh) = crate::layout::chat_box();
+            if ui.size(dir, "Prguse", HUD_BOARD).is_none() {
+                canvas.set_draw_color(Color::RGB(255, 255, 255));
+                canvas.fill_rect(FRect::new(bx, by, bw, bh))?;
+            }
+            // 文字**贴着白框底边往上排**（新的一行在最下面）—— 原来固定从框顶
+            // 开始 ⇒ 只有一两行时看着"飘在上面"（用户 2026-10-11：位置偏上）。
             for (i, (line, col)) in chat.lines.iter().skip(skip).enumerate() {
                 names.draw(
                     canvas,
                     tc,
                     line,
-                    CHAT_AT.0,
-                    CHAT_AT.1 + i as f32 * CHAT_LINE_H,
+                    bx + 4.0,
+                    crate::layout::chat_line_y(i, shown),
                     (col.r, col.g, col.b),
-                    Some((0, 0, 0)),
+                    None,
                 )?;
             }
         }

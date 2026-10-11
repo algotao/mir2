@@ -73,9 +73,14 @@ pub(crate) const C_ENT_TARGET: Color = Color::RGB(255, 236, 140);
 pub(crate) const C_HOVER_NAME: Color = Color::RGB(255, 255, 210);
 
 /// HUD 聊天区的配色：系统消息 / 坏消息（原版 `ChatStrs` 每行自带一色，我们只用三档）。
-pub(crate) const C_CHAT_SYS: Color = Color::RGB(230, 230, 210);
+///
+/// ⚠️ **必须是深色**（2026-10-11）：聊天区那块底是**纯白**的（底栏 `Prguse[1]`
+/// 的 x207..594 / y120..243 逐像素量出来是 255,255,255）⇒ 原来近白的
+/// `(230,230,210)` 在白底上根本看不见。改成墨色 / 暗红，描边也去掉（黑描边
+/// 压在白底上只会糊）。
+pub(crate) const C_CHAT_SYS: Color = Color::RGB(38, 38, 44);
 
-pub(crate) const C_CHAT_BAD: Color = Color::RGB(255, 120, 120);
+pub(crate) const C_CHAT_BAD: Color = Color::RGB(178, 24, 24);
 
 /// HUD 里"地图名 + 坐标"那行（左下角）。
 pub(crate) const C_HUD_COORD: Color = Color::RGB(255, 236, 180);

@@ -2302,3 +2302,38 @@ fn 注销与退出按钮的落点() {
         assert_eq!(hud_quick_at((x + w / 2.0, y + h / 2.0)), Some(b), "{b:?}");
     }
 }
+
+/// **聊天区**：文字要落在底栏那块**白底**里，且**贴着底边往上排**。
+///
+/// ⚠️ 白底的范围是逐像素量出来的（底栏 `Prguse[1]` 面板坐标 x207..594 / y120..243，
+/// 那一整块是纯白 255,255,255）。原来文字固定从框顶开始 ⇒ 只有一两行时看着
+/// "飘在上面"（用户 2026-10-11：位置偏上）。
+#[test]
+fn 聊天文字贴着白框底边且不越界() {
+    use crate::layout::{chat_box, chat_line_y, CHAT_LINE_H};
+    let (_bx, by, _bw, bh) = chat_box();
+    for shown in 1..=8 {
+        let mut prev = f32::MIN;
+        for i in 0..shown {
+            let y = chat_line_y(i, shown);
+            // 行与行依次往下
+            assert!(y > prev, "{shown} 行时第 {i} 行没有往下排");
+            prev = y;
+            // 每一行都在白框内
+            assert!(y >= by, "第 {i} 行跑到白框上方了：{y} < {by}");
+            assert!(
+                y + CHAT_LINE_H <= by + bh + 1.0,
+                "第 {i} 行掉出白框下方：{y} + {CHAT_LINE_H} > {}",
+                by + bh
+            );
+        }
+        // 最后一行**贴底**（离底边不超过一行）
+        let last = chat_line_y(shown - 1, shown);
+        assert!(
+            by + bh - (last + CHAT_LINE_H) < CHAT_LINE_H,
+            "{shown} 行时最后一行没贴底：底边 {} vs 行底 {}",
+            by + bh,
+            last + CHAT_LINE_H
+        );
+    }
+}
