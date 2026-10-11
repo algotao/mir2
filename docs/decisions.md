@@ -5167,3 +5167,27 @@ scene_input.rs  100 行：登录/选角鼠标空间适配
 优先级与 early-return 现在由 `world_input` 自己持有，运行时 match 只需委派。
 
 **验收**：客户端 154/148/7/4，clippy 0；Go 25 包。
+
+---
+
+## D-94 架构方向 ⑧ 第一阶段：`netproto.go` 按协议域拆文件（2026-10-11）
+
+`internal/gamesvr/netproto.go` 的新协议 handler 按职责搬到同包文件（**只搬不改行为**，
+Go 同 package 的文件共享 handler/helpers，不会引入 import cycle）：
+
+| 文件 | handler / 责任 |
+|---|---|
+| `netproto_auth.go` | 取盐 / 登录 / 建账号 / 会话与 reconnect |
+| `netproto_character.go` | 建角 / 删角 / 列表 / 选角 / 相关回执与出生点 |
+| `netproto_scene.go` | 进图 / 地图快照 / 视野实体转换 |
+| `netproto_world.go` | 移动 / 战斗输入 |
+| `netproto_npc.go` | NPC 对话 / 选项 / 关闭 / 挖肉输入 |
+| `netproto_item.go` | 捡取 / 背包移动 / 使用 / 穿脱 / 修理 |
+| `netproto_shop.go` | 买入 / 卖出 |
+
+`netproto.go` 从原来的巨型协议 handler 集合缩到 **552 行**，保留连接、握手、dispatch、
+协议通用 send/error 等骨架。后续改商店/物品/对话时，可直接去对应域文件。
+
+测试覆盖以既有套件为主；没有为"文件搬家"新增行为断言，避免把重构与逻辑改动混在一起。
+
+**验收**：`go vet ./...` 通过，Go 25 包全过。
