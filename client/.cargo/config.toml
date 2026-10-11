@@ -1,0 +1,23 @@
+# Windows 交叉编译（**mingw-w64**，不是 MSVC）—— 2026-10-11
+#
+# 为什么选 mingw-w64：
+#   - MSVC 路线要 `xwin` 从 Microsoft 下载 CRT/SDK，国内没有镜像、很慢；
+#   - mingw-w64 是 `brew install mingw-w64` 就有的**现成交叉编译器**；
+#   - 静态链接更彻底（`+crt-static` 把 libgcc / libwinpthread 也编进去）。
+#
+# 前置：`brew install mingw-w64` + `rustup target add x86_64-pc-windows-gnu`
+# 构建：`cargo build --release --target x86_64-pc-windows-gnu -p mir2-app`
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+# 静态链接 CRT / libgcc / winpthread ⇒ 出来的 exe 不依赖 mingw 的 DLL。
+# （Windows 系统自己的 DLL —— kernel32 / user32 / d3d11 等 —— 是绕不开的。）
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# SDL3 是 build-from-source-static（D-04）⇒ 要用 Windows 的 C/C++ 编译器。
+# `cmake` crate 会按 target 读 `<VAR>_x86_64_pc_windows_gnu`，并自己把
+# `CMAKE_SYSTEM_NAME=Windows` 设好 ⇒ 这里只需指编译器。
+[env]
+CC_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-gcc"
+CXX_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-g++"
+AR_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-ar"

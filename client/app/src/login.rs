@@ -37,11 +37,6 @@ use crate::{center_x, text, C_BG, C_ERR, C_FIELD};
 /// 光标闪烁周期（原版是系统 `TEdit` 的光标；这里 500ms 闪一下）。
 const CARET_MS: u128 = 500;
 
-/// "连接中"那行提示的文字（真字体 ⇒ 可以是中文）。
-const BUSY_TEXT: &str = "正在连接服务器";
-/// "连接中"三点循环的步进（毫秒）：每 300ms 多一个点，0→1→2→3→0。
-const BUSY_DOT_MS: u128 = 300;
-
 /// 弹窗文字那套配色（**真字体**那条路用 `Rgb`；本文件其余地方用的 `C_*` 是 SDL 的 `Color`）。
 const RGB_TEXT: Rgb = (255, 255, 255);
 const RGB_SHADOW: Rgb = (0, 0, 0);
@@ -594,29 +589,12 @@ impl Login {
             );
         }
 
-        // ⑦ busy / 提示（原版没有；这是开发查看器需要的可见性）
+        // ⑦ 底部提示（原版没有；这是开发查看器需要的可见性）
         //
-        // ⚠️ 2026-10-11：这两行原来是 8×8 调试字体（`text()`，**只认 ASCII**）⇒
-        // 只能写英文大写，和画面完全不搭。现在走**真字体 + 中文**，与弹窗/字段
-        // 那套一致（`texts.draw` 收画布像素 ⇒ 设计坐标先 `ui_px`）。
-        if self.busy {
-            // 「正在连接服务器」+ 三点循环（每 300ms 多一个点，到 3 个再回 0）
-            // —— 静止不动的话看不出"还在忙"，动的点才是"等待"的意思。
-            let n = (started.elapsed().as_millis() / BUSY_DOT_MS) % 4;
-            let mut s = String::from(BUSY_TEXT);
-            for _ in 0..n {
-                s.push('·');
-            }
-            texts.draw(
-                canvas,
-                tc,
-                &s,
-                ui_px(l.dialog.x + 8.0),
-                ui_px(l.dialog.y + l.dialog.h - 20.0),
-                RGB_DIM,
-                Some(RGB_SHADOW),
-            )?;
-        } else if self.error.is_none() {
+        // ⚠️ 2026-10-11：**"正在连接服务器 + 三点循环"那行删掉了** —— 原版压根没有
+        // 这行字，登录成功后直接是石门打开的动画 + 开门音效 + 淡出（我们已接了开门
+        // 动画，`ChrSel[23+n]` 共 10 帧）⇒ 门在开就是"正在进"，不需要文字说明。
+        if self.error.is_none() {
             let tip = "TAB 下一项   ENTER 登录";
             let w = texts.width(tip);
             texts.draw(

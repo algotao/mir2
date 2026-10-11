@@ -4596,3 +4596,36 @@ TDControl  rect / Visible / WLib+FaceIndex / SurfaceX(父偏移) / InRange(hit)
 - 拿着 + 空槽 ⇒ 放进去；空手 + 有槽 ⇒ 拿回手上；两边都空 / 两边都有 ⇒ 原样。
 
 **验收**：客户端 110/148/7/3 + Go 25 包，clippy 0；`widget` 测试 10 条。
+
+---
+
+## D-70 删掉"正在连接服务器"+ Windows 交叉编译（mingw-w64，2026-10-11）
+
+### ① 删掉 busy 提示
+
+原版压根没有这行字：登录成功后直接是**石门打开的动画 + 开门音效 + 淡出**，
+而开门动画我们早就接了（`ChrSel[23+n]` 共 10 帧）⇒ 门在开就是"正在进"。
+`BUSY_TEXT` / `BUSY_DOT_MS` 一并删除。底部"TAB 下一项 ENTER 登录"提示保留。
+
+### ② Windows 交叉编译：**走 mingw-w64，不走 MSVC**
+
+| | MSVC | **mingw-w64（选它）** |
+|---|---|---|
+| 下载 | `xwin` 从 Microsoft 拉 CRT/SDK，**国内无镜像**，实测 4 分钟零字节 | `brew install mingw-w64`，现成交叉编译器 |
+| C 编译器 | macOS 上要用 Apple clang `--driver-mode=cl` 配 xwin 的头（未验证） | `x86_64-w64-mingw32-gcc` 开箱可用 |
+| 静态链接 | 得带上 VC++ 静态运行时 | `+crt-static` 把 libgcc / libwinpthread 也编进去 |
+
+配置在 `client/.cargo/config.toml`：`linker` + `-C target-feature=+crt-static`
++ `CC/CXX/AR_x86_64_pc_windows_gnu`（SDL3 是 `build-from-source-static`（D-04），
+要用 Windows 的 C 编译器；`cmake` crate 会自己设 `CMAKE_SYSTEM_NAME=Windows`）。
+
+**产物**（`cargo build --release --target x86_64-pc-windows-gnu -p mir2-app`，52 秒）：
+
+- `mir2-app.exe` **3.3 MB**，PE32+ x86-64，stripped
+- `libSDL3.a` 从源码编出并**静态链入**
+- 依赖**只有 Windows 系统 DLL**（KERNEL32/USER32/GDI32/SHELL32…）+ `api-ms-win-crt-*`
+  ⇒ **没有 mingw 自己的 DLL**，拷过去就能跑
+
+⚠️ UCRT：mingw-w64 默认链 Universal CRT ⇒ Win10/11 直接跑，Win7 需要 KB2999226。
+⚠️ 现在是 **console 子系统**（会带一个黑框，能看到项目里那些 `println!` 调试输出）；
+要去掉加 `-Wl,--subsystem,windows` 即可。
