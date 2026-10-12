@@ -56,6 +56,15 @@ pub(crate) const HUD_EXP: u32 = 7;
 /// 等级数字的第一张（`Prguse[30..39]` = '0'..'9'，8px 一位）。
 pub(crate) const HUD_DIGIT0: u32 = 30;
 
+/// 球下面那两个数值（HP/MP）的**底板**：`Prguse2[302]`，64×14 的暗色凹槽
+///（外框亮边、内部压暗）。
+///
+/// ⚠️ 官方 1.76 底栏不画这两个数，这是照用户给的参考图补的（2026-10-09 第 6 条）；
+/// 底板是 2026-10-12 第 7 条补的。逐像素看过形状才定的这张（同尺寸的 `Prguse2[303]`
+/// 是整块金色的高亮态，[26] 那张上面已经印了字）。
+pub(crate) const HUD_NUM_PLATE_LIB: &str = "Prguse2";
+pub(crate) const HUD_NUM_PLATE: u32 = 302;
+
 /// 球在**面板坐标**里的落点（原版 `(40, btop+91)`）。
 pub(crate) const ORB_AT: (f32, f32) = (40.0, 91.0);
 
@@ -117,24 +126,24 @@ impl HudBtn {
     }
 }
 
-/// 面板中间那段的**横向拉伸比**（左右两段 1:1，只有中间被拉宽到窗口宽）。
-pub(crate) fn hud_mid_scale() -> f32 {
-    let src = HUD_BOARD_W - 2.0 * HUD_SIDE_W;
-    let dst = (crate::window::WIN_W as f32 - 2.0 * HUD_SIDE_W).max(src);
-    dst / src
+/// 面板中间那段的**目标宽度**（窗口宽 − 左右两块；800 图的中段只有 400 ⇒ 至少不缩）。
+///
+/// ⚠️ 2026-10-12：中段**不再整体拉伸**（用户对照官方 1024 截图："看上去没有拉伸"）——
+/// 顶带是**平铺**（城垛纹 8px 严格周期、`400 % 8 == 0` ⇒ 接缝正好落在整周期上）、
+/// 聊天带是"左框 | 白区拉伸 | 右框"（白区是纯色，拉伸无害）⇒ 中段里的元素
+/// （腰带 6 格）都按**原样**摆，不再乘拉伸比。
+pub(crate) fn hud_mid_w() -> f32 {
+    (crate::window::WIN_W as f32 - 2.0 * HUD_SIDE_W).max(HUD_BOARD_W - 2.0 * HUD_SIDE_W)
 }
 
 /// 面板局部 x → 屏幕 x。
 ///
-/// ⚠️ 面板是**三段贴**的（`hud.rs` 的 `draw_hud`）：左右两段 1:1、**中间那段拉宽**
-/// ⇒ 局部 x 落在右段要换落点、落在中段要乘拉伸比，不然 1024 窗口下按钮/格子
-/// 会跑到面板外（或错位到邻格）。
+/// ⚠️ 面板是**三段贴**的（`hud.rs` 的 `draw_hud`）：左右两段 1:1，中段在窗口更宽时
+/// **向外拼** ⇒ 局部 x 落在右段要换落点，落在中段则原样（平铺不拉伸）。
 pub(crate) fn hud_local_x(local: f32) -> f32 {
     let right = HUD_BOARD_W - HUD_SIDE_W;
     if local >= right {
         hud_right_x() + (local - right)
-    } else if local > HUD_SIDE_W {
-        HUD_SIDE_W + (local - HUD_SIDE_W) * hud_mid_scale()
     } else {
         local
     }
@@ -170,13 +179,12 @@ pub(crate) struct BeltSlot {
 
 /// 第 `i` 格的命中框（**屏幕坐标**）。
 ///
-/// ⚠️ 这 6 格落在面板**中间那段**（会被拉宽）⇒ 宽度也要跟着乘拉伸比。
+/// ⚠️ 2026-10-12：中段改**平铺**后这 6 格不再被拉宽 ⇒ 宽高都按原样（32×29）。
 pub(crate) fn belt_slot_rect(i: usize) -> crate::space::CRect {
-    let s = hud_mid_scale();
     crate::space::canvas_rect(
         hud_local_x(BELT_AT.0 + i as f32 * BELT_STEP),
         crate::window::WIN_H as f32 - HUD_BOARD_H + BELT_AT.1,
-        BELT_W * s,
+        BELT_W,
         BELT_H,
     )
 }
@@ -389,11 +397,19 @@ pub(crate) const CHAT_LINE_H: f32 = 13.0;
 /// （用户："聊天文字区域整体向上一行，最下端覆盖了打字区"）。
 pub(crate) const CHAT_BOX_LOCAL: (f32, f32, f32, f32) = (207.0, 120.0, 388.0, 109.0);
 
-/// 聊天区在**屏幕坐标**里的矩形（宽按底栏中段的拉伸比换算，见 `hud_local_x`）。
+/// 聊天区在**屏幕坐标**里的矩形。
+///
+/// ⚠️ 2026-10-12：底栏中段改"顶带平铺 + 聊天带三段"后（见 `hud_mid_w`），白区不再
+/// 乘拉伸比 —— 聊天带是"左框 7px（原样）| 白区（拉伸）| 右框 6px（原样）"，
+/// 白区宽 = 中段宽 − 13，左缘仍是面板 x=207。
 pub(crate) fn chat_box() -> (f32, f32, f32, f32) {
-    let (lx, ly, lw, lh) = CHAT_BOX_LOCAL;
-    let s = hud_mid_scale();
-    (hud_local_x(lx), WIN_H as f32 - HUD_BOARD_H + ly, lw * s, lh)
+    let (lx, ly, _, lh) = CHAT_BOX_LOCAL;
+    (
+        lx,
+        WIN_H as f32 - HUD_BOARD_H + ly,
+        hud_mid_w() - 13.0,
+        lh,
+    )
 }
 
 /// 第 `i` 行（共 `shown` 行）的 y：**贴底** ⇒ 最后一行落在白框底边往上一行处。

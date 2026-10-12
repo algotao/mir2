@@ -82,6 +82,13 @@ pub(crate) const C_CHAT_SYS: Color = Color::RGB(38, 38, 44);
 
 pub(crate) const C_CHAT_BAD: Color = Color::RGB(178, 24, 24);
 
+/// **经验提示**：红底白字（用户 2026-10-12 第 6 条）。
+///
+/// 原版 `AddChatBoardString('已获得 N 点经验值', clWhite, clRed)`
+///（`ClMain.pas:4822`）—— 这是聊天区**唯一**带底色的行。
+pub(crate) const C_CHAT_EXP_FG: Color = Color::RGB(255, 255, 255);
+pub(crate) const C_CHAT_EXP_BG: Color = Color::RGB(178, 24, 24);
+
 /// HUD 里"地图名 + 坐标"那行（左下角）。
 pub(crate) const C_HUD_COORD: Color = Color::RGB(255, 236, 180);
 

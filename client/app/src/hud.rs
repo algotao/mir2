@@ -9,13 +9,15 @@ use sdl3::pixels::Color;
 use sdl3::render::{BlendMode, FRect, TextureCreator, WindowCanvas};
 
 use crate::colors::C_HUD_COORD;
+use crate::fill;
 use crate::gfx::trunc;
 use crate::layout::{
-    exp_at, gauge_band, hud_right_x, level_at, weight_at, HUD_BOARD, HUD_DIGIT0, HUD_EXP, HUD_ORB,
+    exp_at, gauge_band, hud_right_x, level_at, weight_at, HUD_BOARD, HUD_DIGIT0, HUD_EXP,
+    HUD_NUM_PLATE, HUD_NUM_PLATE_LIB, HUD_ORB,
     HUD_ORB_SOLO, HUD_ORB_SOLO_FILL, HUD_SIDE_W, ORB_AT, ORB_SOLO_AT, ORB_TEXT_DY,
 };
 use crate::net::Net;
-use crate::window::{WIN_H, WIN_W};
+use crate::window::WIN_H;
 
 use crate::{font, ui};
 
@@ -23,15 +25,32 @@ use crate::{font, ui};
 ///
 /// ⚠️ 与终端里的 `println!` **不重复也不替代**：终端是给开发看的流水账，
 /// 这里是给玩家看的"最近发生了什么"（有上限、旧的滚掉）。
+/// 一行聊天：`(文字, 前景色, 背景色)`。
+///
+/// 背景色是原版 `AddChatBoardString(str, fcolor, bcolor)` 的第三个参数
+///（`ClMain.pas:4822`：经验提示 `clWhite, clRed` ⇒ **红底白字**）。`None` = 不铺底
+///（普通聊天行就是白底黑字，底是面板那块白框给的）。
+pub(crate) type ChatLine = (String, Color, Option<Color>);
+
 #[derive(Default)]
 pub(crate) struct Chat {
-    pub(crate) lines: std::collections::VecDeque<(String, Color)>,
+    pub(crate) lines: std::collections::VecDeque<ChatLine>,
 }
 
 impl Chat {
-    /// 推一行。超过 [`CHAT_CAP`] 就丢最旧的。
+    /// 推一行（不铺底）。超过 [`CHAT_CAP`] 就丢最旧的。
     pub(crate) fn push(&mut self, s: impl Into<String>, col: Color) {
-        self.lines.push_back((s.into(), col));
+        self.lines.push_back((s.into(), col, None));
+        self.trim();
+    }
+
+    /// 推一行**带背景色**的（原版 `AddChatBoardString` 的第三个参数）。
+    pub(crate) fn push_bg(&mut self, s: impl Into<String>, col: Color, bg: Color) {
+        self.lines.push_back((s.into(), col, Some(bg)));
+        self.trim();
+    }
+
+    fn trim(&mut self) {
         while self.lines.len() > CHAT_CAP {
             self.lines.pop_front();
         }
@@ -64,6 +83,8 @@ pub(crate) fn draw_hud<'a, T>(
     dialog_scroll: usize,
     // 控件引擎（hover / 按下都由它算；规范见 `widget` 模块头）
     widget_ui: &crate::widget::Ui,
+    // 鼠标在**画布**里的位置（经验条/负重条的悬停提示要按它判）
+    mouse: (f32, f32),
 ) -> Result<(), sdl3::Error> {
     let (bw, bh) = ui.size(dir, "Prguse", HUD_BOARD).unwrap_or((800, 251));
     let (bw, bh) = (bw as f32, bh as f32);
@@ -72,14 +93,52 @@ pub(crate) fn draw_hud<'a, T>(
     // ⚠️ 一张 alpha 贴图就等价于原版那两刀（上半 120px 走色键、下半不透明）：
     // 我们的解码把调色板索引 0 当透明，上半正好是空的。
     //
-    // 面板分三段贴（见 `HUD_SIDE_W`）：左右 1:1，中间那段拉宽到窗口宽 ——
-    // 于是 1024 窗口下球和按钮都不变形，只有聊天框变宽。
-    let mid_src_w = (bw - 2.0 * HUD_SIDE_W).max(1.0);
-    let mid_dst_w = (WIN_W as f32 - 2.0 * HUD_SIDE_W).max(mid_src_w);
+    // 面板分三段贴（见 `HUD_SIDE_W`）：左右两块 **1:1**；中间那段不再整段拉宽
+    //（用户 2026-10-12 对照官方 1024 截图："官方看上去没有拉伸，我们的是被拉伸的"），
+    // 拆成两层 ——
+    //
+    //   ① 顶带（0..120）：**平铺**。城垛纹是 8px 严格周期、`400 % 8 == 0` ⇒ 接缝
+    //      正好落在整周期上，拱形装饰重复出现 —— 与官方截图一致（花纹不拉宽）。
+    //   ② 聊天带（120..251）："左框 7px | 白区拉伸 | 右框 6px"。白区是**纯白**
+    //      （207..594 逐像素量过），拉伸无害；框沿原样，不会被拉胖。
+    let mid_w = crate::layout::hud_mid_w();
+    let chat_top = crate::layout::CHAT_BOX_LOCAL.1;
+    // ⓪ **左右两块 1:1**（球那一块 / 按钮·状态那一块）—— 2026-10-12 改中段平铺时
+    // 一度把这整段删了 ⇒ 底栏只剩中间一条（用户截图：地图上浮着球和文字）。
+    for (sx, dx) in [(0.0, 0.0), (bw - HUD_SIDE_W, hud_right_x())] {
+        ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            "Prguse",
+            HUD_BOARD,
+            FRect::new(sx, 0.0, HUD_SIDE_W, bh),
+            FRect::new(dx, board_y, HUD_SIDE_W, bh),
+            255,
+        );
+    }
+    let mut x = HUD_SIDE_W;
+    while x < HUD_SIDE_W + mid_w - 0.5 {
+        let w = 400.0_f32.min(HUD_SIDE_W + mid_w - x);
+        ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            "Prguse",
+            HUD_BOARD,
+            FRect::new(HUD_SIDE_W, 0.0, w, chat_top),
+            FRect::new(x, board_y, w, chat_top),
+            255,
+        );
+        x += 400.0;
+    }
+    let band_y = board_y + chat_top;
+    let band_h = bh - chat_top;
+    // 左框（源 200..207，原样）| 白区（源 207..594，拉伸）| 右框（源 594..600，原样）
     for (sx, sw, dx, dw) in [
-        (0.0, HUD_SIDE_W, 0.0, HUD_SIDE_W),             // 左：球那一块
-        (HUD_SIDE_W, mid_src_w, HUD_SIDE_W, mid_dst_w), // 中：聊天框（拉宽）
-        (bw - HUD_SIDE_W, HUD_SIDE_W, hud_right_x(), HUD_SIDE_W), // 右：按钮/状态
+        (HUD_SIDE_W, 7.0, HUD_SIDE_W, 7.0),
+        (207.0, 387.0, 207.0, mid_w - 13.0),
+        (594.0, 6.0, HUD_SIDE_W + mid_w - 6.0, 6.0),
     ] {
         ui.draw_src(
             canvas,
@@ -87,8 +146,8 @@ pub(crate) fn draw_hud<'a, T>(
             dir,
             "Prguse",
             HUD_BOARD,
-            FRect::new(sx, 0.0, sw, bh),
-            FRect::new(dx, board_y, dw, bh),
+            FRect::new(sx, chat_top, sw, band_h),
+            FRect::new(dx, band_y, dw, band_h),
             255,
         );
     }
@@ -218,21 +277,67 @@ pub(crate) fn draw_hud<'a, T>(
     // 这是照用户给的参考图加的：左 HP、右 MP，各自贴着自己那半边。
     if max_hp > 0 {
         let text_y = board_y + ORB_TEXT_DY;
-        names.draw(
+        // ★ 数值底下那块**底板**（用户 2026-10-12 第 7 条："原版显示红蓝数字位置，有
+        // 背景图"）= `Prguse2[302]`（64×14，**暗色凹槽**：外框亮边、内部压暗）——
+        // 逐像素看过形状才敢用它（`Prguse[26]` 是 44×16 但上面**已经印了字**，不能用）。
+        // 两块板左右并排（12..76 / 76..140）正好托住球底下那一行；数字**居中**在板内。
+        //
+        // ⚠️ 取不到这张图时退回"画一块"：宁可有个朴素的暗底，也别让数字糊在球座花纹上。
+        let (plate_w, plate_h) = ui
+            .size(dir, HUD_NUM_PLATE_LIB, HUD_NUM_PLATE)
+            .map_or((64.0, 14.0), |(w, h)| (w as f32, h as f32));
+        let has_plate = ui.size(dir, HUD_NUM_PLATE_LIB, HUD_NUM_PLATE).is_some();
+
+        // HP：板贴在球左下
+        let hp_s = format!("{hp}/{max_hp}");
+        let hp_x = ORB_SOLO_AT.0 - 26.0;
+        if has_plate {
+            ui.draw_src(
+                canvas,
+                tc,
+                dir,
+                HUD_NUM_PLATE_LIB,
+                HUD_NUM_PLATE,
+                FRect::new(0.0, 0.0, plate_w, plate_h),
+                FRect::new(hp_x, text_y - 2.0, plate_w, plate_h),
+                255,
+            );
+        } else {
+            num_plate(canvas, hp_x, text_y, names.width(&hp_s) + 6.0)?;
+        }
+        names.draw_centered(
             canvas,
             tc,
-            &format!("{hp}/{max_hp}"),
-            ORB_SOLO_AT.0 - 26.0,
+            &hp_s,
+            hp_x + plate_w / 2.0,
             text_y,
             (C_HUD_COORD.r, C_HUD_COORD.g, C_HUD_COORD.b),
             Some((0, 0, 0)),
         )?;
+
+        // MP：板接在 HP 那块右边
         if max_mp > 0 {
-            names.draw(
+            let mp_s = format!("{mp}/{max_mp}");
+            let mp_x = ORB_AT.0 + 36.0;
+            if has_plate {
+                ui.draw_src(
+                    canvas,
+                    tc,
+                    dir,
+                    HUD_NUM_PLATE_LIB,
+                    HUD_NUM_PLATE,
+                    FRect::new(0.0, 0.0, plate_w, plate_h),
+                    FRect::new(mp_x, text_y - 2.0, plate_w, plate_h),
+                    255,
+                );
+            } else {
+                num_plate(canvas, mp_x, text_y, names.width(&mp_s) + 6.0)?;
+            }
+            names.draw_centered(
                 canvas,
                 tc,
-                &format!("{mp}/{max_mp}"),
-                ORB_AT.0 + 36.0,
+                &mp_s,
+                mp_x + plate_w / 2.0,
                 text_y,
                 (C_HUD_COORD.r, C_HUD_COORD.g, C_HUD_COORD.b),
                 Some((0, 0, 0)),
@@ -278,6 +383,35 @@ pub(crate) fn draw_hud<'a, T>(
     if let Some(a) = net.and_then(|n| n.world.ability.as_ref()) {
         draw_prop_bar(canvas, ui, tc, dir, a.exp, a.max_exp, exp_at());
         draw_prop_bar(canvas, ui, tc, dir, a.weight, a.max_weight, weight_at());
+        // **悬停提示**（用户 2026-10-12 第 8/9 条）：鼠标压在哪条上，就在它**下方**
+        // 写一行 —— 原版是 `TFrmDlg` 里那两条 `SetDlgItemText`，落点也是条下面。
+        let (bar_w, bar_h) = ui.size(dir, "Prguse", HUD_EXP).unwrap_or((76, 13));
+        for (at, s) in [
+            (
+                exp_at(),
+                format!("当前经验 {} {}%", a.exp, percent(a.exp, a.max_exp)),
+            ),
+            (
+                weight_at(),
+                format!("包裹负重{}/{}", a.weight, a.max_weight),
+            ),
+        ] {
+            let hit = mouse.0 >= at.0
+                && mouse.0 < at.0 + bar_w as f32
+                && mouse.1 >= at.1
+                && mouse.1 < at.1 + bar_h as f32;
+            if hit {
+                names.draw(
+                    canvas,
+                    tc,
+                    &s,
+                    at.0,
+                    at.1 + bar_h as f32 + 1.0,
+                    (255, 255, 255),
+                    Some((0, 0, 0)),
+                )?;
+            }
+        }
     }
 
     // **攻击模式 + 当前时间**（底栏右块，用户 2026-10-12 第 5 条给的参考图：
@@ -330,13 +464,27 @@ pub(crate) fn draw_hud<'a, T>(
             }
             // 文字**贴着白框底边往上排**（新的一行在最下面）—— 原来固定从框顶
             // 开始 ⇒ 只有一两行时看着"飘在上面"（用户 2026-10-11：位置偏上）。
-            for (i, (line, col)) in chat.lines.iter().skip(skip).enumerate() {
+            for (i, (line, col, bg)) in chat.lines.iter().skip(skip).enumerate() {
+                let y = crate::layout::chat_line_y(i, shown);
+                // 带底色的行（原版 `AddChatBoardString` 的 `bcolor`）：先铺一条**文字宽**
+                // 的色带再画字 —— `Prguse[1]` 那块是纯白聊天区，红底就是这么来的
+                //（用户 2026-10-12 第 6 条：经验增加"红色背景白色字"）。
+                if let Some(bg) = bg {
+                    let w = names.width(line) + 4.0;
+                    canvas.set_draw_color(*bg);
+                    canvas.fill_rect(FRect::new(
+                        bx + 2.0,
+                        y - 1.0,
+                        w,
+                        crate::layout::CHAT_LINE_H,
+                    ))?;
+                }
                 names.draw(
                     canvas,
                     tc,
                     line,
                     bx + 4.0,
-                    crate::layout::chat_line_y(i, shown),
+                    y,
                     (col.r, col.g, col.b),
                     None,
                 )?;
@@ -380,6 +528,25 @@ pub(crate) fn draw_hud<'a, T>(
         }
     }
     Ok(())
+}
+
+/// 数值底下那块**底板**（暗底 + 上下各 1px 亮边）。
+///
+/// 原版这里是一张图（用户 2026-10-12 第 7 条："原版显示红蓝数字位置，有背景图"），
+/// 但本套素材里没有对应的空白底板（`Prguse[26]` 44×16 上面**已经印了字**）⇒ 画一块。
+fn num_plate(canvas: &mut WindowCanvas, x: f32, y: f32, w: f32) -> Result<(), sdl3::Error> {
+    fill(canvas, x - 3.0, y - 2.0, w, 15.0, Color::RGBA(18, 18, 22, 225))?;
+    fill(canvas, x - 3.0, y - 2.0, w, 1.0, Color::RGBA(150, 132, 96, 200))?;
+    fill(canvas, x - 3.0, y + 12.0, w, 1.0, Color::RGBA(150, 132, 96, 200))
+}
+
+/// 百分比（整数，向下取整）；`max == 0` 时给 0 —— 只用在提示文案里。
+fn percent(cur: u32, max: u32) -> u32 {
+    if max == 0 {
+        0
+    } else {
+        (cur as u64 * 100 / max as u64) as u32
+    }
 }
 
 /// 画一条 `Prguse[7]` 的比例条（**经验条**与**负重条**同款图，原版也共用）。
