@@ -47,6 +47,8 @@ pub(crate) struct WorldControl {
     /// 自动追打目标与攻击节拍。
     pub combat_target: Option<u64>,
     pub attack_at: Instant,
+    /// **已经对它出过手**的目标（换目标 ⇒ 第一刀不等拍，见 `simulation` 的攻击分支）。
+    pub attack_on: Option<u64>,
     /// 本地脚步动画音效去重。
     pub last_foot_frame: Option<u16>,
 }
@@ -70,6 +72,7 @@ impl WorldControl {
             pending_pickup: None,
             combat_target: None,
             attack_at: now,
+            attack_on: None,
             last_foot_frame: None,
         }
     }
@@ -111,6 +114,7 @@ impl WorldControl {
     pub(crate) fn consume_world_click(&mut self) {
         self.move_target = None;
         self.combat_target = None;
+        self.attack_on = None;
         self.press_at = None;
         self.pending_pickup = None;
         self.held_move = None;
@@ -120,12 +124,14 @@ impl WorldControl {
     pub(crate) fn clear_targets(&mut self) {
         self.move_target = None;
         self.combat_target = None;
+        self.attack_on = None;
     }
 
     /// 取消当前追打/走路意图（如移动被拒）。
     pub(crate) fn cancel_target(&mut self) {
         self.move_target = None;
         self.combat_target = None;
+        self.attack_on = None;
         self.detour = None;
     }
 }

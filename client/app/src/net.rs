@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::actor::{move_ms, next_walk_since, self_move_ms, ActorAnim, SeenEntity, WALK_STEP_MS};
-use crate::colors::{C_CHAT_BAD, C_CHAT_SYS};
+use crate::colors::{C_CHAT_BAD, C_CHAT_EXP_BG, C_CHAT_EXP_FG, C_CHAT_SYS};
 use crate::geom::self_render_pos;
 use crate::hud::Chat;
 
@@ -257,6 +257,8 @@ impl Net {
                     // 用 `bag_seen` 把第一次标记掉。
                     let was_in_world = self.world.in_world();
                     let gold_before = self.world.ability.map(|a| a.gold);
+                    // ⚠️ 经验也要**旧值**：涨了多少只能两相比较（与金币同一条路）
+                    let exp_before = self.world.ability.map(|a| a.exp);
                     let bag_before_slots = self.world.bag.clone();
                     let bag_seen = self.bag_seen;
                     if self.world.apply(&env) == mir2_core::world::Change::World {
@@ -281,8 +283,28 @@ impl Net {
                                     .push(mir2_core::sound::item_click_sound(std_mode, &name));
                             }
                         }
+                        // 经验涨了 ⇒ **红底白字**进聊天框（用户 2026-10-12 第 6 条）。
+                        // 原版 `SM_WINEXP`：`AddChatBoardString('已获得 ' + N + ' 点经验值',
+                        // clWhite, clRed)`（`ClMain.pas:4818-4822`）。
+                        // 我们没有 `SM_WINEXP` 这条包 ⇒ 用"能力值里 exp 变多"当信号
+                        //（与上面金币同一条路）；升级时 exp 会**回绕变小**，不算涨。
+                        let exp_now = self.world.ability.map(|a| a.exp);
+                        if let (Some(before), Some(after)) = (exp_before, exp_now) {
+                            if after > before {
+                                self.chat.push_bg(
+                                    format!("已获得 {} 点经验值", after - before),
+                                    C_CHAT_EXP_FG,
+                                    C_CHAT_EXP_BG,
+                                );
+                            }
+                        }
                     }
-                    if self.world.bag.iter().any(|it| it.is_some()) {
+                    // ⚠️ "见过全量背包"要按**收到过 `BagItems`** 记，不能按"包里有没有东西"
+                    //（2026-10-12 用户第 2 条："捡拾地上物品没有音效"）：空包开局时
+                    // `bag.iter().any(is_some())` 永远为假 ⇒ `bag_seen` 一直是 false
+                    // ⇒ **每一次**捡起都当作"进图那次全量刷新"被跳过 ⇒ 一声都没有。
+                    // 判据改成"收到过第一条 `BagItems`"，第一次刷包仍然不响（那不是捡到）。
+                    if let Some(mir2_protocol::envelope::Body::BagItems(_)) = env.body.as_ref() {
                         self.bag_seen = true;
                     }
                     // 买卖的结果：**proto 玩家收不到 `sysMsg`**（legacy 下行会被丢），

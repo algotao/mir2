@@ -100,16 +100,26 @@ pub(crate) fn tick(
                         .and_then(|n| n.world.ability.as_ref().map(|a| a.level))
                         .unwrap_or(1)
                         .max(1);
-                    if can_attack(
-                        stepping || swing_busy,
-                        app.world_control.attack_at.elapsed(),
-                        level,
-                    ) {
+                    // ⚠️ **换目标的第一刀不等拍**（2026-10-12 用户第 4 条："主动攻击时，
+                    // 跑到怪身边应立即攻击，我们的实现看上去有延迟"）：
+                    // `attack_at` 在**鼠标按下那一刻**就被清零（防连点把间隔压到 0），
+                    // 于是"跑过去"这段时间也计进了节拍 ⇒ 到位后还要再干等一整拍才出手。
+                    // 原版 `CanNextHit` 比的是"距**上一次出刀**"（`m_dwLatestHitTick`），
+                    // 换了个目标就是全新一轮 ⇒ 第一次应当立刻出手。
+                    let fresh_target = app.world_control.attack_on != Some(id);
+                    if fresh_target
+                        || can_attack(
+                            stepping || swing_busy,
+                            app.world_control.attack_at.elapsed(),
+                            level,
+                        )
+                    {
                         if let Some(n) = app.net.as_ref() {
                             let _ = n.attack_target(id);
                             swing_sfx(n, sound, sounds);
                         }
                         app.world_control.attack_at = Instant::now();
+                        app.world_control.attack_on = Some(id);
                     }
                 }
                 // 够不着：复用鼠标走路那条路（步频/节流/"到了就停"都在下面那段里）

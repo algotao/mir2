@@ -327,8 +327,10 @@ pub(crate) fn draw_map_view<'a, T>(
                     hover == Some(e.id),
                     // 别人不画数值（参考图里只有玩家头顶带）
                     false,
-                    // 满血也画血条：**正在打它 / 鼠标指着它**（打空的第一刀就要看得见）
-                    hover == Some(e.id) || combat_target == Some(e.id),
+                    // ⚠️ **怪的血条默认就画**（2026-10-12 用户第 3 条："原版，怪物默认显示
+                    // 血条"）—— 原版 `DrawScrn.pas` 给每只可打的怪都铺一条，满血也在；
+                    // 只有 NPC / 尸体不画（上面 `npc` 那条已把 hp/max_hp 传成 0/0）。
+                    true,
                 )?;
             }
 
@@ -477,6 +479,7 @@ pub(crate) fn draw_map_view<'a, T>(
         &m.title,
         dialog_scroll,
         widget_ui,
+        mouse,
     )?;
 
     // 悬停结果还给主循环：光标要跟着它换（Crystal 的 Attack 光标）
