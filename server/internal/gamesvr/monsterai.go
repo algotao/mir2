@@ -572,7 +572,7 @@ func (s *Server) dropFromTable(m *entity.Monster, tbl *entity.DropTable, owner u
 			ID:   s.world.groundSeq.Add(1),
 			Name: tmpl.Name,
 			Item: &pb.UserItem{
-				MakeIndex: int32(s.itemSeq.Add(1)),
+				MakeIndex: s.itemSeq.Next(),
 				Index:     uint32(tmpl.Index),
 				Dura:      dura,
 				DuraMax:   tmpl.DuraMax,

@@ -133,7 +133,7 @@ func (s *Server) handleMakeDrug(c net.Conn, p *Player, pkt wire.Packet) {
 		return
 	}
 	ui := &pb.UserItem{
-		MakeIndex: int32(s.itemSeq.Add(1)),
+		MakeIndex: s.itemSeq.Next(),
 		Index:     uint32(tmpl.Index),
 		Dura:      initialDura(tmpl),
 		DuraMax:   tmpl.DuraMax,

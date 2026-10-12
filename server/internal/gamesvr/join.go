@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/algotao/mir2/server/internal/entity"
+	"github.com/algotao/mir2/server/internal/itemid"
 	"github.com/algotao/mir2/server/internal/proto"
 	"github.com/algotao/mir2/server/internal/storage"
 )
@@ -73,6 +74,15 @@ func (s *Server) claimGameLease(ctx context.Context, account string, sessionID i
 // ⚠️ 只做"构造"，**不**注册进 `world.players` —— 那一步由调用方在合适的时机做，
 // 因为它要和各自的收尾逻辑配对（两条入口都是"注册后 defer 下线清理"）。
 func (s *Server) joinWorld(chr *storage.Character, sessionID int32, ip string) *Player {
+	// ⚠️ **实例号自检**（2026-10-12 用户报的「点第 N 格，拿起来/卖掉的总是第 1 格那件」）：
+	// 发号器原来是"重启归零"的内存计数器 ⇒ 老存档里会有两件东西共用一个 `MakeIndex`，
+	// 而卖/修/用/穿全都按它认物 ⇒ 客户端重绑与服务端取物都只命中靠前那件。
+	// 进世界是**两条入口（legacy / 新协议）唯一的构造点** ⇒ 在这儿修一次，两边都好：
+	// 重复的号换新号，同时把发号水位抬到它身上最大的号之上（见 `internal/itemid`）。
+	if n := itemid.Heal(chr.Data, &s.itemSeq); n > 0 {
+		log.Printf("角色 %s：修好了 %d 件重复/空的物品实例号（老存档撞号；下一次自动存档落盘）",
+			chr.Name, n)
+	}
 	m := s.world.defaultMap
 	if mm, err := s.world.maps.Get(chr.Data.CurMap); err == nil {
 		m = mm

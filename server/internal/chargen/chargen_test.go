@@ -1,10 +1,10 @@
 package chargen
 
 import (
-	"sync/atomic"
 	"testing"
 
 	"github.com/algotao/mir2/server/internal/data"
+	"github.com/algotao/mir2/server/internal/itemid"
 )
 
 // fakeItems 是个**假物品表**：`ItemSource` 定成接口就是为了这个 ——
@@ -46,7 +46,7 @@ func TestValidName(t *testing.T) {
 
 // 组装：13 槽装备位、空槽占位、初始武器、5 瓶药、能力值、出生点。
 func TestBuild(t *testing.T) {
-	var seq atomic.Int64
+	var seq itemid.Seq
 	home := Home{Map: "0", X: 289, Y: 618}
 	c := Build("tester", "小法", 1, 1, 2, home, testItems(), &seq)
 
@@ -115,7 +115,7 @@ func TestBuild(t *testing.T) {
 
 // 没有物品表也不能崩（`accountsvc` 起不来数据目录时的降级）。
 func TestBuildWithoutItems(t *testing.T) {
-	var seq atomic.Int64
+	var seq itemid.Seq
 	c := Build("a", "abc", 0, 0, 1, Home{Map: "0"}, nil, &seq)
 	if len(c.Data.GetBagItems()) != 0 || c.Data.GetHumItems()[1].GetIndex() != 0 {
 		t.Error("没有物品表时不该凭空造出物品")

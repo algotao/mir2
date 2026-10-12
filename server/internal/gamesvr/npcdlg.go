@@ -552,7 +552,7 @@ func (s *Server) actGive(c net.Conn, p *Player, name string, n int) {
 	}
 	for i := 0; i < n; i++ {
 		ui := &pb.UserItem{
-			MakeIndex: int32(s.itemSeq.Add(1)),
+			MakeIndex: s.itemSeq.Next(),
 			Index:     uint32(it.Index),
 			Dura:      initialDura(it),
 			DuraMax:   it.DuraMax,

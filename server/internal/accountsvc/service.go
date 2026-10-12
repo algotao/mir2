@@ -7,12 +7,12 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/algotao/mir2/server/internal/authn"
 	"github.com/algotao/mir2/server/internal/chargen"
 	"github.com/algotao/mir2/server/internal/data"
+	"github.com/algotao/mir2/server/internal/itemid"
 	"github.com/algotao/mir2/server/internal/proto"
 	"github.com/algotao/mir2/server/internal/storage"
 	"github.com/algotao/mir2/server/internal/wire"
@@ -106,7 +106,7 @@ type Service struct {
 	//
 	// 原版从 g_Config.nItemNumber 读取并递增（M2Share.pas:3610-3628），
 	// 持久化在配置里。此处用内存计数器，重启后从高位继续以避免撞号。
-	itemSeq atomic.Int64
+	itemSeq itemid.Seq
 }
 
 // SetTables 注入静态数据表。

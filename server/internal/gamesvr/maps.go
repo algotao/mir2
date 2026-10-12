@@ -589,7 +589,7 @@ func (s *Server) gmGive(c net.Conn, p *Player, args []string) {
 	got := 0
 	for i := 0; i < n; i++ {
 		it := &pb.UserItem{
-			MakeIndex: int32(s.itemSeq.Add(1)),
+			MakeIndex: s.itemSeq.Next(),
 			Index:     uint32(tmpl.Index),
 			Dura:      initialDura(tmpl),
 			DuraMax:   tmpl.DuraMax,

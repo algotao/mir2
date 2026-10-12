@@ -325,7 +325,7 @@ func (s *Server) handleBuyItem(c net.Conn, p *Player, m wire.Packet) {
 	}
 
 	ui := &pb.UserItem{
-		MakeIndex: int32(s.itemSeq.Add(1)),
+		MakeIndex: s.itemSeq.Next(),
 		Index:     uint32(it.Index),
 		Dura:      initialDura(it),
 		DuraMax:   it.DuraMax,
@@ -698,7 +698,7 @@ func (s *Server) onShopBuy(c net.Conn, p *Player, m *protocol.ShopBuy) {
 	if lim := it.StackLimit(); lim > 0 {
 		// 可堆叠：一个实例，`Dura` 记数量（`addToBagLocked` 的约定）
 		ui := &pb.UserItem{
-			MakeIndex: int32(s.itemSeq.Add(1)),
+			MakeIndex: s.itemSeq.Next(),
 			Index:     uint32(it.Index),
 			Dura:      uint32(n),
 			DuraMax:   it.DuraMax,
@@ -709,7 +709,7 @@ func (s *Server) onShopBuy(c net.Conn, p *Player, m *protocol.ShopBuy) {
 	} else {
 		for i := 0; i < n; i++ {
 			ui := &pb.UserItem{
-				MakeIndex: int32(s.itemSeq.Add(1)),
+				MakeIndex: s.itemSeq.Next(),
 				Index:     uint32(it.Index),
 				Dura:      initialDura(it),
 				DuraMax:   it.DuraMax,

@@ -15,6 +15,7 @@ import (
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/group"
 	"github.com/algotao/mir2/server/internal/guild"
+	"github.com/algotao/mir2/server/internal/itemid"
 	"github.com/algotao/mir2/server/internal/proxyproto"
 	"github.com/algotao/mir2/server/internal/script"
 	"github.com/algotao/mir2/server/internal/storage"
@@ -518,7 +519,7 @@ type Server struct {
 	npc npcState
 
 	// itemSeq 分配物品唯一 ID（MakeIndex）。
-	itemSeq atomic.Int64
+	itemSeq itemid.Seq
 
 	// eventSeq 分配**地面事件** id（客户端 `EventMan.DelEventById(Recog)` 按它抹事件，
 	// 见 groundevent.go）。原版直接拿事件对象指针当 id。

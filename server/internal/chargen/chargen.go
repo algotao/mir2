@@ -16,10 +16,10 @@ import (
 	"math/rand/v2"
 	"strconv"
 	"strings"
-	"sync/atomic"
 
 	"github.com/algotao/mir2/server/internal/data"
 	"github.com/algotao/mir2/server/internal/entity"
+	"github.com/algotao/mir2/server/internal/itemid"
 	"github.com/algotao/mir2/server/internal/storage"
 	"github.com/algotao/mir2/server/internal/storage/pb"
 )
@@ -121,7 +121,7 @@ func InitialHPMP(job uint32) (hp, mp uint32) {
 // ⇒ 我们物品表里 `蜡烛` 的 `std_mode` 正好是 30 ⇒ 槽 2。
 //
 // `seq` 是**物品实例号**（`MakeIndex`）分配器：两个服务各有自己的一个。
-func InitialItems(items ItemSource, seq *atomic.Int64, sex uint32) (equip map[uint32]*pb.UserItem, bag []*pb.UserItem) {
+func InitialItems(items ItemSource, seq *itemid.Seq, sex uint32) (equip map[uint32]*pb.UserItem, bag []*pb.UserItem) {
 	if items == nil {
 		return nil, nil
 	}
@@ -131,7 +131,7 @@ func InitialItems(items ItemSource, seq *atomic.Int64, sex uint32) (equip map[ui
 			return nil
 		}
 		return &pb.UserItem{
-			MakeIndex: int32(seq.Add(1)),
+			MakeIndex: seq.Next(),
 			Index:     uint32(it.Index), // data.StdItem.Index 是 int32，pb 用 uint32
 			Dura:      it.DuraMax,
 			DuraMax:   it.DuraMax,
@@ -228,7 +228,7 @@ func Build(
 	job, sex, hair uint32,
 	home Home,
 	items ItemSource,
-	seq *atomic.Int64,
+	seq *itemid.Seq,
 ) *storage.Character {
 	hp0, mp0 := InitialHPMP(job)
 	equipInit, bagInit := InitialItems(items, seq, sex)

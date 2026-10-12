@@ -226,7 +226,7 @@ func (s *Server) butchTakeItems(p *Player, m *entity.Monster) bool {
 			continue
 		}
 		ui := &pb.UserItem{
-			MakeIndex: int32(s.itemSeq.Add(1)),
+			MakeIndex: s.itemSeq.Next(),
 			Index:     uint32(tmpl.Index),
 			Dura:      initialDura(tmpl),
 			DuraMax:   tmpl.DuraMax,
@@ -416,7 +416,7 @@ func (s *Server) giveStone(p *Player, name string) bool {
 		return false // 物品表里没有这块矿 ⇒ 原版 `CopyToUserItemFromName` 失败、Dispose
 	}
 	ui := &pb.UserItem{
-		MakeIndex: int32(s.itemSeq.Add(1)),
+		MakeIndex: s.itemSeq.Next(),
 		Index:     uint32(tmpl.Index),
 		Dura:      stoneDura(),
 		DuraMax:   tmpl.DuraMax,
