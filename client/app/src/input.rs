@@ -237,9 +237,22 @@ pub(crate) fn route_step(
         return fallback;
     }
     let first = bfs_first_step(m, from, to)?;
-    // 跑不跑按**这一步**的距离算（与原来同一个口径：≥2 才跑）
-    let (dx, dy) = (first.0 - from.0, first.1 - from.1);
-    let run = want_run && dx.abs().max(dy.abs()) >= 2;
+    // 跑不跑按**到目标的距离**算（原版 `GetDistance(自己, 目标) >= 2`，`ClMain.pas:1950`），
+    // **不是**按这一步的步长 —— BFS 的每一步都只有 1 格，按步长算就**永远跑不起来**
+    //（2026-10-12 用户报的回归：「右键显示跑、实际走」—— 寻路一上，跑就没了）。
+    //
+    // 但跑是一次跨 2 格、服务端**整步提交**（第二格过不去一格都不走并回 reason=3
+    // ⇒ 白锁 1 秒，见 `statelock.go` 的 `movePlayerSteps`）⇒ 顺着这一步的方向
+    // 再迈一格也得走得通，否则先走一步。
+    let run = want_run
+        && far
+        && walkable(
+            m,
+            (
+                first.0 + (first.0 - from.0).signum(),
+                first.1 + (first.1 - from.1).signum(),
+            ),
+        );
     Some((dir_to(from, first)?, run))
 }
 

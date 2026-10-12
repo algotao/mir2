@@ -40,13 +40,24 @@ const W: f32 = 308.0;
 const H: f32 = 205.0;
 
 /// 三列的列头/列内容 x（窗口内坐标，按 308 宽排）。
-const COL_NAME: f32 = 16.0;
-const COL_PRICE: f32 = 150.0;
-const COL_DURA: f32 = 240.0;
+///
+/// ⚠️ 按 `Prguse[385]` **逐像素量出来的**（2026-10-12，`wzldump` 导出后扫色块）：
+/// 内层三块深色面板分别是 **x 10..149（物品）/ 152..238（价格）/ 241..281（持久）**，
+/// 可见区域右缘 ≈ 288。文字起点取各面板内缩 2px；原先 16/150/240 是"按 308 宽排"的
+/// 估値 ⇒ 行矩形一直伸到 304、压出窗外（用户 2026-10-12：列表过宽）。
+const COL_NAME: f32 = 12.0;
+const COL_PRICE: f32 = 154.0;
+const COL_DURA: f32 = 243.0;
 
 /// 表头与首行的 y。
 const HEAD_Y: f32 = 8.0;
 const LIST_Y: f32 = 30.0;
+
+/// 列表行的矩形（窗口内）：从左面板左缘（10）到可见区域右缘（≈286）。
+///
+/// ⚠️ 画与命中同源（[`row_rect`] 只此一份）—— 别再按"308 − 边距"估宽度。
+const LIST_X: f32 = 10.0;
+const LIST_W: f32 = 276.0;
 
 /// 素材自带的区（窗口内矩形）—— 位置见 [`BUY_BG`] 那条说明。
 pub(crate) const CLOSE: (f32, f32, f32, f32) = (291.0, 1.0, 16.0, 20.0);
@@ -76,7 +87,7 @@ pub(crate) fn panel() -> (f32, f32, f32, f32) {
 
 /// 第 `row` 行（**页内下标**）在窗口内的矩形。画与命中同源。
 pub(crate) fn row_rect(row: usize) -> (f32, f32, f32, f32) {
-    (COL_NAME, LIST_Y + row as f32 * ROW_H, W - 20.0, ROW_H)
+    (LIST_X, LIST_Y + row as f32 * ROW_H, LIST_W, ROW_H)
 }
 
 /// 一共几页（服务端一个商人最多 20 件 ⇒ 4 页）。
@@ -185,13 +196,13 @@ pub(crate) fn draw<'a, T>(
             break;
         };
         let (rx, ry, rw, rh) = row_rect(i);
-        // 选中行给一条亮底（原版选中就是整行点亮）
+        // 选中行给一条亮底（原版选中就是整行点亮；贴着量出来的列表区，别压到窗框）
         if selected == Some(base + i) {
             fill(
                 canvas,
-                x + rx - 2.0,
+                x + rx,
                 y + ry,
-                rw + 4.0,
+                rw,
                 rh - 1.0,
                 Color::RGBA(120, 100, 40, 150),
             )?;

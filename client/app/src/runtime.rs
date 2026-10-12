@@ -26,6 +26,8 @@ pub(crate) fn run_app<T>(
     let mut ui = ui::UiCache::new();
     let mut ui_texts = font::TextCache::new(mir2_core::text::UI_PX);
     let mut names = font::TextCache::new(mir2_core::text::NAME_PX);
+    // 商店/卖货窗专用（比界面字小 2 号，用户 2026-10-12：购买窗字过大）
+    let mut shop_texts = font::TextCache::new(mir2_core::text::SHOP_PX);
 
     // 素材浏览器的独立数据与 GPU 纹理（F3）
     let mut loaded: Option<(usize, Wzl)> = None;
@@ -256,6 +258,7 @@ pub(crate) fn run_app<T>(
             &mut ui,
             &mut ui_texts,
             &mut names,
+            &mut shop_texts,
             &mut libs,
             &mut tiles,
             &mut draws,

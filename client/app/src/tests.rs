@@ -1546,6 +1546,20 @@ fn 商店窗几何与命中() {
     assert!(y + h <= 768.0, "整块窗要落在 1024×768 画面内");
     assert!(x + w <= 1024.0);
 
+    // ①′ 行矩形要落在**可见区域**里（2026-10-12 用户：列表过宽 —— 原先按
+    // "308 − 边距"估宽，一直伸到 x=304、压出窗外）。`Prguse[385]` 内层面板
+    // 逐像素量出来是 x 10..149 / 152..238 / 241..281，可见右缘 ≈ 288。
+    for row in 0..crate::shop::ROWS {
+        let (rx, _, rw, _) = crate::shop::row_rect(row);
+        assert!(rx >= 8.0, "行左缘不能压到左窗框上");
+        assert!(
+            rx + rw <= w - 20.0,
+            "行右缘 {} 超出可见区域 {}（「列表过宽」就是它）",
+            rx + rw,
+            w - 20.0
+        );
+    }
+
     // ② 命中：行选中、翻页箭头、OK、行间空白
     let (rx, ry, rw, rh) = crate::shop::row_rect(0);
     assert_eq!(
@@ -2046,6 +2060,36 @@ fn 追怪遇到墙要绕过去() {
         );
     }
     assert_eq!(pos, (6, 1), "跟着 BFS 走该能绕到目标格，实得 {pos:?}");
+}
+
+/// **右键跑**（2026-10-12 用户报的回归）：BFS 的每一步都只有 1 格，"跑不跑"
+/// 必须按**到目标的距离**算（原版 `GetDistance >= 2`），不能按步长 ——
+/// 否则寻路一上，右键就永远只是走（「显示跑、实际走」）。
+#[test]
+fn 目标够远且前方两格都通就跑() {
+    let map = test_map(9, 3, &[]);
+    assert_eq!(
+        route_step(Some(&map), (0, 1), (4, 1), true),
+        Some((mir2_protocol::Direction::DirRight, true)),
+        "距离 ≥ 2 且这一步的方向上再迈一格也通 ⇒ 跑"
+    );
+    // 相邻（距离 1）⇒ 走一步正好落到，不许跑（原版同一条：避免跨过去再跨回来）
+    assert_eq!(
+        route_step(Some(&map), (0, 1), (1, 1), true),
+        Some((mir2_protocol::Direction::DirRight, false))
+    );
+}
+
+/// 跑是一次跨 2 格、服务端**整步提交**（第二格过不去一格都不走，还要白锁 1 秒）
+/// ⇒ 顺着这一步再迈一格走不通就先走一步。
+#[test]
+fn 跑的第二格走不通就先走一步() {
+    // (2,1) 挡路：BFS 第一步仍是 (1,1)（直着），但再往前 (2,1) 是墙 ⇒ 这步只能走
+    let map = test_map(9, 3, &[(2, 1)]);
+    assert_eq!(
+        route_step(Some(&map), (0, 1), (4, 1), true),
+        Some((mir2_protocol::Direction::DirRight, false))
+    );
 }
 
 /// 没有地图（还没加载）⇒ 退回"直着走"那条老路，不能一步都不给。
