@@ -12,8 +12,8 @@
 //!   u8[3] 跳过
 //!   i16  width, height
 //!   i16  anchor_x, anchor_y      // ★ 渲染对齐必须保留
-//!   i32  packed_size             // zlib 压缩后字节数
-//!   u8[packed_size]              // zlib 流
+//!   i32  packed_size             // zlib 压缩后字节数；★ 0 且宽高非 0 = **未压缩直存**
+//!   u8[packed_size]              // zlib 流；未压缩时这里就是 raw 像素（stride × height）
 //! ```
 //!
 //! 解压后为原始像素：**行按 4 字节对齐**、**数据自下而上**（第一行是图像底行）。
@@ -121,12 +121,14 @@ impl Record {
         self.type_flag == TYPE_16BIT
     }
 
-    /// 空白图（直读路径的判据：宽/高为 0，或没有压缩数据）。
+    /// 空白图（直读路径的判据：**只看宽/高为 0**）。
     ///
-    /// ⚠️ 只对**直读** `.wzl` 有意义：容器里的 IMGP 记录不带 `packed_size`
-    ///（恒为 0），那边判空白只看宽高（见 `image_lib::PackedLib::decode`）。
+    /// ⚠️ `packed_size == 0` **不是**空白：那是"像素未压缩直存"（见
+    /// [`Raw::decode`] 的第二条分支）。2026-10-12 换素材集后发现这套库里有
+    /// **4096 张**这样的图（数字字形、头发、武器、地图物件……），旧判据把它们
+    /// 一律当空白 ⇒ 整片不显示（等级数字就是这么没的）。
     fn is_blank(&self) -> bool {
-        self.width == 0 || self.height == 0 || self.packed_size == 0
+        self.width == 0 || self.height == 0
     }
 }
 
@@ -299,7 +301,13 @@ impl Raw {
         Some(Record::parse(&self.data[o..end]))
     }
 
-    /// 解码第 `index` 张图。空白图（宽/高为 0 或压缩长度为 0）返回 `None`。
+    /// 解码第 `index` 张图。空白图（宽/高为 0）返回 `None`。
+    ///
+    /// 两条取像素的路：
+    ///
+    /// 1. `packed_size > 0` ⇒ 记录头后是一条 zlib 流，解开就是 raw 像素；
+    /// 2. `packed_size == 0` **且宽高非 0** ⇒ 像素**未压缩直存**在记录头后面，
+    ///    长度 = 行距 × 高（见 [`Raw::raw_span`] 的判据）。
     pub fn decode(&self, index: usize) -> Option<Sprite> {
         let o = self.index.offset(index)? as usize;
         if o < HEADER_LEN {
@@ -310,11 +318,17 @@ impl Raw {
             return None;
         }
         let start = o + RECORD_LEN;
-        let end = start.checked_add(rec.packed_size as usize)?;
-        if end > self.data.len() {
-            return None;
-        }
-        let raw = inflate(&self.data[start..end]).ok()?;
+        let raw: Vec<u8> = if rec.packed_size == 0 {
+            let len = stride_of(rec.type_flag, rec.width) * rec.height as usize;
+            let (s, e) = self.raw_span(index, o, start, len)?;
+            self.data[s..e].to_vec()
+        } else {
+            let end = start.checked_add(rec.packed_size as usize)?;
+            if end > self.data.len() {
+                return None;
+            }
+            inflate(&self.data[start..end]).ok()?
+        };
         let rgba = to_rgba(rec.type_flag, rec.width, rec.height, &raw)?;
         Some(Sprite {
             width: rec.width,
@@ -323,6 +337,30 @@ impl Raw {
             anchor_y: rec.anchor_y,
             rgba,
         })
+    }
+
+    /// "未压缩直存"的像素区间 `(start, end)`；这张图不是这么存的就返回 `None`。
+    ///
+    /// 素材里有一批 `packed_size == 0` 但**宽高非 0** 的图：像素原样摆在 16 字节记录头
+    /// 后面（`Prguse[30..40]` 的数字字形 —— 12×10 正好 120 字节，下一条记录的偏移
+    /// 也正好是 本条 + 16 + 120）。2026-10-12 换素材集后统计：这套库 **4096 张**这么存
+    /// （数字、头发 `hair2`、武器 `Weapon`、地图物件 `Objects29/30`……）。
+    ///
+    /// 判据（**必须与 Go 侧 `internal/m2pk/image.go` 的 `rawSpan` 一致**，否则容器与
+    /// 直读两条路会解出不同的图）：
+    ///   · 下一张图的偏移**正好**等于 本条 + 16 + stride×高 ⇒ 数据确实占这么多；
+    ///   · 或这张是**最后一张**（下一条偏移为 0 / 回退）且区间落在文件内。
+    ///
+    /// 反向的例子：`Objects25~27` 那批 1×1 / 4×1 的**真空白图**下一条偏移对不上 ⇒ 判为
+    /// 空白 —— 不会把下一条记录头的头几个字节当成像素，在地图上画出一堆杂点。
+    fn raw_span(&self, index: usize, rec_off: usize, start: usize, len: usize) -> Option<(usize, usize)> {
+        match self.index.offset(index + 1).map(|v| v as usize) {
+            Some(next) if next > rec_off => (next == start + len).then_some((start, start + len)),
+            _ => {
+                let end = start.checked_add(len)?;
+                (end <= self.data.len()).then_some((start, end))
+            }
+        }
     }
 }
 
@@ -417,6 +455,74 @@ mod tests {
     #[test]
     fn 空图返回none() {
         let (wzl, wzx) = pack(3, 0, 0, 0, 0, &[]);
+        let lib = Wzl::from_bytes(wzl, &wzx).unwrap();
+        assert!(lib.decode(0).is_none());
+    }
+
+    /// 组装一对 (wzl, wzx)：记录头后**直接**摆 raw 像素（`packed_size` 写 0）。
+    ///
+    /// `next_off` = 索引里"第二张图"的偏移（`None` = 这个库只有一张图）——
+    /// 决定 [`Raw::raw_span`] 走"下一张紧随"还是"末张"那条判据。
+    fn pack_uncompressed(
+        r#type: u8,
+        w: i16,
+        h: i16,
+        raw: &[u8],
+        next_off: Option<u32>,
+    ) -> (Vec<u8>, Vec<u8>) {
+        let mut wzl = vec![0u8; 64];
+        wzl.push(r#type);
+        wzl.extend_from_slice(&[0, 0, 0]);
+        wzl.extend_from_slice(&w.to_le_bytes());
+        wzl.extend_from_slice(&h.to_le_bytes());
+        wzl.extend_from_slice(&0i16.to_le_bytes());
+        wzl.extend_from_slice(&0i16.to_le_bytes());
+        wzl.extend_from_slice(&0u32.to_le_bytes()); // ★ packed_size = 0
+        wzl.extend_from_slice(raw);
+        let mut wzx = vec![0u8; 48];
+        let count: u32 = if next_off.is_some() { 2 } else { 1 };
+        wzx[44..48].copy_from_slice(&count.to_le_bytes());
+        wzx.extend_from_slice(&64u32.to_le_bytes());
+        if let Some(o) = next_off {
+            wzx.extend_from_slice(&o.to_le_bytes());
+        }
+        (wzl, wzx)
+    }
+
+    /// 2026-10-12 换素材集后补的：这套库里有 4096 张图是**未压缩直存**
+    /// （`Prguse[30..40]` 的数字字形就是），旧判据把它们当空白 ⇒ 等级数字整片不显示。
+    #[test]
+    fn 未压缩直存的图也要解出来() {
+        // 8 位 2x2：stride 4 ⇒ 8 字节。raw 行0 = 底行 [1, 2]，行1 = 顶行 [3, 4]
+        let raw = [1u8, 2, 0, 0, 3, 4, 0, 0];
+        // 只有一张图 ⇒ 走"末张"判据
+        let (wzl, wzx) = pack_uncompressed(3, 2, 2, &raw, None);
+        let lib = Wzl::from_bytes(wzl, &wzx).unwrap();
+        let s = lib.decode(0).expect("未压缩图应解得出");
+        assert_eq!((s.width, s.height), (2, 2));
+        let p = |x: usize, y: usize| {
+            let q = (y * 2 + x) * 4;
+            [s.rgba[q], s.rgba[q + 1], s.rgba[q + 2], s.rgba[q + 3]]
+        };
+        let [r3, g3, b3] = PALETTE[3];
+        assert_eq!(p(0, 0), [r3, g3, b3, 255]); // 数据自下而上 ⇒ 屏幕上第一行是 raw 的顶行
+        let [r4, g4, b4] = PALETTE[4];
+        assert_eq!(p(1, 0), [r4, g4, b4, 255]);
+        let [r1, g1, b1] = PALETTE[1];
+        assert_eq!(p(0, 1), [r1, g1, b1, 255]);
+
+        // 下一条记录**正好**紧随其后 ⇒ 走"下一张紧随"判据，同样要解得出
+        let (wzl, wzx) = pack_uncompressed(3, 2, 2, &raw, Some(64 + 16 + 8));
+        let lib = Wzl::from_bytes(wzl, &wzx).unwrap();
+        assert!(lib.decode(0).is_some());
+    }
+
+    /// `Objects25~27` 那批 1x1 / 4x1 是**真空白**：下一条记录的偏移对不上"记录头+像素"
+    /// ⇒ 必须判空，不能把下一条记录头的头几个字节当像素（会在地图上画出杂点）。
+    #[test]
+    fn 真空白图不把下一条记录头当像素() {
+        let raw = [1u8, 2, 0, 0, 3, 4, 0, 0];
+        let (wzl, wzx) = pack_uncompressed(3, 2, 2, &raw, Some(64 + 16 + 8 + 4));
         let lib = Wzl::from_bytes(wzl, &wzx).unwrap();
         assert!(lib.decode(0).is_none());
     }

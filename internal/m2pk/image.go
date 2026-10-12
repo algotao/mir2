@@ -168,6 +168,39 @@ func (s *WzlSource) Len() int { return len(s.data) }
 
 func (s *WzlSource) Count() int { return len(s.offs) }
 
+// rawSpan 判断第 i 张图是不是"**未压缩直存**"，是就返回像素区间 `[start, end)`。
+//
+// 素材里有一批 `packed_size == 0` 但**宽高非 0** 的图：像素原样摆在 16 字节记录头后面
+// （`Prguse[30..40]` 的数字字形 —— 12×10 正好 120 字节，下一条记录的偏移也正好是
+// 本条 + 16 + 120）。2026-10-12 换素材集后统计：这套库 **4096 张**这么存（数字、头发
+// `hair2`、武器 `Weapon`、地图物件 `Objects29/30`……），而旧判据把 `packed_size == 0`
+// 一律当空白 ⇒ 打进容器的就是空图 ⇒ 运行时整片不显示。
+//
+// 判据与 Rust 侧 `wzl::Raw::raw_span` **必须逐字一致**（否则容器与直读两条路会解出
+// 不同的图，回验会挂）：
+//   · 下一张图的偏移**正好**等于 本条 + 16 + RawLen ⇒ 数据确实占这么多；
+//   · 或这张是**最后一张**（下一条偏移为 0 / 回退）且区间落在文件内。
+//
+// 反向的例子：`Objects25~27` 那批 1×1 / 4×1 的**真空白图**下一条偏移对不上 ⇒ 这里
+// 返回 `ok=false` ⇒ 按空白处理，不会把下一条记录头的头几个字节当成像素。
+func (s *WzlSource) rawSpan(i int, rec ImageRecord, start int) (end int, ok bool) {
+	n := rec.RawLen()
+	if n == 0 {
+		return 0, false
+	}
+	if i+1 < len(s.offs) && int(s.offs[i+1]) > int(s.offs[i]) {
+		if int(s.offs[i+1]) != start+n {
+			return 0, false
+		}
+		return start + n, true
+	}
+	// 末张 / 下一条偏移不可用：只要区间落在文件里就算数
+	if start+n > len(s.data) {
+		return 0, false
+	}
+	return start + n, true
+}
+
 // parseRecord 解析第 i 张的记录；第二个返回值是 `packed_size`。
 func (s *WzlSource) parseRecord(i int) (ImageRecord, uint32, bool) {
 	o := int(s.offs[i])
@@ -186,14 +219,34 @@ func (s *WzlSource) parseRecord(i int) (ImageRecord, uint32, bool) {
 
 // Record 返回第 i 张的记录；不可用（结构坏 / 空白）时返回零值记录。
 //
-// ⚠️ 这里就把"空白"归一化了：源里 `packed_size == 0` 的图，记录一律写成零值 ——
-// 与 Rust 侧 `Wzl::decode` 返回 `None` 的判据（w/h/packed_size 有 0）对齐。
+// ⚠️ 这里就把"空白"归一化了：源里**真的没有像素**的图，记录一律写成零值 ——
+// 与 Rust 侧 `Wzl::decode` 返回 `None` 的判据对齐。
+//
+// 注意 `packed_size == 0` **不等于**空白（见 rawSpan：那可能是"未压缩直存"），
+// 要看 `Raw()` 到底取没取到像素。
 func (s *WzlSource) Record(i int) ImageRecord {
-	rec, packed, ok := s.parseRecord(i)
-	if !ok || packed == 0 || rec.Width == 0 || rec.Height == 0 {
+	rec, _, ok := s.parseRecord(i)
+	if !ok || rec.Width == 0 || rec.Height == 0 {
+		return ImageRecord{}
+	}
+	if !s.hasRaw(i) {
 		return ImageRecord{}
 	}
 	return rec
+}
+
+// hasRaw 是 Record 用的"到底有没有像素"判据（不复制像素，省一次大拷贝）。
+func (s *WzlSource) hasRaw(i int) bool {
+	rec, packed, ok := s.parseRecord(i)
+	if !ok || rec.Width == 0 || rec.Height == 0 {
+		return false
+	}
+	start := int(s.offs[i]) + ImageRecordSize
+	if packed == 0 {
+		_, ok := s.rawSpan(i, rec, start)
+		return ok
+	}
+	return start+int(packed) <= len(s.data)
 }
 
 // Raw 返回第 i 张图的原始像素。
@@ -207,10 +260,18 @@ func (s *WzlSource) Raw(i int) ([]byte, error) {
 		s.broken[i] = "记录越界"
 		return nil, nil
 	}
-	if packed == 0 || rec.Width == 0 || rec.Height == 0 {
+	if rec.Width == 0 || rec.Height == 0 {
 		return nil, nil
 	}
 	start := int(s.offs[i]) + ImageRecordSize
+	if packed == 0 {
+		// ★ 未压缩直存（见 rawSpan）：像素就在记录头后面，不再有 zlib 流。
+		end, ok := s.rawSpan(i, rec, start)
+		if !ok {
+			return nil, nil
+		}
+		return s.data[start:end], nil
+	}
 	end := start + int(packed)
 	if end > len(s.data) {
 		s.broken[i] = "数据越界"
