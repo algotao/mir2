@@ -402,12 +402,14 @@ pub(crate) fn body_sprite(
         1 => {
             let appr = f.appr as u16;
             let lib = A::mon_container(appr)?;
-            // ⚠️ **骷髅尸体**：定格在 `ActDeath.start + 方向`（原版
+            // ⚠️ **挖过肉的尸体**定格在 `ActDeath.start + 方向`（原版
             // `Actor.pas:2124-2131`：`if m_boSkeleton then Result := pm.ActDeath.start
             // + m_btDir` —— 注意是 `+ 方向`，不是"按步长的首帧"，照抄）。
-            // 2026-10-12 用户："挖完肉后的尸体一团黑色" —— 之前停在 ActDie 末帧，
-            // 骷髅那帧（Mon3[269]）是一团黑影；Death 首帧（340）才是蹲坐的骨架。
-            // 普通尸体（没变骷髅的）仍停 `ActDie` 末帧，见 `monster_sample`。
+            //
+            // 用的是**尸体自己那只怪**的动作表（外观不变，见 `world.rs` 的
+            // `Body::Skeleton`）：鸡/鹿是 MA11，`ActDeath` = 单帧白骨堆，按方向有 8
+            // 张（`Mon17[700..707]` 米白、三四十像素宽），这就是原版"挖完肉剩一副骨架"。
+            // 普通尸体（没挖过的）仍停 `ActDie` 末帧，见 `monster_sample`。
             if e.dead && e.skeleton {
                 let death = A::mon_actions(f.race_img as u8)[A::MAct::Death as usize];
                 if death.frame > 0 {
@@ -449,7 +451,10 @@ const HIT_MIN_H: f32 = 34.0;
 /// "明明指着身体却没反应"。原版/Crystal 都是按**画面上的矩形/像素**判的
 ///（`GetAttackFocusCharacter`、`MapObject.MouseOver`）。
 ///
-/// 死了的不参与（原版 `g_FocusCret` 画之前要 `IsValidActor`，Crystal 显式排除 `Dead`）。
+/// ⚠️ **尸体也参与**（2026-10-12 用户第 5 条："原版，鼠标 hover 尸体，会显示名称"）——
+/// 原来这里照 `IsValidActor`（Crystal 显式排除 `Dead`）把尸体排除在外 ⇒ 指着尸体得不到
+/// `hover`，名字条自然不出来。点它**不会**被锁成攻击目标：`mouse_intent` 那头还要过
+/// `world.attackable`（尸体不可打）⇒ 只是"看得见名字"，点下去仍是走那一格。
 /// 取不到精灵时退回"占格框"（`draw_entity_marker` 画的就是它）。
 pub(crate) fn actor_rect<'a, T>(
     tc: &'a TextureCreator<T>,
@@ -460,9 +465,6 @@ pub(crate) fn actor_rect<'a, T>(
     anim: Option<&ActorAnim>,
     now: Instant,
 ) -> Option<FRect> {
-    if e.dead {
-        return None;
-    }
     let (fx, fy) = anim.map_or((e.x as f32, e.y as f32), |a| a.draw_pos((e.x, e.y), now));
     let (px, py) = cell_to_screen_f(cam, fx, fy);
     let mut hit: Option<FRect> = None;

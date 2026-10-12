@@ -62,12 +62,14 @@ const (
 	meatCutMin, meatCutRange         = 100, 201 // Random(201)+100 ⇒ 100..300
 	// leatheryReset 是"把肉挖出来之后"重置的皮革度（原版 `m_nBodyLeathery := 50`）
 	leatheryReset = 50
-	// skeletonAppr / skeletonRaceImg 是"取完肉的尸体变成什么"：**怪物表里的骷髅**
-	//（`data/monsters.json`：骷髅 appr=20、race_img=14）。原版这里是置
-	// `m_boSkeleton := True`（ObjBase.pas:17494-17508），客户端拿它换骨架外观；
-	// 我们直接把外观换成骷髅这只怪（素材里本来就有它），效果一致、也不用新素材。
-	skeletonAppr    = 20
-	skeletonRaceImg = 14
+	// ⚠️ 取完肉**不换外观**：原版只置 `m_boSkeleton := True`
+	//（ObjBase.pas:17494-17508），`GetFeature` 里没有骷髅分支 —— 客户端换的是"定在
+	// 哪一帧"（`ActDie` 末帧 → `ActDeath.start + 方向`），不是换成另一只怪。
+	//
+	// 2026-10-12 用户："挖肉后的尸体图变成爆炸图" —— 我们曾把外观换成骷髅
+	//（appr=20 / race_img=14 ⇒ MA14），而 MA14 的 `ActDeath` 在这套素材里是**一团火**
+	//（`Mon3[340..349]`）；换回尸体自己的表，鸡/鹿（MA11）那帧就是白骨堆。
+	// `Skeleton` 消息的 appr/race_img 字段因此**不再填**（见 protocol/scene.proto）。
 	// animalRaceLo/Hi 是 `RC_ANIMAL`/`RC_MONSTER`（Grobal2.pas:1103-1104）：
 	// 原版判"能不能变成骷髅"用的是这个区间，而 `m_boAnimal` 只在
 	// 鸡/鹿/狼三个 race 上被置真（UsrEngn.pas:1835-1865）⇒ 两者对我们是等价的。
@@ -514,13 +516,14 @@ func (s *Server) broadcastSkeleton(m *entity.Monster) {
 	raw := body.Bytes()
 	s.broadcastToViewers(m.MapRef(), m.PosX(), m.PosY(), func(o *Player) {
 		// ⚠️ 新协议：上面那条 legacy 包会被 `protoDown` 丢掉 ⇒ proto 玩家**永远看不到
-		// 骷髅**（用户 2026-10-10 第 2 条）。让它把外观换成骷髅（怪物表里"骷髅"这只
-		// 怪的 appr/race_img），死亡动作保留 ⇒ 看到的就是一副骨架躺在地上。
+		// 骷髅**（用户 2026-10-10 第 2 条）。
+		//
+		// 只带 entity_id：客户端置 `skeleton = true` 后自己换到 `ActDeath.start + 方向`，
+		// 外观不动（原版如此，见上面 `skeletonAppr` 那条注释）。
 		if sink := o.protoOut; sink != nil {
 			sink.enqueue(&protocol.Envelope{Body: &protocol.Envelope_Skeleton{
-				Skeleton: &protocol.Skeleton{
-					EntityId: uint64(m.ID), Appr: uint32(skeletonAppr), RaceImg: uint32(skeletonRaceImg),
-				}}})
+				Skeleton: &protocol.Skeleton{EntityId: uint64(m.ID)},
+			}})
 			return
 		}
 		s.send(o.conn, proto.SM_SKELETON, int32(m.ID), uint16(m.HP), uint16(m.MaxHP), 0, string(raw[:]))

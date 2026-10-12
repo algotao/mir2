@@ -785,13 +785,17 @@ impl World {
                     Change::None
                 }
             }
-            // 尸体变骷髅：把**外观换成骷髅**（appr/race_img 由服务端给），死亡动作
-            // 保留 ⇒ 看到的就是一副骨架躺在地上（原版 `RM_SKELETON`）。
+            // 尸体变白骨：原版 `RM_SKELETON` **只置 `m_boSkeleton`**，外观**一个字节都
+            // 不改**（ObjBase.pas:17494-17508：置位后 `SendRefMsg(RM_SKELETON, dir, x, y,
+            // 0, '')`，`GetFeature` 里没有骷髅分支）。换的只是"定在哪一帧"：
+            // `ActDie` 末帧 → `ActDeath.start + 方向`（Actor.pas:2121-2126 / 1443-1449）。
+            //
+            // 2026-10-12 用户："挖肉后的尸体图变成爆炸图" —— 之前这里把外观换成骷髅
+            //（appr 20 / race_img 14 ⇒ MA14），而 MA14 的 `ActDeath` 在这套素材里正好是
+            // **一团火**（`Mon3[340..349]`，逐帧变大、主色橙）；换回"尸体自己那只怪的
+            // ActDeath"就是素材里真正的白骨堆（鹿 `Mon17[700..707]`，36~60px 宽、米白）。
             Body::Skeleton(k) => {
                 let changed = if let Some(e) = self.entities.get_mut(&k.entity_id) {
-                    let f = e.feature.get_or_insert_with(Default::default);
-                    f.appr = k.appr;
-                    f.race_img = k.race_img;
                     e.skeleton = true;
                     true
                 } else {

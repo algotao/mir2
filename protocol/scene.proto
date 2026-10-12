@@ -22,8 +22,11 @@ option go_package = "github.com/algotao/mir2/server/protocol;protocol";
 // 给 —— 骷髅在怪物表里本来就是一只怪），死亡动作保留 ⇒ 看到的就是一副骨架躺在地上。
 message Skeleton {
   uint64 entity_id = 1;
-  uint32 appr = 2;      // 换成哪只怪的外观（服务端按怪物表给"骷髅"）
-  uint32 race_img = 3;  // 动作表（同上）
+  // ⚠️ appr / race_img **已停用**（2026-10-12）：原版 `RM_SKELETON` 不改外观
+  //（ObjBase.pas:17494-17508），客户端只是把尸体从 `ActDie` 末帧换成
+  // `ActDeath.start + 方向`。字段留着是为不动 schema（改字段要 bump version.txt）。
+  uint32 appr = 2;      // 不再填（恒 0）
+  uint32 race_img = 3;  // 不再填（恒 0）
 }
 
 message EntityState {
