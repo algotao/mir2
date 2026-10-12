@@ -29,6 +29,7 @@ fn ent(kind: u32, f: mir2_protocol::EntityFeature) -> Entity {
         run: false,
         status_bits: 0,
         dead: false,
+        skeleton: false,
         action: None,
         action_seq: 0,
     }
@@ -1143,6 +1144,7 @@ fn 点鼠标算什么() {
                 run: false,
                 status_bits: 0,
                 dead,
+                skeleton: false,
                 action: None,
                 action_seq: 0,
             },
@@ -1200,6 +1202,7 @@ fn 按住不丢已锁的怪() {
                 run: false,
                 status_bits: 0,
                 dead,
+                skeleton: false,
                 action: None,
                 action_seq: 0,
             },
@@ -1725,6 +1728,7 @@ fn 挖肉的目标与动作() {
         max_hp: 10,
         status_bits: 0,
         dead,
+        skeleton: false,
         action: None,
         action_seq: 0,
     };
@@ -1785,6 +1789,7 @@ fn 点npc的判据() {
         run: false,
         status_bits: 0,
         dead: false,
+        skeleton: false,
         action: None,
         action_seq: 0,
     };
@@ -2156,6 +2161,7 @@ fn 点怪优先锁悬停的那只() {
             max_hp: 5,
             status_bits: 0,
             dead: false,
+            skeleton: false,
             action: None,
             action_seq: 0,
         },

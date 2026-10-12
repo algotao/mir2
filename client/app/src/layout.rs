@@ -443,6 +443,13 @@ pub(crate) const BAG_CLOSE_IMG: u32 = 64;
 pub(crate) const BAG_GOLD_X: f32 = 61.0;
 pub(crate) const BAG_GOLD_Y: f32 = 182.0;
 
+/// 金币**图标**（`Prguse[29]`，36×21 的金币堆）与落点。
+///
+/// ⚠️ 原版 `DGold` 控件（`FState.pas:1255-1257`）：`SetImgIndex(g_WMainImages, 29)`、
+/// `Left := 10; Top := 190` —— 图号与落点照抄。**核查过：原版不按金额换图**。
+pub(crate) const BAG_GOLD_ICON: u32 = 29;
+pub(crate) const BAG_GOLD_ICON_AT: (f32, f32) = (10.0, 190.0);
+
 /// 背包窗落点。
 ///
 /// 平时：**左侧、对话窗下面**（`(8, 188)`）—— 右上被小地图占着、左上被对话窗占着。

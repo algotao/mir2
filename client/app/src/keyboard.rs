@@ -227,6 +227,16 @@ pub(crate) fn handle_key_down(
             // 见 `docs/use.md`；音乐已经挪到 Ctrl+M，不再抢 M）。
             Some(Keycode::Tab) => crate::world_input::toggle_minimap(&mut app.minimap_on),
             Some(Keycode::M) => app.bigmap_on = !app.bigmap_on,
+            // Ctrl+H = **切换攻击模式**（原版 `ClMain.pas:2078-2081`：word('H') +
+            // `ssCtrl` ⇒ `SendSay('@AttackMode')`）。命令文本用服务端认的那个
+            // （`@atkmode`）；模式变化由服务端的系统提示同步回底栏显示
+            //（见 `net::Net::attack_mode` 的说明）。
+            Some(Keycode::H) if ctrl(keymod) && app.scene == crate::app_state::Scene::World => {
+                if let Some(n) = app.net.as_ref() {
+                    n.say("@atkmode");
+                    println!("[net] 发送 @atkmode（切换攻击模式）");
+                }
+            }
             // 空格：打一下身边的目标（A′：走 + 砍 = 能玩）。**左键点怪**才是
             // 主路（会锁住目标、自动靠近）—— 见下面 `MouseButtonDown` 那段。
             Some(Keycode::Space) => {

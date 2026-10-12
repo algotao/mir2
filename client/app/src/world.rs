@@ -352,6 +352,8 @@ pub(crate) fn draw_map_view<'a, T>(
                 max_hp,
                 status_bits: 0,
                 dead: n.world.self_dead,
+                // 自己不会变成骷髅尸体（死了就回城/复活），恒 false
+                skeleton: false,
                 action: n.world.self_action,
                 // 自己的动作事件计数（判"又砍了一刀"用它，不看值 —— 普通攻击恒为 1）
                 action_seq: n.world.self_action_seq,

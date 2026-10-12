@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use chrono::Timelike;
 use sdl3::pixels::Color;
 use sdl3::render::{BlendMode, FRect, TextureCreator, WindowCanvas};
 
@@ -277,6 +278,37 @@ pub(crate) fn draw_hud<'a, T>(
     if let Some(a) = net.and_then(|n| n.world.ability.as_ref()) {
         draw_prop_bar(canvas, ui, tc, dir, a.exp, a.max_exp, exp_at());
         draw_prop_bar(canvas, ui, tc, dir, a.weight, a.max_weight, weight_at());
+    }
+
+    // **攻击模式 + 当前时间**（底栏右块，用户 2026-10-12 第 5 条给的参考图：
+    // 右下角有 `[全体攻击]`、等级、经验、负重、时钟）。等级与两条上面已经画了；
+    // 这里补缺的两样。
+    //
+    // - 攻击模式：服务端是权威，切模式走 Ctrl+H ⇒ `@atkmode`，模式名从服务端的
+    //   系统提示同步回来（见 `net::Net::attack_mode` 的说明）。
+    // - 时钟：本地当前时间（参考图是 GOM 引擎后加的，原版 1.76 没有 ⇒ 位置照
+    //   参考图摆在负重条下面）。
+    let mode = net.map_or(0, |n| n.attack_mode.min(crate::ATTACK_MODE_NAMES.len() - 1));
+    names.draw(
+        canvas,
+        tc,
+        &format!("[{}]", crate::ATTACK_MODE_NAMES[mode]),
+        hud_right_x() + 56.0,
+        WIN_H as f32 - 136.0,
+        (C_HUD_COORD.r, C_HUD_COORD.g, C_HUD_COORD.b),
+        Some((0, 0, 0)),
+    )?;
+    {
+        let now = chrono::Local::now();
+        names.draw(
+            canvas,
+            tc,
+            &format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second()),
+            hud_right_x() + 66.0,
+            WIN_H as f32 - 22.0,
+            (C_HUD_COORD.r, C_HUD_COORD.g, C_HUD_COORD.b),
+            Some((0, 0, 0)),
+        )?;
     }
 
     // 聊天行：原版是"每行自带背景色、OPAQUE 画"（`FState.pas:3868-3886`）——
@@ -581,7 +613,9 @@ pub(crate) fn draw_bag<'a, T>(
         }
         let (cx, cy, cw, ch) = crate::layout::bag_cell_rect(i);
         let (cx, cy) = (x + cx, y + cy);
-        // 图标：`Items.wzl[looks]`，在格子里居中
+        // 图标：`Items.wzl[looks]`，在格子里居中。
+        // ⚠️ 对齐照**原版** `TFrmDlg.DItemGridGridPaint`（FState.pas:4844-4845）：
+        // 居中之后 **x 再 -1、y 再 +1**（用户 2026-10-12："整体偏上 2-5 像素"）。
         if let Some((iw, ih)) = ui.size(dir, "Items", item.looks) {
             let (iw, ih) = (iw as f32, ih as f32);
             ui.draw_src(
@@ -591,7 +625,12 @@ pub(crate) fn draw_bag<'a, T>(
                 "Items",
                 item.looks,
                 FRect::new(0.0, 0.0, iw, ih),
-                FRect::new(cx + (cw - iw) / 2.0, cy + (ch - ih) / 2.0, iw, ih),
+                FRect::new(
+                    cx + (cw - iw) / 2.0 - 1.0,
+                    cy + (ch - ih) / 2.0 + 1.0,
+                    iw,
+                    ih,
+                ),
                 255,
             );
         }
@@ -609,7 +648,25 @@ pub(crate) fn draw_bag<'a, T>(
         }
     }
 
-    // 金币（服务端 `Ability.gold`）—— **只画数字**（原版横条左端自带金币图标；
+    // 金币图标（原版 `DGold` 控件：`FState.pas:1255` `DGold.SetImgIndex(g_WMainImages,
+    // 29)`、落点 (10,190) —— **核查过：原版不按金额换图**，全工程没有"数量大换
+    // 金条/金盒"的逻辑；我们这套素材里同一张金币堆图就在 `Prguse[29]`，36×21）。
+    // 2026-10-12 用户第 4 条：左下角圆圈要显示金币图标。
+    if let Some((gw, gh)) = ui.size(dir, "Prguse", crate::layout::BAG_GOLD_ICON) {
+        let (gw, gh) = (gw as f32, gh as f32);
+        let (ix, iy) = crate::layout::BAG_GOLD_ICON_AT;
+        ui.draw_src(
+            canvas,
+            tc,
+            dir,
+            "Prguse",
+            crate::layout::BAG_GOLD_ICON,
+            FRect::new(0.0, 0.0, gw, gh),
+            FRect::new(x + ix, y + iy, gw, gh),
+            255,
+        );
+    }
+    // 金额数字（服务端 `Ability.gold`）—— **只画数字**（原版横条左端自带金币图标；
     // 用户 2026-10-10 第 8 条：不要"金币"字样，数字也别贴着横条下沿）
     if let Some(ab) = n.world.ability {
         texts.draw(

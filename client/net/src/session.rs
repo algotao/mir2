@@ -125,6 +125,9 @@ pub enum Cmd {
         /// 协议 `Direction`（0 = 未指定），服务端用它转身面对尸体。
         direction: i32,
     },
+    /// 说一句话 / 发一条**聊天命令**（原版 `CM_SAY`；`@atkmode` 这类以 `@` 开头
+    /// 的文本在服务端走命令分发）。普通聊天频道还没开，目前只有命令用得着它。
+    Say(String),
     /// 心跳（`Ping`）。
     Ping,
     /// 主动关闭。
@@ -345,6 +348,12 @@ fn writer_loop(stream: &mut TcpStream, cmds: Receiver<Cmd>) {
             Cmd::RepairItem { slot, special } => Body::RepairItem(proto::RepairItem {
                 slot,
                 special,
+                client_tick: 0,
+            }),
+            Cmd::Say(text) => Body::ChatInput(proto::ChatInput {
+                channel: proto::ChatChannel::ChatSay as i32,
+                text,
+                target_name: String::new(),
                 client_tick: 0,
             }),
             Cmd::Butch {

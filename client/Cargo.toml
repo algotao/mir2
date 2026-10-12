@@ -20,6 +20,9 @@ brotli-decompressor = { version = "6", default-features = false, features = ["st
 
 prost = "0.14"
 
+# 底栏右下角的**当前时间**显示（2026-10-12 用户第 5 条）。纯 Rust、只开 clock。
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
 # D-01：体积优先的发布配置
 [profile.release]
 opt-level = "z"

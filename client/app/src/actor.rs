@@ -402,6 +402,18 @@ pub(crate) fn body_sprite(
         1 => {
             let appr = f.appr as u16;
             let lib = A::mon_container(appr)?;
+            // ⚠️ **骷髅尸体**：定格在 `ActDeath.start + 方向`（原版
+            // `Actor.pas:2124-2131`：`if m_boSkeleton then Result := pm.ActDeath.start
+            // + m_btDir` —— 注意是 `+ 方向`，不是"按步长的首帧"，照抄）。
+            // 2026-10-12 用户："挖完肉后的尸体一团黑色" —— 之前停在 ActDie 末帧，
+            // 骷髅那帧（Mon3[269]）是一团黑影；Death 首帧（340）才是蹲坐的骨架。
+            // 普通尸体（没变骷髅的）仍停 `ActDie` 末帧，见 `monster_sample`。
+            if e.dead && e.skeleton {
+                let death = A::mon_actions(f.race_img as u8)[A::MAct::Death as usize];
+                if death.frame > 0 {
+                    return Some((lib, A::mon_offset(appr) + death.start as u32 + dir as u32));
+                }
+            }
             let (act, frame) = monster_sample(f.race_img as u8, held, held_ms, moving, e.dead);
             Some((
                 lib,

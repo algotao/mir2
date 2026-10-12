@@ -16,6 +16,11 @@ use crate::hud::Chat;
 /// - 握手状态机与世界状态在 `mir2-core`（纯函数，`client/e2e` 用的是**同一份**，见 D-18）
 ///
 /// 这里只负责"把它们按帧推一下、把状态交给渲染"，**不放任何游戏规则**。
+/// 攻击模式名（**与服务端 `pvp.go` 的 `names` 表同一份顺序**：0 全体 / 1 和平 /
+/// 2 编组 / 3 行会 / 4 只打红名）。底栏显示与系统提示回包都靠它对位。
+pub(crate) const ATTACK_MODE_NAMES: [&str; 5] =
+    ["全体攻击", "和平模式", "编组攻击", "行会攻击", "只打红名"];
+
 pub(crate) struct Net {
     pub(crate) sess: mir2_net::Session,
     pub(crate) entrance: mir2_core::entrance::Entrance,
@@ -50,6 +55,9 @@ pub(crate) struct Net {
     ///
     /// ⚠️ 同样只在渲染层：世界模型只存事实（在哪、什么动作），"什么时候发生的"归这里。
     pub(crate) anims: HashMap<u64, ActorAnim>,
+    /// 当前**攻击模式**（底栏右块那块「[全体攻击]」）。服务端是权威：
+    /// 切换走 `@atkmode`（Ctrl+H），模式名从服务端的系统提示里同步回来（见 pump）。
+    pub(crate) attack_mode: usize,
     /// 世界侧排出来的音效编号（挨打 / 死亡），由主循环取走播放。
     ///
     /// ⚠️ 为什么要绕这一道：`pump()` 在 `Net` 里，**拿不到音频设备**（那在 `main`
@@ -117,6 +125,7 @@ impl Net {
             started: Instant::now(),
             chat: Chat::default(),
             anims: HashMap::new(),
+            attack_mode: 0,
             pending_sfx: Vec::new(),
             died_once: false,
             bag_seen: false,
@@ -158,6 +167,7 @@ impl Net {
             started: Instant::now(),
             chat: Chat::default(),
             anims: HashMap::new(),
+            attack_mode: 0,
             pending_sfx: Vec::new(),
             died_once: false,
             bag_seen: false,
@@ -199,6 +209,7 @@ impl Net {
             started: Instant::now(),
             chat: Chat::default(),
             anims: HashMap::new(),
+            attack_mode: 0,
             pending_sfx: Vec::new(),
             died_once: false,
             bag_seen: false,
@@ -287,6 +298,16 @@ impl Net {
                     // ⇒ 进聊天框。proto 玩家原来收不到 `sysMsg`，这类反馈全都无声。
                     if let Some(mir2_protocol::envelope::Body::SystemNotice(n)) = env.body.as_ref()
                     {
+                        // ⚠️ 服务端切攻击模式后的那句「攻击模式：全体攻击」兼当**同步信号**：
+                        // 底栏右块那块「[全体攻击]」跟着改（服务端是权威，2026-10-12 第 5 条）。
+                        // 原版靠 `m_btAttatckMode` 字段下发，我们协议里还没有那个字段，
+                        // 先用这条文本同步 —— 文案两端同一份（`pvp.go` 的 `names` 表）。
+                        if let Some(rest) = n.text.strip_prefix("攻击模式：") {
+                            let names = ATTACK_MODE_NAMES;
+                            if let Some(i) = names.iter().position(|m| *m == rest) {
+                                self.attack_mode = i;
+                            }
+                        }
                         self.chat.push(n.text.clone(), C_CHAT_SYS);
                     }
                     if self.entrance.in_world() && !self.entered_once {
@@ -547,6 +568,11 @@ impl Net {
             name: name.to_string(),
             count,
         });
+    }
+
+    /// 说一句话（目前只用于 `@atkmode` 这类**命令**；普通聊天频道还没开）。
+    pub(crate) fn say(&self, text: &str) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::Say(text.to_string()));
     }
 
     /// 卖出：把背包里 `make_index` 那件卖给 `npc_id`（原版 `CM_USERSELLITEM`）。

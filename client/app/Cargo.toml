@@ -18,3 +18,5 @@ mir2-core = { path = "../core" }
 # B（app 连上 server）：协议类型 + 后台会话（消息泵）。两者都**不含 SDL**（D-18）。
 mir2-protocol = { path = "../protocol" }
 mir2-net = { path = "../net" }
+# 底栏时钟（当前时间 HH:MM:SS）
+chrono.workspace = true

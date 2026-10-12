@@ -41,6 +41,12 @@ pub struct Entity {
     /// ⚠️ 死亡**不等于**消失：原版里尸骨会留一会儿（法师还能打尸骨），
     /// 所以这里只标记，实体仍在 `entities` 里 —— 由渲染层决定怎么画（半透明/躺下）。
     pub dead: bool,
+    /// 尸体已**变成骷髅**（`Skeleton` 消息；原版 `m_boSkeleton`）。
+    ///
+    /// ⚠️ 渲染层靠它挑尸体的定格段：普通尸体停 `ActDie` 末帧，**骷髅尸体**停在
+    /// `ActDeath.start + 方向`（原版 `Actor.pas:2124-2131`）—— 2026-10-12 用户报
+    /// 「挖完肉后的尸体一团黑色」就是停错了段（骷髅的 Die 末帧是一团黑影）。
+    pub skeleton: bool,
     /// 最近一次动作（见 `protocol.md` §9.5 的动作 id 值域：1..8 攻击 51 受击 52 死亡）。
     pub action: Option<u32>,
     /// 收到过多少条 `EntityAction`（**动作事件计数**，不是值）。
@@ -100,6 +106,7 @@ impl Entity {
             run: false,
             status_bits: s.status_bits,
             dead: false,
+            skeleton: false,
             action: None,
             action_seq: 0,
         }
@@ -749,6 +756,7 @@ impl World {
                     let f = e.feature.get_or_insert_with(Default::default);
                     f.appr = k.appr;
                     f.race_img = k.race_img;
+                    e.skeleton = true;
                     true
                 } else {
                     false
