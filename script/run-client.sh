@@ -25,7 +25,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLIENT_DIR="$ROOT/client"
 
-DEFAULT_ASSET_DIR="$(cd "$ROOT/.." && pwd)/mir2c/data"
+DEFAULT_ASSET_DIR="$(cd "$ROOT/.." && pwd)/mir2c/data2"
 ASSET_DIR="${MIR2_ASSET_DIR:-$DEFAULT_ASSET_DIR}"
 SERVER="${MIR2_SERVER:-127.0.0.1:7500}"
 

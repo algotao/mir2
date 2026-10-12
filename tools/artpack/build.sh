@@ -18,9 +18,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="${MIR2_IMAGE_OUT:-$ROOT/assets/image/images.m2pk}"
 GROUP="${MIR2_IMAGE_GROUP:-32}"
 
-# 源目录：唯一真源 = 客户端集（mir2c/data）。刻意不自动回退到别的副本——
+# 源目录：唯一真源 = 客户端集（mir2c/data2）。刻意不自动回退到别的副本——
 # 换了素材却悄悄换了整个游戏的美术，属于最难排查的一类 bug，宁可报错。
-CANON="$ROOT/../mir2c/data"
+#
+# ⚠️ 2026-10-12：真源从 `mir2c/data` 换成 **`mir2c/data2`**（用户："data2 是最新资源"）。
+# 两个目录只差 9 个库，但 `tb-ui` / `ui_dragon` / `ui_n` 在老的 `data` 里是**空壳**
+# （64 字节、只有文件头、一个像素都没有）⇒ 打出来的容器缺这一批 UI 素材。
+# `data` 先留着做对照，确认无虞后可以删（或把 data2 改名回 data，那时把本行改回来）。
+CANON="$ROOT/../mir2c/data2"
 SRC="${MIR2_IMAGE_SRC:-$CANON}"
 
 if [ ! -d "$SRC" ]; then
