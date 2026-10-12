@@ -580,10 +580,23 @@ func (x *SkillEffect) GetTargetId() uint64 {
 }
 
 type MagicInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SkillId       uint32                 `protobuf:"varint,1,opt,name=skill_id,json=skillId,proto3" json:"skill_id,omitempty"`
-	Level         uint32                 `protobuf:"varint,2,opt,name=level,proto3" json:"level,omitempty"`
-	Exp           uint32                 `protobuf:"varint,3,opt,name=exp,proto3" json:"exp,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	SkillId uint32                 `protobuf:"varint,1,opt,name=skill_id,json=skillId,proto3" json:"skill_id,omitempty"`
+	Level   uint32                 `protobuf:"varint,2,opt,name=level,proto3" json:"level,omitempty"`
+	Exp     uint32                 `protobuf:"varint,3,opt,name=exp,proto3" json:"exp,omitempty"`
+	// **快捷键**（原版 `TUserMagic.btKey`：`#0` = 没绑，`'1'..'8'` = F1..F8）。
+	// 客户端技能窗里那个小徽标、技能栏与 F1..F8 分派都靠它 —— 服务端是权威
+	//（改键走 [`SetMagicKey`]，服务端顺手清掉撞键）。
+	Key uint32 `protobuf:"varint,4,opt,name=key,proto3" json:"key,omitempty"`
+	// **技能名**。与物品一样由服务端带下来 —— 客户端不持有技能表
+	// （原版 `g_MagicList` 里的 `Def` 是客户端内置表，我们没有）。
+	Name string `protobuf:"bytes,6,opt,name=name,proto3" json:"name,omitempty"`
+	// **技能图标号**（`MagIcon.wzl` 的图号）。
+	//
+	// ⚠️ **不是** skill_id：原版取 `pm.Def.btEffect * 2`（FState.pas:3655），
+	// 按下态是 `icon + 1`。`btEffect` 在服务端 `magics.json` 的 `effect` 字段里
+	// ⇒ 由服务端算好下发（客户端不持有技能表，别自己乘）。
+	Icon          uint32 `protobuf:"varint,5,opt,name=icon,proto3" json:"icon,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -639,6 +652,84 @@ func (x *MagicInfo) GetExp() uint32 {
 	return 0
 }
 
+func (x *MagicInfo) GetKey() uint32 {
+	if x != nil {
+		return x.Key
+	}
+	return 0
+}
+
+func (x *MagicInfo) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *MagicInfo) GetIcon() uint32 {
+	if x != nil {
+		return x.Icon
+	}
+	return 0
+}
+
+// 客户端 → 服务端：设置技能快捷键（原版 `CM_MAGICKEYCHANGE = 1008`）。
+//
+// `key` 用**字符值**（`'1'..'8'`，与存档 `UserMagic.Key` 同一口径）；0 = 清空。
+// 服务端会把占用同一键的其它技能清掉（`FState.pas:3687-3693` 的同一条规则）
+// ⇒ 一个键只对应一个技能。
+type SetMagicKey struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SkillId       uint32                 `protobuf:"varint,1,opt,name=skill_id,json=skillId,proto3" json:"skill_id,omitempty"`
+	Key           uint32                 `protobuf:"varint,2,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetMagicKey) Reset() {
+	*x = SetMagicKey{}
+	mi := &file_combat_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetMagicKey) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetMagicKey) ProtoMessage() {}
+
+func (x *SetMagicKey) ProtoReflect() protoreflect.Message {
+	mi := &file_combat_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetMagicKey.ProtoReflect.Descriptor instead.
+func (*SetMagicKey) Descriptor() ([]byte, []int) {
+	return file_combat_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *SetMagicKey) GetSkillId() uint32 {
+	if x != nil {
+		return x.SkillId
+	}
+	return 0
+}
+
+func (x *SetMagicKey) GetKey() uint32 {
+	if x != nil {
+		return x.Key
+	}
+	return 0
+}
+
 // 服务端 → 客户端：全量技能列表（取代原版 SM_SENDMYMAGIC）。
 type MagicList struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -649,7 +740,7 @@ type MagicList struct {
 
 func (x *MagicList) Reset() {
 	*x = MagicList{}
-	mi := &file_combat_proto_msgTypes[9]
+	mi := &file_combat_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -661,7 +752,7 @@ func (x *MagicList) String() string {
 func (*MagicList) ProtoMessage() {}
 
 func (x *MagicList) ProtoReflect() protoreflect.Message {
-	mi := &file_combat_proto_msgTypes[9]
+	mi := &file_combat_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -674,7 +765,7 @@ func (x *MagicList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MagicList.ProtoReflect.Descriptor instead.
 func (*MagicList) Descriptor() ([]byte, []int) {
-	return file_combat_proto_rawDescGZIP(), []int{9}
+	return file_combat_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *MagicList) GetMagics() []*MagicInfo {
@@ -695,7 +786,7 @@ type MagicChanged struct {
 
 func (x *MagicChanged) Reset() {
 	*x = MagicChanged{}
-	mi := &file_combat_proto_msgTypes[10]
+	mi := &file_combat_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -707,7 +798,7 @@ func (x *MagicChanged) String() string {
 func (*MagicChanged) ProtoMessage() {}
 
 func (x *MagicChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_combat_proto_msgTypes[10]
+	mi := &file_combat_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -720,7 +811,7 @@ func (x *MagicChanged) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MagicChanged.ProtoReflect.Descriptor instead.
 func (*MagicChanged) Descriptor() ([]byte, []int) {
-	return file_combat_proto_rawDescGZIP(), []int{10}
+	return file_combat_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *MagicChanged) GetAdded() bool {
@@ -748,7 +839,7 @@ type MagicLevelExp struct {
 
 func (x *MagicLevelExp) Reset() {
 	*x = MagicLevelExp{}
-	mi := &file_combat_proto_msgTypes[11]
+	mi := &file_combat_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -760,7 +851,7 @@ func (x *MagicLevelExp) String() string {
 func (*MagicLevelExp) ProtoMessage() {}
 
 func (x *MagicLevelExp) ProtoReflect() protoreflect.Message {
-	mi := &file_combat_proto_msgTypes[11]
+	mi := &file_combat_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -773,7 +864,7 @@ func (x *MagicLevelExp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MagicLevelExp.ProtoReflect.Descriptor instead.
 func (*MagicLevelExp) Descriptor() ([]byte, []int) {
-	return file_combat_proto_rawDescGZIP(), []int{11}
+	return file_combat_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *MagicLevelExp) GetSkillId() uint32 {
@@ -839,11 +930,17 @@ const file_combat_proto_rawDesc = "" +
 	"\bskill_id\x18\x02 \x01(\rR\askillId\x12&\n" +
 	"\bposition\x18\x03 \x01(\v2\n" +
 	".mir2.Vec2R\bposition\x12\x1b\n" +
-	"\ttarget_id\x18\x04 \x01(\x04R\btargetId\"N\n" +
+	"\ttarget_id\x18\x04 \x01(\x04R\btargetId\"\x88\x01\n" +
 	"\tMagicInfo\x12\x19\n" +
 	"\bskill_id\x18\x01 \x01(\rR\askillId\x12\x14\n" +
 	"\x05level\x18\x02 \x01(\rR\x05level\x12\x10\n" +
-	"\x03exp\x18\x03 \x01(\rR\x03exp\"4\n" +
+	"\x03exp\x18\x03 \x01(\rR\x03exp\x12\x10\n" +
+	"\x03key\x18\x04 \x01(\rR\x03key\x12\x12\n" +
+	"\x04name\x18\x06 \x01(\tR\x04name\x12\x12\n" +
+	"\x04icon\x18\x05 \x01(\rR\x04icon\":\n" +
+	"\vSetMagicKey\x12\x19\n" +
+	"\bskill_id\x18\x01 \x01(\rR\askillId\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\rR\x03key\"4\n" +
 	"\tMagicList\x12'\n" +
 	"\x06magics\x18\x01 \x03(\v2\x0f.mir2.MagicInfoR\x06magics\"K\n" +
 	"\fMagicChanged\x12\x14\n" +
@@ -879,7 +976,7 @@ func file_combat_proto_rawDescGZIP() []byte {
 }
 
 var file_combat_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_combat_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_combat_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_combat_proto_goTypes = []any{
 	(AttackAction)(0),      // 0: mir2.AttackAction
 	(*AttackInput)(nil),    // 1: mir2.AttackInput
@@ -891,18 +988,19 @@ var file_combat_proto_goTypes = []any{
 	(*CastSkillInput)(nil), // 7: mir2.CastSkillInput
 	(*SkillEffect)(nil),    // 8: mir2.SkillEffect
 	(*MagicInfo)(nil),      // 9: mir2.MagicInfo
-	(*MagicList)(nil),      // 10: mir2.MagicList
-	(*MagicChanged)(nil),   // 11: mir2.MagicChanged
-	(*MagicLevelExp)(nil),  // 12: mir2.MagicLevelExp
-	(*Vec2)(nil),           // 13: mir2.Vec2
-	(*Ability)(nil),        // 14: mir2.Ability
+	(*SetMagicKey)(nil),    // 10: mir2.SetMagicKey
+	(*MagicList)(nil),      // 11: mir2.MagicList
+	(*MagicChanged)(nil),   // 12: mir2.MagicChanged
+	(*MagicLevelExp)(nil),  // 13: mir2.MagicLevelExp
+	(*Vec2)(nil),           // 14: mir2.Vec2
+	(*Ability)(nil),        // 15: mir2.Ability
 }
 var file_combat_proto_depIdxs = []int32{
 	0,  // 0: mir2.AttackInput.action:type_name -> mir2.AttackAction
-	13, // 1: mir2.Revive.position:type_name -> mir2.Vec2
-	14, // 2: mir2.LevelUp.ability:type_name -> mir2.Ability
-	13, // 3: mir2.CastSkillInput.target_position:type_name -> mir2.Vec2
-	13, // 4: mir2.SkillEffect.position:type_name -> mir2.Vec2
+	14, // 1: mir2.Revive.position:type_name -> mir2.Vec2
+	15, // 2: mir2.LevelUp.ability:type_name -> mir2.Ability
+	14, // 3: mir2.CastSkillInput.target_position:type_name -> mir2.Vec2
+	14, // 4: mir2.SkillEffect.position:type_name -> mir2.Vec2
 	9,  // 5: mir2.MagicList.magics:type_name -> mir2.MagicInfo
 	9,  // 6: mir2.MagicChanged.magic:type_name -> mir2.MagicInfo
 	7,  // [7:7] is the sub-list for method output_type
@@ -924,7 +1022,7 @@ func file_combat_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_combat_proto_rawDesc), len(file_combat_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -96,6 +96,7 @@ message Envelope {
     MagicList magic_list = 0x0703;
     MagicChanged magic_changed = 0x0704;
     MagicLevelExp magic_level_exp = 0x0705;
+    SetMagicKey set_magic_key = 0x0706;
 
     // ---------- 0x08xx 物品 ----------
     BagItems bag_items = 0x0801;
