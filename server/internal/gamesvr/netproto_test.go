@@ -1834,3 +1834,82 @@ func TestProtoRustSell(t *testing.T) {
 		t.Errorf("输出里没有金币断言：\n%s", out.String())
 	}
 }
+
+// TestProtocolAbilityExpIsLevelProgress 新协议下发的**经验必须是级内值**。
+//
+// 用户 2026-10-12 P0："经验值满升级上限后，未升级" —— proto 出口把存档里的
+// **累计**经验原样发出去，而 `MaxExp` 发的是"本级升级所需"（两者口径不同，
+// 见 entity/exp.go 的说明）⇒ 客户端经验条（`100 * Exp / MaxExp`，FState.pas:2885）
+// 从第一级起就画满，看上去"经验满了却不升级"。
+//
+// ⚠️ 与 legacy 出口 `abilityFromPB`（send.go）同一套算法，改一边必须改另一边。
+func TestProtocolAbilityExpIsLevelProgress(t *testing.T) {
+	entity.SetLevelNeed([]uint64{0, 100, 300, 600})
+	defer entity.SetLevelNeed(nil)
+
+	cases := []struct {
+		name    string
+		level   uint32
+		cumExp  uint64
+		wantExp uint32 // 级内
+		wantMax uint32 // 本级升级所需
+	}{
+		{"1 级 0 经验", 1, 0, 0, 100},
+		{"1 级 60/100", 1, 60, 60, 100},
+		{"刚升到 2 级", 2, 100, 0, 300},
+		{"2 级 150/300", 2, 250, 150, 300},
+		{"刚升到 3 级", 3, 400, 0, 600},
+	}
+	for _, c := range cases {
+		got := protocolAbility(&pb.Ability{Level: c.level, Exp: c.cumExp}, 0)
+		if got.Exp != c.wantExp || got.MaxExp != c.wantMax {
+			t.Errorf("%s：Exp/MaxExp = %d/%d，期望 %d/%d",
+				c.name, got.Exp, got.MaxExp, c.wantExp, c.wantMax)
+		}
+		if got.MaxExp == 0 {
+			t.Errorf("%s：MaxExp = 0 ⇒ 客户端经验条会除以 0", c.name)
+		}
+		if got.Exp >= got.MaxExp {
+			t.Errorf("%s：下发的 Exp(%d) >= MaxExp(%d) ⇒ 经验条满格却没升级",
+				c.name, got.Exp, got.MaxExp)
+		}
+	}
+}
+
+// TestGrantExpLevelUpResetsBar 打怪经验走完一圈后：等级要涨、经验条要**归零重来**。
+//
+// 用户 2026-10-12 P0："经验值满升级上限后，未升级"。这条钉死两端：
+//   - 服务端真的升级（`grantExpRaw` → `CheckLevelUp` → `applyLevelUp`）；
+//   - 升级后**下发**的经验是新的级内值（原来发累计值 ⇒ 条总是满的）。
+func TestGrantExpLevelUpResetsBar(t *testing.T) {
+	entity.SetLevelNeed([]uint64{0, 100, 300, 600})
+	defer entity.SetLevelNeed(nil)
+
+	p := &Player{
+		Obj:  &entity.Object{},
+		Char: &storage.Character{Data: &pb.CharacterData{
+			Abil: &pb.Ability{Level: 1, Hp: 20, MaxHp: 20, Mp: 5, MaxMp: 5},
+		}},
+	}
+	s := &Server{}
+	if got := s.grantExpRaw(p, 60); got != 0 {
+		t.Fatalf("1 级给 60 经验（需 100）不该升级，实际升到 %d", got)
+	}
+	// 经验条：60/100
+	ab := protocolAbility(p.Char.Data.Abil, 0)
+	if ab.Exp != 60 || ab.MaxExp != 100 {
+		t.Fatalf("未升级时经验条 = %d/%d，期望 60/100", ab.Exp, ab.MaxExp)
+	}
+
+	if got := s.grantExpRaw(p, 40); got != 2 {
+		t.Fatalf("再给 40（累计 100）应升到 2 级，实际 %d", got)
+	}
+	if p.Char.Data.Abil.Level != 2 {
+		t.Fatalf("存档等级 = %d，期望 2", p.Char.Data.Abil.Level)
+	}
+	// ⚠️ 升级后经验条必须**归零重来**（级内值），不是接着显示累计 100
+	ab = protocolAbility(p.Char.Data.Abil, 0)
+	if ab.Exp != 0 || ab.MaxExp != 300 {
+		t.Errorf("升级后经验条 = %d/%d，期望 0/300（级内值）", ab.Exp, ab.MaxExp)
+	}
+}

@@ -365,8 +365,12 @@ func protocolAbility(a *pb.Ability, gold int64) *protocol.Ability {
 		Level:         uint32(a.Level),
 		Gold:          uint64(gold),
 		// 经验/升级所需（HUD 的经验条要用；与 send.go 的 legacy 出口同一套算法）：
-		// 存的是**级内经验**，`MaxExp` 由等级现算（原版 `GetExp` 升级时会减掉它）。
-		Exp:    uint32(a.Exp),
+		// `MaxExp` 由等级现算（原版 `GetExp` 升级时会减掉它），而 **`Exp` 必须换算成
+		// 级内值** —— 存档里的 `a.Exp` 是**累计**值（entity/exp.go 的说明），
+		// 客户端经验条是 `100 * Exp / MaxExp`（FState.pas:2885）⇒ 直接发累计值会让
+		// 经验条**从第一级起就满格**、看起来"经验满了却不升级"
+		//（用户 2026-10-12 P0）。
+		Exp:    uint32(entity.LevelProgress(a.Exp, a.Level)),
 		MaxExp: uint32(entity.LevelNeed(a.Level)),
 	}
 }
