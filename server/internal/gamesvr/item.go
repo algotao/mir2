@@ -147,18 +147,17 @@ func (s *Server) sendBagItems(c net.Conn, p *Player) {
 	}
 }
 
-// takeBagItem 把背包某槽的物品拿走，并**保持背包没有空洞**（末尾补一个空槽）。
+// takeBagItem 把背包某槽的物品拿走。
 //
-// ⚠️ 这是一个**协议契约**问题，不是风格问题：
+// ⚠️ **位次契约**（2026-10-12 修订）：原来这里"摘除后把后面的物品前移、尾补空槽"，
+// 为的是让"压缩位次 == 数组下标"。但 D-120 起 `sendBagItems` 对新协议玩家**按槽位**
+// 下发（空槽占位）⇒ 客户端格子号就是服务端下标，前移反而成了 bug（用户：
+// 「售出物品后，其后续物品往前移了。应该是维持原位置不变」）⇒ 现在**只清槽、留空洞**；
+// 空洞由 `addToBagLocked` 填、`doMoveItem` 可以把东西挪进去。
 //
-//   - 原版 `SM_BAGITEMS` 的 Series 字段就是 `m_ItemList.Count`（ObjBase.pas:15926），
-//     客户端按**收到的顺序**摆在背包格里 ⇒ 它发回来的 `CM_EAT`/`CM_TAKEONITEM`
-//     里的下标是**压缩位次**（第几个物品，不是第几号槽）；
-//   - 我们的 `pb.CharacterData.BagItems` 是**定长数组**，若某处写成 `BagItems[i] = 空`
-//     就会留下空洞 ⇒ 之后的压缩位次与数组下标**错位** ⇒ 玩家"用了别的药 / 穿上了
-//     别的装备"，而且只在背包中间有空洞时才复现（很难查）。
-//
-// 保持"紧凑前缀 + 空尾巴"后，两种下标恒等 ⇒ 服务端各处可以继续直接按下标访问。
+// 历史教训仍成立：下标语义必须**全仓一份** —— legacy 路径（`SM_BAGITEMS` 的 body
+// 不带空槽）那边客户端仍按"收到的顺序"摆，好在 legacy 玩家的命令也是按 MakeIndex
+// 或压缩位次自洽（见 `handleEat` 等的调用方）；别把两条路的下标混着用。
 //
 // （踩坑记录：e2e 的祝福油用例就是这么暴露出来的——前面用例用过一堆物品后，
 // 客户端给的祝福油位次落到服务端的另一格里，`CM_EAT` 直接判成非法下标。）
@@ -172,13 +171,16 @@ func (s *Server) takeBagItem(p *Player, idx int) {
 }
 
 // takeBagItemLocked 是 takeBagItem 的**无锁**内核（调用方已持 stateMu）。
+//
+// ⚠️ 2026-10-12 改：**只清槽，不再把后面的物品前移**（用户："售出物品后，其后续
+// 物品往前移了。应该是维持原位置不变"）。背包自 D-120 起按**槽位**下发（空槽占位）
+// ⇒ 留空洞是安全的：客户端格子号 == 服务端下标，卖掉第 5 格的东西，第 6 格往后
+// 都待在原地。新物品由 `addToBagLocked` 填进第一个空槽。
 func takeBagItemLocked(data *pb.CharacterData, idx int) {
 	if data == nil || idx < 0 || idx >= len(data.BagItems) {
 		return
 	}
-	data.BagItems = append(data.BagItems[:idx], data.BagItems[idx+1:]...)
-	// 补回长度：把空槽放到末尾，而不是留在原位。
-	data.BagItems = append(data.BagItems, &pb.UserItem{})
+	data.BagItems[idx] = nil
 }
 
 // takeBagByIndex 按 `MakeIndex` + 名字双因子**原子地**从背包取出物品

@@ -193,6 +193,12 @@ func (s *Server) handleSay(c net.Conn, p *Player, pkt wire.Packet) {
 		if len(fields) == 0 {
 			return
 		}
+		// ⚠️ 切换攻击模式是**玩家命令**（原版 CmdChangeAttackMode 权限 0，
+		// ObjBase.pas:10679；客户端 Ctrl+H 就发它）⇒ 不走下面的 GM 权限门。
+		if strings.EqualFold(fields[0], "atkmode") {
+			s.cmdAttackMode(c, p, fields[1:])
+			return
+		}
 		if !s.cfg.gmOpen && p.permission == 0 {
 			s.sysMsg(c, "@"+fields[0]+" 此命令不正确，或没有足够的权限！！！")
 			log.Printf("%s 使用 GM 命令被拒（不在 AdminList）: %s", p.Char.Name, msg)

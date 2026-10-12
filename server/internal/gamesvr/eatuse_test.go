@@ -320,9 +320,10 @@ func TestScrollRandomTeleports(t *testing.T) {
 	}
 }
 
-// ⚠️ 原版 `SM_BAGITEMS` 的 Series 就是 `m_ItemList.Count`（ObjBase.pas:15926），
-// 客户端按收到顺序排列 ⇒ 它发回的下标是**压缩位次**；我们的 BagItems 是定长数组
-// ⇒ 中间一旦留空洞，`CM_EAT`/`CM_TAKEONITEM` 的下标就会错位（会"用错物品/穿错装备"）。
+// ⚠️ 2026-10-12 改口径：摘除**只清槽、不前移**（用户："售出物品后，其后续物品
+// 往前移了。应该是维持原位置不变"）。背包自 D-120 起按**槽位**下发（空槽占位），
+// 客户端格子号 == 服务端下标 ⇒ 留空洞是安全的，位次从此稳定；
+// 空洞由 `addToBagLocked` 填、`doMoveItem` 可把东西挪进去。
 func TestTakeBagItemKeepsBagCompact(t *testing.T) {
 	s, p := eatTestServer(t, oilTmpl(), weaponTmpl(2, 50))
 	d := p.Char.Data
@@ -345,14 +346,14 @@ func TestTakeBagItemKeepsBagCompact(t *testing.T) {
 
 	takeBagItemLocked(d, 1) // 删中间那格（这个用例只测纯行为，不涉及并发）
 	if len(d.BagItems) != 4 {
-		t.Fatalf("长度应保持 4（末尾补空槽），实际 %d", len(d.BagItems))
+		t.Fatalf("长度不该变，实际 %d", len(d.BagItems))
 	}
-	if got := idxOf(); got[0] != 1 || got[1] != 3 || got[2] != 0 || got[3] != 0 {
-		t.Errorf("删除后应左移并末尾补空，实际 %v", got)
+	if got := idxOf(); got[0] != 1 || got[1] != 0 || got[2] != 3 || got[3] != 0 {
+		t.Errorf("删除后其余物品必须待在原位（不前移），实际 %v", got)
 	}
 
 	takeBagItemLocked(d, 0)
-	if got := idxOf(); got[0] != 3 || got[1] != 0 {
+	if got := idxOf(); got[0] != 0 || got[2] != 3 {
 		t.Errorf("再删第一格后实际 %v", got)
 	}
 

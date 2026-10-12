@@ -49,6 +49,10 @@ func TestBagConcurrentTradeAndOwnOps(t *testing.T) {
 
 // TestTakeBagItemLockedWrapper 无锁内核与加锁包装的行为一致（补 stub 用例，
 // 保证 takeBagItem 的加锁包装本身也被跑到）。
+//
+// ⚠️ 2026-10-12 改口径：摘除**只清槽、不前移**（用户："售出物品后，其后续物品
+// 往前移了。应该是维持原位置不变"）—— 背包自 D-120 起按槽位下发（空槽占位），
+// 留空洞安全，位次稳定。
 func TestTakeBagItemLockedWrapper(t *testing.T) {
 	p := dealTestPlayer(1, "甲")
 	p.Char.Data.BagItems = []*pb.UserItem{
@@ -57,10 +61,13 @@ func TestTakeBagItemLockedWrapper(t *testing.T) {
 	s := testSlaveServer()
 	s.takeBagItem(p, 0)
 	got := p.bagSnapshot()
-	if len(got) != 3 || got[0].MakeIndex != 2 || got[1].MakeIndex != 3 {
-		t.Fatalf("摘除后该前移且尾补空槽，实际 %d 格首件 %d", len(got), got[0].MakeIndex)
+	if len(got) != 3 {
+		t.Fatalf("摘除不该改变背包长度，实际 %d 格", len(got))
 	}
-	if got[2] == nil || got[2].Index != 0 {
-		t.Error("尾格该是空槽（保持无空洞）")
+	if got[0] != nil {
+		t.Fatalf("第 0 格该被清空，实得 MakeIndex=%d", got[0].MakeIndex)
+	}
+	if got[1] == nil || got[1].MakeIndex != 2 || got[2] == nil || got[2].MakeIndex != 3 {
+		t.Error("后面的物品必须待在原位（不该前移）")
 	}
 }

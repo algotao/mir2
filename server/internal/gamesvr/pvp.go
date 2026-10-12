@@ -530,7 +530,10 @@ func (s *Server) cmdAttackMode(c net.Conn, p *Player, args []string) {
 	}
 	p.Char.Data.AttackMode = uint32(next)
 	names := [...]string{"全体攻击", "和平模式", "编组攻击", "行会攻击", "只打红名"}
-	s.sysMsg(c, "攻击模式："+names[next])
+	// ⚠️ 2026-10-12：改走 `notice`（proto 玩家走 `SystemNotice`）—— `sysMsg` 是
+	// legacy 下行、会被 `protoDown` 丢掉 ⇒ 新协议客户端切了模式却没有任何反馈，
+	// 也没法把底栏那块「[全体攻击]」显示同步出来（用户 2026-10-12 第 5 条）。
+	s.notice(p, "攻击模式："+names[next])
 	// 模式影响"看到的人的颜色"（同会免打标记），刷一次视野。
 	now := time.Now()
 	s.mu.RLock()

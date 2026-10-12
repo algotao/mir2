@@ -242,6 +242,8 @@ func (ps *protoSession) dispatch(env *protocol.Envelope) (keep bool) {
 		return ps.onSelectCharacter(body.SelectCharacter)
 	case *protocol.Envelope_MoveInput:
 		return ps.onMoveInput(body.MoveInput)
+	case *protocol.Envelope_ChatInput:
+		return ps.onChatInput(body.ChatInput)
 	case *protocol.Envelope_CreateCharacter:
 		return ps.onCreateCharacter(body.CreateCharacter)
 	case *protocol.Envelope_DeleteCharacter:

@@ -2,6 +2,7 @@ package gamesvr
 
 import (
 	"log"
+	"strings"
 	"time"
 
 	"github.com/algotao/mir2/server/internal/entity"
@@ -86,6 +87,32 @@ func (ps *protoSession) rejectMove(reason uint32, x, y int) bool {
 			AuthoritativePosition: &protocol.Vec2{X: int32(x), Y: int32(y)},
 			Reason:                reason,
 		}}}) == nil
+}
+
+// onChatInput 处理聊天输入（social.proto 的 `ChatInput`）。
+//
+// ⚠️ 现在只接 **'@' 命令**：Ctrl+H 切攻击模式发的是 `@atkmode`（用户 2026-10-12
+// 第 5 条要底栏显示攻击模式）。复用 legacy 的 `handleSay` —— 命令分发、权限门、
+// 玩家命令白名单都在那一份里，别长出第二套。
+// 普通聊天（说话/喊话）还没有频道 UI ⇒ 先不接，明说一句而不是静默吞掉。
+func (ps *protoSession) onChatInput(m *protocol.ChatInput) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	text := strings.TrimSpace(m.GetText())
+	if text == "" {
+		return true
+	}
+	if !strings.HasPrefix(text, "@") {
+		ps.srv.notice(p, "聊天频道还没开放（命令要以 @ 开头）")
+		return true
+	}
+	ps.srv.handleSay(nil, p, wire.Packet{
+		Head: proto.MakeDefaultMsg(proto.CM_SAY, 0, 0, 0, 0),
+		Body: text,
+	})
+	return true
 }
 
 // ---------- 战斗 ----------
