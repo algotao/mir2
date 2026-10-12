@@ -59,8 +59,16 @@ func TestSendBagItemsProto(t *testing.T) {
 		t.Fatalf("应为 BagItems，实得 %T", env.Body)
 	}
 	items := bag.GetItems()
-	if len(items) != 2 {
-		t.Fatalf("槽数 = %d，应为 2", len(items))
+	// ⚠️ **按槽位发**：空槽也要占位（客户端格子号 == 服务端 `BagItems` 下标）——
+	// 只发"有东西的格"会让位次整体前移 ⇒ 玩家把东西放到靠后的空格后又被贴回前面
+	//（2026-10-12 用户报的「包裹物品不能换位置」）。
+	if len(items) != entity.MaxBagSize {
+		t.Fatalf("槽数 = %d，应为 %d（原版 46 格，空槽占位）", len(items), entity.MaxBagSize)
+	}
+	for i := 2; i < len(items); i++ {
+		if items[i].GetIndex() != 0 {
+			t.Fatalf("第 %d 格应是空槽，实得 index=%d", i, items[i].GetIndex())
+		}
 	}
 	for i, want := range []struct {
 		name  string
@@ -82,6 +90,61 @@ func TestSendBagItemsProto(t *testing.T) {
 			t.Errorf("%q 数量 = %d，应为 %d（可叠加物的数量在 Dura 里）",
 				want.name, got.GetCount(), want.count)
 		}
+	}
+}
+
+// TestMoveItemToEmptySlot 把东西放到**靠后的空格**要真的落在那一格。
+//
+// 用户 2026-10-12：「包裹中的物品不能换位置，应该是拾取后放到另一个空位，
+// 则允许放置在该空位。现在总是顺序排」。
+//
+// 两处都得对：服务端的 `BagItems` 真把它挪过去，且**下发按槽位**（空槽占位）——
+// 少一个占位就会让客户端的格子号整体前移，看着就是"又排回去了"。
+func TestMoveItemToEmptySlot(t *testing.T) {
+	tables, err := data.LoadDir(filepath.Join("..", "..", "data"))
+	if err != nil {
+		t.Fatalf("加载数据表: %v", err)
+	}
+	s := testSlaveServer()
+	s.data.tables = tables
+	p := testMaster(100, "整理包裹的")
+	p.Char.Data = &pb.CharacterData{BagItems: []*pb.UserItem{
+		{MakeIndex: 1, Index: 5, Dura: 1, DuraMax: 1}, // 第 0 格
+		{MakeIndex: 2, Index: 6, Dura: 1, DuraMax: 1}, // 第 1 格
+	}}
+	sink := &protoSink{ch: make(chan *protocol.Envelope, 8)}
+	p.protoOut = sink
+
+	s.doMoveItem(p, 0, 20) // 第 0 格 ⇒ 第 20 格（空槽，还在切片之外）
+
+	got := p.Char.Data.BagItems
+	if len(got) <= 20 {
+		t.Fatalf("背包长度 = %d，应至少补到 21（目标槽在切片之外要先补空槽）", len(got))
+	}
+	if got[20].GetMakeIndex() != 1 {
+		t.Errorf("第 20 格 = MakeIndex %d，应为 1（刚放过去的那件）", got[20].GetMakeIndex())
+	}
+	if got[0].GetIndex() != 0 {
+		t.Errorf("原格该空出来，实得 index=%d", got[0].GetIndex())
+	}
+	if got[1].GetMakeIndex() != 2 {
+		t.Errorf("第 1 格不该被动，实得 MakeIndex=%d", got[1].GetMakeIndex())
+	}
+	// 下发**按槽位** ⇒ 客户端那一格就在 20
+	env := <-sink.ch
+	bag := env.GetBagItems()
+	if bag == nil {
+		t.Fatalf("应下发 BagItems，实得 %T", env.Body)
+	}
+	items := bag.GetItems()
+	if len(items) != entity.MaxBagSize {
+		t.Fatalf("下发槽数 = %d，应为 %d", len(items), entity.MaxBagSize)
+	}
+	if items[20].GetIndex() != 5 {
+		t.Errorf("下发第 20 格 index = %d，应为 5", items[20].GetIndex())
+	}
+	if items[0].GetIndex() != 0 {
+		t.Errorf("下发第 0 格应是空槽，实得 index=%d", items[0].GetIndex())
 	}
 }
 

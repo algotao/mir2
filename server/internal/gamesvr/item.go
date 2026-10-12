@@ -109,25 +109,35 @@ func (s *Server) sendBagItems(c net.Conn, p *Player) {
 	// 遍历期间持锁（`buildClientItem` 只读物品表，不碰背包 ⇒ 不会自死锁），
 	// 但 `s.send` 放到锁外（避免在锁里做 I/O）。
 	var body []byte
-	// 新协议同一次遍历里一起攒（`docs/decisions.md` D-65：proto 玩家原来**收不到**背包，
+	// 新协议：**按槽位**攒（`docs/decisions.md` D-65：proto 玩家原来**收不到**背包，
 	// 因为这条只发 legacy，而 legacy 下行会被 `protoDown` 丢掉）。
-	var stack []*protocol.ItemStack
+	//
+	// ⚠️ **空槽必须占位**（2026-10-12 用户报的「包裹物品不能换位置，现在总是顺序排」）：
+	// 原来只发"有东西的格" ⇒ 客户端那一格的下标是**压缩位次**而不是服务端槽位
+	// ⇒ 把东西放到靠后的空格后，一下发又"贴回"前面去了，看着就是"总是顺序排"。
+	// 补满 `entity.MaxBagSize`（原版 46 格）后，客户端格子号 == 服务端 `BagItems` 下标。
+	stack := make([]*protocol.ItemStack, entity.MaxBagSize)
+	for i := range stack {
+		stack[i] = &protocol.ItemStack{}
+	}
 	p.stateMu.Lock()
-	for _, it := range p.Char.Data.BagItems {
+	for i, it := range p.Char.Data.BagItems {
 		if it == nil || it.Index == 0 {
 			continue
 		}
+		// legacy 的 body **只收有东西的**（那边没有数量前缀，客户端按 sizeof 切分）
 		ci, ok := s.buildClientItem(it)
 		if !ok {
-			// ⚠️ 这里跳过会让客户端的"压缩位次"少一位 ⇒ 之后所有 CM_EAT/CM_TAKEONITEM
-			// 的下标都会错位（见 takeBagItem 的说明）。正常情况下不该发生。
-			log.Printf("警告：%s 背包物品 Index=%d 构造 ClientItem 失败，已跳过（会造成客户端位次错位）",
+			log.Printf("警告：%s 背包物品 Index=%d 构造 ClientItem 失败（该槽按空下发）",
 				p.Char.Name, it.Index)
 			continue
 		}
 		body = ci.Append(body)
+		if i >= len(stack) {
+			continue
+		}
 		if st, ok := s.itemStack(it); ok {
-			stack = append(stack, st)
+			stack[i] = st
 		}
 	}
 	p.stateMu.Unlock()
@@ -659,16 +669,25 @@ func (s *Server) itemStack(u *pb.UserItem) (*protocol.ItemStack, bool) {
 // 服务端是权威：这里改完发**全量背包**刷新，客户端不用自己猜。
 func (s *Server) doMoveItem(p *Player, from, to int) {
 	data := p.Char.Data
-	if data == nil || p.bagLen() == 0 {
+	if data == nil {
 		return
 	}
-	// ⚠️ `bagLen` 自己要拿 `stateMu` ⇒ **必须在加锁之前**读（锁里再调它 = 自死锁，
-	// Go 的互斥锁不可重入 —— 这个坑踩过一次，测试直接超时 10 分钟才发现）。
-	n := p.bagLen()
-	if from < 0 || to < 0 || from == to || from >= n || to >= n || from >= entity.MaxBagSize || to >= entity.MaxBagSize {
+	if from < 0 || to < 0 || from == to || from >= entity.MaxBagSize || to >= entity.MaxBagSize {
 		return
 	}
 	p.stateMu.Lock()
+	// ⚠️ 目标**可以是空格**（2026-10-12 用户："拾取后放到另一个空位，则允许放置在该
+	// 空位"）：那个槽可能还在当前切片之外（比如身上只有 5 件、想放到第 20 格）⇒
+	// 先把切片补到那个长度，再交换。空槽换过去 = 移动，有东西的槽换过去 = 交换。
+	//
+	// 补的是"空槽"（`Index == 0`），与 `takeBagItemLocked` 末尾补的那个同义。
+	for len(data.BagItems) <= to && len(data.BagItems) < entity.MaxBagSize {
+		data.BagItems = append(data.BagItems, &pb.UserItem{})
+	}
+	if from >= len(data.BagItems) || to >= len(data.BagItems) {
+		p.stateMu.Unlock()
+		return
+	}
 	data.BagItems[from], data.BagItems[to] = data.BagItems[to], data.BagItems[from]
 	p.stateMu.Unlock()
 	s.sendBagItems(nil, p)
