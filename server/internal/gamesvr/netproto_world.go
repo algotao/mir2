@@ -89,6 +89,81 @@ func (ps *protoSession) rejectMove(reason uint32, x, y int) bool {
 		}}}) == nil
 }
 
+// onCastSkill 处理施法（新协议 `CastSkillInput`）。
+//
+// ⚠️ **翻译而不是重写**：MP/护身符/冷却/伤害/特效/修炼点那一整套只有一份
+// （`handleSpell`）⇒ 这里只是把 typed 消息翻成 legacy 那条 `CM_SPELL` 报文，
+// 绝不另写一个"少了几条规则"的影子版本（与 `onAttackInput` 同一条纪律）。
+//
+// 报文布局照 `decodeSpellMsg`（spell.go:140-154）：技能号在 **Param**、
+// 目标坐标打包在 **Recog**（`MakeLong(x,y)`）、目标实体在 **Series**。
+func (ps *protoSession) onCastSkill(m *protocol.CastSkillInput) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil || !p.logonDone {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	id := m.GetSkillId()
+	if id == 0 {
+		return true
+	}
+	tx, ty := int(m.GetTargetPosition().GetX()), int(m.GetTargetPosition().GetY())
+	targID := uint32(m.GetTargetEntityId())
+	if (tx == 0 && ty == 0) && targID != 0 {
+		if x, y, ok := ps.srv.entityCell(targID); ok {
+			tx, ty = x, y
+		}
+	}
+	if tx == 0 && ty == 0 {
+		// 没有目标格 ⇒ 打自己面前那一格（战士系点燃类技能不需要目标）
+		tx, ty = ps.srv.frontCell(p)
+	}
+	ps.srv.handleSpell(nil, p, wire.Packet{Head: proto.MakeDefaultMsg(
+		proto.CM_SPELL,
+		proto.MakeLong(uint16(tx), uint16(ty)),
+		uint16(id), 0, uint16(targID),
+	)})
+	return true
+}
+
+// onSetMagicKey 设置技能快捷键（新协议 `SetMagicKey`，原版 `CM_MAGICKEYCHANGE`）。
+//
+// ⚠️ 服务端是权威，顺手做两件客户端做不到的事：
+//  1. 只允许 `'1'..'8'`（F1..F8）与 0（清空）；
+//  2. **清掉撞键** —— 一个键只对应一个技能（原版 FState.pas:3687-3693 在客户端
+//     先清冲突再发报；我们把这条规则放在服务端，任何客户端都躲不掉）。
+func (ps *protoSession) onSetMagicKey(m *protocol.SetMagicKey) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil || p.Char == nil || p.Char.Data == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	id, key := m.GetSkillId(), m.GetKey()
+	if key != 0 && (key < '1' || key > '8') {
+		ps.srv.notice(p, "快捷键只能是 F1..F8")
+		return true
+	}
+	found := false
+	p.stateMu.Lock()
+	for _, um := range p.Char.Data.Magics {
+		if um == nil {
+			continue
+		}
+		switch {
+		case um.MagicId == id:
+			um.Key = key
+			found = true
+		case key != 0 && um.Key == key:
+			um.Key = 0 // 撞键 ⇒ 旧的让位
+		}
+	}
+	p.stateMu.Unlock()
+	if !found {
+		ps.srv.notice(p, "你还没学会这个技能")
+		return true
+	}
+	ps.srv.sendMyMagics(nil, p)
+	return true
+}
+
 // onChatInput 处理聊天输入（social.proto 的 `ChatInput`）。
 //
 // ⚠️ 现在只接 **'@' 命令**：Ctrl+H 切攻击模式发的是 `@atkmode`（用户 2026-10-12
@@ -192,6 +267,33 @@ func (ps *protoSession) onAttackInput(m *protocol.AttackInput) bool {
 			Direction:  directionOf(facing),
 			ServerTick: uint32(time.Now().UnixMilli()),
 		}}}) == nil
+}
+
+// entityCell 按实体 id 取它所在的格（玩家与怪物都算）；找不到 ok=false。
+//
+// 施法报文里只带目标格时（客户端没给坐标、只给了实体 id）用它补齐。
+func (s *Server) entityCell(id uint32) (int, int, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if p := s.world.players[id]; p != nil && p.Obj != nil {
+		return p.Obj.PosX(), p.Obj.PosY(), true
+	}
+	if m := s.world.monsters[id]; m != nil {
+		return m.PosX(), m.PosY(), true
+	}
+	return 0, 0, false
+}
+
+// frontCell 取玩家**正前方**那一格（朝向上的相邻格）。
+//
+// 战士系的"点燃"类技能（烈火 26 等）不需要目标，原版也是按朝向放
+// ⇒ 客户端没给坐标时用它兜底，避免把技能放到 (0,0)。
+func (s *Server) frontCell(p *Player) (int, int) {
+	dir := p.Obj.Facing()
+	if int(dir) >= len(entity.DirDelta) {
+		return p.Obj.PosX(), p.Obj.PosY()
+	}
+	return p.Obj.PosX() + entity.DirDelta[dir][0], p.Obj.PosY() + entity.DirDelta[dir][1]
 }
 
 // attackTargetDir 按 ActorId 找目标，并返回**从 p 指向它的方向**；不可及时 ok=false。

@@ -16,6 +16,7 @@ import (
 	"github.com/algotao/mir2/server/internal/proto"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/internal/wire"
+	protocol "github.com/algotao/mir2/server/protocol"
 )
 
 // 技能系统。
@@ -66,19 +67,61 @@ var damageMagics = map[uint32]bool{
 // "未实现的技能"日志）——3 早就在表里，4 是 2026-10-06 补的。
 var passiveMagics = map[uint32]bool{3: true, 4: true}
 
-// sendMyMagics 下发玩家技能列表（SM_SENDMYMAGIC=211）。
+// sendMyMagics 下发玩家技能列表（legacy：`SM_SENDMYMAGIC=211`；新协议：`MagicList`）。
+//
+// ⚠️ 两条**都要发**：proto 玩家的 legacy 下行会被 `protoDown` 丢掉，只发 legacy
+// 等于 proto 玩家没有技能（技能窗/技能栏全空）。
 func (s *Server) sendMyMagics(c net.Conn, p *Player) {
 	var body []byte
+	var list []*protocol.MagicInfo
 	if p.Char.Data != nil {
 		for _, um := range p.Char.Data.Magics {
+			if um == nil {
+				continue
+			}
 			var b [proto.MagicBodySize]byte
 			binary.LittleEndian.PutUint32(b[0:], um.MagicId)
 			binary.LittleEndian.PutUint32(b[4:], um.Level)
 			binary.LittleEndian.PutUint32(b[8:], uint32(um.TranPoint))
 			body = append(body, b[:]...)
+			list = append(list, &protocol.MagicInfo{
+				SkillId: um.MagicId,
+				Level:   um.Level,
+				Exp:     uint32(um.TranPoint),
+				Key:     um.Key,
+				// 名字与图标都来自服务端的技能表（客户端不持有技能表 ⇒
+				// 这两项必须由服务端带下来，别让客户端去猜技能号）。
+				Name: s.magicName(um.MagicId),
+				Icon: s.magicIcon(um.MagicId),
+			})
 		}
 	}
 	s.send(c, proto.SM_SENDMYMAGIC, 0, 0, 0, uint16(len(body)/proto.MagicBodySize), string(body))
+	if sink := p.protoOut; sink != nil {
+		sink.magics(list)
+	}
+}
+
+// magicName 取技能名（查不到返回空串：客户端按"没有名字"处理，别编一个）。
+func (s *Server) magicName(magicID uint32) string {
+	info := s.data.tables.Magics.GetByID(uint16(magicID))
+	if info == nil {
+		return ""
+	}
+	return info.Name
+}
+
+// magicIcon 取技能图标号（`MagIcon.wzl` 的下标）。
+//
+// ⚠️ **不是**技能号：原版 `pm.Def.btEffect * 2`（FState.pas:3655），按下态是
+// `icon + 1`。`btEffect` 就是 `magics.json` 的 `effect` 字段 ⇒ 查不到技能时
+// 返回 0（客户端按"没有图标"处理，别去猜）。
+func (s *Server) magicIcon(magicID uint32) uint32 {
+	info := s.data.tables.Magics.GetByID(uint16(magicID))
+	if info == nil {
+		return 0
+	}
+	return uint32(info.Effect) * 2
 }
 
 // ensureInitialMagics 首次进游戏时补发初始技能。

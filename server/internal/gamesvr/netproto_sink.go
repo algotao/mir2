@@ -189,6 +189,19 @@ func (k *protoSink) equip(items []*protocol.ItemStack) {
 		EquippedItems: &protocol.EquippedItems{Items: items}}})
 }
 
+// magics 发一条**全量技能列表**（`MagicList`）。
+//
+// ⚠️ 与新协议玩家的 `SM_SENDMYMAGIC` 是**同一件事的两种编码**：legacy 下行会被
+// `protoDown` 丢掉 ⇒ 不补这条，proto 玩家永远看不到自己的技能（技能窗/技能栏
+// 全空）。
+//
+// `Icon` 由服务端算好（`magics.json` 的 `effect * 2`，原版 FState.pas:3655），
+// 客户端不持有技能表。
+func (k *protoSink) magics(items []*protocol.MagicInfo) {
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_MagicList{
+		MagicList: &protocol.MagicList{Magics: items}}})
+}
+
 // exp 发一条经验获得（只有自己会收到）。
 func (k *protoSink) exp(amount, total uint64) {
 	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_ExperienceGain{
