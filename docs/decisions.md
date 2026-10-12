@@ -5617,3 +5617,79 @@ SDL 纹理与 WZL 句柄仍由 runtime/render 管；素材绘制将归一结果�
 把打字区也算进了文字区 ⇒ 最后一行落在 228..240，正好压住。
 
 改成 **109**，并把"框底不许超过 229"钉进 `聊天文字贴着白框底边且不越界`。
+
+---
+
+## D-122 尸体定格：骷髅用 **ActDeath** 段（2026-10-12）
+
+用户："挖完肉后的尸体素材看上去有问题，一团黑色很大"。
+
+核查（原版 `Actor.pas:2124-2131`，`GetDefaultFrame` 的死亡分支）：
+
+```pascal
+if m_boDeath then begin
+   if m_boSkeleton then Result := pm.ActDeath.start + m_btDir   // 骷髅：Death 段首帧
+   else Result := pm.ActDie.start + dir*步长 + (frame-1);        // 普通尸体：Die 末帧
+end
+```
+
+我们原来**一律**停在 `ActDie` 末帧 —— 骷髅那帧（`Mon3[269]`）本身就是一团黑影
+（导出来看过），而 `ActDeath.start + dir`（`Mon3[340]`）才是蹲坐发光的骨架。
+修法：`Entity` 加 `skeleton` 标记（`Skeleton` 消息置位），`body_sprite` 对
+`skeleton` 尸体取 `mon_offset(appr) + ActDeath.start + 方向`（**照抄 `+ m_btDir`**，
+不是按步长的首帧）。普通尸体不变。
+
+## D-123 摘除只清槽、**位次稳定**（2026-10-12）
+
+用户："售出物品后，其后续物品往前移了。应该是维持原位置不变"。
+
+`takeBagItemLocked` 原来删除后把后面的物品前移（维持"紧凑前缀"）—— 那是给
+"压缩位次"时代准备的口径。D-120 之后新协议按**槽位**下发（空槽占位）⇒ 留空洞安全，
+前移反而成了 bug。改为 `BagItems[idx] = nil`；空洞由 `addToBagLocked` 填、
+`doMoveItem` 可挪东西进去。同步改 `TestTakeBagItemKeepsBagCompact` /
+`TestTakeBagItemLockedWrapper` 的期望。
+
+## D-124 包裹图标对齐照原版：居中后 **x−1 / y+1**（2026-10-12）
+
+用户："物品在格子没有居中，整体偏上 2-5 像素"。
+
+原版 `TFrmDlg.DItemGridGridPaint`（FState.pas:4844-4845）：
+
+```pascal
+dsurface.Draw (Rect.Left + (ColWidth  - d.Width)  div 2 - 1,
+               Rect.Top  + (RowHeight - d.Height) div 2 + 1, ...)
+```
+
+我们只做了居中 ⇒ 比原版高 1px。补上 `-1 / +1`。
+
+## D-125 包裹左下角画**金币图标**（`Prguse[29]`，落点照原版（10,190））（2026-10-12）
+
+用户："包裹窗口左下角圆圈应显示金币图标，并且根据金币数量显示不同的图，请核查原版"。
+
+核查（GOM 客户端源码，`GameOfMir/MirClient/FState.pas:1255-1257 / 4622-4656`）：
+
+- 图标是**固定一张**：`DGold.SetImgIndex(g_WMainImages, 29)`、`Left:=10; Top:=190`
+  （相对包裹窗）；金额数字画在 `(65, 185)`（`GetGoldStr` 加千位逗号）。
+- **全工程没有"金额大换金条/金盒图"的逻辑** —— 用户印象中的换图在原版源码里不存在。
+
+我们这套素材里同一张金币堆图就在 `Prguse[29]`（36×21，主色金黄 —— 图号都与
+原版同源）。实现：`layout::BAG_GOLD_ICON/AT` + `draw_bag` 画图；金额数字位置
+不动（2026-10-12 用户刚调过的 61/182）。
+
+## D-126 底栏右块补**攻击模式与当前时间**（2026-10-12）
+
+用户（附参考截图）："功能栏右下角有攻击模式、等级、经验、负重、当前时间显示，现在看上去还没接"。
+
+核查：等级（数字图 30..39）、经验条与负重条（`Prguse[7]`）**本来就在**（原版
+FState.pas:3808-3840 同款）；缺的是**攻击模式**与**时钟** —— 这两样是 GOM/本源
+引擎加的（原版 1.76 底栏没有），照参考图补：
+
+- 攻击模式：`[全体攻击]` 等，画在等级上方。服务端是权威 —— **Ctrl+H**（原版
+  `ClMain.pas:2078`）发聊天命令 `@atkmode`：新协议接了 `ChatInput`（social.proto
+  早就定义了，此前两端都没接线）→ 复用 legacy 的 `handleSay`（命令分发/权限门一份），
+  `atkmode` 按玩家命令放行（原版 CmdChangeAttackMode 权限 0，不走 GM 门）；
+  模式名从服务端回的 `SystemNotice`「攻击模式：XX」同步（`cmdAttackMode` 顺带从
+  `sysMsg` 改 `notice`，proto 玩家原来收不到）。
+- 时钟：本地当前时间 HH:MM:SS，画在负重条下面（新增 `chrono` 依赖，仅 `clock`）。
+
+**验收**：客户端 171/149/7/3、clippy 0；Go 26 包全过。
