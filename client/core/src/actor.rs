@@ -162,10 +162,13 @@ pub fn human_pose(action_id: Option<u32>, moving: bool, run: bool) -> Pose {
             act: HAct::Die,
             looping: false,
         },
-        // 挖肉：原版是 `SM_BUTCH` 触发的一次"挥"动作（没有专门的挖肉图）⇒ 播挥砍
-        //（`ActHit`）。客户端点 Alt+左键自己也会先摆一下，见 `app::main` 的挖肉那段。
+        // 挖肉/挖矿：**蹲下挖**那一段（`ActSitdown`，start 456 / 2 帧 / 300ms）。
+        //
+        // ⚠️ 2026-10-12 改：原来播 `ActHit`（挥砍）⇒ 看着就是"打了一下"，
+        // 而原版这里放的是**蹲下去挖**的动作（人物动作表里 `ActSitdown` 那一段，
+        // 挖肉与挖矿共用）。用户："挖肉的动作看着像攻击，而不是蹲下挖的动作"。
         Some(action::BUTCH) => Pose {
-            act: HAct::Hit,
+            act: HAct::Sitdown,
             looping: false,
         },
         // ⚠️ **移动优先于攻击**（用户 2026-10-09 补的第 2 条："不要在奔跑/走动没结束时

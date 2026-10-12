@@ -1734,10 +1734,11 @@ fn 挖肉的目标与动作() {
     let pick = |e: &Entity| if e.dead { Some(e.id) } else { None };
     assert_eq!(pick(&dead_animal), Some(7));
     assert_eq!(pick(&alive_mon), None);
-    // 动作：挖肉播挥砍（原版没有专门的挖肉图）
+    // 动作：挖肉播**蹲下挖**那一段（2026-10-12 用户："看着像攻击"⇒ 改用 `ActSitdown`）
     assert_eq!(
         mir2_core::actor::human_pose(Some(action::BUTCH), false, false).act,
-        mir2_core::actor::HAct::Hit
+        mir2_core::actor::HAct::Sitdown,
+        "挖肉不是挥砍：人物动作表里 `ActSitdown` 就是蹲下去挖那一段"
     );
 }
 
@@ -2444,6 +2445,16 @@ fn 注销与退出按钮的落点() {
 #[test]
 fn 聊天文字贴着白框底边且不越界() {
     use crate::layout::{chat_box, chat_line_y, CHAT_LINE_H};
+    // ⚠️ 2026-10-12：白框只到**聊天区**为止，下面还有打字区 —— 沿 `Prguse[1]` 的
+    // x=300 逐像素扫过：文字区 y 120..228（半开区间 [120,229)）、229..231 分隔线、
+    // **232..243 才是打字区**。框高按 124 算时最后一行落在 228..240 ⇒ 压住打字区
+    //（用户报的那条）。
+    let (_, ly, _, lh) = crate::layout::CHAT_BOX_LOCAL;
+    assert!(
+        ly + lh <= 229.0,
+        "聊天框底 {} 压到打字区了（面板坐标：文字区 120..228，打字区 232 起）",
+        ly + lh
+    );
     let (_bx, by, _bw, bh) = chat_box();
     for shown in 1..=8 {
         let mut prev = f32::MIN;
