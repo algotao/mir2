@@ -47,8 +47,13 @@ use crate::ui;
 /// 窗框（`Prguse[370]`，232×325）。
 pub(crate) const BG_LIB: &str = "Prguse";
 pub(crate) const BG: u32 = 370;
-/// 页数（官方 4 页，我们做前两页）。
-pub(crate) const PAGES: usize = 2;
+/// 页数：0 装备 / 1 属性 / **2 技能**（原版是 0 状态 / 1 属性 / 2 技能 / 3 技能，
+/// 我们把技能接在第 3 页 —— 原版 F11 也是 `StatePage := 3`）。
+pub(crate) const PAGES: usize = 3;
+/// 技能页的页号（F11 / 底栏「技能」按钮直接跳到它）。
+pub(crate) const SKILL_PAGE: usize = 2;
+/// 技能页**一页几条**（原版 `MagicPage*5`，FState.pas:3058-3059）。
+pub(crate) const SKILL_ROWS: usize = 5;
 /// 官方落点：贴右缘、距顶 52（`FState.pas:1020-1021`）。
 pub(crate) const TOP: f32 = 52.0;
 /// 官方内容偏移（`FState.pas:2907-2908`）。
@@ -65,6 +70,27 @@ const FIG_M: u32 = 376;
 const FIG_F: u32 = 377;
 /// 发型图号基址：`440 + 发型*2 + 性别`（男 0 / 女 1）。
 const HAIR_BASE: u32 = 440;
+
+/// 窗框的**名义尺寸**（`Prguse[370]` 实测 232×325）。
+///
+/// 有它就能在"拿不到素材"时也算出窗在哪（滚轮翻页那处要用）。
+pub(crate) const BG_W: f32 = 232.0;
+pub(crate) const BG_H: f32 = 325.0;
+
+/// 窗口矩形（**不需要素材**：按名义尺寸算）。
+pub(crate) fn panel_rect() -> (f32, f32, f32, f32) {
+    (
+        (crate::window::WIN_W as f32 - BG_W).max(0.0),
+        TOP,
+        BG_W,
+        BG_H,
+    )
+}
+
+/// 技能列表一共几页（一页 [`SKILL_ROWS`] 条；空列表也算 1 页）。
+pub(crate) fn skill_pages(items: usize) -> usize {
+    items.div_ceil(SKILL_ROWS).max(1)
+}
 
 /// 窗口矩形 `(x, y, w, h)`：尺寸 = 素材原始像素（**不缩放**）。
 pub(crate) fn panel(bg: (u32, u32)) -> (f32, f32, f32, f32) {
@@ -144,15 +170,43 @@ pub(crate) enum Hit {
     Arrow(i8),
     /// 命中装备槽（值是**服务端槽位下标**）。
     Slot(usize),
+    /// 命中技能页第 `row` 行（**页内下标**）。
+    Skill(usize),
     None,
 }
+
+/// 技能页一行的矩形（窗口内坐标）。
+///
+/// ⚠️ 画与命中同源（与 `SLOTS` 同一条纪律）。
+pub(crate) fn skill_row_rect(row: usize) -> (f32, f32, f32, f32) {
+    (
+        SKILL_LIST_X,
+        SKILL_LIST_Y + row as f32 * SKILL_ROW_H,
+        SKILL_ROW_W,
+        SKILL_ROW_H - 3.0,
+    )
+}
+
+/// 技能页的落点（窗口内）：图标 → 名字/等级 → 快捷键徽标。
+const SKILL_LIST_X: f32 = 18.0;
+const SKILL_LIST_Y: f32 = 56.0;
+const SKILL_ROW_H: f32 = 37.0;
+const SKILL_ROW_W: f32 = 196.0;
+/// 图标框（32×32，行内偏左）。
+const SKILL_ICON_DX: f32 = 4.0;
+/// 名字/等级的 x（图标右边）。
+const SKILL_TEXT_X: f32 = 66.0;
+/// 快捷键徽标的 x（行右端）。原版画 `Prguse[248..255]`（F1..F8 那 8 张）。
+const SKILL_KEY_IMG: u32 = 248;
 
 fn in_rect(r: (f32, f32, f32, f32), p: (f32, f32)) -> bool {
     p.0 >= r.0 && p.0 < r.0 + r.2 && p.1 >= r.1 && p.1 < r.1 + r.3
 }
 
 /// 窗口内一点命中谁（**画与命中同源**：坐标都来自上面那几张常量表）。
-pub(crate) fn hit(local: (f32, f32)) -> Hit {
+///
+/// `page` 是状态窗当前页 —— 技能页那 5 行的命中区与装备槽**不是一回事**。
+pub(crate) fn hit(local: (f32, f32), page: usize) -> Hit {
     if in_rect(CLOSE, local) {
         return Hit::Close;
     }
@@ -162,6 +216,14 @@ pub(crate) fn hit(local: (f32, f32)) -> Hit {
     if in_rect(ARROW_DOWN_RECT, local) {
         return Hit::Arrow(1);
     }
+    if page == SKILL_PAGE {
+        for row in 0..SKILL_ROWS {
+            if in_rect(skill_row_rect(row), local) {
+                return Hit::Skill(row);
+            }
+        }
+        return Hit::None;
+    }
     for &(slot, sx, sy, sw, sh) in SLOTS.iter() {
         if in_rect((sx, sy, sw, sh), local) {
             return Hit::Slot(slot);
@@ -170,7 +232,11 @@ pub(crate) fn hit(local: (f32, f32)) -> Hit {
     Hit::None
 }
 
-/// 画状态窗。`page` = 0 装备页 / 1 属性页。
+/// 画状态窗。`page` = 0 装备 / 1 属性 / 2 技能。
+///
+/// - `skill_page`：技能页翻到第几页（技能多于 [`SKILL_ROWS`] 时用；翻页键在
+///   技能页翻它，在别的页翻的是**窗口页**）；
+/// - `selected`：技能页里选中那条的 `skill_id`（选中后按 F1..F8 = 设快捷键）。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw<'a, T>(
     canvas: &mut WindowCanvas,
@@ -180,6 +246,8 @@ pub(crate) fn draw<'a, T>(
     dir_assets: &Path,
     net: Option<&Net>,
     page: usize,
+    skill_page: usize,
+    selected: Option<u32>,
     // 控件引擎（hover / 按下都由它算 ⇒ 不再单独传"按住的是谁"）
     widget_ui: &crate::widget::Ui,
 ) -> Result<(), sdl3::Error> {
@@ -211,10 +279,12 @@ pub(crate) fn draw<'a, T>(
         crate::widget::draw_button(canvas, tc, ui, dir_assets, &b, &b.response(widget_ui));
     }
 
-    if page == 0 {
-        draw_figure(canvas, tc, ui, dir_assets, n, x, y);
-    } else {
-        draw_attrs(canvas, tc, texts, n, x, y);
+    match page {
+        0 => draw_figure(canvas, tc, ui, dir_assets, n, x, y),
+        1 => draw_attrs(canvas, tc, texts, n, x, y),
+        _ => draw_skills(
+            canvas, tc, ui, texts, dir_assets, n, x, y, skill_page, selected,
+        ),
     }
     Ok(())
 }
@@ -352,6 +422,120 @@ fn draw_attrs<'a, T>(
         );
     }
 }
+
+/// **技能页**（原版 `FState.pas:3050-3121`，一页 5 条）：图标 + 名字 + 等级/修炼点
+/// + 快捷键徽标；选中那条给一条亮底。
+///
+/// ⚠️ 图标号是服务端算好的 `icon`（= `effect * 2`），客户端不自己乘 —— 见
+/// `MagicEntry::icon` 与服务端 `magicIcon` 的说明。
+#[allow(clippy::too_many_arguments)]
+fn draw_skills<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    ui: &mut ui::UiCache<'a>,
+    texts: &mut font::TextCache<'a>,
+    dir_assets: &Path,
+    n: &Net,
+    x: f32,
+    y: f32,
+    page_no: usize,
+    selected: Option<u32>,
+) {
+    let base = page_no * SKILL_ROWS;
+    let white = (232, 228, 204);
+    let shadow = Some((0, 0, 0));
+    for row in 0..SKILL_ROWS {
+        let Some(m) = n.world.magics.get(base + row) else {
+            break;
+        };
+        let r = skill_row_rect(row);
+        if selected == Some(m.skill_id) {
+            crate::gfx::fill(
+                canvas,
+                x + r.0,
+                y + r.1,
+                r.2,
+                r.3,
+                sdl3::pixels::Color::RGBA(120, 100, 40, 150),
+            )
+            .ok();
+        }
+        // 图标（`MagIcon.wzl`；按下态是 `icon+1`，这里不按下 ⇒ 用常态）
+        if m.icon != 0 {
+            if let Some((iw, ih)) = ui.size(dir_assets, MAG_ICON_LIB, m.icon) {
+                let (iw, ih) = (iw as f32, ih as f32);
+                let _ = ui.draw_src(
+                    canvas,
+                    tc,
+                    dir_assets,
+                    MAG_ICON_LIB,
+                    m.icon,
+                    FRect::new(0.0, 0.0, iw, ih),
+                    FRect::new(
+                        x + r.0 + SKILL_ICON_DX + (32.0 - iw) / 2.0,
+                        y + r.1 + (32.0 - ih) / 2.0,
+                        iw,
+                        ih,
+                    ),
+                    255,
+                );
+            }
+        }
+        let _ = texts.draw(
+            canvas,
+            tc,
+            &m.name,
+            x + SKILL_TEXT_X,
+            y + r.1 + 2.0,
+            white,
+            shadow,
+        );
+        // 等级 / 修炼点（原版 3 级满级显示 `-`）
+        let lv = if m.level >= 3 {
+            "Lv3".to_string()
+        } else {
+            format!("Lv{}", m.level)
+        };
+        let _ = texts.draw(
+            canvas,
+            tc,
+            &lv,
+            x + SKILL_TEXT_X,
+            y + r.1 + 18.0,
+            (200, 200, 170),
+            shadow,
+        );
+        // 快捷键徽标：原版 `Prguse[248 + n]`（F1..F8）；取不到就写字
+        if let Some(slot) = m.slot() {
+            let img = SKILL_KEY_IMG + slot as u32;
+            if ui.size(dir_assets, BG_LIB, img).is_some() {
+                let _ = ui.draw_src(
+                    canvas,
+                    tc,
+                    dir_assets,
+                    BG_LIB,
+                    img,
+                    FRect::new(0.0, 0.0, 16.0, 16.0),
+                    FRect::new(x + r.0 + r.2 - 20.0, y + r.1 + 4.0, 16.0, 16.0),
+                    255,
+                );
+            } else {
+                let _ = texts.draw(
+                    canvas,
+                    tc,
+                    &format!("F{}", slot + 1),
+                    x + r.0 + r.2 - 22.0,
+                    y + r.1 + 4.0,
+                    (255, 230, 130),
+                    shadow,
+                );
+            }
+        }
+    }
+}
+
+/// 技能图标的库（原版 `MagIcon.wil`，Share.pas:58）。
+pub(crate) const MAG_ICON_LIB: &str = "MagIcon";
 
 /// 画一张界面图，落点 = `(x, y) + 图自带锚点`（官方合成规则的**唯一**实现）。
 #[allow(clippy::too_many_arguments)]

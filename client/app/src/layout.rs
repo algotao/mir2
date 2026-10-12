@@ -193,6 +193,43 @@ pub(crate) fn hud_btn_at(p: crate::space::CPt) -> Option<HudBtn> {
         .find(|b| crate::space::hit(b.rect(), p))
 }
 
+// ---------- 技能栏（F1..F8）----------
+//
+// 原版 1.76 的底栏**没有**这一排（技能只在 F1..F8 与技能窗里），参考图那个
+// 引擎把技能栏摆成底栏上方一排 8 格 ⇒ 我们照它摆（用户 2026-10-12 的参考图）。
+// 位置在**底栏之上**（底栏是最后贴的，压在它上面会互相盖住）。
+
+/// 技能栏格数（F1..F8）。
+pub(crate) const SKILL_SLOTS: usize = 8;
+/// 一格 34×34，格间距 37。
+pub(crate) const SKILL_SLOT_W: f32 = 34.0;
+pub(crate) const SKILL_SLOT_H: f32 = 34.0;
+pub(crate) const SKILL_SLOT_STEP: f32 = 37.0;
+
+/// 技能栏左上角的**画布坐标**（贴在底栏上方，离底栏 6px）。
+pub(crate) fn skill_bar_at() -> (f32, f32) {
+    (
+        8.0,
+        crate::window::WIN_H as f32 - HUD_BOARD_H - SKILL_SLOT_H - 6.0,
+    )
+}
+
+/// 第 `i` 格的命中框（**画布坐标**）。画与命中同源。
+pub(crate) fn skill_slot_rect(i: usize) -> crate::space::CRect {
+    let (bx, by) = skill_bar_at();
+    crate::space::canvas_rect(
+        bx + i as f32 * SKILL_SLOT_STEP,
+        by,
+        SKILL_SLOT_W,
+        SKILL_SLOT_H,
+    )
+}
+
+/// 画布点落在技能栏哪一格（没中 ⇒ `None`）。
+pub(crate) fn skill_slot_at(p: crate::space::CPt) -> Option<usize> {
+    (0..SKILL_SLOTS).find(|i| crate::space::hit(skill_slot_rect(*i), p))
+}
+
 // ---------- 底栏**左下**那排快捷按钮 ----------
 //
 // 原版 `DBotMiniMap / DBotTrade / DBotGuild / DBotGroup / DBotPlusAbil / …`

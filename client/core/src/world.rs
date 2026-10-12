@@ -139,6 +139,40 @@ pub struct ShopItem {
     pub dura_max: u32,
 }
 
+/// 已学会的一个技能（`MagicList` 里的一条）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MagicEntry {
+    /// 技能号（服务端 `magics.json` 的 `magic_id`）。
+    pub skill_id: u32,
+    pub name: String,
+    /// 等级 0..3（原版 `btLevel`，0 级就是"刚学会"）。
+    pub level: u32,
+    /// 修炼点（`TranPoint`）。
+    pub exp: u32,
+    /// **快捷键**：0 = 没绑；`'1'..'8'` = F1..F8。服务端是权威（改键服务端清冲突）。
+    pub key: u32,
+    /// `MagIcon.wzl` 的图标号（= `effect * 2`，原版 FState.pas:3655；0 = 没有图标）。
+    pub icon: u32,
+}
+
+impl MagicEntry {
+    fn from_proto(m: &proto::MagicInfo) -> Self {
+        Self {
+            skill_id: m.skill_id,
+            name: m.name.clone(),
+            level: m.level,
+            exp: m.exp,
+            key: m.key,
+            icon: m.icon,
+        }
+    }
+
+    /// 绑在 F1..F8 的第几格（`0..8`）；没绑 ⇒ `None`。
+    pub fn slot(&self) -> Option<usize> {
+        (b'1'..=b'8').position(|k| self.key == k as u32)
+    }
+}
+
 /// 正在看的商店：哪个商人、货架上有什么、**开的是买窗还是卖窗**。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Shop {
@@ -369,6 +403,8 @@ pub struct World {
     /// 服务端却从不构造**（只发 legacy，而 legacy 下行会被 `protoDown` 丢掉）。
     /// 服务端补齐后（见 `docs/decisions.md` D-65）这里才拿得到东西。
     pub bag: Vec<Option<BagItem>>,
+    /// **已学会的技能**（`MagicList` 全量下发）。技能窗与技能栏都读它。
+    pub magics: Vec<MagicEntry>,
     /// 已穿戴（`EquippedItems`）。**按下标 = 槽位**（空槽是 `None`）。
     ///
     /// 与背包不同：装备槽的位置本身有意义（武器/衣服/项链…），所以服务端会为
@@ -797,6 +833,34 @@ impl World {
                     } else {
                         Some(BagItem::from_proto(it))
                     });
+                }
+                Change::World
+            }
+            Body::MagicList(l) => {
+                self.magics = l.magics.iter().map(MagicEntry::from_proto).collect();
+                Change::World
+            }
+            // 增量：学了新技能 / 忘了技能（原版 SM_ADDMAGIC / SM_DELMAGIC）
+            Body::MagicChanged(c) => {
+                let Some(m) = c.magic.as_ref() else {
+                    return Change::None;
+                };
+                if c.added {
+                    let e = MagicEntry::from_proto(m);
+                    match self.magics.iter_mut().find(|x| x.skill_id == e.skill_id) {
+                        Some(cur) => *cur = e,
+                        None => self.magics.push(e),
+                    }
+                } else {
+                    self.magics.retain(|x| x.skill_id != m.skill_id);
+                }
+                Change::World
+            }
+            // 修炼点变化（原版 SM_MAGIC_LVEXP）
+            Body::MagicLevelExp(u) => {
+                if let Some(cur) = self.magics.iter_mut().find(|x| x.skill_id == u.skill_id) {
+                    cur.level = u.level;
+                    cur.exp = u.exp;
                 }
                 Change::World
             }
@@ -1550,6 +1614,65 @@ mod bag_tests {
     /// ⚠️ 这条链原来是**两端都齐、服务端却从不构造**：客户端 core 里没有背包字段、
     /// 没人在 `match body` 里接 `BagItems` ⇒ 玩家永远看不到包裹。服务端补齐后，
     /// 这里把"收到之后世界变成什么样"钉住。
+    /// 技能列表：全量下发 + 增量（学了/忘了）+ 修炼点变化。
+    ///
+    /// ⚠️ 客户端的技能窗与技能栏**只读这一份**（服务端是权威：连快捷键都是它定的）
+    /// ⇒ 三条消息缺一条，玩家就会看到"技能不见了/修炼点不动"。
+    #[test]
+    fn 技能列表的全量与增量() {
+        let mut w = World::default();
+        w.apply(&env(Body::MagicList(proto::MagicList {
+            magics: vec![
+                proto::MagicInfo {
+                    skill_id: 1,
+                    name: "火球术".into(),
+                    level: 2,
+                    exp: 120,
+                    key: b'1' as u32,
+                    icon: 8,
+                },
+                proto::MagicInfo {
+                    skill_id: 2,
+                    name: "治愈术".into(),
+                    ..Default::default()
+                },
+            ],
+        })));
+        assert_eq!(w.magics.len(), 2);
+        assert_eq!(w.magics[0].name, "火球术");
+        assert_eq!(w.magics[0].slot(), Some(0), "'1' ⇒ F1 那格");
+        assert_eq!(w.magics[1].slot(), None, "没绑 ⇒ None");
+
+        // 修炼点变化
+        w.apply(&env(Body::MagicLevelExp(proto::MagicLevelExp {
+            skill_id: 1,
+            level: 3,
+            exp: 200,
+        })));
+        assert_eq!((w.magics[0].level, w.magics[0].exp), (3, 200));
+
+        // 学了新技能
+        w.apply(&env(Body::MagicChanged(proto::MagicChanged {
+            added: true,
+            magic: Some(proto::MagicInfo {
+                skill_id: 7,
+                name: "攻杀剑法".into(),
+                ..Default::default()
+            }),
+        })));
+        assert_eq!(w.magics.len(), 3);
+        // 忘了技能
+        w.apply(&env(Body::MagicChanged(proto::MagicChanged {
+            added: false,
+            magic: Some(proto::MagicInfo {
+                skill_id: 2,
+                ..Default::default()
+            }),
+        })));
+        assert_eq!(w.magics.len(), 2);
+        assert!(w.magics.iter().all(|m| m.skill_id != 2));
+    }
+
     #[test]
     fn 背包与已穿戴的解析() {
         let mut w = World::default();

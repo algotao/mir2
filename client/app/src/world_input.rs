@@ -149,6 +149,58 @@ fn apply_bag_act(act: bagdrag::Act, net: &mut Option<Net>) {
     }
 }
 
+/// 放一个技能（**技能栏点击与 F1..F8 共用** —— 鼠标与键盘同一个动作）。
+///
+/// 目标顺序照原版 `UseMagic`（ClMain.pas:2370-2449）：**有锁定目标就打它**，
+/// 否则打光标那一格。
+pub(crate) fn cast_skill(app: &mut AppState, skill_id: u32, name: &str) {
+    let Some(n) = app.net.as_ref() else {
+        return;
+    };
+    if !n.world.in_world() {
+        return;
+    }
+    let (tx, ty) = screen_to_cell(app.cam, app.mouse.0, app.mouse.1);
+    let target = app.world_control.combat_target.unwrap_or(0);
+    n.cast_skill(skill_id, target, tx, ty);
+    println!("[net] 施放 {name}（目标 {target} / 格 {tx},{ty}）");
+}
+
+/// 打开**技能窗**（原版 F11 与底栏「技能」按钮都是 `StatePage := 3`，
+/// 也就是状态窗的技能页 —— `ClMain.pas:2056-2059`）。
+pub(crate) fn open_skill_window(app: &mut AppState) {
+    app.status_page
+        .set(crate::status::SKILL_PAGE, crate::status::PAGES);
+    app.magic_selected = None;
+    if !app.win.status() {
+        app.win.toggle_status();
+    }
+    println!("[ui] 技能窗");
+}
+
+/// F1..F8：技能窗里**选中了**某条 ⇒ 给它设快捷键；否则 ⇒ 放绑在那个键上的技能。
+pub(crate) fn skill_hotkey(app: &mut AppState, slot: usize) {
+    let key = b'1' as u32 + slot as u32;
+    if let Some(id) = app.magic_selected.take() {
+        if let Some(n) = app.net.as_ref() {
+            n.set_magic_key(id, key);
+            println!("[net] 技能 {id} 绑定到 F{}", slot + 1);
+        }
+        return;
+    }
+    let picked = app.net.as_ref().and_then(|n| {
+        n.world
+            .magics
+            .iter()
+            .find(|m| m.key == key)
+            .map(|m| (m.skill_id, m.name.clone()))
+    });
+    match picked {
+        Some((skill_id, name)) => cast_skill(app, skill_id, &name),
+        None => println!("[ui] F{} 还没绑技能", slot + 1),
+    }
+}
+
 /// 执行浮窗状态机给出的副作用（SDL 命中与纯状态转换已经完成）。
 fn handle_ui_press(app: &mut AppState, press: Press) -> bool {
     use crate::overlay_state::Effect;
@@ -170,6 +222,11 @@ fn handle_ui_press(app: &mut AppState, press: Press) -> bool {
         Effect::UseBelt { slot, make_index } => {
             belt_use(&mut app.net, &mut app.belt, slot, make_index)
         }
+        Effect::CastSkill {
+            slot: _,
+            skill_id,
+            name,
+        } => cast_skill(app, skill_id, &name),
         Effect::Buy { npc, name } => {
             if let Some(n) = app.net.as_ref() {
                 n.shop_buy(npc, &name, 1);
@@ -285,6 +342,14 @@ pub(crate) fn handle_world_mouse_down<'a>(
                 if let Some(i) = crate::layout::belt_slot_at(crate::widget::canvas_pt(app.mouse)) {
                     app.ui_click
                         .press(Press::Belt(i), crate::layout::belt_slot_rect(i));
+                    app.world_control.consume_world_click();
+                    return;
+                }
+                // **技能栏**（F1..F8）：点一格 = 放绑在那格的技能（与腰带同一套：
+                // OnClick 规范 ⇒ 按下只记，松开才执行）。
+                if let Some(i) = crate::layout::skill_slot_at(crate::widget::canvas_pt(app.mouse)) {
+                    app.ui_click
+                        .press(Press::SkillBar(i), crate::layout::skill_slot_rect(i));
                     app.world_control.consume_world_click();
                     return;
                 }
@@ -492,7 +557,7 @@ pub(crate) fn handle_world_mouse_down<'a>(
                         let (wx, wy, ww, wh) = crate::status::panel(bg);
                         if x >= wx && x < wx + ww && y >= wy && y < wy + wh {
                             ui_consumed = true;
-                            match crate::status::hit((x - wx, y - wy)) {
+                            match crate::status::hit((x - wx, y - wy), app.status_page.page()) {
                                 // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
                                 crate::status::Hit::Close => {
                                     let c = crate::status::CLOSE;
@@ -542,6 +607,29 @@ pub(crate) fn handle_world_mouse_down<'a>(
                                             if let Some(n) = app.net.as_mut() {
                                                 n.chat.push(trunc(&msg, 30), C_CHAT_SYS);
                                             }
+                                        }
+                                    }
+                                }
+                                // 技能页：**点一行 = 选中它**（选中后按 F1..F8 设快捷键；
+                                // 原版是弹一个选键对话框，我们还没有那块面板）。
+                                crate::status::Hit::Skill(row) => {
+                                    let base = app.magic_page.page() * crate::status::SKILL_ROWS;
+                                    let picked = app
+                                        .net
+                                        .as_ref()
+                                        .and_then(|n| n.world.magics.get(base + row))
+                                        .map(|m| (m.skill_id, m.name.clone()));
+                                    if let Some((id, name)) = picked {
+                                        app.magic_selected = Some(id);
+                                        println!("[ui] 选中技能 {name}（按 F1..F8 设快捷键）");
+                                        if let Some(n) = app.net.as_mut() {
+                                            n.chat.push(
+                                                trunc(
+                                                    &format!("选中 {name}，按 F1-F8 设快捷键"),
+                                                    30,
+                                                ),
+                                                C_CHAT_SYS,
+                                            );
                                         }
                                     }
                                 }
@@ -823,6 +911,26 @@ pub(crate) fn handle_mouse_wheel(app: &mut AppState, y: f32) {
             } else if y < 0.0 {
                 app.bag_page.step(-1, pages);
             }
+            done = true;
+        }
+    }
+    // ①′ 状态窗**技能页**内滚轮翻技能列表（一页 5 条）。
+    //
+    // ⚠️ 为什么不用那两个箭头：原版在技能页拿箭头翻技能列表（FState.pas:3704），
+    // 但我们没有那排"状态/技能"标签页 ⇒ 箭头被抢走就再也翻不回别的页。
+    if !done && app.win.status() && app.status_page.page() == crate::status::SKILL_PAGE {
+        let (wx, wy, ww, wh) = crate::status::panel_rect();
+        let over = app.mouse.0 >= wx
+            && app.mouse.0 < wx + ww
+            && app.mouse.1 >= wy
+            && app.mouse.1 < wy + wh;
+        if over {
+            let dir = if y > 0.0 { 1 } else { -1 };
+            let pages = app
+                .net
+                .as_ref()
+                .map_or(1, |n| crate::status::skill_pages(n.world.magics.len()));
+            app.magic_page.step(dir, pages);
             done = true;
         }
     }

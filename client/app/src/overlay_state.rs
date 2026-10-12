@@ -27,6 +27,13 @@ pub(crate) enum Effect {
         slot: usize,
         make_index: i32,
     },
+    /// 放一个技能（技能栏点击 / F1..F8）。
+    CastSkill {
+        /// 技能栏格号（0..8，只用于日志/提示）。
+        slot: usize,
+        skill_id: u32,
+        name: String,
+    },
     BoundBelt {
         slot: usize,
         name: String,
@@ -62,7 +69,8 @@ pub(crate) fn reduce(app: &mut AppState, press: Press) -> Effect {
                 };
             }
             crate::layout::HudBtn::Magic => {
-                return Effect::Say("技能窗还没做（原版 F11）。".into())
+                crate::world_input::open_skill_window(app);
+                return Effect::Notice("技能窗".into());
             }
             crate::layout::HudBtn::Option => return Effect::Say("选项窗还没做。".into()),
         },
@@ -102,6 +110,33 @@ pub(crate) fn reduce(app: &mut AppState, press: Press) -> Effect {
                 };
             }
         }
+        // 技能栏第 `slot` 格 ⇒ 放绑在 F{slot+1} 的那个技能
+        //（原版 `UseMagic(GetMagicByKey(...))`，ClMain.pas:1825-1841）。
+        Press::SkillBar(slot) => {
+            let key = b'1' as u32 + slot as u32;
+            let picked = app.net.as_ref().and_then(|n| {
+                n.world
+                    .magics
+                    .iter()
+                    .find(|m| m.key == key)
+                    .map(|m| (m.skill_id, m.name.clone()))
+            });
+            match picked {
+                Some((skill_id, name)) => {
+                    return Effect::CastSkill {
+                        slot,
+                        skill_id,
+                        name,
+                    }
+                }
+                None => {
+                    return Effect::Say(format!(
+                        "F{} 还没绑技能（技能窗里选中后按 F1-F8）",
+                        slot + 1
+                    ))
+                }
+            }
+        }
         Press::BagClose => {
             app.win.close_bag();
             return Effect::Notice("背包窗关闭（点 X）".into());
@@ -111,6 +146,9 @@ pub(crate) fn reduce(app: &mut AppState, press: Press) -> Effect {
             return Effect::Notice("状态窗关闭（点 X）".into());
         }
         Press::Status(crate::status::Hit::Arrow(dir)) => {
+            // ⚠️ 箭头**永远翻窗口页**：原版在技能页让箭头去翻技能列表（FState.pas:3704），
+            // 但我们没有那排"状态/技能"标签页 ⇒ 箭头被抢走就再也翻不回别的页。
+            // 技能列表的翻页交给**滚轮**（`world_input::handle_mouse_wheel`）。
             app.status_page.step(dir, crate::status::PAGES);
             return Effect::Notice(format!("状态窗翻到第 {} 页", app.status_page.page()));
         }
@@ -226,6 +264,8 @@ mod tests {
         let mut app = AppState::new();
         reduce(&mut app, Press::Status(crate::status::Hit::Arrow(1)));
         assert_eq!(app.status_page.page(), 1);
+        reduce(&mut app, Press::Status(crate::status::Hit::Arrow(1)));
+        assert_eq!(app.status_page.page(), crate::status::SKILL_PAGE);
         reduce(&mut app, Press::Status(crate::status::Hit::Arrow(1)));
         assert_eq!(app.status_page.page(), 0, "状态页翻页循环");
     }

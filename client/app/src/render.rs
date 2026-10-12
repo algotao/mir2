@@ -86,6 +86,18 @@ pub(crate) fn draw_frame<'a, T>(
         // **快捷（腰带）栏**：画在世界与 HUD 之上（框在底栏里、内容在这里）。
         if app.scene == crate::app_state::Scene::World {
             if let Some(dir) = asset_dir.as_deref() {
+                hud::draw_skill_bar(
+                    canvas,
+                    tex_creator,
+                    ui,
+                    ui_texts,
+                    dir,
+                    app.net.as_ref(),
+                    match app.ui_click.held() {
+                        Some(Press::SkillBar(i)) => Some(i),
+                        _ => None,
+                    },
+                )?;
                 hud::draw_belt(
                     canvas,
                     tex_creator,
@@ -277,6 +289,8 @@ pub(crate) fn draw_frame<'a, T>(
                     dir,
                     app.net.as_ref(),
                     app.status_page.page(),
+                    app.magic_page.page(),
+                    app.magic_selected,
                     &app.ui_click,
                 )?;
             }

@@ -108,6 +108,36 @@ pub(crate) fn handle_key_down(
         Some(Keycode::_6) if app.scene == crate::app_state::Scene::World => {
             crate::world_input::belt_key(&mut app.net, &mut app.belt, 5)
         }
+        // F1..F8 = **技能**（原版键位，ClMain.pas:2038-2048）：
+        // 技能窗里选中了某条 ⇒ 给它设快捷键；否则 ⇒ 放绑在那个键上的技能。
+        Some(Keycode::F1) if app.scene == crate::app_state::Scene::World => {
+            crate::world_input::skill_hotkey(app, 0)
+        }
+        Some(Keycode::F2) if app.scene == crate::app_state::Scene::World => {
+            crate::world_input::skill_hotkey(app, 1)
+        }
+        Some(Keycode::F3) if app.scene == crate::app_state::Scene::World => {
+            crate::world_input::skill_hotkey(app, 2)
+        }
+        Some(Keycode::F4) if app.scene == crate::app_state::Scene::World => {
+            crate::world_input::skill_hotkey(app, 3)
+        }
+        Some(Keycode::F5) if app.scene == crate::app_state::Scene::World => {
+            crate::world_input::skill_hotkey(app, 4)
+        }
+        Some(Keycode::F6) if app.scene == crate::app_state::Scene::World => {
+            crate::world_input::skill_hotkey(app, 5)
+        }
+        Some(Keycode::F7) if app.scene == crate::app_state::Scene::World => {
+            crate::world_input::skill_hotkey(app, 6)
+        }
+        Some(Keycode::F8) if app.scene == crate::app_state::Scene::World => {
+            crate::world_input::skill_hotkey(app, 7)
+        }
+        // F11 = **技能窗**（原版 `StatePage := 3` + 打开状态窗，ClMain.pas:2056）
+        Some(Keycode::F11) if app.scene == crate::app_state::Scene::World => {
+            crate::world_input::open_skill_window(app)
+        }
         // ⚠️ **开发键让开原版键位**（口径见 `docs/use.md`）：F1~F8 是技能、
         // F9~F12 是包裹/属性/技能/内挂、M 是大地图、Tab 是小地图、数字是快捷物品
         // ⇒ 这些"开发查看器"入口统统收进 **Ctrl+**，原版键位留给真功能。

@@ -2001,7 +2001,7 @@ fn 状态窗版式() {
         assert!(!seen.contains(&(sx, sy)), "槽 {slot} 与前面的重叠");
         seen.push((sx, sy));
         assert_eq!(
-            crate::status::hit((sx + sw / 2.0, sy + sh / 2.0)),
+            crate::status::hit((sx + sw / 2.0, sy + sh / 2.0), 0),
             crate::status::Hit::Slot(slot),
             "槽 {slot} 中心应命中它自己"
         );
@@ -2009,26 +2009,28 @@ fn 状态窗版式() {
     // 关闭 X / 翻页箭头：命中判定落在官方坐标上
     let c = crate::status::CLOSE;
     assert_eq!(
-        crate::status::hit((c.0 + 1.0, c.1 + 1.0)),
+        crate::status::hit((c.0 + 1.0, c.1 + 1.0), 0),
         crate::status::Hit::Close
     );
     let u = crate::status::ARROW_UP_RECT;
     assert_eq!(
-        crate::status::hit((u.0 + 1.0, u.1 + 1.0)),
+        crate::status::hit((u.0 + 1.0, u.1 + 1.0), 0),
         crate::status::Hit::Arrow(-1)
     );
     let d = crate::status::ARROW_DOWN_RECT;
     assert_eq!(
-        crate::status::hit((d.0 + 1.0, d.1 + 1.0)),
+        crate::status::hit((d.0 + 1.0, d.1 + 1.0), 0),
         crate::status::Hit::Arrow(1)
     );
-    assert_eq!(crate::status::hit((0.0, 0.0)), crate::status::Hit::None);
-    // 翻页**循环**（官方 4 页，我们做 2 页）
+    assert_eq!(crate::status::hit((0.0, 0.0), 0), crate::status::Hit::None);
+    // 翻页**循环**（0 装备 / 1 属性 / 2 技能）
     let mut pg = crate::pager::Pager::new();
     pg.step(1, crate::status::PAGES);
     assert_eq!(pg.page(), 1);
     pg.step(1, crate::status::PAGES);
-    assert_eq!(pg.page(), 0);
+    assert_eq!(pg.page(), crate::status::SKILL_PAGE, "第 3 页是技能页");
+    pg.step(1, crate::status::PAGES);
+    assert_eq!(pg.page(), 0, "翻页循环");
     pg.step(-1, crate::status::PAGES);
     assert_eq!(pg.page(), crate::status::PAGES - 1);
     // 槽位中文名（只用于聊天反馈，但别把下标写错）
@@ -2486,6 +2488,68 @@ fn 聊天文字贴着白框底边且不越界() {
             last + CHAT_LINE_H
         );
     }
+}
+
+/// **技能栏**：8 格（F1..F8）都在画布内、彼此不重叠、命中与矩形同源。
+#[test]
+fn 技能栏八格不重叠且可命中() {
+    for i in 0..crate::layout::SKILL_SLOTS {
+        let r = crate::layout::skill_slot_rect(i);
+        let (x, y, w, h) = (r.0 .0, r.1 .0, r.2 .0, r.3 .0);
+        assert!(x >= 0.0 && y >= 0.0);
+        assert!(
+            x + w <= crate::window::WIN_W as f32 && y + h <= crate::window::WIN_H as f32,
+            "第 {i} 格越出画布"
+        );
+        assert_eq!(
+            crate::layout::skill_slot_at(crate::widget::canvas_pt((x + w / 2.0, y + h / 2.0))),
+            Some(i),
+            "第 {i} 格中心应命中它自己"
+        );
+        // 技能栏在底栏**之上**（底栏最后贴 ⇒ 压在它上面会互相盖住）
+        assert!(
+            y + h <= crate::window::WIN_H as f32 - crate::layout::HUD_BOARD_H,
+            "技能栏压到底栏上了"
+        );
+    }
+}
+
+/// **技能窗**（状态窗技能页）与技能的快捷键槽位换算。
+///
+/// `MagicEntry::slot()` 是技能栏与 F1..F8 的**唯一**换算处：
+/// `key` 用字符值（`'1'..'8'`），没绑是 0。
+#[test]
+fn 技能快捷键的槽位换算() {
+    let mk = |key: u32| mir2_core::world::MagicEntry {
+        skill_id: 1,
+        name: "火球术".into(),
+        key,
+        icon: 8,
+        ..Default::default()
+    };
+    assert_eq!(mk(0).slot(), None, "没绑 ⇒ None");
+    assert_eq!(mk(b'1' as u32).slot(), Some(0));
+    assert_eq!(mk(b'8' as u32).slot(), Some(7));
+    assert_eq!(mk(b'9' as u32).slot(), None, "只允许 F1..F8");
+    // 技能页：一页 5 条、行矩形在窗框内、命中与矩形同源
+    let bg = (232.0, 325.0);
+    let (_px, _py, pw, ph) = crate::status::panel((232, 325));
+    for row in 0..crate::status::SKILL_ROWS {
+        let (rx, ry, rw, rh) = crate::status::skill_row_rect(row);
+        assert!(rx >= 0.0 && rx + rw <= pw, "第 {row} 行越出窗宽");
+        assert!(ry + rh <= ph, "第 {row} 行越出窗高");
+        assert_eq!(
+            crate::status::hit((rx + rw / 2.0, ry + rh / 2.0), crate::status::SKILL_PAGE),
+            crate::status::Hit::Skill(row)
+        );
+    }
+    // 装备页不认技能行（同一个点，页不同 ⇒ 结果不同）
+    let (rx, ry, rw, rh) = crate::status::skill_row_rect(0);
+    assert_ne!(
+        crate::status::hit((rx + rw / 2.0, ry + rh / 2.0), 0),
+        crate::status::Hit::Skill(0)
+    );
+    let _ = bg;
 }
 
 /// **底栏所有控件都必须在画布内**，而且用的是**画布坐标**（不是设计坐标）。

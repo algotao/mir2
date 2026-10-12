@@ -570,6 +570,25 @@ impl Net {
         });
     }
 
+    /// 释放技能（原版 `CM_SPELL`）：`target_id` 为 0 ⇒ 按目标格 `(x, y)` 放。
+    pub(crate) fn cast_skill(&self, skill_id: u32, target_id: u64, x: i32, y: i32) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::CastSkill {
+            skill_id,
+            target_entity_id: target_id,
+            x,
+            y,
+        });
+    }
+
+    /// 设置技能快捷键：`key` 用 `'1'..'8'`（F1..F8），0 = 清空。
+    /// 撞键由服务端清（一个键只对应一个技能）。
+    pub(crate) fn set_magic_key(&self, skill_id: u32, key: u32) {
+        let _ = self
+            .sess
+            .cmds
+            .send(mir2_net::Cmd::SetMagicKey { skill_id, key });
+    }
+
     /// 说一句话（目前只用于 `@atkmode` 这类**命令**；普通聊天频道还没开）。
     pub(crate) fn say(&self, text: &str) {
         let _ = self.sess.cmds.send(mir2_net::Cmd::Say(text.to_string()));

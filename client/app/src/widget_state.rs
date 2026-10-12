@@ -62,6 +62,8 @@ pub(crate) enum Press {
     Quick(crate::layout::QuickBtn),
     /// 快捷（腰带）栏第 `i` 格。
     Belt(usize),
+    /// **技能栏**第 `i` 格（F1..F8）：点它 = 放绑在那格上的技能。
+    SkillBar(usize),
     /// 背包窗的关闭 X。
     BagClose,
     /// 状态窗的关闭 X / 翻页箭头。

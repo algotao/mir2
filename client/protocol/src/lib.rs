@@ -163,6 +163,13 @@ pub fn body_name(body: &envelope::Body) -> &'static str {
         Body::EntityAppear(_) => "EntityAppear",
         Body::EntityDisappear(_) => "EntityDisappear",
         Body::EntityMove(_) => "EntityMove",
+        // ---------- 0x07xx 技能（技能窗 / 技能栏）----------
+        Body::CastSkillInput(_) => "CastSkillInput",
+        Body::SkillEffect(_) => "SkillEffect",
+        Body::MagicList(_) => "MagicList",
+        Body::MagicChanged(_) => "MagicChanged",
+        Body::MagicLevelExp(_) => "MagicLevelExp",
+        Body::SetMagicKey(_) => "SetMagicKey",
         _ => "other",
     }
 }

@@ -65,6 +65,10 @@ pub(crate) struct AppState {
     pub win: windows::Windows,
     pub bag_page: pager::Pager,
     pub status_page: pager::Pager,
+    /// **技能页**翻到第几页（技能多于 5 条时；翻页键在技能页翻它）。
+    pub magic_page: pager::Pager,
+    /// 技能窗里**选中**的那条的 `skill_id`（选中后按 F1..F8 = 设快捷键）。
+    pub magic_selected: Option<u32>,
     pub shop_seen_seq: u64,
     pub shop_ui: shopui::ShopUi,
     pub ui_click: Ui,
@@ -110,6 +114,8 @@ impl AppState {
             win: windows::Windows::new(),
             bag_page: pager::Pager::new(),
             status_page: pager::Pager::new(),
+            magic_page: pager::Pager::new(),
+            magic_selected: None,
             shop_seen_seq: 0,
             shop_ui: shopui::ShopUi::new(),
             ui_click: Ui::new(),

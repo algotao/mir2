@@ -117,6 +117,15 @@ pub enum Cmd {
     UnequipItem { equip_slot: u32 },
     /// 修理背包物品（原版 `CM_USERREPAIRITEM`；`special` = 特修，价格 ×3 但不磨损上限）。
     RepairItem { slot: u32, special: bool },
+    /// 释放技能（原版 `CM_SPELL`）。`target_entity_id` 为 0 时按**目标格**施放。
+    CastSkill {
+        skill_id: u32,
+        target_entity_id: u64,
+        x: i32,
+        y: i32,
+    },
+    /// 设置技能快捷键（原版 `CM_MAGICKEYCHANGE`）：`key` 用字符值 `'1'..'8'`，0 = 清空。
+    SetMagicKey { skill_id: u32, key: u32 },
     /// 挖肉（原版 `CM_BUTCH`）：按住 Alt 点动物尸体（死了的、鸡/鹿/狼这类动物）。
     Butch {
         target_id: u64,
@@ -350,6 +359,24 @@ fn writer_loop(stream: &mut TcpStream, cmds: Receiver<Cmd>) {
                 special,
                 client_tick: 0,
             }),
+            Cmd::CastSkill {
+                skill_id,
+                target_entity_id,
+                x,
+                y,
+            } => Body::CastSkillInput(proto::CastSkillInput {
+                skill_id,
+                target_entity_id,
+                target_position: if x != 0 || y != 0 {
+                    Some(proto::Vec2 { x, y })
+                } else {
+                    None
+                },
+                client_tick: 0,
+            }),
+            Cmd::SetMagicKey { skill_id, key } => {
+                Body::SetMagicKey(proto::SetMagicKey { skill_id, key })
+            }
             Cmd::Say(text) => Body::ChatInput(proto::ChatInput {
                 channel: proto::ChatChannel::ChatSay as i32,
                 text,

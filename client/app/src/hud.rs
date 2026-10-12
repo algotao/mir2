@@ -916,6 +916,75 @@ fn hud_img_rect<'a, T>(
 /// ⚠️ 数据是客户端本地的（官方 `g_ItemArr`）⇒ 只认 `BeltSlot` 里那两个字段，
 /// 物品真身始终在背包里；背包重排后由调用方把失效的格清掉。
 #[allow(clippy::too_many_arguments)]
+/// **技能栏**（F1..F8 那 8 格）：画在底栏之上，每格显示绑上去的技能图标。
+///
+/// ⚠️ 原版 1.76 底栏**没有**这一排（技能只在 F1..F8 与技能窗里）；这是照用户
+/// 2026-10-12 给的参考图补的。图标取 `MagIcon.wzl[icon]`（`icon` 由服务端下发
+/// = `effect * 2`），按下态是 `icon + 1`（原版 FState.pas:3655-3662）。
+pub(crate) fn draw_skill_bar<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    ui: &mut ui::UiCache<'a>,
+    texts: &mut font::TextCache<'a>,
+    dir: &Path,
+    net: Option<&Net>,
+    // 当前按住的是第几格（按下反馈，与其它控件同一条规矩）
+    held: Option<usize>,
+) -> Result<(), sdl3::Error> {
+    let Some(n) = net else { return Ok(()) };
+    if !n.world.in_world() {
+        return Ok(());
+    }
+    for i in 0..crate::layout::SKILL_SLOTS {
+        let r = crate::layout::skill_slot_rect(i);
+        let (x, y, w, h) = (r.0 .0, r.1 .0, r.2 .0, r.3 .0);
+        // 格子底（半透明深底 + 石色边框）—— 素材里没有技能栏的板，自绘一块
+        canvas.set_blend_mode(BlendMode::Blend);
+        canvas.set_draw_color(Color::RGBA(16, 14, 12, 200));
+        canvas.fill_rect(FRect::new(x, y, w, h))?;
+        canvas.set_draw_color(if held == Some(i) {
+            Color::RGB(255, 236, 140)
+        } else {
+            Color::RGB(120, 108, 82)
+        });
+        canvas.draw_rect(FRect::new(x, y, w, h))?;
+        canvas.set_blend_mode(BlendMode::None);
+
+        let key = b'1' as u32 + i as u32;
+        let bound = n.world.magics.iter().find(|m| m.key == key);
+        if let Some(m) = bound {
+            // 按下时叠 `icon+1` 那张（原版按下态），常态用 `icon`
+            let idx = if held == Some(i) { m.icon + 1 } else { m.icon };
+            if m.icon != 0 {
+                if let Some((iw, ih)) = ui.size(dir, crate::status::MAG_ICON_LIB, idx) {
+                    let (iw, ih) = (iw as f32, ih as f32);
+                    let _ = ui.draw_src(
+                        canvas,
+                        tc,
+                        dir,
+                        crate::status::MAG_ICON_LIB,
+                        idx,
+                        FRect::new(0.0, 0.0, iw, ih),
+                        FRect::new(x + (w - iw) / 2.0, y + (h - ih) / 2.0, iw, ih),
+                        255,
+                    );
+                }
+            }
+        }
+        // 键名（F1..F8）
+        texts.draw(
+            canvas,
+            tc,
+            &format!("F{}", i + 1),
+            x + 2.0,
+            y + h - 11.0,
+            (214, 200, 150),
+            Some((0, 0, 0)),
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) fn draw_belt<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
