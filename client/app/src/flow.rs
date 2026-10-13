@@ -239,6 +239,56 @@ pub(crate) fn submit_login(login: &mut login::Login, net: &mut Option<Net>, stat
     }
 }
 
+/// 键盘和鼠标共用的登录动作执行器；SDL 事件入口只生成 `login::Action`。
+pub(crate) fn do_login_action(
+    action: login::Action,
+    login: &mut login::Login,
+    net: &mut Option<Net>,
+    status: &mut String,
+    sound: &audio::Audio,
+    sounds: &Option<mir2_core::sound::SoundAssets>,
+) -> bool {
+    apply_login_action(action, login, net, status, || {
+        sfx(sound, sounds, mir2_core::sound::idx::NORM_BUTTON_CLICK)
+    })
+}
+
+fn apply_login_action(
+    action: login::Action,
+    login: &mut login::Login,
+    net: &mut Option<Net>,
+    status: &mut String,
+    mut click_sound: impl FnMut(),
+) -> bool {
+    if action != login::Action::None {
+        click_sound();
+    }
+    match action {
+        login::Action::None | login::Action::Dismiss => false,
+        login::Action::Submit => {
+            submit_login(login, net, status);
+            false
+        }
+        login::Action::SubmitSignup => {
+            submit_signup(login, net, status);
+            false
+        }
+        login::Action::NewAccount => {
+            *status = "NEW ACCOUNT".into();
+            false
+        }
+        login::Action::CancelSignup => {
+            status.clear();
+            false
+        }
+        login::Action::ChangePassword => {
+            *status = "CHANGE PASSWORD: NOT WIRED YET".into();
+            false
+        }
+        login::Action::Quit => true,
+    }
+}
+
 /// 提交建号（D-32）。
 ///
 /// 与 `submit_login` 的差别只有两点：走 `connect_for_signup`，以及提示语措辞 ——
@@ -262,5 +312,58 @@ pub(crate) fn submit_signup(login: &mut login::Login, net: &mut Option<Net>, sta
             *net = Some(n);
         }
         Err(e) => login.error = Some(e),
+    }
+}
+
+#[cfg(test)]
+mod login_action_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn 键盘鼠标共用登录动作执行并只对语义动作播放按钮声() {
+        let mut login = login::Login::new();
+        let mut net = None;
+        let mut status = String::new();
+        let sounds = Cell::new(0);
+        let mut play = || sounds.set(sounds.get() + 1);
+
+        assert!(!apply_login_action(
+            login::Action::None,
+            &mut login,
+            &mut net,
+            &mut status,
+            &mut play,
+        ));
+        assert_eq!(sounds.get(), 0);
+
+        assert!(!apply_login_action(
+            login::Action::NewAccount,
+            &mut login,
+            &mut net,
+            &mut status,
+            &mut play,
+        ));
+        assert_eq!(status, "NEW ACCOUNT");
+        assert_eq!(sounds.get(), 1);
+
+        assert!(!apply_login_action(
+            login::Action::CancelSignup,
+            &mut login,
+            &mut net,
+            &mut status,
+            &mut play,
+        ));
+        assert!(status.is_empty());
+        assert_eq!(sounds.get(), 2);
+
+        assert!(apply_login_action(
+            login::Action::Quit,
+            &mut login,
+            &mut net,
+            &mut status,
+            &mut play,
+        ));
+        assert_eq!(sounds.get(), 3);
     }
 }

@@ -257,29 +257,16 @@ pub(crate) fn handle_key_down(
         // 它给出的动作翻译成"接下来干什么"。
         _ if app.scene == crate::app_state::Scene::Login => {
             if let Some(k) = keycode {
-                let act = app.login.on_key(scene_key(k));
-                // 按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` ⇒ 103）
-                if act != login::Action::None {
-                    sfx(sound, sounds, mir2_core::sound::idx::NORM_BUTTON_CLICK);
-                }
-                match act {
-                    login::Action::Submit => {
-                        submit_login(&mut app.login, &mut app.net, &mut app.status)
-                    }
-                    login::Action::SubmitSignup => {
-                        submit_signup(&mut app.login, &mut app.net, &mut app.status)
-                    }
-                    login::Action::NewAccount => {
-                        // 面板切换在 `login` 里已经做完了（`enter_signup`），
-                        // 这里只给状态栏一句人话（原版是开 `DNewAccount`）。
-                        app.status = "NEW ACCOUNT".into();
-                    }
-                    login::Action::CancelSignup => app.status = String::new(),
-                    login::Action::ChangePassword => {
-                        app.status = "CHANGE PASSWORD: NOT WIRED YET".into();
-                    }
-                    login::Action::Quit => return Ok(true),
-                    login::Action::None | login::Action::Dismiss => {}
+                let action = app.login.on_key(scene_key(k));
+                if crate::flow::do_login_action(
+                    action,
+                    &mut app.login,
+                    &mut app.net,
+                    &mut app.status,
+                    sound,
+                    sounds,
+                ) {
+                    return Ok(true);
                 }
             }
         }

@@ -257,25 +257,15 @@ pub(crate) fn run_app<T>(
                         &asset_dir,
                         crate::widget::canvas_pt((x, y)),
                     );
-                    // 按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` ⇒ 103）
-                    if act != login::Action::None {
-                        sfx(&sound, &sounds, mir2_core::sound::idx::NORM_BUTTON_CLICK);
-                    }
-                    match act {
-                        login::Action::Submit => {
-                            submit_login(&mut app.login, &mut app.net, &mut app.status)
-                        }
-                        login::Action::SubmitSignup => {
-                            submit_signup(&mut app.login, &mut app.net, &mut app.status)
-                        }
-                        login::Action::Quit => break 'run,
-                        login::Action::Dismiss => {}
-                        login::Action::NewAccount => app.status = "NEW ACCOUNT".into(),
-                        login::Action::CancelSignup => app.status = String::new(),
-                        login::Action::ChangePassword => {
-                            app.status = "CHANGE PASSWORD: NOT WIRED YET".into();
-                        }
-                        login::Action::None => {}
+                    if crate::flow::do_login_action(
+                        act,
+                        &mut app.login,
+                        &mut app.net,
+                        &mut app.status,
+                        &sound,
+                        &sounds,
+                    ) {
+                        break 'run;
                     }
                 }
                 Event::TextInput { text: t, .. }

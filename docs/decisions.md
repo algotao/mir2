@@ -6043,3 +6043,15 @@ dir, x, y, 0, '')`，`GetFeature` 里**没有**骷髅分支 ⇒ **外观一个�
 - 保存仍为稀疏覆盖；只有存在非默认 override 才写版本字段。全默认时清除配置文件，不留下空版本文件。
 
 **验收**：v0 子项在 parent 位移/锚点改变时迁移后保持原绝对位置；保存为 v1 再读回完全一致；损坏/未来版本拒绝且现有无版本配置兼容。
+
+---
+
+## D-141 场景动作使用单一副作用入口（2026-10-13）
+
+键盘和鼠标只产生平台无关的场景动作；相同动作必须共用一个副作用执行器，避免登录/选角不同输入途径行为漂移。
+
+- `Login::on_key` 和 `scene_input::login_up` 均只产生 `login::Action`；按钮声、登录/建号连接提交、状态文字与退出由 `flow::do_login_action` 统一执行。
+- `Select::on_key` / 鼠标 hit 继续汇入 `select::Action`，由既有 `flow::do_select_action` 执行网络与音效副作用。
+- SDL `Keycode/MouseButton` 映射仍位于 keyboard/world_input 边界；本阶段不把 SDL、网络或 renderer 句柄移入纯状态机，也不重写大型 World 点击 reducer。
+
+**验收**：键盘和鼠标的 Login 动作只调用同一执行器；纯动作测试验证按钮音、状态变化与退出标记；workspace 全量测试通过。
