@@ -318,6 +318,201 @@ pub(crate) enum InputPolicy {
     Block,
 }
 
+/// 通用布局编辑约束；绘制和业务交互不属于此策略。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct EditPolicy {
+    pub movable: bool,
+    pub resizable: bool,
+    pub min_w: f32,
+    pub min_h: f32,
+    pub max_w: Option<f32>,
+    pub max_h: Option<f32>,
+}
+
+impl EditPolicy {
+    pub(crate) const LOCKED: Self = Self {
+        movable: false,
+        resizable: false,
+        min_w: 1.0,
+        min_h: 1.0,
+        max_w: None,
+        max_h: None,
+    };
+    pub(crate) const MOVE_ONLY: Self = Self {
+        movable: true,
+        resizable: false,
+        ..Self::LOCKED
+    };
+    pub(crate) const MOVE_RESIZE: Self = Self {
+        movable: true,
+        resizable: true,
+        min_w: 2.0,
+        min_h: 2.0,
+        max_w: None,
+        max_h: None,
+    };
+
+    fn clamp_size(self, w: f32, h: f32) -> (f32, f32) {
+        let max_w = self.max_w.unwrap_or(f32::INFINITY).max(self.min_w);
+        let max_h = self.max_h.unwrap_or(f32::INFINITY).max(self.min_h);
+        (w.max(self.min_w).min(max_w), h.max(self.min_h).min(max_h))
+    }
+}
+
+/// 可编辑节点的局部几何与锚点快照。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LayoutValue {
+    pub rect: crate::layout::LRect,
+    pub align: Align,
+}
+
+/// 一次完整的布局变更，可用于撤销/重做。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct EditOperation {
+    pub id: &'static str,
+    pub before: LayoutValue,
+    pub after: LayoutValue,
+}
+
+/// 通用拖动/改尺寸事务。预览可逐帧写入，提交时只产生一个操作。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EditSession {
+    id: &'static str,
+    mode: EditMode,
+    from: (f32, f32),
+    start: crate::layout::LRect,
+    before: LayoutValue,
+    policy: EditPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditMode {
+    Move,
+    Resize,
+}
+
+impl EditSession {
+    pub(crate) fn begin(
+        tree: &WidgetTree,
+        viewport: crate::layout::LRect,
+        id: &'static str,
+        pointer: (f32, f32),
+        grip: f32,
+    ) -> Option<Self> {
+        let node = tree.node(id)?;
+        let policy = node.edit;
+        if !policy.movable && !policy.resizable {
+            return None;
+        }
+        let start = tree.resolved_rect(viewport, id)?;
+        let resizing = policy.resizable
+            && (pointer.0 >= start.x + start.w - grip || pointer.1 >= start.y + start.h - grip);
+        Some(Self {
+            id,
+            mode: if resizing {
+                EditMode::Resize
+            } else {
+                EditMode::Move
+            },
+            from: pointer,
+            start,
+            before: tree.value(id)?,
+            policy,
+        })
+    }
+
+    pub(crate) fn update(
+        &self,
+        tree: &mut WidgetTree,
+        viewport: crate::layout::LRect,
+        pointer: (f32, f32),
+        grid: f32,
+    ) -> Result<crate::layout::LRect, &'static str> {
+        let step = grid.max(1.0);
+        let snap = |v: f32| (v / step).round() * step;
+        let (dx, dy) = (snap(pointer.0 - self.from.0), snap(pointer.1 - self.from.1));
+        let rect = match self.mode {
+            EditMode::Move if self.policy.movable => crate::layout::LRect::new(
+                snap(self.start.x + dx),
+                snap(self.start.y + dy),
+                self.start.w,
+                self.start.h,
+            ),
+            EditMode::Resize if self.policy.resizable => {
+                let (w, h) = self.policy.clamp_size(self.start.w + dx, self.start.h + dy);
+                let (w, h) = self.policy.clamp_size(snap(w), snap(h));
+                crate::layout::LRect::new(self.start.x, self.start.y, w, h)
+            }
+            _ => self.start,
+        };
+        tree.set_resolved_rect(viewport, self.id, rect)?;
+        Ok(rect)
+    }
+
+    pub(crate) fn commit(self, tree: &WidgetTree) -> Option<EditOperation> {
+        let after = tree.value(self.id)?;
+        (after != self.before).then_some(EditOperation {
+            id: self.id,
+            before: self.before,
+            after,
+        })
+    }
+
+    pub(crate) fn cancel(self, tree: &mut WidgetTree) -> Result<(), &'static str> {
+        tree.set_value(self.id, self.before)
+    }
+}
+
+/// 布局操作历史；一段拖动只入栈一次。
+#[derive(Debug, Default)]
+pub(crate) struct EditHistory {
+    undo: Vec<EditOperation>,
+    redo: Vec<EditOperation>,
+}
+
+impl EditHistory {
+    pub(crate) fn record(&mut self, operation: EditOperation) {
+        const HISTORY_LIMIT: usize = 256;
+        if self.undo.len() == HISTORY_LIMIT {
+            self.undo.remove(0);
+        }
+        self.undo.push(operation);
+        self.redo.clear();
+    }
+
+    pub(crate) fn undo(
+        &mut self,
+        tree: &mut WidgetTree,
+    ) -> Result<Option<&'static str>, &'static str> {
+        let Some(operation) = self.undo.pop() else {
+            return Ok(None);
+        };
+        if let Err(error) = tree.set_value(operation.id, operation.before) {
+            self.undo.push(operation);
+            return Err(error);
+        }
+        let id = operation.id;
+        self.redo.push(operation);
+        Ok(Some(id))
+    }
+
+    pub(crate) fn redo(
+        &mut self,
+        tree: &mut WidgetTree,
+    ) -> Result<Option<&'static str>, &'static str> {
+        let Some(operation) = self.redo.pop() else {
+            return Ok(None);
+        };
+        if let Err(error) = tree.set_value(operation.id, operation.after) {
+            self.redo.push(operation);
+            return Err(error);
+        }
+        let id = operation.id;
+        self.undo.push(operation);
+        Ok(Some(id))
+    }
+}
+
 /// 场景树中的一个布局节点。
 ///
 /// `parent` 为空时相对 viewport 对齐；有父控件时 `rect` 是父控件局部坐标。
@@ -331,6 +526,7 @@ pub(crate) struct LayoutNode {
     pub z: i32,
     pub clip_children: bool,
     pub input: InputPolicy,
+    pub edit: EditPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -351,6 +547,66 @@ pub(crate) struct WidgetTree {
 impl WidgetTree {
     pub(crate) fn push(&mut self, node: LayoutNode) {
         self.nodes.push(node);
+    }
+
+    pub(crate) fn nodes(&self) -> &[LayoutNode] {
+        &self.nodes
+    }
+
+    pub(crate) fn nodes_mut(&mut self) -> &mut [LayoutNode] {
+        &mut self.nodes
+    }
+
+    pub(crate) fn node(&self, id: &str) -> Option<&LayoutNode> {
+        self.nodes.iter().find(|node| node.id == id)
+    }
+
+    pub(crate) fn value(&self, id: &str) -> Option<LayoutValue> {
+        let node = self.node(id)?;
+        Some(LayoutValue {
+            rect: node.rect,
+            align: node.align,
+        })
+    }
+
+    pub(crate) fn set_value(&mut self, id: &str, value: LayoutValue) -> Result<(), &'static str> {
+        let node = self.node_mut(id).ok_or("editable widget does not exist")?;
+        node.rect = value.rect;
+        node.align = value.align;
+        Ok(())
+    }
+
+    pub(crate) fn resolved_rect(
+        &self,
+        viewport: crate::layout::LRect,
+        id: &str,
+    ) -> Option<crate::layout::LRect> {
+        self.resolve(viewport)
+            .ok()?
+            .into_iter()
+            .find(|node| node.id == id)
+            .map(|node| node.rect)
+    }
+
+    pub(crate) fn set_resolved_rect(
+        &mut self,
+        viewport: crate::layout::LRect,
+        id: &str,
+        rect: crate::layout::LRect,
+    ) -> Result<(), &'static str> {
+        let node = self.node(id).ok_or("editable widget does not exist")?;
+        let (parent, align) = (node.parent, node.align);
+        let base = if let Some(parent_id) = parent {
+            self.resolved_rect(viewport, parent_id)
+                .ok_or("editable widget parent does not resolve")?
+        } else {
+            viewport
+        };
+        let local = unalign_rect(rect, base, align);
+        self.node_mut(id)
+            .ok_or("editable widget does not exist")?
+            .rect = local;
+        Ok(())
     }
 
     /// 设计器修改 anchor/局部矩形时更新节点。
@@ -436,6 +692,27 @@ impl WidgetTree {
             node.input != InputPolicy::Ignore
                 && node.rect.hit(p, 0.0)
                 && node.clip.is_none_or(|clip| clip.hit(p, 0.0))
+        });
+        nodes.sort_by_key(|node| (node.z, node.order));
+        Ok(nodes.pop())
+    }
+
+    /// 编辑命中与业务 hit-test 分离：编辑器可直接拖 Ignore 节点，但只认可见、可编辑节点。
+    pub(crate) fn edit_hit_test(
+        &self,
+        viewport: crate::layout::LRect,
+        p: (f32, f32),
+        visible: Option<&[&str]>,
+    ) -> Result<Option<ResolvedNode>, &'static str> {
+        let mut nodes = self.resolve(viewport)?;
+        nodes.retain(|resolved| {
+            let Some(node) = self.node(resolved.id) else {
+                return false;
+            };
+            (node.edit.movable || node.edit.resizable)
+                && visible.is_none_or(|ids| ids.contains(&resolved.id))
+                && resolved.rect.hit(p, 0.0)
+                && resolved.clip.is_none_or(|clip| clip.hit(p, 0.0))
         });
         nodes.sort_by_key(|node| (node.z, node.order));
         Ok(nodes.pop())
@@ -768,6 +1045,7 @@ mod layout_tree_tests {
             z,
             clip_children,
             input,
+            edit: EditPolicy::MOVE_RESIZE,
         }
     }
 
@@ -865,6 +1143,65 @@ mod layout_tree_tests {
     }
 
     #[test]
+    fn 编辑命中支持忽略输入节点并排除隐藏覆盖节点() {
+        let mut tree = WidgetTree::default();
+        let viewport = LRect::new(0.0, 0.0, 100.0, 100.0);
+        tree.push(node(
+            "panel",
+            None,
+            LRect::new(0.0, 0.0, 80.0, 80.0),
+            Align::TOP_LEFT,
+            0,
+            false,
+            InputPolicy::Block,
+        ));
+        tree.push(node(
+            "visible_button",
+            Some("panel"),
+            LRect::new(10.0, 10.0, 30.0, 30.0),
+            Align::TOP_LEFT,
+            1,
+            false,
+            InputPolicy::Target,
+        ));
+        tree.push(node(
+            "hidden_modal",
+            None,
+            LRect::new(5.0, 5.0, 40.0, 40.0),
+            Align::TOP_LEFT,
+            9,
+            false,
+            InputPolicy::Ignore,
+        ));
+        let visible = ["panel", "visible_button"];
+        assert_eq!(
+            tree.edit_hit_test(viewport, (20.0, 20.0), Some(&visible))
+                .unwrap()
+                .unwrap()
+                .id,
+            "visible_button",
+            "隐藏且层级更高的弹窗不能劫持可见按钮编辑命中"
+        );
+        assert_eq!(
+            tree.edit_hit_test(viewport, (6.0, 6.0), Some(&visible))
+                .unwrap()
+                .unwrap()
+                .id,
+            "panel",
+            "Block 根节点同样可以从画布直接编辑"
+        );
+        let door = ["hidden_modal"];
+        assert_eq!(
+            tree.edit_hit_test(viewport, (6.0, 6.0), Some(&door))
+                .unwrap()
+                .unwrap()
+                .id,
+            "hidden_modal",
+            "Ignore 业务 hit-test 节点仍可作为可见编辑目标"
+        );
+    }
+
+    #[test]
     fn parent环和缺失parent拒绝解析() {
         let mut tree = WidgetTree::default();
         tree.push(node(
@@ -888,6 +1225,99 @@ mod layout_tree_tests {
         assert_eq!(
             tree.resolve(LRect::new(0.0, 0.0, 10.0, 10.0)),
             Err("widget parent cycle")
+        );
+    }
+
+    #[test]
+    fn 通用编辑事务约束并可撤销重做() {
+        let viewport = LRect::new(0.0, 0.0, 400.0, 300.0);
+        let mut tree = WidgetTree::default();
+        let mut panel = node(
+            "panel",
+            None,
+            LRect::new(10.0, 20.0, 100.0, 60.0),
+            Align::TOP_LEFT,
+            0,
+            false,
+            InputPolicy::Block,
+        );
+        panel.edit = EditPolicy {
+            max_w: Some(120.0),
+            max_h: Some(80.0),
+            ..EditPolicy::MOVE_RESIZE
+        };
+        tree.push(panel);
+
+        let session = EditSession::begin(&tree, viewport, "panel", (109.0, 69.0), 8.0).unwrap();
+        session
+            .update(&mut tree, viewport, (300.0, 200.0), 1.0)
+            .unwrap();
+        let operation = session.commit(&tree).unwrap();
+        assert_eq!(
+            tree.resolved_rect(viewport, "panel"),
+            Some(LRect::new(10.0, 20.0, 120.0, 80.0))
+        );
+
+        let mut history = EditHistory::default();
+        history.record(operation);
+        assert_eq!(history.undo(&mut tree).unwrap(), Some("panel"));
+        assert_eq!(
+            tree.resolved_rect(viewport, "panel"),
+            Some(LRect::new(10.0, 20.0, 100.0, 60.0))
+        );
+        assert_eq!(history.redo(&mut tree).unwrap(), Some("panel"));
+        assert_eq!(
+            tree.resolved_rect(viewport, "panel"),
+            Some(LRect::new(10.0, 20.0, 120.0, 80.0))
+        );
+    }
+
+    #[test]
+    fn 固定尺寸编辑策略在边缘仍只移动() {
+        let viewport = LRect::new(0.0, 0.0, 400.0, 300.0);
+        let mut tree = WidgetTree::default();
+        let mut window = node(
+            "window",
+            None,
+            LRect::new(10.0, 20.0, 100.0, 60.0),
+            Align::TOP_LEFT,
+            0,
+            false,
+            InputPolicy::Block,
+        );
+        window.edit = EditPolicy::MOVE_ONLY;
+        tree.push(window);
+        let session = EditSession::begin(&tree, viewport, "window", (109.0, 69.0), 8.0).unwrap();
+        session
+            .update(&mut tree, viewport, (115.0, 75.0), 1.0)
+            .unwrap();
+        assert_eq!(
+            tree.resolved_rect(viewport, "window"),
+            Some(LRect::new(16.0, 26.0, 100.0, 60.0))
+        );
+    }
+
+    #[test]
+    fn 编辑事务取消恢复原矩形() {
+        let viewport = LRect::new(0.0, 0.0, 100.0, 100.0);
+        let mut tree = WidgetTree::default();
+        tree.push(node(
+            "item",
+            None,
+            LRect::new(5.0, 7.0, 20.0, 10.0),
+            Align::TOP_LEFT,
+            0,
+            false,
+            InputPolicy::Target,
+        ));
+        let session = EditSession::begin(&tree, viewport, "item", (10.0, 10.0), 8.0).unwrap();
+        session
+            .update(&mut tree, viewport, (30.0, 40.0), 1.0)
+            .unwrap();
+        session.cancel(&mut tree).unwrap();
+        assert_eq!(
+            tree.resolved_rect(viewport, "item"),
+            Some(LRect::new(5.0, 7.0, 20.0, 10.0))
         );
     }
 }

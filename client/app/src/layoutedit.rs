@@ -1,5 +1,5 @@
-//! **界面开发器**（D-134）：Ctrl+L 切进编辑模式，点选底栏上的控件、拖动/改大小、
-//! 选好就保存回 `assets/ui/layout.json`。
+//! **通用界面布局编辑器**（D-134/D-136）：Ctrl+L 后从 widget tree 点选节点，按节点策略
+//! 移动/改大小；接入 HUD、世界浮窗、登录/建号、开门动画与选角场景，统一保存到 `assets/ui/layout.json`。
 //!
 //! 只做三件事，其它一概不管：
 //!
@@ -7,14 +7,14 @@
 //! 2. **调**：按住拖动 = 移动；压在右/下边缘 8px 内拖动 = 改大小；网格吸附 `G` 键切 1/8px；
 //! 3. **存**：`S` 写文件（只写与缺省不同的项），`R` 把选中项恢复缺省，`Esc` 退出。
 //!
-//! ⚠️ 改动**只落这一个文件**，渲染那边统一读 `layout::hud_layout()` —— 所以编辑完
-//! 立刻看得见，不用重编译。
+//! 编辑结果写入统一的 `layout::hud_layout()` 文档；场景绘制/命中 adapter 读取同一解析几何。
 
 use sdl3::pixels::Color;
 use sdl3::render::{FRect, WindowCanvas};
 
-use crate::layout::{hud_layout, with_hud_layout, HudLayout, LRect, HUD_ITEM_IDS};
+use crate::layout::{hud_layout, with_hud_layout, EditorScope, HudLayout, LRect};
 use crate::layoutcfg;
+use crate::widget::{EditHistory, EditSession, WidgetTree};
 
 /// 边缘把手的宽度（右/下边缘这么多像素内拖动 = 改大小）。
 const GRIP: f32 = 8.0;
@@ -30,26 +30,15 @@ const TREE_ROW_H: f32 = 14.0;
 const C_FRAME: Color = Color::RGBA(90, 170, 255, 200);
 const C_SEL: Color = Color::RGBA(255, 210, 60, 255);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Move,
-    Resize,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Drag {
-    mode: Mode,
-    id: &'static str,
-    from: (f32, f32),
-    orig: LRect,
-}
-
 /// 编辑器的运行态（挂在 `AppState` 上）。
 #[derive(Debug, Default)]
 pub(crate) struct LayoutEdit {
     pub on: bool,
+    scope: EditorScope,
+    visible: Option<Vec<&'static str>>,
     sel: Option<&'static str>,
-    drag: Option<Drag>,
+    drag: Option<EditSession>,
+    history: EditHistory,
     grid: f32,
     /// **放大倍数**（1..8；>1 时整个画面按 [`Self::zoom_center`] 放大 —— 精确对像素用）。
     zoom: f32,
@@ -68,6 +57,97 @@ impl LayoutEdit {
     /// 放大中心（屏幕坐标）。
     pub(crate) fn zoom_center(&self) -> (f32, f32) {
         self.zoom_center
+    }
+
+    /// 当前显示场景决定编辑文档与坐标空间；切场景时取消未提交拖动。
+    pub(crate) fn set_scene(&mut self, scene: crate::app_state::Scene) {
+        let Some(scope) = EditorScope::from_scene(scene) else {
+            if self.on {
+                self.toggle();
+            }
+            return;
+        };
+        if scope == self.scope {
+            return;
+        }
+        if let Some(session) = self.drag.take() {
+            with_hud_layout(|layout| {
+                let mut tree = layout.editor_tree(self.scope);
+                if session.cancel(&mut tree).is_ok() {
+                    layout.apply_widget_tree(&tree, self.scope);
+                }
+            });
+        }
+        self.scope = scope;
+        self.sel = None;
+        self.visible = match scope {
+            EditorScope::World => None,
+            EditorScope::Login => Some(vec![
+                "login.panel",
+                "login.account",
+                "login.password",
+                "login.ok",
+                "login.new",
+                "login.chgpw",
+                "login.close",
+            ]),
+            EditorScope::Select => Some(vec![
+                "select.panel",
+                "select.slot.left",
+                "select.slot.right",
+                "select.info.left",
+                "select.info.right",
+                "select.menu.start",
+                "select.menu.create",
+                "select.menu.delete",
+                "select.menu.credits",
+                "select.menu.exit",
+            ]),
+        };
+        self.zoom = 1.0;
+        self.history = EditHistory::default();
+    }
+
+    pub(crate) fn scope(&self) -> EditorScope {
+        self.scope
+    }
+
+    /// 当前场景实际绘制的节点；None 表示该文档的所有节点都可见。
+    pub(crate) fn set_visible(&mut self, visible: Option<Vec<&'static str>>) {
+        if self.visible == visible {
+            return;
+        }
+        if let Some(session) = self.drag.take() {
+            with_hud_layout(|layout| {
+                let mut tree = layout.editor_tree(self.scope);
+                if session.cancel(&mut tree).is_ok() {
+                    layout.apply_widget_tree(&tree, self.scope);
+                }
+            });
+        }
+        if self
+            .sel
+            .is_some_and(|id| visible.as_ref().is_some_and(|ids| !ids.contains(&id)))
+        {
+            self.sel = None;
+            self.history = EditHistory::default();
+        }
+        self.visible = visible;
+    }
+
+    fn is_visible(&self, id: &str) -> bool {
+        self.visible.as_ref().is_none_or(|ids| ids.contains(&id))
+    }
+
+    /// 将鼠标画布坐标反算到当前布局文档空间（包含放大镜与 800×600 设计空间转换）。
+    pub(crate) fn pointer_to_layout(&self, screen: (f32, f32)) -> (f32, f32) {
+        let canvas = self.to_logic(screen);
+        if matches!(self.scope, EditorScope::Login | EditorScope::Select) {
+            let p = crate::ui::ui_inv_pt(canvas);
+            (p.0 .0, p.1 .0)
+        } else {
+            canvas
+        }
     }
 
     /// `+` / `-`：以 `at`（屏幕坐标）为中心改倍数 ⇒ 中心不变，看着就是"从鼠标处放大"。
@@ -103,9 +183,16 @@ impl LayoutEdit {
 
     pub(crate) fn toggle(&mut self) {
         self.on = !self.on;
-        self.drag = None;
+        if let Some(session) = self.drag.take() {
+            with_hud_layout(|layout| {
+                let mut tree = layout.editor_tree(self.scope);
+                if session.cancel(&mut tree).is_ok() {
+                    layout.apply_widget_tree(&tree, self.scope);
+                }
+            });
+        }
         if self.on {
-            self.last = "Ctrl+L 编辑中：点选拖动 / 边缘=改大小 / A锚点(Shift+A横向) / G网格 / S保存 / R复位 / Esc退出".to_string();
+            self.last = "Ctrl+L 编辑中：点选拖动 / 边缘=按节点策略改大小 / A锚点(Shift+A横向) / Ctrl+Z撤销 Ctrl+Y重做 / G网格 / S保存 / R复位 / Esc退出".to_string();
         }
     }
 
@@ -121,45 +208,40 @@ impl LayoutEdit {
         println!("[layout] {}", self.last);
     }
 
-    /// `R`：选中项恢复缺省。
+    /// `R`：选中项恢复缺省，作为一次通用布局操作记录。
     pub(crate) fn reset_selected(&mut self) {
-        let Some(id) = self.sel else {
+        let Some(id) = self.sel else { return };
+        let default = HudLayout::default_layout().editor_tree(self.scope);
+        let Some(after) = default.value(id) else {
             return;
         };
-        let def = HudLayout::default_layout();
-        let Some(r) = def.stored_rect(id) else { return };
-        with_hud_layout(|l| {
-            if id == crate::layout::HUD_PANEL_ID {
-                l.panel_align = def.panel_align;
-            }
-            l.set_stored(id, r);
+        let operation = with_hud_layout(|layout| {
+            let mut tree = layout.editor_tree(self.scope);
+            let before = tree.value(id)?;
+            tree.set_value(id, after).ok()?;
+            layout.apply_widget_tree(&tree, self.scope);
+            Some(crate::widget::EditOperation { id, before, after })
         });
-        self.last = format!("{id} 已复位");
+        if let Some(operation) = operation.filter(|op| op.before != op.after) {
+            self.history.record(operation);
+            self.last = format!("{id} 已复位");
+        }
     }
 
-    /// 命中走同一棵 widget tree：子控件在上层；底栏空白由 parent Block 接住，
-    /// clip / z-order 与绘制共用解析结果（D-135）。
-    fn pick(&self, p: (f32, f32)) -> Option<&'static str> {
-        let l = hud_layout();
-        let viewport = LRect::new(
-            0.0,
-            0.0,
-            crate::window::WIN_W as f32,
-            crate::window::WIN_H as f32,
-        );
-        l.widget_tree()
-            .hit_test(viewport, p)
-            .expect("HUD widget tree must be valid")
+    fn pick(&self, tree: &WidgetTree, p: (f32, f32)) -> Option<&'static str> {
+        tree.edit_hit_test(viewport(self.scope), p, self.visible.as_deref())
+            .expect("editable widget tree must be valid")
             .map(|hit| hit.id)
     }
 
-    /// 画布→固定层级面板的点击：选择列表项不启动控件拖动。
+    /// 层级面板与实际 widget tree 同源；添加节点后无需另改编辑器白名单。
     pub(crate) fn mouse_down_screen(&mut self, screen: (f32, f32), logic: (f32, f32)) -> bool {
         if !self.on {
             return false;
         }
+        let tree = hud_layout().editor_tree(self.scope);
         let row_y = TREE_Y + TREE_HEADER_H;
-        let tree_h = TREE_HEADER_H + TREE_ROW_H * HUD_ITEM_IDS.len() as f32 + 4.0;
+        let tree_h = TREE_HEADER_H + TREE_ROW_H * tree.nodes().len() as f32 + 4.0;
         if screen.0 >= TREE_X
             && screen.0 < TREE_X + TREE_W
             && screen.1 >= TREE_Y
@@ -167,9 +249,9 @@ impl LayoutEdit {
         {
             if screen.1 >= row_y {
                 let row = ((screen.1 - row_y) / TREE_ROW_H).floor() as usize;
-                if let Some(id) = HUD_ITEM_IDS.get(row) {
-                    self.sel = Some(id);
-                    self.last = format!("选中 {} ({id})", crate::layout::item_name(id));
+                if let Some(node) = tree.nodes().get(row) {
+                    self.sel = Some(node.id);
+                    self.last = format!("选中 {} ({})", crate::layout::item_name(node.id), node.id);
                 }
             }
             self.drag = None;
@@ -178,95 +260,139 @@ impl LayoutEdit {
         self.mouse_down(logic)
     }
 
-    /// 按下：选中 + 决定是移动还是改大小。返回是否消费了这次点击。
+    /// 通用节点命中与策略决定移动/调整尺寸；业务控件无需各自实现编辑逻辑。
     pub(crate) fn mouse_down(&mut self, p: (f32, f32)) -> bool {
         if !self.on {
             return false;
         }
-        let Some(id) = self.pick(p) else {
+        let tree = hud_layout().editor_tree(self.scope);
+        let Some(id) = self.pick(&tree, p) else {
             self.sel = None;
-            return true; // 编辑模式下点空白只是取消选中，不穿透到世界
+            self.drag = None;
+            return true;
         };
         self.sel = Some(id);
-        let orig = hud_layout()
-            .get(id)
-            .unwrap_or(LRect::new(0.0, 0.0, 0.0, 0.0));
-        // Parent 只移动、不缩放；子项在现阶段可人工改尺寸。
-        let mode = if id != crate::layout::HUD_PANEL_ID
-            && (p.0 >= orig.x + orig.w - GRIP || p.1 >= orig.y + orig.h - GRIP)
-        {
-            Mode::Resize
-        } else {
-            Mode::Move
-        };
-        self.drag = Some(Drag {
-            mode,
-            id,
-            from: p,
-            orig,
-        });
+        self.drag = EditSession::begin(&tree, viewport(self.scope), id, p, GRIP);
         true
     }
 
-    /// 移动：按网格吸附写回。
+    /// 编辑事务逐帧预览，mouse-up 才压入一次 undo 历史。
     pub(crate) fn mouse_move(&mut self, p: (f32, f32)) {
-        let Some(d) = self.drag else { return };
-        let g = self.grid();
-        let snap = |v: f32| (v / g).round() * g;
-        let (dx, dy) = (snap(p.0 - d.from.0), snap(p.1 - d.from.1));
-        let r = match d.mode {
-            Mode::Move => LRect::new(snap(d.orig.x + dx), snap(d.orig.y + dy), d.orig.w, d.orig.h),
-            Mode::Resize => LRect::new(
-                d.orig.x,
-                d.orig.y,
-                (snap(d.orig.w) + dx).max(2.0),
-                (snap(d.orig.h) + dy).max(2.0),
-            ),
-        };
-        with_hud_layout(|l| l.set(d.id, r));
+        let Some(session) = self.drag else { return };
+        let grid = self.grid();
+        with_hud_layout(|layout| {
+            let mut tree = layout.editor_tree(self.scope);
+            if session
+                .update(&mut tree, viewport(self.scope), p, grid)
+                .is_ok()
+            {
+                layout.apply_widget_tree(&tree, self.scope);
+            }
+        });
     }
 
     pub(crate) fn mouse_up(&mut self) {
-        if let Some(d) = self.drag.take() {
-            if let Some(r) = hud_layout().get(d.id) {
-                self.last = format!("{} x={} y={} w={} h={}", d.id, r.x, r.y, r.w, r.h);
+        let Some(session) = self.drag.take() else {
+            return;
+        };
+        let tree = hud_layout().editor_tree(self.scope);
+        if let Some(operation) = session.commit(&tree) {
+            self.history.record(operation);
+            if let Some(rect) = tree.resolved_rect(viewport(self.scope), operation.id) {
+                self.last = format!(
+                    "{} x={} y={} w={} h={}",
+                    operation.id, rect.x, rect.y, rect.w, rect.h
+                );
             }
         }
     }
 
-    /// 方向键微调（1 格；按住 Shift 之类由调用方决定，这里只吃单位量）。
-    pub(crate) fn nudge(&mut self, dx: f32, dy: f32) {
-        let Some(id) = self.sel else { return };
-        let Some(r) = hud_layout().get(id) else {
-            return;
-        };
-        with_hud_layout(|l| l.set(id, LRect::new(r.x + dx, r.y + dy, r.w, r.h)));
-        let r = hud_layout().get(id).unwrap();
-        self.last = format!("{} x={} y={} w={} h={}", id, r.x, r.y, r.w, r.h);
+    /// 撤销/重做通过 widget 层的几何快照执行。
+    pub(crate) fn undo(&mut self) {
+        let id = with_hud_layout(|layout| {
+            let mut tree = layout.editor_tree(self.scope);
+            let id = self.history.undo(&mut tree).ok().flatten()?;
+            layout.apply_widget_tree(&tree, self.scope);
+            Some(id)
+        });
+        if let Some(id) = id {
+            self.last = format!("已撤销 {id}");
+        }
     }
 
-    /// `A`：循环当前 parent 的 anchor 轴；Shift+A 切横向，不按 Shift 切纵向。
-    /// 子项局部坐标不变，父锚点变化时全体子项一起跟随。
+    pub(crate) fn redo(&mut self) {
+        let id = with_hud_layout(|layout| {
+            let mut tree = layout.editor_tree(self.scope);
+            let id = self.history.redo(&mut tree).ok().flatten()?;
+            layout.apply_widget_tree(&tree, self.scope);
+            Some(id)
+        });
+        if let Some(id) = id {
+            self.last = format!("已重做 {id}");
+        }
+    }
+
+    /// 方向键微调也作为单个通用操作进入历史。
+    pub(crate) fn nudge(&mut self, dx: f32, dy: f32) {
+        let Some(id) = self.sel else { return };
+        let operation = with_hud_layout(|layout| {
+            let mut tree = layout.editor_tree(self.scope);
+            if !tree.node(id)?.edit.movable {
+                return None;
+            }
+            let before = tree.value(id)?;
+            let rect = tree.resolved_rect(viewport(self.scope), id)?;
+            tree.set_resolved_rect(
+                viewport(self.scope),
+                id,
+                LRect::new(rect.x + dx, rect.y + dy, rect.w, rect.h),
+            )
+            .ok()?;
+            let after = tree.value(id)?;
+            layout.apply_widget_tree(&tree, self.scope);
+            Some(crate::widget::EditOperation { id, before, after })
+        });
+        if let Some(operation) = operation.filter(|op| op.before != op.after) {
+            self.history.record(operation);
+            if let Some(rect) = hud_layout().get(id) {
+                self.last = format!("{} x={} y={} w={} h={}", id, rect.x, rect.y, rect.w, rect.h);
+            }
+        }
+    }
+
+    /// `A` 改变当前选中节点的锚点；节点层级和锚点轴均由 widget 文档决定。
     pub(crate) fn cycle_align(&mut self, horizontal: bool) {
         use crate::widget::AxisAlign::{Center, End, Start};
+        let Some(id) = self.sel else { return };
         let axes = [Start, Center, End];
-        crate::layout::with_hud_layout(|l| {
-            if horizontal {
-                let i = axes
-                    .iter()
-                    .position(|a| *a == l.panel_align.horizontal)
-                    .unwrap_or(0);
-                l.panel_align.horizontal = axes[(i + 1) % axes.len()];
-            } else {
-                let i = axes
-                    .iter()
-                    .position(|a| *a == l.panel_align.vertical)
-                    .unwrap_or(0);
-                l.panel_align.vertical = axes[(i + 1) % axes.len()];
+        let operation = with_hud_layout(|layout| {
+            let mut tree = layout.editor_tree(self.scope);
+            if !tree.node(id)?.edit.movable {
+                return None;
             }
+            let before = tree.value(id)?;
+            let mut after = before;
+            let axis = if horizontal {
+                &mut after.align.horizontal
+            } else {
+                &mut after.align.vertical
+            };
+            let index = axes
+                .iter()
+                .position(|candidate| candidate == axis)
+                .unwrap_or(0);
+            *axis = axes[(index + 1) % axes.len()];
+            tree.set_value(id, after).ok()?;
+            layout.apply_widget_tree(&tree, self.scope);
+            Some(crate::widget::EditOperation { id, before, after })
         });
-        let align = hud_layout().panel_align;
-        self.last = format!("底栏锚点：{:?}/{:?}", align.horizontal, align.vertical);
+        if let Some(operation) = operation.filter(|op| op.before != op.after) {
+            self.history.record(operation);
+            self.last = format!(
+                "{id} 锚点：{:?}/{:?}",
+                operation.after.align.horizontal, operation.after.align.vertical
+            );
+        }
     }
 
     pub(crate) fn cycle_grid(&mut self) {
@@ -292,29 +418,51 @@ impl LayoutEdit {
         }
         let z = self.zoom();
         let (cx, cy) = self.zoom_center;
-        // 逻辑 → 屏幕（放大 z 倍、以 zoom_center 为中心）。字**不跟着放大**（放大 8 倍
-        // 的字是糊的），只把位置换算过去。
-        let sx = |x: f32| cx + (x - cx) * z;
-        let sy = |y: f32| cy + (y - cy) * z;
-        let l = hud_layout();
-        for id in HUD_ITEM_IDS {
-            let Some(r) = l.get(id) else { continue };
+        let space_scale = if self.scope == EditorScope::World {
+            1.0
+        } else {
+            crate::ui::UI_SCALE
+        };
+        // 文档坐标→画布坐标→编辑器放大屏幕坐标。文本标签只换位置、不拉伸。
+        let zx = |x: f32| cx + (x - cx) * z;
+        let zy = |y: f32| cy + (y - cy) * z;
+        let tree = hud_layout().editor_tree(self.scope);
+        let resolved = tree
+            .resolve(viewport(self.scope))
+            .expect("editable widget tree must be valid");
+        for node in tree.nodes() {
+            let id = node.id;
+            if !self.is_visible(id) {
+                continue;
+            }
+            let Some(r) = resolved
+                .iter()
+                .find(|item| item.id == id)
+                .map(|item| item.rect)
+            else {
+                continue;
+            };
+            let shown = LRect::new(
+                r.x * space_scale,
+                r.y * space_scale,
+                r.w * space_scale,
+                r.h * space_scale,
+            );
             let sel = self.sel == Some(id);
             let c = if sel { C_SEL } else { C_FRAME };
-            frame(canvas, r, c, z, (cx, cy))?;
+            frame(canvas, shown, c, z, (cx, cy))?;
             if sel {
-                // 四个角把手（右下那个是"改大小"的提示）
-                for (gx, gy) in [
-                    (r.x, r.y),
-                    (r.x + r.w - 3.0, r.y),
-                    (r.x, r.y + r.h - 3.0),
-                    (r.x + r.w - 3.0, r.y + r.h - 3.0),
-                ] {
-                    canvas.set_draw_color(c);
-                    canvas.fill_rect(FRect::new(sx(gx), sy(gy), 3.0, 3.0))?;
+                if node.edit.resizable {
+                    for (gx, gy) in [
+                        (shown.x, shown.y),
+                        (shown.x + shown.w - 3.0, shown.y),
+                        (shown.x, shown.y + shown.h - 3.0),
+                        (shown.x + shown.w - 3.0, shown.y + shown.h - 3.0),
+                    ] {
+                        canvas.set_draw_color(c);
+                        canvas.fill_rect(FRect::new(zx(gx), zy(gy), 3.0, 3.0))?;
+                    }
                 }
-                // ⚠️ **黑底白字**（用户 2026-10-12：原来的描边字在花纹上看不清）——
-                // 先铺一块黑底再写白字，`num` 里已经按字宽算好宽度。
                 let s = format!(
                     "{} {}  x={} y={} w={} h={}",
                     crate::layout::item_name(id),
@@ -324,14 +472,14 @@ impl LayoutEdit {
                     r.w,
                     r.h
                 );
-                let (lx, ly) = (sx(r.x).max(2.0), sy(r.y - 14.0).max(2.0));
+                let (lx, ly) = (zx(shown.x).max(2.0), zy(shown.y - 14.0).max(2.0));
                 canvas.set_draw_color(Color::RGBA(0, 0, 0, 225));
                 canvas.fill_rect(FRect::new(lx - 2.0, ly - 1.0, names.width(&s) + 4.0, 14.0))?;
                 names.draw(canvas, tc, &s, lx, ly, (255, 255, 255), None)?;
             }
         }
-        // 鼠标可点选的层级树（固定屏幕层，不跟放大镜缩放；孩子都缩进到底栏 parent 下）。
-        let tree_h = TREE_HEADER_H + TREE_ROW_H * HUD_ITEM_IDS.len() as f32 + 4.0;
+        // 列表保留全部节点，隐藏节点可从这里选择；画布命中只考虑 self.visible。
+        let tree_h = TREE_HEADER_H + TREE_ROW_H * tree.nodes().len() as f32 + 4.0;
         canvas.set_draw_color(Color::RGB(0, 0, 0));
         canvas.fill_rect(FRect::new(TREE_X, TREE_Y, TREE_W, tree_h))?;
         canvas.set_draw_color(C_FRAME);
@@ -345,17 +493,19 @@ impl LayoutEdit {
             (255, 230, 140),
             None,
         )?;
-        for (i, id) in HUD_ITEM_IDS.iter().enumerate() {
+        for (i, node) in tree.nodes().iter().enumerate() {
+            let id = node.id;
             let y = TREE_Y + TREE_HEADER_H + i as f32 * TREE_ROW_H;
             if self.sel == Some(id) {
                 canvas.set_draw_color(Color::RGB(64, 56, 30));
                 canvas.fill_rect(FRect::new(TREE_X + 1.0, y, TREE_W - 2.0, TREE_ROW_H))?;
             }
-            let text = if *id == crate::layout::HUD_PANEL_ID {
-                format!("[-] {}", crate::layout::item_name(id))
+            let depth = if node.parent.is_some() {
+                "  - "
             } else {
-                format!("  - {}", crate::layout::item_name(id))
+                "[-] "
             };
+            let text = format!("{depth}{}", crate::layout::item_name(id));
             names.draw(
                 canvas,
                 tc,
@@ -370,6 +520,10 @@ impl LayoutEdit {
         label(canvas, names, tc, &self.last, 8.0, 8.0)?;
         Ok(())
     }
+}
+
+fn viewport(scope: EditorScope) -> LRect {
+    scope.viewport()
 }
 
 /// 一行**黑底白字**的标签（编辑器的所有文字都走它 ⇒ 在任何底图上都读得清）。
@@ -412,15 +566,27 @@ fn frame(
 mod tests {
     use super::*;
 
-    /// ⚠️ 布局是**进程内全局**的，而 cargo test 默认并行 ⇒ 用例之间要**互斥**，
-    /// 否则一个在读默认值、另一个在改，会偶发失败（实测跑三次挂一次）。
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// 持锁期间独占全局布局，离开测试（包括 panic）时恢复默认值。
+    struct LayoutTestGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
 
-    /// 取锁 + 把布局复位；返回值要活到用例结束。
-    fn begin() -> std::sync::MutexGuard<'static, ()> {
-        let g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        crate::layout::with_hud_layout(|l| *l = crate::layout::HudLayout::default_layout());
-        g
+    impl Drop for LayoutTestGuard {
+        fn drop(&mut self) {
+            crate::layout::with_hud_layout(|layout| {
+                *layout = crate::layout::HudLayout::default_layout();
+            });
+        }
+    }
+
+    fn begin() -> LayoutTestGuard {
+        let guard = crate::layout::LAYOUT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::layout::with_hud_layout(|layout| {
+            *layout = crate::layout::HudLayout::default_layout();
+        });
+        LayoutTestGuard { _guard: guard }
     }
 
     /// 编辑器的命中/拖动是纯几何 ⇒ 用一个假布局单测（不碰 SDL）。
@@ -441,7 +607,8 @@ mod tests {
     }
 
     #[test]
-    fn 拖动按网格吸附() {
+    fn 拖动按网格吸附且一次撤销还原() {
+        let _g = begin();
         let mut e = LayoutEdit {
             on: true,
             ..LayoutEdit::default()
@@ -457,6 +624,10 @@ mod tests {
         assert_eq!(after.x, snap(before.x + 8.0));
         assert_eq!(after.y, snap(before.y + 8.0));
         assert_eq!(after.w, before.w, "移动不该改大小");
+        e.undo();
+        assert_eq!(hud_layout().get("orb").unwrap(), before);
+        e.redo();
+        assert_eq!(hud_layout().get("orb").unwrap(), after);
     }
 
     #[test]
@@ -466,17 +637,18 @@ mod tests {
             on: true,
             ..LayoutEdit::default()
         };
-        let r = hud_layout().get("orb").unwrap();
-        // 正好压在右下角（命中框外扩 2px ⇒ 点得到）⇒ 进"改大小"
+        let r = hud_layout().get("plate_hp").unwrap();
+        // 这个文字布局框声明允许 resize；原生像素球则是 MoveOnly。
         e.mouse_down((r.x + r.w, r.y + r.h));
-        let before = hud_layout().get("orb").unwrap();
+        let before = hud_layout().get("plate_hp").unwrap();
         e.mouse_move((r.x + r.w + 10.0, r.y + r.h + 6.0));
         e.mouse_up();
-        let after = hud_layout().get("orb").unwrap();
+        let after = hud_layout().get("plate_hp").unwrap();
         assert_eq!(after.w, before.w + 10.0);
+        assert_eq!(after.h, before.h + 6.0);
         assert_eq!(after.x, before.x, "改大小不该挪位置");
         // 复原，免得污染别的用例
-        e.sel = Some("orb");
+        e.sel = Some("plate_hp");
         e.reset_selected();
     }
 
@@ -548,7 +720,12 @@ mod tests {
             on: true,
             ..LayoutEdit::default()
         };
-        let row = 2usize; // root=0, orb=1, plate_hp=2
+        let row = hud_layout()
+            .editor_tree(e.scope)
+            .nodes()
+            .iter()
+            .position(|node| node.id == "plate_hp")
+            .unwrap();
         let screen = (
             TREE_X + 10.0,
             TREE_Y + TREE_HEADER_H + row as f32 * TREE_ROW_H + 2.0,
@@ -623,5 +800,222 @@ mod tests {
         assert_eq!(after.get("exp_bar").unwrap(), before);
         assert_eq!(after.stored_rect("exp_bar"), Some(expected_local));
         assert_eq!(after.panel_align.vertical, crate::widget::AxisAlign::End);
+    }
+
+    #[test]
+    fn 通用编辑器移动状态窗和对话窗并保留原生尺寸() {
+        let _g = begin();
+        let mut e = LayoutEdit {
+            on: true,
+            ..LayoutEdit::default()
+        };
+        let before = hud_layout().get("window_status").unwrap();
+        let p = (before.x + before.w / 2.0, before.y + before.h / 2.0);
+        assert!(e.mouse_down(p));
+        assert_eq!(e.selected(), Some("window_status"));
+        e.mouse_move((p.0 + 18.0, p.1 - 9.0));
+        e.mouse_up();
+        let moved = hud_layout().get("window_status").unwrap();
+        assert_eq!(
+            moved,
+            LRect::new(before.x + 18.0, before.y - 9.0, before.w, before.h)
+        );
+        assert_eq!(
+            crate::status::panel_rect(),
+            (moved.x, moved.y, moved.w, moved.h)
+        );
+        e.undo();
+        assert_eq!(hud_layout().get("window_status"), Some(before));
+        e.redo();
+        assert_eq!(hud_layout().get("window_status"), Some(moved));
+
+        e.sel = Some("window_dialog");
+        let dialog = hud_layout().get("window_dialog").unwrap();
+        e.nudge(-11.0, 6.0);
+        assert_eq!(
+            crate::dialog::dialog_panel(),
+            (dialog.x - 11.0, dialog.y + 6.0, dialog.w, dialog.h)
+        );
+        e.undo();
+        assert_eq!(
+            crate::dialog::dialog_panel(),
+            (dialog.x, dialog.y, dialog.w, dialog.h)
+        );
+    }
+
+    #[test]
+    fn 登录面板账号框和开门动画使用可编辑文档几何() {
+        let _g = begin();
+        let mut e = LayoutEdit {
+            on: true,
+            ..LayoutEdit::default()
+        };
+        e.set_scene(crate::app_state::Scene::Login);
+        let before = hud_layout();
+        let panel = before.get("login.panel").unwrap();
+        let account = before.get("login.account").unwrap();
+        let p = (panel.x + 20.0, panel.y + 20.0);
+        assert!(e.mouse_down(p));
+        assert_eq!(e.selected(), Some("login.panel"));
+        e.mouse_move((p.0 + 20.0, p.1 + 9.0));
+        e.mouse_up();
+
+        let moved = hud_layout();
+        let login = moved.login_layout(crate::layout::core_login_layout());
+        assert_eq!(
+            (login.dialog.x, login.dialog.y),
+            (panel.x + 20.0, panel.y + 9.0)
+        );
+        assert_eq!(
+            (login.account.x, login.account.y),
+            (account.x + 20.0, account.y + 9.0)
+        );
+        let mut login_state = crate::login::Login::new();
+        login_state.on_down(
+            (login.password.x + 2.0, login.password.y + 2.0),
+            &login,
+            &mut crate::widget::Ui::new(),
+        );
+        assert_eq!(login_state.focus, 1, "点击编辑后密码框实际位置应仍能命中");
+        assert_eq!(
+            moved.login_door(),
+            before.login_door(),
+            "独立门动画不跟登录面板动"
+        );
+        e.undo();
+        assert_eq!(hud_layout().get("login.panel"), Some(panel));
+
+        let door = hud_layout().get("login.door").unwrap();
+        e.set_visible(Some(vec!["login.door"]));
+        e.sel = Some("login.door");
+        let p = (door.x + 20.0, door.y + 20.0);
+        assert!(e.mouse_down(p));
+        assert_eq!(e.selected(), Some("login.door"));
+        e.mouse_move((p.0 + 7.0, p.1 + 5.0));
+        e.mouse_up();
+        assert_eq!(hud_layout().login_door().x, door.x + 7.0);
+        e.undo();
+        assert_eq!(hud_layout().login_door(), door);
+    }
+
+    #[test]
+    fn 选角背景槽位文字及模态窗口使用可编辑文档几何() {
+        let _g = begin();
+        let mut e = LayoutEdit {
+            on: true,
+            ..LayoutEdit::default()
+        };
+        e.set_scene(crate::app_state::Scene::Select);
+        let before = hud_layout();
+        let base = crate::layout::core_select_layout();
+        let select0 = before.select_layout(base);
+        let root = before.get("select.panel").unwrap();
+        let p = (root.x + 780.0, root.y + 10.0);
+        assert!(e.mouse_down(p));
+        assert_eq!(e.selected(), Some("select.panel"));
+        e.mouse_move((p.0 + 12.0, p.1 + 6.0));
+        e.mouse_up();
+
+        let moved = hud_layout();
+        let select1 = moved.select_layout(base);
+        assert_eq!(select1.bg, (12.0, 6.0));
+        assert_eq!(select1.menu[0].x, select0.menu[0].x + 12.0);
+        assert_eq!(select1.slots[0].x, select0.slots[0].x + 12.0);
+        assert_eq!(
+            select1.slot_texts[0].name.1,
+            select0.slot_texts[0].name.1 + 6.0
+        );
+        e.undo();
+        assert_eq!(hud_layout().select_layout(base).bg, (0.0, 0.0));
+
+        let slot = hud_layout().select_layout(base).slots[0];
+        let p = (slot.x + slot.w / 2.0, slot.y + slot.h / 2.0);
+        assert!(e.mouse_down(p));
+        assert_eq!(e.selected(), Some("select.slot.left"));
+        e.mouse_move((p.0 + 8.0, p.1 + 4.0));
+        e.mouse_up();
+        let select2 = hud_layout().select_layout(base);
+        assert_eq!(select2.slots[0].x, slot.x + 8.0);
+        assert_eq!(select2.slots[0].y, slot.y + 4.0);
+        assert_eq!(select2.slots[1], select0.slots[1]);
+        let mut select_state = crate::select::Select::new(Vec::new());
+        let mut widget_ui = crate::widget::Ui::new();
+        let hit_at = (
+            select2.slots[0].x + select2.slots[0].w / 2.0,
+            select2.slots[0].y + select2.slots[0].h / 2.0,
+        );
+        let canvas_point = crate::ui::ui_pt(hit_at);
+        widget_ui.set_mouse(canvas_point);
+        select_state.on_down_with_dialog(
+            hit_at,
+            &select2,
+            None,
+            hud_layout().select_dialog_box(),
+            &mut widget_ui,
+        );
+        assert_eq!(
+            widget_ui.release(canvas_point),
+            Some(crate::Press::Select(crate::select::Hit::Slot(0)))
+        );
+
+        let create = hud_layout().select_layout(base).menu[1];
+        let p = (create.x + create.w / 2.0, create.y + create.h / 2.0);
+        assert!(e.mouse_down(p));
+        assert_eq!(e.selected(), Some("select.menu.create"));
+        e.mouse_move((p.0 + 5.0, p.1 + 2.0));
+        e.mouse_up();
+        let select3 = hud_layout().select_layout(base);
+        assert_eq!(select3.menu[1].x, create.x + 5.0);
+        assert_eq!(select3.menu[1].y, create.y + 2.0);
+
+        let mut menu_state = crate::select::Select::new(Vec::new());
+        let mut menu_ui = crate::widget::Ui::new();
+        let menu_point = (
+            select3.menu[1].x + select3.menu[1].w / 2.0,
+            select3.menu[1].y + select3.menu[1].h / 2.0,
+        );
+        let menu_canvas_point = crate::ui::ui_pt(menu_point);
+        menu_ui.set_mouse(menu_canvas_point);
+        menu_state.on_down_with_dialog(
+            menu_point,
+            &select3,
+            None,
+            hud_layout().select_dialog_box(),
+            &mut menu_ui,
+        );
+        assert_eq!(
+            menu_ui.release(menu_canvas_point),
+            Some(crate::Press::Select(crate::select::Hit::Menu(1)))
+        );
+        assert_eq!(
+            menu_state.click_select(crate::select::Hit::Menu(1), &select3),
+            crate::select::Action::None
+        );
+        assert!(menu_state.newchar_open(), "创建人物按钮执行原有业务动作");
+
+        let dialog0 = hud_layout().select_dialog_box();
+        let d = dialog0.frame;
+        e.set_visible(Some(vec![
+            "select.newchar",
+            "select.newchar.name",
+            "select.newchar.job.0",
+            "select.newchar.job.1",
+            "select.newchar.job.2",
+            "select.newchar.sex.0",
+            "select.newchar.sex.1",
+            "select.newchar.ok",
+            "select.newchar.close",
+        ]));
+        e.sel = Some("select.newchar");
+        let p = (d.x + d.w / 2.0, d.y + d.h / 2.0);
+        assert!(e.mouse_down(p));
+        assert_eq!(e.selected(), Some("select.newchar"));
+        e.mouse_move((p.0 - 9.0, p.1 + 11.0));
+        e.mouse_up();
+        let dialog1 = hud_layout().select_dialog_box();
+        assert_eq!(dialog1.frame.x, d.x - 9.0);
+        assert_eq!(dialog1.frame.y, (d.y + 11.0).round());
+        assert_eq!(dialog1.name.x, dialog0.name.x - 9.0);
+        assert_eq!(dialog1.name.y, dialog0.name.y + (dialog1.frame.y - d.y));
     }
 }

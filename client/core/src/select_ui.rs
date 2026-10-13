@@ -4,13 +4,10 @@
 //!
 //! 原版（`mir2standard` 的 1.76）的坐标在 `FState.pas:934-953` / `IntroScn.pas:1390-1538`。
 //!
-//! ⚠️ **2026-10-09 更正**：这段注释原来写"面板间距 552 而原版 340、行距 20 而原版 38"
-//! —— **反了**。核对 `FState.pas:934-953`：原版 "选择"钮 x = `+133` / `+685`
-//!（**间距 552**）、菜单项 y = `456/486/506/527/547`（**行距 20~21**）—— 与我们实测的
-//! 一模一样（连 `MENU_X` 那五个 385/348/347/362/379 都逐字相同）。
-//! 也就是说本套素材**就是**原版那套版式，之前的"不是那一套"结论是错的，
-//! 唯一确实不同的是 `Prguse[2]`（1024 用的那张 HUD 底图）在本套里是空壳（见 D-50）。
-//! ⇒ 这里所有数字仍是**实测**值，但"照抄原版会错位"的说法不成立、已删。
+//! 旧 800×600 图 `Prguse[65]` 与原版位置相同；当前正式界面使用 1024×768 `ui1[2851]`。
+//! 2026-10-13 改用新版背景后，选择钮/人物槽仍沿 1.28 比例不变，但五个菜单标签的行位发生变化；
+//! 菜单按下态模板按实际 1024 背景重新匹配，当前坐标由 `真素材_1024新版背景五个菜单控件逐项对齐` 验收。
+//! 旧底图的旧菜单位置只在 `真素材_菜单按下态与背景对齐` 中作为历史对照。
 //!
 //! 量法与依据（都是**有界**计算，毫秒级；工具用完即删）：
 //!
@@ -18,20 +15,14 @@
 //! |---|---|---|
 //! | 两块「选择」按钮 | 把按下态图当模板在背景上滑，差异最小处即按钮矩形 | 左 `Prguse[66] @ (133,452)`、右 `Prguse[67] @ (685,453)`，**差 4.4**（次好 16+） |
 //! | 面板间距 | 上面两个 x 之差 | **552** |
-//! | 中间 5 个菜单项 | **同一套模板匹配**：`Prguse[68..72]` 当模板在背景上滑（差 16.6/8.9/12.1/14.3/14.2，次好 23+） | 左上角 = **(385/348/347/362/379, 456/486/506/527/547)**（2026-10-08 重测，见下） |
+//! | 中间 5 个菜单项 | `Prguse[68..72]` 按下态模板与当前 `ui1[2851]` 在 1.28×画布上匹配 | 左上角 = **(381/347/346/377/378, 466/496/520/542/565)** |
 //! | 菜单项的按下态图 | 尺寸与文字宽度一一对应（2/4/4/3/2 个字 ↔ 44/120/120/92/56 像素宽） | `Prguse[68..72]` |
 //! | 人物区（放小人） | 行/列**暗度剖面**（`lum<45` 占比 >0.75 的连续区 = 凹槽暗腔） | 左 `x 92..377`、右 `x 421..725`，`y 58..402`（底线 = 凹槽地台） |
 //! | 名字/等级/职业 的值框 | 面板内**亮底线**（`lum>110` 的整行）定位框底，再按框高 20 反推框顶 | 框底 y ≈ 508.5 / 537.5 / 568，框 `x 108..211`（右面板 +552）；文字落点 = 框顶 + 2.5 |
 //!
-//! ⚠️ **2026-10-08 重测**（用户第二次报"按钮/文字位置偏了"）：菜单那 5 行的 y 原先是
-//! `465/497/517/536/557`（用"亮像素行直方图分组"量的）——那套量法量的是**文字行**，
-//! 而绘制用的是**按下态图**（图的顶比文字顶高 3px），于是按下态整体低 8~10px；
-//! 值框那三行原先是 `481/510/539`（同样只量到"亮框行"），字被画在**框外上方**。
-//! 现在两者都改成**用绘制时真正要用的那张图/那个框**去定位，并由
-//! `真素材_菜单按下态与背景对齐` 与 `真素材_三行值框与文字落点` 两条测试钉住。
-//!
-//! ⚠️ **同日第二轮**（用户报"创建人物/制作群的按下态左偏 1px"）：五项的中心实测是
-//! `407/408/407/408/407`，**不是一个数** ⇒ 改成逐项存左上角（见 `MENU_X`）。
+//! 五项矩形按下态素材尺寸校准，当前新版背景逐项坐标由真实 `ui1[2851]` 模板匹配回归钉住；
+//! 名字/等级/职业三行仍按旧素材字段框底线测量，由 `真素材_三行值框与文字落点` 验收。
+//! 旧 800 图的精确菜单中心记录仅留作历史版式对照，不再用作当前界面坐标。
 //!
 //! ⚠️ **同日第三轮**（用户报"左侧在石化状态下往左偏 2px"）：石化帧的落点改成
 //! "站立第 0 帧的基准 + **原版的手调量**"（[`frozen_offset`]）——
@@ -159,14 +150,13 @@ pub const MENU: [Menu; 5] = [
 /// 两块「选择」按钮：`(x, y, w, h)`，尺寸就是按下态图的尺寸（实测）。
 const SEL_BTN: [(f32, f32, u32, u32); 2] = [(133.0, 452.0, 76, 33), (685.0, 453.0, 76, 33)];
 
-/// 菜单每一项的**左上角 x**（模板匹配实测的按下态图左边缘，逐项给）。
+/// 1024 原生新版背景 `ui1[2851]` 上五个菜单标签的设计空间左上角。
 ///
-/// ⚠️ **不要**改回"同一个列中心"：五项的中心实测是 `407/408/407/408/407`（不是同一个数），
-/// 取一个 407 会让 `创建人物`、`制作群` 各**左偏 1px**（用户看得出来的那种偏，
-/// 2026-10-08 报过）。素材是逐项画在背景上的整数位置，就逐项存。
-const MENU_X: [f32; 5] = [385.0, 348.0, 347.0, 362.0, 379.0];
-/// 菜单每一项的**顶**（= 按下态图 `Prguse[68..72]` 的左上角 y，模板匹配实测）。
-const MENU_ROW_Y: [f32; 5] = [456.0, 486.0, 506.0, 527.0, 547.0];
+/// 逐项用真实背景亮字位置与 1.28 倍绘制的 `Prguse[68..72]` 按下态模板重新匹配；
+/// 新版背景行距与旧 `Prguse[65]` 不同，不能继续沿用旧的 456/486/506/527/547。
+const MENU_X: [f32; 5] = [381.0, 347.0, 346.0, 377.0, 378.0];
+/// 按钮高亮/命中矩形顶部；中心第三项“删除人物”起，按新背景每项实测行距下移。
+const MENU_ROW_Y: [f32; 5] = [466.0, 496.0, 520.0, 542.0, 565.0];
 
 /// 两块人物区（凹槽）的**暗腔**：`(x0, y0, x1, y1)`。小人画在这里面。
 ///
@@ -237,6 +227,10 @@ pub struct Layout {
     pub sel: [Rect; 2],
     /// 中间 5 个菜单项（顺序同 [`MENU`]）。
     pub menu: [Rect; 5],
+    /// 两个角色展示/命中区域（可由 app 的 widget 布局覆盖）。
+    pub slots: [Rect; 2],
+    /// 两块角色信息区域的三行文字落点（名字、等级、职业）。
+    pub slot_texts: [SlotText; 2],
     /// 窗口尺寸（`f32` 版）。
     ///
     /// 存在的理由：**建角对话框与消息框是"居中"的**，命中测试要按窗口尺寸算它们的位置，
@@ -288,6 +282,8 @@ impl Layout {
             bg,
             sel,
             menu,
+            slots: std::array::from_fn(|slot| slot_rect(slot, bg)),
+            slot_texts: std::array::from_fn(|slot| slot_text(slot, bg)),
             win: (win.0 as f32, win.1 as f32),
         })
     }
@@ -332,14 +328,18 @@ pub fn class_name(class: i32) -> &'static str {
 /// 校验：本套素材战士(男) = `IntroScn.pas` 里写死的 `by = 75-23 = 52`
 /// （脚 y=400 = 地台），与这里算出来的**逐像素相同** —— 说明这条规则就是原版那条。
 pub fn slot_anchor(slot: usize, bg: (f32, f32)) -> (f32, f32) {
-    let (x0, _y0, x1, y1) = ALCOVE[slot.min(Art::SLOTS - 1)];
-    (bg.0 + (x0 + x1) / 2.0, bg.1 + y1 - ALCOVE_FLOOR_MARGIN)
+    slot_anchor_in(slot_rect(slot, bg))
 }
 
-/// 「开始」那颗石台该画在哪（**设计空间**）—— 居中压在菜单第一项上。
+/// 由可编辑的角色槽矩形计算人物脚底锚点。
+pub fn slot_anchor_in(rect: Rect) -> (f32, f32) {
+    (rect.x + rect.w / 2.0, rect.y + rect.h - ALCOVE_FLOOR_MARGIN)
+}
+
+/// 「开始」那颗石台该画在哪（**设计空间**）—— 居中压在可编辑的开始菜单 widget 上。
 ///
-/// 用 `menu[0]`（= [`Menu::Start`]）而不是写死 `(365,447)`：以后版式一动它跟着走；
-/// 与实测的原位（台心 406 / 钮心 407）差不到 1px，肉眼看不出。
+/// 用 `menu[0]`（= [`Menu::Start`]）而不是写死旧版 `(365,447)`：新版背景按钮位置调整或
+/// 用户拖动 widget 后，台子、按下高亮与开始命中区域仍保持同一中心。
 pub fn start_plate_at(menu0: Rect) -> Rect {
     let (_, _, w, h) = START_PLATE_SRC;
     Rect {
@@ -836,16 +836,10 @@ mod tests {
                 "第 {i} 项的左上角不对"
             );
         }
-        // 五项横向几乎同一列：中心最多差 1px（差多了说明 `MENU_X` 抄错了）
+        // 新版背景上「制作群」本身略偏右，逐项中心按真实背景模板结果锁定。
         let centers: Vec<f32> = l.menu.iter().map(|r| r.x + r.w / 2.0).collect();
-        let (lo, hi) = (
-            centers.iter().cloned().fold(f32::MAX, f32::min),
-            centers.iter().cloned().fold(f32::MIN, f32::max),
-        );
-        assert!(hi - lo <= 1.0, "五项的中心差了 {}px：{centers:?}", hi - lo);
-        // 菜单项之间的重叠**允许 2 像素**：素材的按钮高 21，而实测行距是 20~21
-        //（486 → 506 → 527 → 547），本来就会叠 1~2 像素 —— 原版那套也是叠着的。
-        // 叠超过 2 像素才说明行位置量错了（量的时候用模板匹配，精度 ±1）。
+        assert_eq!(centers, [403.0, 407.0, 406.0, 423.0, 406.0]);
+        // 五个按下态节点不重叠；实际菜单文字仍烘焙在背景上，行间距按新版底图逐项实测。
         for i in 1..5 {
             let overlap = l.menu[i - 1].y + l.menu[i - 1].h - l.menu[i].y;
             assert!(overlap <= 2.0, "菜单第 {i} 项与上一项叠了 {overlap} 像素");
@@ -1270,6 +1264,91 @@ mod tests {
         }
     }
 
+    #[test]
+    fn 真素材_1024新版背景五个菜单控件逐项对齐() {
+        use crate::wzl::{Sprite, Wzl};
+        use std::collections::HashMap;
+        use std::path::Path;
+
+        fn dec(
+            libs: &mut HashMap<&'static str, Wzl>,
+            dir: &Path,
+            name: &'static str,
+            index: u32,
+        ) -> Option<Sprite> {
+            if !libs.contains_key(name) {
+                libs.insert(name, Wzl::open(dir.join(name)).ok()?);
+            }
+            libs.get(name)?.decode(index as usize)
+        }
+
+        fn scaled_diff(bg: &Sprite, tex: &Sprite, x: i32, y: i32, scale: f32) -> Option<f32> {
+            let (w, h) = (
+                (tex.width as f32 * scale).round() as i32,
+                (tex.height as f32 * scale).round() as i32,
+            );
+            let (mut sum, mut count) = (0u64, 0u64);
+            for dy in 0..h {
+                for dx in 0..w {
+                    let sx =
+                        (((dx as f32 + 0.5) / scale).floor() as i32).clamp(0, tex.width as i32 - 1);
+                    let sy = (((dy as f32 + 0.5) / scale).floor() as i32)
+                        .clamp(0, tex.height as i32 - 1);
+                    let ti = ((sy * tex.width as i32 + sx) * 4) as usize;
+                    if tex.rgba[ti + 3] < 128 {
+                        continue;
+                    }
+                    let bx = x + dx;
+                    let by = y + dy;
+                    if bx < 0 || by < 0 || bx >= bg.width as i32 || by >= bg.height as i32 {
+                        return None;
+                    }
+                    let bi = ((by * bg.width as i32 + bx) * 4) as usize;
+                    for channel in 0..3 {
+                        sum += (bg.rgba[bi + channel] as i32 - tex.rgba[ti + channel] as i32)
+                            .unsigned_abs() as u64;
+                    }
+                    count += 3;
+                }
+            }
+            (count > 0).then(|| sum as f32 / count as f32)
+        }
+
+        let Ok(dir) = std::env::var("MIR2C_DATA") else {
+            eprintln!("跳过：未设置 MIR2C_DATA");
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        let mut libs = HashMap::new();
+        let scale = 1024.0 / 800.0;
+        let bg = dec(&mut libs, &dir, Art::BG_1024.0, Art::BG_1024.1).expect("1024 选角背景");
+        for index in 0..MENU.len() {
+            let (name, image) = Art::MENU_DOWN[index];
+            let tex = dec(&mut libs, &dir, name, image).expect("菜单按下态");
+            let expected_x = (MENU_X[index] * scale).round() as i32;
+            let expected_y = (MENU_ROW_Y[index] * scale).round() as i32;
+            let mut best = (f32::INFINITY, 0, 0);
+            for y in expected_y - 5..=expected_y + 5 {
+                for x in expected_x - 5..=expected_x + 5 {
+                    if let Some(diff) = scaled_diff(&bg, &tex, x, y, scale) {
+                        if diff < best.0 {
+                            best = (diff, x, y);
+                        }
+                    }
+                }
+            }
+            assert!(best.0 < 50.0, "新版背景菜单[{index}]匹配度不足：{best:?}");
+            assert!(
+                (best.1 - expected_x).abs() <= 1 && (best.2 - expected_y).abs() <= 1,
+                "菜单[{index}]设计坐标 ({},{}) 与新版 ui1[2851] 模板最佳位置 ({},{}) 不符",
+                MENU_X[index],
+                MENU_ROW_Y[index],
+                best.1,
+                best.2
+            );
+        }
+    }
+
     /// **真素材验收**：中间 5 个菜单项的**按下态图**，在实测位置上与背景几乎重合 ——
     /// 而且**附近没有更好的位置**（否则就是量错了）。
     ///
@@ -1329,20 +1408,18 @@ mod tests {
         let mut libs: HashMap<&'static str, Wzl> = HashMap::new();
 
         let bg = dec(&mut libs, &dir, Art::BG.0, Art::BG.1).expect("背景");
-        // 版式：和 app 一样，用素材实测尺寸算（背景 800×600 ⇒ bg = (0,0)）
-        let l = Layout::build((800, 600), |c, i| {
-            let lib = libs
-                .entry(c)
-                .or_insert_with(|| Wzl::open(dir.join(c)).expect("图库都在"));
-            lib.record(i as usize)
-                .map(|r| (r.width as u32, r.height as u32))
-        })
-        .expect("素材齐全");
-
-        for (i, r) in l.menu.iter().enumerate() {
+        // 旧 Prguse[65] 的菜单落点仅作历史对照；正式 ui1[2851] 的当前版式由上面的新背景测试验收。
+        let legacy_menu = [
+            (385.0, 456.0),
+            (348.0, 486.0),
+            (347.0, 506.0),
+            (362.0, 527.0),
+            (379.0, 547.0),
+        ];
+        for (i, (legacy_x, legacy_y)) in legacy_menu.into_iter().enumerate() {
             let (name, idx) = Art::MENU_DOWN[i];
             let t = dec(&mut libs, &dir, name, idx).expect("菜单按下态");
-            let (x, y) = (r.x as i32, r.y as i32);
+            let (x, y) = (legacy_x as i32, legacy_y as i32);
             let here = diff_at(&bg, &t, x, y).expect("位置在图内");
             assert!(
                 here < 20.0,

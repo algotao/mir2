@@ -69,8 +69,10 @@ pub(crate) fn run_app<T>(
         // 每帧重新取"现在"：所有按时间推进的东西（选角动画、开门动画、移动补间）
         // 都拿它当基准。⚠️ 漏了这行 = 动画全部静止（踩过）。
         app.begin_frame();
+        app.layout_edit.set_scene(app.scene);
 
         for ev in events.poll_iter() {
+            app.layout_edit.set_scene(app.scene);
             // ⚠️ 事件里的 `x/y` 是**窗口坐标**（高 DPI 下还是物理像素），而界面画在
             // 800×600 的逻辑空间里 ⇒ 一律让 SDL 换算（它同时管逻辑呈现的缩放与留边）。
             // 漏了它的表现是"按钮点不中 / 点哪走哪偏一截"（踩过）。
@@ -118,9 +120,9 @@ pub(crate) fn run_app<T>(
                 Event::MouseMotion { x, y, .. } => {
                     app.mouse = (x, y);
                     app.ui_click.set_mouse(crate::widget::canvas_pt(app.mouse));
-                    // 界面开发器：拖动中（D-134）。屏幕坐标 → 逻辑坐标（放大时反算）
-                    let logic = app.layout_edit.to_logic((x, y));
-                    app.layout_edit.mouse_move(logic);
+                    // 界面开发器先从画布/放大坐标换到当前 scene 的布局空间。
+                    let layout_xy = app.layout_edit.pointer_to_layout((x, y));
+                    app.layout_edit.mouse_move(layout_xy);
                 }
                 Event::MouseWheel { y, .. } if app.scene == crate::app_state::Scene::World => {
                     world_input::handle_mouse_wheel(&mut app, y)
@@ -129,6 +131,31 @@ pub(crate) fn run_app<T>(
                 // 左键 = 走，右键 = 跑；方向由鼠标相对角色的方位定，见 `dir_to`）。
                 // 离线看地图（没进世界）时左键仍是那个诊断探针 —— 它是开发用的，
                 // 别和"走路"抢同一个键。
+                Event::MouseButtonDown {
+                    mouse_btn: MouseButton::Left,
+                    x,
+                    y,
+                    ..
+                } if app.layout_edit.on
+                    && matches!(
+                        app.scene,
+                        crate::app_state::Scene::Login | crate::app_state::Scene::Select
+                    ) =>
+                {
+                    let layout_xy = app.layout_edit.pointer_to_layout((x, y));
+                    app.layout_edit.mouse_down_screen((x, y), layout_xy);
+                }
+                Event::MouseButtonUp {
+                    mouse_btn: MouseButton::Left,
+                    ..
+                } if app.layout_edit.on
+                    && matches!(
+                        app.scene,
+                        crate::app_state::Scene::Login | crate::app_state::Scene::Select
+                    ) =>
+                {
+                    app.layout_edit.mouse_up();
+                }
                 Event::MouseButtonDown {
                     mouse_btn, x, y, ..
                 } if app.scene == crate::app_state::Scene::World => {
@@ -231,13 +258,15 @@ pub(crate) fn run_app<T>(
                         login::Action::None => {}
                     }
                 }
-                Event::TextInput { text: t, .. } if app.scene == crate::app_state::Scene::Login => {
+                Event::TextInput { text: t, .. }
+                    if app.scene == crate::app_state::Scene::Login && !app.layout_edit.on =>
+                {
                     app.login.on_text(&t)
                 }
                 // 选角界面的**建角对话框**也吃文字（`Select::on_text` 自己判断对话框开没开、
                 // 焦点在不在姓名上）—— 少了这条，姓名框打字没反应（原版是 `TEdit` 收键）。
                 Event::TextInput { text: t, .. }
-                    if app.scene == crate::app_state::Scene::Select =>
+                    if app.scene == crate::app_state::Scene::Select && !app.layout_edit.on =>
                 {
                     if let Some(s) = app.select_scene.as_mut() {
                         s.on_text(&t);
@@ -246,12 +275,15 @@ pub(crate) fn run_app<T>(
                 _ => {}
             }
         }
+        app.layout_edit.set_scene(app.scene);
 
         network_tick::pump(&mut app, &sound, &sounds);
 
         if !simulation::tick(&mut app, &sound, &sounds) {
             continue;
         }
+
+        app.layout_edit.set_scene(app.scene);
 
         // 前景动画的节拍：官方 `m_nAniCount` **每 50 ms 加一**（`PlayScn.pas:963`，
         // 固定定时器、与帧率无关）。所以这里按**真实时间**算，而不是每帧 +1 ——
@@ -337,7 +369,64 @@ pub(crate) fn run_app<T>(
                 &mut sprite_tex,
             )?
         };
-        // 编辑器的控件框**画在放大之后**（跟着放大换算），字才不会被拉糊。
+        // 编辑器只画当前场景真正可见的节点；隐藏对话框/门仍可从层级列表选取并编辑。
+        let edit_visible: Option<Vec<&str>> = match app.scene {
+            crate::app_state::Scene::Login if app.login.opened_at.is_some() => {
+                Some(vec!["login.door"])
+            }
+            crate::app_state::Scene::Login => {
+                let mut ids = vec![
+                    "login.panel",
+                    "login.account",
+                    "login.password",
+                    "login.close",
+                ];
+                if app.login.signup() {
+                    ids.extend(["login.confirm", "login.signup_ok", "login.signup_cancel"]);
+                } else {
+                    ids.extend(["login.ok", "login.new", "login.chgpw"]);
+                }
+                if app.login.error.is_some() {
+                    ids.extend(["login.msgbox", "login.msg_ok"]);
+                }
+                Some(ids)
+            }
+            crate::app_state::Scene::Select => {
+                let mut ids = vec![
+                    "select.panel",
+                    "select.slot.left",
+                    "select.slot.right",
+                    "select.info.left",
+                    "select.info.right",
+                    "select.menu.start",
+                    "select.menu.create",
+                    "select.menu.delete",
+                    "select.menu.credits",
+                    "select.menu.exit",
+                ];
+                if let Some(select) = app.select_scene.as_ref() {
+                    if select.newchar_open() {
+                        ids.extend([
+                            "select.newchar",
+                            "select.newchar.name",
+                            "select.newchar.job.0",
+                            "select.newchar.job.1",
+                            "select.newchar.job.2",
+                            "select.newchar.sex.0",
+                            "select.newchar.sex.1",
+                            "select.newchar.ok",
+                            "select.newchar.close",
+                        ]);
+                    }
+                    if select.msg.is_some() {
+                        ids.extend(["select.msgbox", "select.msg_ok"]);
+                    }
+                }
+                Some(ids)
+            }
+            _ => None,
+        };
+        app.layout_edit.set_visible(edit_visible);
         if app.layout_edit.on {
             app.layout_edit
                 .draw(&mut canvas, &mut names, &tex_creator)?;

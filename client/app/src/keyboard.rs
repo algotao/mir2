@@ -85,7 +85,8 @@ pub(crate) fn handle_key_down(
             app.shop_ui.close();
         }
         Some(Keycode::Escape)
-            if app.scene != crate::app_state::Scene::Login
+            if !app.layout_edit.on
+                && app.scene != crate::app_state::Scene::Login
                 && app.scene != crate::app_state::Scene::Select =>
         {
             return Ok(true)
@@ -155,19 +156,42 @@ pub(crate) fn handle_key_down(
         Some(Keycode::F1) if ctrl(keymod) => app.scene = crate::app_state::Scene::Login,
         Some(Keycode::F2) if ctrl(keymod) => app.scene = crate::app_state::Scene::World,
         Some(Keycode::F3) if ctrl(keymod) => app.scene = crate::app_state::Scene::AssetView,
-        // **界面开发器**（D-134）：Ctrl+L 进出编辑模式。里面的键只在编辑模式下吃，
-        // 免得跟正常操作抢（G/S/R/方向键在世界里另有用途）。
-        Some(Keycode::L) if ctrl(keymod) && app.scene == crate::app_state::Scene::World => {
+        // **界面开发器**（D-134/D-136）：Ctrl+L 在世界、登录、选角三场景切换通用布局编辑。
+        Some(Keycode::L)
+            if ctrl(keymod)
+                && matches!(
+                    app.scene,
+                    crate::app_state::Scene::World
+                        | crate::app_state::Scene::Login
+                        | crate::app_state::Scene::Select
+                ) =>
+        {
             app.layout_edit.toggle()
         }
         Some(Keycode::G) if app.layout_edit.on => app.layout_edit.cycle_grid(),
         Some(Keycode::A) if app.layout_edit.on => app.layout_edit.cycle_align(shift(keymod)),
+        Some(Keycode::Z) if app.layout_edit.on && ctrl(keymod) => {
+            if shift(keymod) {
+                app.layout_edit.redo();
+            } else {
+                app.layout_edit.undo();
+            }
+        }
+        Some(Keycode::Y) if app.layout_edit.on && ctrl(keymod) => app.layout_edit.redo(),
         // 放大镜：以**当前鼠标位置**为中心（用户 2026-10-12："用 +- 号以鼠标位置为中心
         // 放大画面倍数，最高 8 倍、最小 1 倍"）
-        Some(Keycode::Equals | Keycode::Plus) if app.layout_edit.on => {
+        Some(Keycode::Equals | Keycode::Plus)
+            if app.layout_edit.on
+                && app.layout_edit.scope() == crate::layout::EditorScope::World =>
+        {
             app.layout_edit.zoom_by(1.0, app.mouse)
         }
-        Some(Keycode::Minus) if app.layout_edit.on => app.layout_edit.zoom_by(-1.0, app.mouse),
+        Some(Keycode::Minus)
+            if app.layout_edit.on
+                && app.layout_edit.scope() == crate::layout::EditorScope::World =>
+        {
+            app.layout_edit.zoom_by(-1.0, app.mouse)
+        }
         Some(Keycode::S) if app.layout_edit.on => app.layout_edit.save(),
         Some(Keycode::R) if app.layout_edit.on => app.layout_edit.reset_selected(),
         Some(Keycode::Escape) if app.layout_edit.on => app.layout_edit.toggle(),
@@ -211,6 +235,12 @@ pub(crate) fn handle_key_down(
                 if bgm { "ON" } else { "OFF" }
             );
         }
+        // 登录/选角布局编辑时屏蔽场景业务键（提交/建角/确认），防止误触发操作。
+        _ if app.layout_edit.on
+            && matches!(
+                app.scene,
+                crate::app_state::Scene::Login | crate::app_state::Scene::Select
+            ) => {}
         // 选角：键盘是**我们的扩展**（原版选角场景只认鼠标）
         _ if app.scene == crate::app_state::Scene::Select => {
             if let Some(k) = keycode {

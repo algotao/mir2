@@ -29,6 +29,7 @@ pub(crate) fn login_down(
         ui_cache.size(dir, lib, idx)
     });
     if let Some(layout) = layout {
+        let layout = crate::layout::hud_layout().login_layout(layout);
         app.login.on_down(p, &layout, &mut app.ui_click);
     }
 }
@@ -50,6 +51,7 @@ pub(crate) fn login_up(
     let Some(layout) = layout else {
         return login::Action::None;
     };
+    let layout = crate::layout::hud_layout().login_layout(layout);
     match app.ui_click.release(canvas_p) {
         Some(crate::Press::Login(button)) => app.login.click(button, &layout),
         _ => login::Action::None,
@@ -67,11 +69,14 @@ pub(crate) fn select_down(
         return;
     };
     let p = design_xy(canvas_xy);
+    let doc = crate::layout::hud_layout();
     let msg = select::view::msgbox_geom(ui_cache, dir, crate::window::UI_WIN);
+    let dialog = doc.select_dialog_box();
     if let Some(layout) = mir2_core::select_ui::Layout::build(crate::window::UI_WIN, |lib, idx| {
         ui_cache.size(dir, lib, idx)
     }) {
-        scene.on_down(p, &layout, msg, &mut app.ui_click);
+        let layout = doc.select_layout(layout);
+        scene.on_down_with_dialog(p, &layout, msg, dialog, &mut app.ui_click);
     }
 }
 
@@ -91,6 +96,7 @@ pub(crate) fn select_up(
     }) else {
         return select::Action::None;
     };
+    let layout = crate::layout::hud_layout().select_layout(layout);
     match key {
         Some(crate::Press::Select(hit)) => scene.click_select(hit, &layout),
         Some(crate::Press::NewChar(hit)) => scene.click_newchar(hit),

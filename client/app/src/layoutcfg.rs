@@ -3,8 +3,8 @@
 //! ⚠️ **刻意不引 serde**：格式就这么一点（对象 → 数组[4]），手写 80 行比拉一个
 //! 依赖树划算，也守住"运行期零依赖"（C-7）与体积优先（D-01）。
 //!
-//! 文件长这样（**只存被改过的项**，缺省靠 `HudLayout::default_layout`）：child 保存 parent-local 矩形，
-//! `hud_panel` 保存相对 anchor 的偏移；parent 宽高固定，不写尺寸。
+//! 文件只保存相对默认值改过的通用 widget 节点；child 保存 parent-local 矩形，根节点保存
+//! 相对 viewport/anchor 的偏移。固定尺寸节点不会写入可变尺寸。
 //!
 //! ```json
 //! {
@@ -15,7 +15,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::layout::{HudLayout, LRect, HUD_ITEM_IDS};
+use crate::layout::{HudLayout, LRect, LAYOUT_ITEM_IDS};
 
 /// 布局文件的位置（**入库**，调完直接提交）。
 pub(crate) fn layout_path() -> PathBuf {
@@ -64,7 +64,12 @@ pub(crate) fn parse(text: &str) -> Vec<(String, [f32; 4])> {
                 }
             }
         }
-        if n == 4 && HUD_ITEM_IDS.contains(&key) {
+        if n == 4
+            && LAYOUT_ITEM_IDS.contains(&key)
+            && nums.iter().all(|value| value.is_finite())
+            && nums[2] > 0.0
+            && nums[3] > 0.0
+        {
             out.push((key.to_string(), nums));
         }
         i = after + colon + 1 + b1 + b2 + 1;
@@ -75,10 +80,11 @@ pub(crate) fn parse(text: &str) -> Vec<(String, [f32; 4])> {
     out
 }
 
-/// 解析 parent 的 anchor 属性。缺失时保留默认 BottomLeft。
-fn parse_panel_align(text: &str) -> Option<crate::widget::Align> {
-    let key = text.find("\"hud_panel_align\"")?;
-    let rest = &text[key..];
+/// 通用节点锚点键为 `{id}_align`；`hud_panel_align` 与旧格式保持兼容。
+fn parse_align(text: &str, id: &str) -> Option<crate::widget::Align> {
+    let key = format!("\"{id}_align\"");
+    let start = text.find(&key)?;
+    let rest = &text[start + key.len()..];
     let left = rest.find('[')? + 1;
     let right = rest[left..].find(']')? + left;
     let mut axes = rest[left..right]
@@ -108,21 +114,19 @@ fn axis_name(axis: crate::widget::AxisAlign) -> &'static str {
 pub(crate) fn load(path: &Path) -> Option<HudLayout> {
     let text = fs::read_to_string(path).ok()?;
     let mut l = HudLayout::default_layout();
-    let align = parse_panel_align(&text);
-    if let Some(align) = align {
-        l.panel_align = align;
-    }
     let entries = parse(&text);
-    let count = entries.len();
+    let mut overrides = entries.len();
     for (id, v) in entries {
         l.set_stored(&id, LRect::new(v[0], v[1], v[2], v[3]));
     }
-    if count > 0 || align.is_some() {
-        println!(
-            "[layout] 已载入 {}（{} 项覆盖）",
-            path.display(),
-            count + usize::from(align.is_some())
-        );
+    for id in LAYOUT_ITEM_IDS {
+        if let Some(align) = parse_align(&text, id) {
+            l.set_align(id, align);
+            overrides += 1;
+        }
+    }
+    if overrides > 0 {
+        println!("[layout] 已载入 {}（{} 项覆盖）", path.display(), overrides);
         Some(l)
     } else {
         None
@@ -133,7 +137,7 @@ pub(crate) fn load(path: &Path) -> Option<HudLayout> {
 pub(crate) fn save(path: &Path, cur: &HudLayout) -> std::io::Result<bool> {
     let def = HudLayout::default_layout();
     let mut body = String::new();
-    for id in HUD_ITEM_IDS {
+    for id in LAYOUT_ITEM_IDS {
         let (a, b) = match (cur.stored_rect(id), def.stored_rect(id)) {
             (Some(a), Some(b)) => (a, b),
             _ => continue,
@@ -149,12 +153,17 @@ pub(crate) fn save(path: &Path, cur: &HudLayout) -> std::io::Result<bool> {
             num(a.h)
         ));
     }
-    if cur.panel_align != def.panel_align {
-        body.push_str(&format!(
-            "  \"hud_panel_align\": [\"{}\", \"{}\"],\n",
-            axis_name(cur.panel_align.horizontal),
-            axis_name(cur.panel_align.vertical)
-        ));
+    for id in LAYOUT_ITEM_IDS {
+        let (Some(current), Some(default)) = (cur.align(id), def.align(id)) else {
+            continue;
+        };
+        if current != default {
+            body.push_str(&format!(
+                "  \"{id}_align\": [\"{}\", \"{}\"],\n",
+                axis_name(current.horizontal),
+                axis_name(current.vertical)
+            ));
+        }
     }
     if body.is_empty() {
         // 全是缺省值 ⇒ 删掉文件（若存在）
@@ -205,9 +214,12 @@ mod tests {
     }
 
     #[test]
-    fn 小数与负数也认() {
+    fn 小数与负数也认但拒绝非有限或非正尺寸() {
         let got = parse("{\"exp_bar\": [890.5, -3, 76, 13]}");
         assert_eq!(got[0].1, [890.5, -3.0, 76.0, 13.0]);
+        assert!(parse("{\"exp_bar\": [NaN, 0, 76, 13]}").is_empty());
+        assert!(parse("{\"exp_bar\": [1, 2, 0, 13]}").is_empty());
+        assert!(parse("{\"exp_bar\": [1, 2, 76, -1]}").is_empty());
     }
 
     #[test]
@@ -263,6 +275,13 @@ mod tests {
             horizontal: crate::widget::AxisAlign::Center,
             vertical: crate::widget::AxisAlign::End,
         };
+        l.set_align(
+            "orb",
+            crate::widget::Align {
+                horizontal: crate::widget::AxisAlign::Center,
+                vertical: crate::widget::AxisAlign::Start,
+            },
+        );
         let expected_panel = l.panel_rect();
         let expected_orb = l.get("orb").unwrap();
         let expected_local_orb = l.stored_rect("orb").unwrap();
@@ -272,6 +291,7 @@ mod tests {
         assert!(save(&path, &l).unwrap());
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"hud_panel_align\": [\"center\", \"end\"]"));
+        assert!(text.contains("\"orb_align\": [\"center\", \"start\"]"));
 
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.panel_align, l.panel_align);
@@ -281,6 +301,109 @@ mod tests {
         );
         assert_eq!(loaded.get("orb"), Some(expected_orb));
         assert_eq!(loaded.stored_rect("orb"), Some(expected_local_orb));
+        assert_eq!(loaded.align("orb"), l.align("orb"));
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn 通用节点配置持久化状态窗和对话窗位置锚点() {
+        let mut l = HudLayout::default_layout();
+        let status = l.get("window_status").unwrap();
+        l.set(
+            "window_status",
+            LRect::new(status.x - 24.0, status.y + 13.0, status.w, status.h),
+        );
+        l.set_align(
+            "window_status",
+            crate::widget::Align {
+                horizontal: crate::widget::AxisAlign::Center,
+                vertical: crate::widget::AxisAlign::Start,
+            },
+        );
+        let dialog = l.get("window_dialog").unwrap();
+        l.set(
+            "window_dialog",
+            LRect::new(dialog.x + 31.0, dialog.y + 19.0, dialog.w, dialog.h),
+        );
+        let expected_status = l.get("window_status").unwrap();
+        let expected_dialog = l.get("window_dialog").unwrap();
+
+        let path = std::env::temp_dir().join("mir2_layout_generic_windows.json");
+        let _ = fs::remove_file(&path);
+        assert!(save(&path, &l).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"window_status\""));
+        assert!(text.contains("\"window_status_align\": [\"center\", \"start\"]"));
+        assert!(text.contains("\"window_dialog\""));
+
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.get("window_status"), Some(expected_status));
+        assert_eq!(loaded.get("window_dialog"), Some(expected_dialog));
+        assert_eq!(loaded.align("window_status"), l.align("window_status"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn 登录门和选角节点稀疏配置往返() {
+        let mut layout = HudLayout::default_layout();
+        let panel = layout.get("login.panel").unwrap();
+        layout.set(
+            "login.panel",
+            LRect::new(panel.x + 12.0, panel.y + 7.0, panel.w, panel.h),
+        );
+        let door = layout.stored_rect("login.door").unwrap();
+        layout.set_stored(
+            "login.door",
+            LRect::new(door.x - 5.0, door.y + 9.0, door.w, door.h),
+        );
+        let account = layout.stored_rect("login.account").unwrap();
+        layout.set_stored(
+            "login.account",
+            LRect::new(account.x + 3.0, account.y + 2.0, account.w, account.h),
+        );
+        let select_panel = layout.get("select.panel").unwrap();
+        layout.set(
+            "select.panel",
+            LRect::new(
+                select_panel.x + 8.0,
+                select_panel.y + 4.0,
+                select_panel.w,
+                select_panel.h,
+            ),
+        );
+        let slot = layout.stored_rect("select.slot.left").unwrap();
+        layout.set_stored(
+            "select.slot.left",
+            LRect::new(slot.x + 6.0, slot.y - 3.0, slot.w, slot.h),
+        );
+        let create = layout.stored_rect("select.menu.create").unwrap();
+        layout.set_stored(
+            "select.menu.create",
+            LRect::new(create.x + 5.0, create.y + 2.0, create.w, create.h),
+        );
+        let expected = [
+            ("login.panel", layout.get("login.panel").unwrap()),
+            ("login.account", layout.get("login.account").unwrap()),
+            ("login.door", layout.get("login.door").unwrap()),
+            ("select.panel", layout.get("select.panel").unwrap()),
+            ("select.slot.left", layout.get("select.slot.left").unwrap()),
+            (
+                "select.menu.create",
+                layout.get("select.menu.create").unwrap(),
+            ),
+        ];
+
+        let path = std::env::temp_dir().join("mir2_layout_login_select_test.json");
+        let _ = fs::remove_file(&path);
+        assert!(save(&path, &layout).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        for (id, _) in expected {
+            assert!(text.contains(&format!("\"{id}\"")), "缺少持久化项 {id}");
+        }
+        let loaded = load(&path).unwrap();
+        for (id, rect) in expected {
+            assert_eq!(loaded.get(id), Some(rect), "{id} 载入后要保持同一解析矩形");
+        }
+        let _ = fs::remove_file(path);
     }
 }

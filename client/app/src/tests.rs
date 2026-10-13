@@ -15,6 +15,12 @@ fn rect_values(r: crate::space::CRect) -> (f32, f32, f32, f32) {
     (r.0 .0, r.1 .0, r.2 .0, r.3 .0)
 }
 
+fn layout_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    crate::layout::LAYOUT_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
 fn ent(kind: u32, f: mir2_protocol::EntityFeature) -> Entity {
     Entity {
         id: 7,
@@ -1338,6 +1344,7 @@ fn npc_精灵图号() {
 /// 而 `hud::draw_dialog` 画的是同一份。
 #[test]
 fn 对话正文的行内链接() {
+    let _layout = layout_test_guard();
     let panel = dialog::dialog_panel();
     let (x, y, w, h) = panel;
     // 官方版式：背板 = `Prguse[384]` 的原生尺寸、固定在屏幕左上角
@@ -1434,6 +1441,7 @@ fn 对话正文的行内链接() {
 /// 滚不动的直接后果：装不下的行**画不出也点不到** ⇒ 「退出」点不动。
 #[test]
 fn 对话正文装不下时要能滚() {
+    let _layout = layout_test_guard();
     let panel = dialog::dialog_panel();
     let (x, y, _, _) = panel;
     let mut measure = |t: &str| t.chars().count() as f32 * 14.0; // 等宽假字体
@@ -1530,6 +1538,7 @@ fn 对话正文装不下时要能滚() {
 /// 点一行**选中**、点 OK 才买；买的时候包裹在右边开着（`layout::bag_pos`）。
 #[test]
 fn 商店窗几何与命中() {
+    let _layout = layout_test_guard();
     let (x, y, w, h) = crate::shop::panel();
     // ① 位置：**对话窗正下面**（对话窗占上排 8..424；商店开着时背包让位到右边 ⇒
     // 这个位置正好空出来给商品列表）
@@ -1618,6 +1627,7 @@ fn 商店窗几何与命中() {
 /// 离卖窗近，减少鼠标反复移动的距离）。
 #[test]
 fn 背包窗在商店开着时紧贴卖窗右侧() {
+    let _layout = layout_test_guard();
     let (nx, ny) = crate::layout::bag_pos(false);
     let (sx, sy) = crate::layout::bag_pos(true);
     assert_eq!((nx, ny), (8.0, 4.0 + dialog::DIALOG_H + 8.0));
@@ -1899,6 +1909,7 @@ fn 武器图层的图库与块大小() {
 /// ⇒ 最后两行（「询问」「退出」）被截掉了。现在上限按背板几何算（(176-32)/18 = 8）。
 #[test]
 fn 对话行数上限装得下官方那段() {
+    let _layout = layout_test_guard();
     // 服务端下发的样子（见 `server/internal/script` 的 `Label.Lines`）
     let text = "欢迎. 我可以为你做什么吗?\n\n <打开/@1> 交易市场\n <购买/@2>  物品\n \
                 <出售/@3>  物品\n <询问/@4> 物品详细情况\n <退出/@5>";
@@ -1938,6 +1949,7 @@ fn 对话行数上限装得下官方那段() {
 /// 命中框是从 `Prguse[384]` 的像素量出来的（红叉在面板内 x 401..411 / y 0..15）。
 #[test]
 fn 对话窗右上角的关闭叉() {
+    let _layout = layout_test_guard();
     let panel = dialog::dialog_panel();
     let (px, py, _, _) = panel;
     // 红叉中心 ⇒ 命中
@@ -1976,6 +1988,7 @@ fn 挥刀声按武器形状取() {
 /// `StateItem.wil[Looks]` 大图，槽位是**固定坐标**。现在全部照官方（见 `status.rs` 模块头）。
 #[test]
 fn 状态窗版式() {
+    let _layout = layout_test_guard();
     let (x, y, w, h) = crate::status::panel((232, 325));
     assert_eq!(
         (w, h),
@@ -2186,6 +2199,7 @@ fn 点怪优先锁悬停的那只() {
 /// 正下方、不与别的窗打架**钉住。
 #[test]
 fn 卖货窗的浮件几何与命中() {
+    let _layout = layout_test_guard();
     let (x, y, w, h) = crate::shop::sell_panel();
     // ① 窗 = 素材 `Prguse[392]` 的原生尺寸（140×181），**右对齐**上方对话窗
     let (dx, dy, dw, dh) = dialog::dialog_panel();
@@ -2255,6 +2269,7 @@ fn 可穿戴物品分类映射装备槽() {
 /// 这条把它们钉住：都在底栏内、互不重叠、点得中。
 #[test]
 fn 底栏功能按钮的落点与命中() {
+    let _layout = layout_test_guard();
     use crate::layout::{hud_btn_at, HudBtn, HUD_BOARD_H, HUD_SIDE_W};
     let win_h = crate::window::WIN_H as f32;
     let win_w = crate::window::WIN_W as f32;
@@ -2310,6 +2325,7 @@ fn 底栏功能按钮的落点与命中() {
 /// 这两态按钮（常态 `img`、按下 `img+1`），与右上那 4 颗"只有高亮态"的不是同一种。
 #[test]
 fn 底栏快捷按钮的落点与命中() {
+    let _layout = layout_test_guard();
     use crate::layout::{hud_quick_at, QuickBtn, HUD_BOARD_H};
     let win_h = crate::window::WIN_H as f32;
     let board_top = win_h - HUD_BOARD_H;
@@ -2359,6 +2375,7 @@ fn 底栏快捷按钮的落点与命中() {
 /// （x 285 起、间距 43、y 59、32×29），框是底栏自带的。
 #[test]
 fn 快捷栏六格的落点与命中() {
+    let _layout = layout_test_guard();
     use crate::layout::{belt_slot_at, belt_slot_rect, BELT_SLOTS, HUD_BOARD_H};
     let win_h = crate::window::WIN_H as f32;
     let board_top = win_h - HUD_BOARD_H;
@@ -2418,6 +2435,7 @@ fn 快捷栏按实例号找物品而不是格位号() {
 /// `FState.pas:1330-1335`：面板 x 530 / 560，同一行 y=104）。
 #[test]
 fn 注销与退出按钮的落点() {
+    let _layout = layout_test_guard();
     use crate::layout::{hud_quick_at, QuickBtn};
     assert_eq!(QuickBtn::Logout.img(), 136);
     assert_eq!(QuickBtn::Exit.img(), 138);
@@ -2446,6 +2464,7 @@ fn 注销与退出按钮的落点() {
 /// "飘在上面"（用户 2026-10-11：位置偏上）。
 #[test]
 fn 聊天文字贴着白框底边且不越界() {
+    let _layout = layout_test_guard();
     use crate::layout::{chat_box, chat_line_y, CHAT_LINE_H};
     // ⚠️ 2026-10-12：白框只到**聊天区**为止，下面还有打字区 —— 沿 `Prguse[1]` 的
     // x=300 逐像素扫过：文字区 y 120..228（半开区间 [120,229)）、229..231 分隔线、
@@ -2487,6 +2506,7 @@ fn 聊天文字贴着白框底边且不越界() {
 /// **技能栏**：8 格（F1..F8）都在画布内、彼此不重叠、命中与矩形同源。
 #[test]
 fn 技能栏八格不重叠且可命中() {
+    let _layout = layout_test_guard();
     for i in 0..crate::layout::SKILL_SLOTS {
         let r = crate::layout::skill_slot_rect(i);
         let (x, y, w, h) = (r.0 .0, r.1 .0, r.2 .0, r.3 .0);
@@ -2514,6 +2534,7 @@ fn 技能栏八格不重叠且可命中() {
 /// `key` 用字符值（`'1'..'8'`），没绑是 0。
 #[test]
 fn 技能快捷键的槽位换算() {
+    let _layout = layout_test_guard();
     let mk = |key: u32| mir2_core::world::MagicEntry {
         skill_id: 1,
         name: "火球术".into(),
@@ -2555,6 +2576,7 @@ fn 技能快捷键的槽位换算() {
 /// ⇒ HUD 一律走 `draw_src`（不换算），见 `hud::hud_img`。
 #[test]
 fn 底栏控件都在画布内() {
+    let _layout = layout_test_guard();
     use crate::layout::{belt_slot_rect, HudBtn, QuickBtn, BELT_SLOTS, HUD_BOARD_H};
     let (w, h) = (crate::window::WIN_W as f32, crate::window::WIN_H as f32);
     let board_top = h - HUD_BOARD_H;

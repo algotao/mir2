@@ -60,6 +60,18 @@ impl Login {
             ui.draw_fullscreen(canvas, tc, dir, Art::BG_1024.0, Art::BG_1024.1),
             "必需素材 ui1[2850] 登录背景缺失"
         );
+        let doc = crate::layout::hud_layout();
+        let Some(base_layout) = Layout::build(win, |lib, idx| ui.size(dir, lib, idx)) else {
+            let msg = "LOGIN ART MISSING - NEED Prguse.wzl";
+            return text(
+                canvas,
+                msg,
+                center_x(msg, 0.0, ui_px(crate::space::Dpx(winf.0)).0),
+                ui_px(crate::space::Dpx(winf.1)).0 / 2.0,
+                C_ERR,
+            );
+        };
+        let l = doc.login_layout(base_layout);
 
         // ② 登录成功 ⇒ **先藏起登录小窗**，只留背景 + 开门动画。
         //
@@ -84,25 +96,13 @@ impl Login {
                     dir,
                     Art::DOOR.0,
                     idx,
-                    Layout::DOOR_AT.0,
-                    Layout::DOOR_AT.1,
+                    doc.login_door().x,
+                    doc.login_door().y,
                 );
             }
             // 门在放：登录小窗（对话框/输入框/按钮/提示）**一律不画** —— 见上面的出处。
             return Ok(());
         }
-
-        let Some(l) = Layout::build(win, |c, i| ui.size(dir, c, i)) else {
-            let msg = "LOGIN ART MISSING - NEED Prguse.wzl";
-            // 同上：`winf` 是设计空间，交给画布字体前要 `ui_px`
-            return text(
-                canvas,
-                msg,
-                center_x(msg, 0.0, ui_px(crate::space::Dpx(winf.0)).0),
-                ui_px(crate::space::Dpx(winf.1)).0 / 2.0,
-                C_ERR,
-            );
-        };
 
         // ③ 对话框
         ui.draw(

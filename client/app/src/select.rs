@@ -367,8 +367,13 @@ impl Select {
     /// 命中 + **那块的矩形**（给控件引擎：按下记矩形，松开就不用再算一遍）。
     fn hit_rect(&self, p: (f32, f32), l: &su::Layout) -> Option<(Hit, su::Rect)> {
         // 先判"点角色本体"（凹槽整块）—— 与下面那两类不重叠，顺序无所谓（见 `su::slot_at`）
-        if let Some(i) = su::slot_at(p, l.bg) {
-            let r = su::slot_rect(i, l.bg);
+        if let Some((i, r)) = l
+            .slots
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, rect)| rect.hit(p))
+        {
             return Some((Hit::Slot(i), r));
         }
         for (i, r) in l.sel.iter().enumerate() {
@@ -397,6 +402,7 @@ impl Select {
     /// 松开由引擎判"是不是同一块" —— 选角也享受同一套 OnClick 规范。
     ///
     /// ⚠️ 建角框与弹窗都是**模态**的 ⇒ 开着的时候只认它们自己的控件。
+    #[allow(dead_code)]
     pub fn on_down(
         &mut self,
         p: (f32, f32),
@@ -404,10 +410,25 @@ impl Select {
         msg: Option<su::MsgBox>,
         ui: &mut crate::widget::Ui,
     ) {
+        let dialog = su::DialogBox::build((l.win.0 as u32, l.win.1 as u32));
+        self.on_down_with_dialog(p, l, msg, dialog, ui);
+    }
+
+    /// 场景适配器传入与绘制相同的可编辑建角窗口几何。
+    pub fn on_down_with_dialog(
+        &mut self,
+        p: (f32, f32),
+        l: &su::Layout,
+        msg: Option<su::MsgBox>,
+        dialog: su::DialogBox,
+        ui: &mut crate::widget::Ui,
+    ) {
         if self.newchar.is_some() {
-            let b = su::DialogBox::build((l.win.0 as u32, l.win.1 as u32));
-            if let Some(dh) = b.hit(p) {
-                ui.press(crate::Press::NewChar(dh), design_rect(dlg_rect(&b, dh)));
+            if let Some(dh) = dialog.hit(p) {
+                ui.press(
+                    crate::Press::NewChar(dh),
+                    design_rect(dlg_rect(&dialog, dh)),
+                );
             }
             return;
         }
@@ -842,6 +863,19 @@ mod tests {
             bg: (0.0, 0.0),
             sel: [empty, empty],
             menu: [r, empty, empty, empty, empty],
+            slots: [empty, empty],
+            slot_texts: [
+                su::SlotText {
+                    name: (0.0, 0.0),
+                    level: (0.0, 0.0),
+                    class: (0.0, 0.0),
+                },
+                su::SlotText {
+                    name: (0.0, 0.0),
+                    level: (0.0, 0.0),
+                    class: (0.0, 0.0),
+                },
+            ],
             win: (1024.0, 768.0),
         };
         let c = r.center();
@@ -878,6 +912,24 @@ mod tests {
                 w: 1.0,
                 h: 1.0,
             }; 5],
+            slots: [su::Rect {
+                x: 9000.0,
+                y: 9000.0,
+                w: 1.0,
+                h: 1.0,
+            }; 2],
+            slot_texts: [
+                su::SlotText {
+                    name: (0.0, 0.0),
+                    level: (0.0, 0.0),
+                    class: (0.0, 0.0),
+                },
+                su::SlotText {
+                    name: (0.0, 0.0),
+                    level: (0.0, 0.0),
+                    class: (0.0, 0.0),
+                },
+            ],
             win: (1024.0, 768.0),
         };
         // ① 删角的确认：点 [Ok] = 真删

@@ -23,7 +23,7 @@ const C_SEL_HL: Rgb = (255, 255, 255);
 pub(crate) fn msgbox_geom(ui: &mut UiCache, dir: &Path, win: (u32, u32)) -> Option<su::MsgBox> {
     let frame = ui.size(dir, "Prguse", 360)?;
     let ok = ui.size(dir, "Prguse", 363).unwrap_or((0, 0));
-    Some(su::MsgBox::build(win, frame, ok))
+    Some(crate::layout::hud_layout().select_msgbox(su::MsgBox::build(win, frame, ok)))
 }
 
 /// 视图专属的惰性素材几何缓存；不属于角色选择状态。
@@ -62,7 +62,8 @@ impl Select {
                 None,
             );
         };
-        let Some(l) = su::Layout::build(win, |lib, idx| ui.size(dir, lib, idx)) else {
+        let doc = crate::layout::hud_layout();
+        let Some(base_layout) = su::Layout::build(win, |lib, idx| ui.size(dir, lib, idx)) else {
             canvas.set_draw_color(sdl3::pixels::Color::RGB(80, 0, 0));
             canvas.clear();
             return text.draw_ui(
@@ -76,11 +77,30 @@ impl Select {
             );
         };
 
+        let l = doc.select_layout(base_layout);
         canvas.set_draw_color(sdl3::pixels::Color::RGB(0, 0, 0));
         canvas.clear();
-        // 选角背景只有客户端清单要求的 1024 原生图 `ui1[2851]`；缺失由启动预检阻止。
+        // 选角背景以原生像素绘制；编辑器移动的是其 800×600 设计空间根节点。
+        let (bw, bh) = ui
+            .size(dir, su::Art::BG_1024.0, su::Art::BG_1024.1)
+            .expect("素材清单要求 ui1[2851]");
+        assert_eq!((bw, bh), (crate::window::WIN_W, crate::window::WIN_H));
+        let bg_x = ui_px(crate::space::Dpx(l.bg.0)).0;
+        let bg_y = ui_px(crate::space::Dpx(l.bg.1)).0;
+        let src = FRect::new(0.0, 0.0, bw as f32, bh as f32);
+        let dst = FRect::new(bg_x, bg_y, bw as f32, bh as f32);
         assert!(
-            ui.draw_fullscreen(canvas, tc, dir, su::Art::BG_1024.0, su::Art::BG_1024.1),
+            ui.draw_src(
+                canvas,
+                tc,
+                dir,
+                su::Art::BG_1024.0,
+                su::Art::BG_1024.1,
+                src,
+                dst,
+                255
+            )
+            .is_some(),
             "必需素材 ui1[2851] 选角背景缺失"
         );
 
@@ -106,7 +126,7 @@ impl Select {
                 continue; // 空槽：什么都不画（删掉的那个位置就留空）
             };
             let f = self.anims[slot].frame(slot == self.picked);
-            let anchor = su::slot_anchor(slot, l.bg);
+            let anchor = su::slot_anchor_in(l.slots[slot]);
             // ⚠️ 落点的**基准永远是"站立第 0 帧"**，不是当前这一帧：
             // 站立 16 帧的上半身在摆（包围盒中点游走，战士女最多 13.5px）⇒ 逐帧对齐会把
             // 站定的脚推着挪；而槽一进来就是石化的，拿当前帧当基准还会"选中那一刻跳一下"。
@@ -141,7 +161,7 @@ impl Select {
                 }
             }
             // 名字 / 等级 / 职业（白字黑边，写在面板的字段框里）
-            let t = su::slot_text(slot, l.bg);
+            let t = l.slot_texts[slot];
             text.draw_ui(
                 canvas,
                 tc,
@@ -228,8 +248,9 @@ impl Select {
 
         // 建角对话框（模态；原版 `DCreateChr`）—— 画在弹窗下面一层
         if let Some(d) = self.newchar.as_ref() {
-            let hover = su::DialogBox::build(win).hit(mouse);
-            draw_newchar(canvas, tc, ui, text, dir, win, d, hover)?;
+            let dialog = doc.select_dialog_box();
+            let hover = dialog.hit(mouse);
+            draw_newchar(canvas, tc, ui, text, dir, dialog, d, hover)?;
         }
 
         // 弹窗
@@ -252,11 +273,10 @@ fn draw_newchar<'a, T>(
     ui: &mut UiCache<'a>,
     text: &mut TextCache<'a>,
     dir: &Path,
-    win: (u32, u32),
+    b: su::DialogBox,
     d: &NewChar,
     hover: Option<su::DialogHit>,
 ) -> Result<(), sdl3::Error> {
-    let b = su::DialogBox::build(win);
     // ① 窗底图（`Prguse[73]`，静态必需素材；不以空窗或自绘板兜底）。
     let (iw, ih) = ui
         .size(dir, su::Art::NEW_CHR_BG.0, su::Art::NEW_CHR_BG.1)

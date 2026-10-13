@@ -83,14 +83,19 @@ const HAIR_BASE: u32 = 440;
 pub(crate) const BG_W: f32 = 232.0;
 pub(crate) const BG_H: f32 = 325.0;
 
-/// 窗口矩形（**不需要素材**：按名义尺寸算）。
+/// 窗口矩形（**不需要素材**：按名义尺寸算；编辑器只允许移动，保持素材原生尺寸）。
 pub(crate) fn panel_rect() -> (f32, f32, f32, f32) {
-    (
-        (crate::window::WIN_W as f32 - BG_W).max(0.0),
-        TOP,
-        BG_W,
-        BG_H,
-    )
+    let r = crate::layout::hud_layout()
+        .get("window_status")
+        .unwrap_or_else(|| {
+            crate::layout::LRect::new(
+                (crate::window::WIN_W as f32 - BG_W).max(0.0),
+                TOP,
+                BG_W,
+                BG_H,
+            )
+        });
+    (r.x, r.y, r.w, r.h)
 }
 
 /// 技能列表一共几页（一页 [`SKILL_ROWS`] 条；空列表也算 1 页）。
@@ -100,8 +105,8 @@ pub(crate) fn skill_pages(items: usize) -> usize {
 
 /// 窗口矩形 `(x, y, w, h)`：尺寸 = 素材原始像素（**不缩放**）。
 pub(crate) fn panel(bg: (u32, u32)) -> (f32, f32, f32, f32) {
-    let (w, h) = (bg.0 as f32, bg.1 as f32);
-    ((crate::window::WIN_W as f32 - w).max(0.0), TOP, w, h)
+    let (x, y, _, _) = panel_rect();
+    (x, y, bg.0 as f32, bg.1 as f32)
 }
 
 /// 状态窗的三个按钮（**窗口内** → 屏幕坐标的换算在这里做一次）。

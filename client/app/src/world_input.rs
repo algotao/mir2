@@ -277,7 +277,7 @@ pub(crate) fn over_ui_window(
     x: f32,
     y: f32,
 ) -> bool {
-    use crate::widget::{Align, InputPolicy, LayoutNode};
+    use crate::widget::{Align, EditPolicy, InputPolicy, LayoutNode};
     let viewport = crate::layout::LRect::new(0.0, 0.0, WIN_W as f32, WIN_H as f32);
     let mut tree = crate::layout::hud_layout().widget_tree();
     let mut add_window = |id, rect: (f32, f32, f32, f32), z| {
@@ -289,6 +289,7 @@ pub(crate) fn over_ui_window(
             z,
             clip_children: true,
             input: InputPolicy::Block,
+            edit: EditPolicy::LOCKED,
         });
     };
 
@@ -325,6 +326,7 @@ pub(crate) fn over_ui_window(
             z: 100,
             clip_children: false,
             input: InputPolicy::Block,
+            edit: EditPolicy::LOCKED,
         });
         tree.push(LayoutNode {
             id: "confirm_frame",
@@ -334,6 +336,7 @@ pub(crate) fn over_ui_window(
             z: 1,
             clip_children: true,
             input: InputPolicy::Block,
+            edit: EditPolicy::LOCKED,
         });
         for (id, r) in [("confirm_ok", c.ok), ("confirm_cancel", c.cancel)] {
             tree.push(LayoutNode {
@@ -344,6 +347,7 @@ pub(crate) fn over_ui_window(
                 z: 1,
                 clip_children: false,
                 input: InputPolicy::Target,
+                edit: EditPolicy::LOCKED,
             });
         }
     }
@@ -374,8 +378,8 @@ pub(crate) fn handle_world_mouse_down<'a>(
         if mouse_btn == MouseButton::Left {
             app.mouse = (x, y);
             // ⚠️ 屏幕坐标 → **逻辑**坐标（画面被放大时鼠标要反算回去，D-134）
-            app.layout_edit
-                .mouse_down_screen((x, y), app.layout_edit.to_logic((x, y)));
+            let layout_xy = app.layout_edit.pointer_to_layout((x, y));
+            app.layout_edit.mouse_down_screen((x, y), layout_xy);
         }
         return;
     }
