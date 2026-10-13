@@ -45,7 +45,7 @@ pub(crate) fn draw_frame<'a, T>(
     archive: Option<&Archive>,
     cursor_arrow: &Cursor,
     cursor_cross: &Cursor,
-    loaded: &mut Option<(usize, Wzl)>,
+    loaded: &mut Option<(usize, crate::assets::ViewerLib)>,
     sprite_tex: &mut Option<Texture<'a>>,
 ) -> Result<Option<usize>, sdl3::Error> {
     let ani_count = (app.started.elapsed().as_millis() / 50) as u32;

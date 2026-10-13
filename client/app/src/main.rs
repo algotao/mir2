@@ -142,15 +142,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let argv: Vec<String> = std::env::args().collect();
     if let Some(pos) = argv.iter().position(|a| a == "--assetview" || a == "-a") {
         let lib = argv.get(pos + 1).filter(|s| !s.starts_with('-')).cloned();
-        // F3 观察器只看客户端 images.m2pk 里、清单允许的图库；不扫描/回退裸 WZL。
+        // 查看器可浏览容器素材；清单外图号或未打包图库仅在此回退到原始 WZL。
         let dir = mir2_core::paths::asset_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let libs = assetview::list_libs(&dir);
         if libs.is_empty() {
-            eprintln!("images.m2pk 缺失/无清单图库；运行 tools/artpack/build.sh");
+            eprintln!("未找到可查看的打包图库或原始 WZL/WZX 素材");
             std::process::exit(2);
         }
         let want = lib.unwrap_or_else(|| "Prguse".to_string());
-        let idx = libs.iter().position(|l| *l == want).unwrap_or(0);
+        let idx = libs
+            .iter()
+            .position(|l| l.eq_ignore_ascii_case(&want))
+            .unwrap_or(0);
         return assetview::run(&dir, &libs, idx);
     }
 

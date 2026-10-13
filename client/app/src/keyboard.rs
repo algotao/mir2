@@ -33,6 +33,7 @@ pub(crate) fn handle_key_down(
     draws: &[mir2_core::map::TileDraw],
     tiles: &std::collections::HashMap<crate::tiles::TileKey, crate::tiles::TileTex<'_>>,
     archive: Option<&mir2_core::m2pk::Archive>,
+    asset_dir: &Option<std::path::PathBuf>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     // Alt 是挖肉的修饰键（`Alt` + 左键点动物尸体）
     if matches!(keycode, Some(Keycode::LAlt) | Some(Keycode::RAlt)) {
@@ -255,11 +256,17 @@ pub(crate) fn handle_key_down(
         // 素材浏览器（开发用）
         _ if app.scene == crate::app_state::Scene::AssetView => match keycode {
             Some(Keycode::LeftBracket) => {
-                let count = crate::assets::packaged_libraries().map_or(0, |libs| libs.len());
+                let count = asset_dir
+                    .as_deref()
+                    .map(crate::assets::viewer_libraries)
+                    .map_or(0, |libs| libs.len());
                 app.asset_view.previous_library(count);
             }
             Some(Keycode::RightBracket) => {
-                let count = crate::assets::packaged_libraries().map_or(0, |libs| libs.len());
+                let count = asset_dir
+                    .as_deref()
+                    .map(crate::assets::viewer_libraries)
+                    .map_or(0, |libs| libs.len());
                 app.asset_view.next_library(count);
             }
             Some(Keycode::Comma) | Some(Keycode::Left) => app.asset_view.previous_image(),

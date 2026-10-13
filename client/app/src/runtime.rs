@@ -30,7 +30,7 @@ pub(crate) fn run_app<T>(
     let mut shop_texts = font::TextCache::new(mir2_core::text::SHOP_PX);
 
     // 素材浏览器的独立数据与 GPU 纹理（F3）
-    let mut loaded: Option<(usize, Wzl)> = None;
+    let mut loaded: Option<(usize, assets::ViewerLib)> = None;
     let mut sprite_tex: Option<Texture<'_>> = None;
     // hover / 系统光标 / 懒素材几何是 renderer 的 view cache，不属于游戏 AppState。
     let mut frame_state = render::FrameState::default();
@@ -102,6 +102,7 @@ pub(crate) fn run_app<T>(
                         &draws,
                         &tiles,
                         archive.as_ref(),
+                        &asset_dir,
                     )? {
                         break 'run;
                     }

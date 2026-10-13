@@ -22,8 +22,6 @@ use sdl3::render::{
     BlendMode, FRect, ScaleMode, Texture, TextureAccess, TextureCreator, WindowCanvas,
 };
 
-use mir2_core::wzl::Wzl;
-
 use crate::font::TextCache;
 
 // ---------- 布局 ----------
@@ -67,11 +65,8 @@ fn hit_cell(x: f32, y: f32) -> Option<usize> {
     Some(cy as usize * c + cx as usize)
 }
 
-pub(crate) fn list_libs(_dir: &Path) -> Vec<String> {
-    crate::assets::packaged_libraries().unwrap_or_else(|e| {
-        eprintln!("[asset:error] {e}");
-        Vec::new()
-    })
+pub(crate) fn list_libs(dir: &Path) -> Vec<String> {
+    crate::assets::viewer_libraries(dir)
 }
 
 pub(crate) fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), Box<dyn Error>> {
@@ -282,13 +277,13 @@ pub(crate) fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), B
     Ok(())
 }
 
-fn open_wzl(dir: &Path, lib: &str) -> Result<Wzl, Box<dyn Error>> {
-    crate::assets::open_lib(dir, lib)
-        .ok_or_else(|| format!("清单图库 {lib} 缺失或打开失败（不回退裸 WZL）").into())
+fn open_wzl(dir: &Path, lib: &str) -> Result<crate::assets::ViewerLib, Box<dyn Error>> {
+    crate::assets::open_viewer_lib(dir, lib)
+        .ok_or_else(|| format!("图库 {lib} 的打包与原始素材都无法读取").into())
 }
 
 /// 一张图的描述行（悬停/选中通用）。
-fn desc(wzl: &Wzl, i: usize, tag: &str) -> String {
+fn desc(wzl: &crate::assets::ViewerLib, i: usize, tag: &str) -> String {
     match wzl.decode(i) {
         Some(sp) => format!(
             "{tag} ID {i}   {w}×{h}  锚点(ax {ax}, ay {ay})",
@@ -317,7 +312,7 @@ fn copy(clip: &ClipboardUtil, id: usize, lib: &str, full: bool) -> String {
 fn draw_grid<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
-    wzl: &Wzl,
+    wzl: &crate::assets::ViewerLib,
     scroll: usize,
     hover: Option<usize>,
     selected: Option<usize>,
@@ -396,7 +391,7 @@ fn draw_grid<'a, T>(
 fn draw_preview<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
-    wzl: &Wzl,
+    wzl: &crate::assets::ViewerLib,
     selected: Option<usize>,
     cache: &mut HashMap<usize, Texture<'a>>,
 ) -> Result<(), sdl3::Error> {

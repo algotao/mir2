@@ -2,10 +2,13 @@
 //!
 //! ⚠️ 从 `main.rs` 拆出来的（2026-10-09，纯搬移、没改逻辑）。
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use mir2_core::wzl::Wzl;
+use mir2_core::image_lib::PackedLib;
+use mir2_core::wzl::{Raw, Record, Sprite, Wzl};
 
 use sdl3::pixels::{Color, PixelFormat};
 use sdl3::rect::Rect;
@@ -103,40 +106,142 @@ pub(crate) fn preflight() -> Result<(), String> {
     Ok(())
 }
 
-/// F3 素材观察器只浏览**实际打包且清单允许**的图库（不再扫描原始素材目录）。
-pub(crate) fn packaged_libraries() -> Result<Vec<String>, String> {
-    let manifest = mir2_core::image_manifest::ImageManifest::shared().map_err(str::to_string)?;
-    let archive = mir2_core::image_lib::art_archive_required()?;
-    let mut libraries: Vec<String> = manifest
-        .rules
-        .iter()
-        .filter(|r| !r.prefix)
-        .map(|r| r.name.clone())
-        .collect();
-    // 通配图库只加入容器里实际出现且符合该前缀的名字。
-    for rule in manifest.rules.iter().filter(|r| r.prefix) {
-        libraries.extend(
-            archive
-                .entries()
-                .iter()
-                .map(|e| e.name.as_str())
-                .filter(|name| name.starts_with(&rule.name))
-                .map(str::to_string),
-        );
-    }
-    libraries.sort();
-    libraries.dedup();
-    for name in &libraries {
-        if archive.lookup(name).is_none() {
-            return Err(format!("清单图库 {name} 不在 images.m2pk 中"));
+/// 查看器图库列表：列出当前实际可读取的打包图库，并合并原始 WZL/WZX 图库。
+pub(crate) fn viewer_libraries(dir: &Path) -> Vec<String> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Vec<String>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = cache.lock() {
+        if let Some(libraries) = cache.get(dir) {
+            return libraries.clone();
         }
     }
-    Ok(libraries)
+
+    let mut libraries = Vec::new();
+    if let (Ok(manifest), Ok(archive)) = (
+        mir2_core::image_manifest::ImageManifest::shared(),
+        mir2_core::image_lib::art_archive_required(),
+    ) {
+        libraries.extend(
+            manifest
+                .rules
+                .iter()
+                .filter(|rule| !rule.prefix && archive.lookup(&rule.name).is_some())
+                .map(|rule| rule.name.clone()),
+        );
+        for rule in manifest.rules.iter().filter(|rule| rule.prefix) {
+            libraries.extend(
+                archive
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.name.as_str())
+                    .filter(|name| name.starts_with(&rule.name))
+                    .map(str::to_string),
+            );
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        let files: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+        let wzx_stems: HashSet<String> = files
+            .iter()
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("wzx"))
+            })
+            .filter_map(|path| path.file_stem()?.to_str())
+            .map(str::to_ascii_lowercase)
+            .collect();
+        for path in files.iter().filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("wzl"))
+        }) {
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if !wzx_stems.contains(&stem.to_ascii_lowercase())
+                || libraries.iter().any(|name| name.eq_ignore_ascii_case(stem))
+            {
+                continue;
+            }
+            libraries.push(stem.to_string());
+        }
+    }
+    libraries.sort_by_key(|name| name.to_ascii_lowercase());
+    libraries.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(dir.to_path_buf(), libraries.clone());
+    }
+    libraries
+}
+
+/// 查看器专用图库：先读容器中登记的图片；清单未选、容器缺项或图库未打包时，
+/// 只在素材查看器中回退到原始 WZL。正式客户端仍使用严格的 [`open_lib`]。
+pub(crate) struct ViewerLib {
+    name: String,
+    packed: Option<PackedLib>,
+    raw: Option<Raw>,
+}
+
+impl ViewerLib {
+    pub(crate) fn len(&self) -> usize {
+        self.packed
+            .as_ref()
+            .map_or(0, PackedLib::len)
+            .max(self.raw.as_ref().map_or(0, Raw::len))
+    }
+
+    pub(crate) fn record(&self, index: usize) -> Option<Record> {
+        if viewer_manifest_allows(&self.name, index) {
+            self.packed
+                .as_ref()
+                .and_then(|lib| lib.record(index))
+                .or_else(|| self.raw.as_ref().and_then(|lib| lib.record(index)))
+        } else {
+            self.raw.as_ref().and_then(|lib| lib.record(index))
+        }
+    }
+
+    pub(crate) fn decode(&self, index: usize) -> Option<Sprite> {
+        if viewer_manifest_allows(&self.name, index) {
+            self.packed
+                .as_ref()
+                .and_then(|lib| lib.decode(index))
+                .or_else(|| self.raw.as_ref().and_then(|lib| lib.decode(index)))
+        } else {
+            self.raw.as_ref().and_then(|lib| lib.decode(index))
+        }
+    }
+}
+
+fn viewer_manifest_allows(name: &str, index: usize) -> bool {
+    mir2_core::image_manifest::ImageManifest::shared()
+        .is_ok_and(|manifest| manifest.allows_image(name, index))
+}
+
+pub(crate) fn open_viewer_lib(dir: &Path, name: &str) -> Option<ViewerLib> {
+    let packed = if mir2_core::image_manifest::ImageManifest::shared()
+        .is_ok_and(|manifest| manifest.allows_library(name))
+    {
+        mir2_core::image_lib::art_archive_required()
+            .ok()
+            .and_then(|archive| Wzl::open_packed(archive, name).ok().flatten())
+            .and_then(|lib| match lib {
+                Wzl::Packed(packed) => Some(packed),
+                Wzl::Raw(_) => None,
+            })
+    } else {
+        None
+    };
+    let raw = Raw::open(dir.join(name)).ok();
+    (packed.is_some() || raw.is_some()).then(|| ViewerLib {
+        name: name.to_string(),
+        packed,
+        raw,
+    })
 }
 
 // ---------- 配色 ----------
 
-/// 素材浏览器（**开发用**，`F3` 进出）：任取一个容器里的第 N 张图，看它解码成什么样。
+/// 素材浏览器（**开发用**，`F3` 进出）：查看打包图；清单外/未打包图只在此回退读原始库。
 ///
 /// 它原先挤在登录页右侧 —— 那让"照原版的登录界面"没法做（一屏两件事）。
 /// 现在独立成一屏：`[` `]` 换容器、`,` `.` 换图号。
@@ -145,7 +250,7 @@ pub(crate) fn draw_asset_view<'a, T>(
     canvas: &mut WindowCanvas,
     tc: &'a TextureCreator<T>,
     asset_dir: &Option<PathBuf>,
-    loaded: &mut Option<(usize, Wzl)>,
+    loaded: &mut Option<(usize, ViewerLib)>,
     sprite_tex: &mut Option<Texture<'a>>,
     status: &str,
     music_on: bool,
@@ -153,9 +258,12 @@ pub(crate) fn draw_asset_view<'a, T>(
     img_idx: usize,
     started: Instant,
 ) -> Result<Option<usize>, sdl3::Error> {
-    let libs = packaged_libraries().unwrap_or_default();
+    let libs = asset_dir
+        .as_deref()
+        .map(viewer_libraries)
+        .unwrap_or_default();
     if libs.is_empty() {
-        text(canvas, "NO PACKAGED IMAGE LIBRARIES", 24.0, 60.0, C_ERR)?;
+        text(canvas, "NO IMAGE LIBRARIES", 24.0, 60.0, C_ERR)?;
         return Ok(None);
     }
     let lib_idx = lib_idx % libs.len();
@@ -187,7 +295,7 @@ pub(crate) fn draw_asset_view<'a, T>(
     if let Some(dir) = asset_dir {
         let name = libs[lib_idx].as_str();
         if loaded.as_ref().map(|(i, _)| *i) != Some(lib_idx) {
-            *loaded = open_lib(dir, name).map(|l| (lib_idx, l));
+            *loaded = open_viewer_lib(dir, name).map(|l| (lib_idx, l));
             *sprite_tex = None;
         }
         if let Some((_, lib)) = loaded.as_ref() {
@@ -302,4 +410,45 @@ pub(crate) fn draw_asset_view<'a, T>(
     }
     let _ = IX;
     Ok(normalized_image)
+}
+
+#[cfg(test)]
+mod viewer_tests {
+    use super::*;
+
+    fn raw_lib_with_chrsel_119() -> Raw {
+        let mut wzl = vec![0u8; mir2_core::wzl::HEADER_LEN];
+        wzl.extend_from_slice(&[3, 0, 0, 0]);
+        wzl.extend_from_slice(&1i16.to_le_bytes());
+        wzl.extend_from_slice(&1i16.to_le_bytes());
+        wzl.extend_from_slice(&0i16.to_le_bytes());
+        wzl.extend_from_slice(&0i16.to_le_bytes());
+        wzl.extend_from_slice(&0u32.to_le_bytes());
+        wzl.extend_from_slice(&[1, 0, 0, 0]);
+
+        let mut wzx = vec![0u8; mir2_core::wzx::HEADER_LEN];
+        wzx[44..48].copy_from_slice(&120u32.to_le_bytes());
+        for index in 0..120 {
+            let offset = if index == 119 {
+                mir2_core::wzl::HEADER_LEN as u32
+            } else {
+                0
+            };
+            wzx.extend_from_slice(&offset.to_le_bytes());
+        }
+        Raw::from_bytes(wzl, &wzx).unwrap()
+    }
+
+    #[test]
+    fn 查看器可回退查看清单外的原始图号() {
+        assert!(!viewer_manifest_allows("chrsel", 119));
+        let viewer = ViewerLib {
+            name: "chrsel".to_string(),
+            packed: None,
+            raw: Some(raw_lib_with_chrsel_119()),
+        };
+        assert_eq!(viewer.len(), 120);
+        assert_eq!(viewer.record(119).unwrap().width, 1);
+        assert_eq!(viewer.decode(119).unwrap().width, 1);
+    }
 }
