@@ -139,14 +139,20 @@ impl LayoutEdit {
         self.visible.as_ref().is_none_or(|ids| ids.contains(&id))
     }
 
-    /// 将鼠标画布坐标反算到当前布局文档空间（包含放大镜与 800×600 设计空间转换）。
-    pub(crate) fn pointer_to_layout(&self, screen: (f32, f32)) -> (f32, f32) {
-        let canvas = self.to_logic(screen);
-        if matches!(self.scope, EditorScope::Login | EditorScope::Select) {
-            let p = crate::ui::ui_inv_pt(crate::widget::canvas_pt(canvas));
-            (p.0 .0, p.1 .0)
-        } else {
-            canvas
+    /// 屏幕画布点反算到带当前作用域类型的布局点（包含编辑器 zoom）。
+    pub(crate) fn pointer_to_layout(
+        &self,
+        screen: crate::space::CPt,
+    ) -> crate::layout::LayoutPoint {
+        let logical = self.to_logic((screen.0 .0, screen.1 .0));
+        self.scope
+            .layout_point(crate::space::CPt::from_xy(logical.0, logical.1))
+    }
+
+    /// 有类型的输入边界；空间标签必须与当前编辑文档匹配。
+    pub(crate) fn mouse_move_point(&mut self, point: crate::layout::LayoutPoint) {
+        if let Some(xy) = point.coordinates(self.scope) {
+            self.mouse_move_xy(xy);
         }
     }
 
@@ -235,20 +241,25 @@ impl LayoutEdit {
     }
 
     /// 层级面板与实际 widget tree 同源；添加节点后无需另改编辑器白名单。
-    pub(crate) fn mouse_down_screen(&mut self, screen: (f32, f32), logic: (f32, f32)) -> bool {
+    pub(crate) fn mouse_down_screen(
+        &mut self,
+        screen: crate::space::CPt,
+        point: crate::layout::LayoutPoint,
+    ) -> bool {
         if !self.on {
             return false;
         }
+        let screen_xy = (screen.0 .0, screen.1 .0);
         let tree = layout_document().editor_tree(self.scope);
         let row_y = TREE_Y + TREE_HEADER_H;
         let tree_h = TREE_HEADER_H + TREE_ROW_H * tree.nodes().len() as f32 + 4.0;
-        if screen.0 >= TREE_X
-            && screen.0 < TREE_X + TREE_W
-            && screen.1 >= TREE_Y
-            && screen.1 < TREE_Y + tree_h
+        if screen_xy.0 >= TREE_X
+            && screen_xy.0 < TREE_X + TREE_W
+            && screen_xy.1 >= TREE_Y
+            && screen_xy.1 < TREE_Y + tree_h
         {
-            if screen.1 >= row_y {
-                let row = ((screen.1 - row_y) / TREE_ROW_H).floor() as usize;
+            if screen_xy.1 >= row_y {
+                let row = ((screen_xy.1 - row_y) / TREE_ROW_H).floor() as usize;
                 if let Some(node) = tree.nodes().get(row) {
                     self.sel = Some(node.id);
                     self.last = format!("选中 {} ({})", crate::layout::item_name(node.id), node.id);
@@ -257,11 +268,15 @@ impl LayoutEdit {
             self.drag = None;
             return true;
         }
-        self.mouse_down(logic)
+        let Some(point) = point.coordinates(self.scope) else {
+            self.drag = None;
+            return true;
+        };
+        self.mouse_down_xy(point)
     }
 
-    /// 通用节点命中与策略决定移动/调整尺寸；业务控件无需各自实现编辑逻辑。
-    pub(crate) fn mouse_down(&mut self, p: (f32, f32)) -> bool {
+    /// 节点命中内部只接受已与文档 scope 对齐的坐标。
+    fn mouse_down_xy(&mut self, p: (f32, f32)) -> bool {
         if !self.on {
             return false;
         }
@@ -276,8 +291,13 @@ impl LayoutEdit {
         true
     }
 
+    #[cfg(test)]
+    pub(crate) fn mouse_down(&mut self, p: (f32, f32)) -> bool {
+        self.mouse_down_xy(p)
+    }
+
     /// 编辑事务逐帧预览，mouse-up 才压入一次 undo 历史。
-    pub(crate) fn mouse_move(&mut self, p: (f32, f32)) {
+    fn mouse_move_xy(&mut self, p: (f32, f32)) {
         let Some(session) = self.drag else { return };
         let grid = self.grid();
         with_layout_document(|layout| {
@@ -289,6 +309,11 @@ impl LayoutEdit {
                 layout.apply_widget_tree(&tree, self.scope);
             }
         });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mouse_move(&mut self, p: (f32, f32)) {
+        self.mouse_move_xy(p);
     }
 
     pub(crate) fn mouse_up(&mut self) {
@@ -663,6 +688,7 @@ mod tests {
     /// 屏幕 → 逻辑 必须是 `中心 + (屏幕 − 中心)/倍`，且倍数夹在 1..8。
     #[test]
     fn 放大后鼠标要反算回逻辑坐标() {
+        let _g = begin();
         let mut e = LayoutEdit {
             on: true,
             ..LayoutEdit::default()
@@ -683,6 +709,17 @@ mod tests {
         assert_eq!(e.zoom(), 8.0);
         e.zoom_by(-100.0, (0.0, 0.0));
         assert_eq!(e.zoom(), 1.0);
+
+        let canvas_point = crate::space::CPt::from_xy(800.0, 640.0);
+        assert_eq!(
+            e.pointer_to_layout(canvas_point),
+            crate::layout::LayoutPoint::World(canvas_point)
+        );
+        e.set_scene(crate::app_state::Scene::Login);
+        assert_eq!(
+            e.pointer_to_layout(canvas_point),
+            crate::layout::LayoutPoint::Ui(crate::space::DPt::from_xy(625.0, 500.0))
+        );
     }
 
     /// 闭环：编辑器改 → 存文件 → 重新载入 ⇒ 拿到同一个布局（D-134 的命脉）。
@@ -739,7 +776,10 @@ mod tests {
             TREE_X + 10.0,
             TREE_Y + TREE_HEADER_H + row as f32 * TREE_ROW_H + 2.0,
         );
-        assert!(e.mouse_down_screen(screen, (900.0, 700.0)));
+        assert!(e.mouse_down_screen(
+            crate::widget::canvas_pt(screen),
+            crate::layout::LayoutPoint::World(crate::widget::canvas_pt((900.0, 700.0)))
+        ));
         assert_eq!(e.selected(), Some("plate_hp"));
         assert!(e.drag.is_none(), "层级面板点击只选择，不开始拖画布控件");
     }

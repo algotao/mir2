@@ -661,7 +661,35 @@ pub(crate) enum EditorScope {
     Select,
 }
 
-/// World 场景可见窗口与覆盖层的共用底到顶顺序；renderer 遍历此表，命中使用 `z()`。
+/// 编辑器输入点携带其所属空间，禁止把 design point 当成 world canvas point。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum LayoutPoint {
+    World(crate::space::CPt),
+    Ui(crate::space::DPt),
+}
+
+impl EditorScope {
+    pub(crate) fn layout_point(self, canvas: crate::space::CPt) -> LayoutPoint {
+        match self {
+            Self::World => LayoutPoint::World(canvas),
+            Self::Login | Self::Select => LayoutPoint::Ui(crate::ui::ui_inv_pt(canvas)),
+        }
+    }
+}
+
+impl LayoutPoint {
+    pub(crate) fn coordinates(self, scope: EditorScope) -> Option<(f32, f32)> {
+        match (self, scope) {
+            (Self::World(point), EditorScope::World) => Some((point.0 .0, point.1 .0)),
+            (Self::Ui(point), EditorScope::Login | EditorScope::Select) => {
+                Some((point.0 .0, point.1 .0))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// World 场景与覆盖层的共用底到顶顺序；renderer 遍历此表，命中使用 `z()`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorldUiLayer {
     Dialog,
@@ -1878,6 +1906,17 @@ mod layout_tests {
             assert!(layout.stored_rect(id).is_some(), "缺少布局节点存储 {id}");
             assert!(layout.align(id).is_some(), "缺少布局节点锚点 {id}");
         }
+    }
+
+    #[test]
+    fn 布局指针空间标签拒绝跨作用域误用() {
+        let world = LayoutPoint::World(crate::space::CPt::from_xy(400.0, 300.0));
+        let ui = LayoutPoint::Ui(crate::space::DPt::from_xy(312.5, 234.375));
+        assert_eq!(world.coordinates(EditorScope::World), Some((400.0, 300.0)));
+        assert_eq!(ui.coordinates(EditorScope::Select), Some((312.5, 234.375)));
+        assert_eq!(ui.coordinates(EditorScope::Login), Some((312.5, 234.375)));
+        assert_eq!(world.coordinates(EditorScope::Login), None);
+        assert_eq!(ui.coordinates(EditorScope::World), None);
     }
 
     #[test]

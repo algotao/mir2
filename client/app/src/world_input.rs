@@ -434,8 +434,9 @@ pub(crate) fn handle_world_mouse_down<'a>(
         if mouse_btn == MouseButton::Left {
             app.mouse = (x, y);
             // ⚠️ 屏幕坐标 → **逻辑**坐标（画面被放大时鼠标要反算回去，D-134）
-            let layout_xy = app.layout_edit.pointer_to_layout((x, y));
-            app.layout_edit.mouse_down_screen((x, y), layout_xy);
+            let screen = crate::widget::canvas_pt((x, y));
+            let layout_point = app.layout_edit.pointer_to_layout(screen);
+            app.layout_edit.mouse_down_screen(screen, layout_point);
         }
         return;
     }

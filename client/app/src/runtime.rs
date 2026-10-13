@@ -120,9 +120,10 @@ pub(crate) fn run_app<T>(
                 Event::MouseMotion { x, y, .. } => {
                     app.mouse = (x, y);
                     app.ui_click.set_mouse(crate::widget::canvas_pt(app.mouse));
-                    // 界面开发器先从画布/放大坐标换到当前 scene 的布局空间。
-                    let layout_xy = app.layout_edit.pointer_to_layout((x, y));
-                    app.layout_edit.mouse_move(layout_xy);
+                    // 布局编辑器将 canvas point 映射成携带 World/UI 空间标签的点。
+                    let screen = crate::widget::canvas_pt((x, y));
+                    let layout_point = app.layout_edit.pointer_to_layout(screen);
+                    app.layout_edit.mouse_move_point(layout_point);
                 }
                 Event::MouseWheel { y, .. } if app.scene == crate::app_state::Scene::World => {
                     world_input::handle_mouse_wheel(&mut app, y)
@@ -142,8 +143,9 @@ pub(crate) fn run_app<T>(
                         crate::app_state::Scene::Login | crate::app_state::Scene::Select
                     ) =>
                 {
-                    let layout_xy = app.layout_edit.pointer_to_layout((x, y));
-                    app.layout_edit.mouse_down_screen((x, y), layout_xy);
+                    let screen = crate::widget::canvas_pt((x, y));
+                    let layout_point = app.layout_edit.pointer_to_layout(screen);
+                    app.layout_edit.mouse_down_screen(screen, layout_point);
                 }
                 Event::MouseButtonUp {
                     mouse_btn: MouseButton::Left,

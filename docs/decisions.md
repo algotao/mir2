@@ -6014,7 +6014,7 @@ dir, x, y, 0, '')`，`GetFeature` 里**没有**骷髅分支 ⇒ **外观一个�
 
 - 登录/选角指针输入在场景适配器以 `CPt` 接收，并转换为 `DPt` 后交给场景命中状态机；场景引擎转接 SDL `Ui` 时只接受 `CPt/CRect`。
 - `ui_pt` / `ui_inv_pt` 分别要求 `DPt` / `CPt`；设计空间 widget 矩形转换要求 `DRect`。Core 的遗留 `f32` DTO 仅在 Login/Select 适配边界显式拆包/构造，不让裸 tuple 穿过坐标换算 helper。
-- HUD/world 布局编辑器的 `LRect` 仍由 `EditorScope` 决定空间，本阶段不泛型化整个 `LayoutDocument` 或 SDL 绘制 API；后续按场景逐步增加 typed accessor。
+- HUD/world 布局编辑器的矩形文档仍由 `EditorScope` 解释；鼠标边界使用 `LayoutPoint::{World(CPt), Ui(DPt)}` 携带当前空间，并拒绝点类型与 scope 不匹配。本阶段不泛型化整个 `LayoutDocument` 或 SDL 绘制 API，编辑事务内部仅在校验 scope 后拆成数值对。
 
 **验收**：错误空间的点/矩形不能传给登录/选角事件入口或跨空间转换 helper；现有 OnClick、设计/画布往返和 workspace 测试通过。
 
