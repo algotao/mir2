@@ -11,7 +11,7 @@
 ///
 /// 背板是原生像素尺寸，**不缩放**（用户："界面显示文字在 1024×768 下不要缩放" ——
 /// 背板也一样，画成 416×176 正好是官方大小）。
-pub(crate) const DIALOG_BG: u32 = 384;
+pub(crate) const DIALOG_BG: u32 = mir2_core::image_manifest::assets::NPC_DIALOG_BACKGROUND.index;
 
 /// 背板尺寸（`Prguse[384]` 的原生尺寸）。
 pub(crate) const DIALOG_W: f32 = 416.0;

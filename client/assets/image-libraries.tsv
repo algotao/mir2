@@ -1,0 +1,54 @@
+# MIR2 客户端图库清单 v1
+# 一行：library<TAB>pattern<TAB>selection<TAB>usage
+# pattern: exact | prefix*。selection: all | 0-based comma-separated indices / ranges (a-b inclusive).
+# `all` 用于运行时图号由角色、地图、装备或服务端数据决定的图库；静态 UI 库按当前固定图号裁剪。
+# 此文件由 client 与 tools/artpack 共同读取；不得另维护一份打包白名单。
+
+library	prguse	exact	3-11,29-39,51-53,60-62,64,66-78,128-141,248-255,360,363,370-373,376-377,384-388,392-393,441-443,445-447,450,458-462,464-475	仅保留当前代码实际访问的静态图与有效发型帧；旧 800 选角底图[65]及已知空帧不打包。
+library	prguse2	exact	480	选角开始按钮石台。
+library	prguse3	exact	690	1024×251 底栏整图。
+library	ui1	exact	2850,2851	登录与选角 1024×768 原生底图（缺失是致命素材错误）
+library	chrsel	exact	4-17,24-32,40-55,60-72,80-95,100-112,120-135,140-152,160-175,180-192,200-215,220-232,240-255,260-272	当前仍使用的选角动画帧；23 是空门帧，22 旧登录背景已由 ui1[2850] 取代。
+library	hum	exact	all	玩家人物动作帧（职业/外观/动作/方向由运行时决定）。
+library	weapon	exact	all	玩家武器动作帧（装备外观与动作方向由运行时决定）。
+library	hair2	exact	all	玩家发型动作帧（发型与性别由运行时决定）。
+library	npc	exact	all	NPC 外观动作帧（Appr/方向由运行时决定）。
+library	items	exact	all	背包、地面掉落、商店物品图标（Looks 来自运行时物品表）。
+library	stateitem	exact	all	人物状态窗装备大图（Looks 来自运行时装备）。
+library	magic	exact	all	F3 素材观察器开放浏览。
+library	magicon	exact	all	状态窗技能图标与技能栏（图号来自服务端技能数据）。
+library	mmap	exact	all	小地图/大地图（图库索引由运行时地图编号决定）。
+library	tiles	exact	all	地图地表层（图号来自运行时地图数据）。
+library	smtiles	exact	all	地图中间层（图号来自运行时地图数据）。
+library	objects*	prefix	all	地图前景物件，图库名由地图 area 字节动态派生。
+library	mon1	exact	all	怪物动作帧。
+library	mon2	exact	all	怪物动作帧。
+library	mon3	exact	all	怪物动作帧。
+library	mon4	exact	all	怪物动作帧。
+library	mon5	exact	all	怪物动作帧。
+library	mon6	exact	all	怪物动作帧。
+library	mon7	exact	all	怪物动作帧。
+library	mon8	exact	all	怪物动作帧。
+library	mon9	exact	all	怪物动作帧。
+library	mon10	exact	all	怪物动作帧。
+library	mon11	exact	all	怪物动作帧。
+library	mon12	exact	all	怪物动作帧。
+library	mon13	exact	all	怪物动作帧。
+library	mon14	exact	all	怪物动作帧。
+library	mon15	exact	all	怪物动作帧。
+library	mon16	exact	all	怪物动作帧。
+library	mon17	exact	all	怪物动作帧。
+library	mon18	exact	all	怪物动作帧。
+library	mon19	exact	all	怪物动作帧。
+library	mon20	exact	all	怪物动作帧。
+library	mon21	exact	all	怪物动作帧。
+library	mon22	exact	all	怪物动作帧。
+library	effect	exact	all	Appr/10=90 的怪物外观动作帧（实际图片入口；按怪物 Appr/方向取帧）。
+
+# image<TAB>library<TAB>index<TAB>purpose：启动期必须验证的静态图；同时自动加入打包选择。
+image	chrsel	4-17,24-32,40-55,60-72,80-95,100-112,120-135,140-152,160-175,180-192,200-215,220-232,240-255,260-272	选角公式动画帧；23 是原版空帧占位，22 旧登录背景由 ui1[2850] 取代。
+image	ui1	2850	登录 1024 背景
+image	ui1	2851	选角 1024 背景
+image	prguse	3-11,29-39,51-53,60-62,64,66-78,128-141,248-255,360,363,370-373,376-377,384-388,392-393,441-443,445-447,450,458-462,464-475	当前 Prguse 固定界面依赖及有效发型图；旧 800 选角底图[65]、空帧不打包
+image	prguse2	480	选角开始按钮石台
+image	prguse3	690	1024 版底栏整图

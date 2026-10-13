@@ -73,6 +73,16 @@ func (s *Server) dropPosition(m *world.Map, orgX, orgY, nRange int, ignoreID uin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// ⚠️ **可达性**（用户 2026-10-12："金币会掉落在不可到达位置"）：`CanWalk` 只判
+	// "这一格能不能站"，不判"能不能从死亡点走过去" ⇒ 墙背后 / 河对岸那种格子会被选
+	// 中，玩家永远走不到。原版靠"怪死在玩家旁边 + 散落半径只有 3"碰运气躲过大部分，
+	// 我们不赌这个：先算出死亡点**走得到**的格子（八方向，与移动同一套），落点只从
+	// 里面挑。全都走不到（比如死亡点本身被围死）⇒ 退化成旧行为，宁可掉也别消失。
+	reach := reachableFrom(m, orgX, orgY, nRange+1)
+	if len(reach) == 0 {
+		reach = nil // 退化：不做连通过滤
+	}
+
 	bestX, bestY, bestCount := orgX, orgY, maxDropStackPerCell+1
 	for i := 1; i <= nRange; i++ {
 		for dy := -i; dy <= i; dy++ {
@@ -80,6 +90,9 @@ func (s *Server) dropPosition(m *world.Map, orgX, orgY, nRange int, ignoreID uin
 				x, y := orgX+dx, orgY+dy
 				if !s.canDropAt(m, x, y, ignoreID) {
 					continue
+				}
+				if reach != nil && !reach[[2]int{x, y}] {
+					continue // 走不到的格子：隔墙 / 隔河
 				}
 				n := s.groundCountAt(m, x, y)
 				if n == 0 {
@@ -142,4 +155,45 @@ func (s *Server) groundCountAt(m *world.Map, x, y int) int {
 		}
 	}
 	return n
+}
+
+// reachableFrom 从 (ox,oy) 出发、**八方向**走得到的格子（含自身），半径 r。
+//
+// ⚠️ 与移动同一套方向（八方向）⇒ "玩家能走过去" 和 "掉落能落过去" 是同一个可达性；
+// 只判 `CanWalk` 的话，墙背后那格也算可落（玩家却走不到）。
+//
+// 返回空集表示"连自己都走不到"（死亡点被围死之类）⇒ 调用方退化成不做过滤。
+func reachableFrom(m *world.Map, ox, oy, r int) map[[2]int]bool {
+	if m == nil || r <= 0 {
+		return nil
+	}
+	if !m.CanWalk(ox, oy) {
+		return nil
+	}
+	out := map[[2]int]bool{{ox, oy}: true}
+	frontier := [][2]int{{ox, oy}}
+	for step := 0; step < r && len(frontier) > 0; step++ {
+		var next [][2]int
+		for _, c := range frontier {
+			for dy := -1; dy <= 1; dy++ {
+				for dx := -1; dx <= 1; dx++ {
+					if dx == 0 && dy == 0 {
+						continue
+					}
+					// 斜向不许穿角：两边都是墙就过不去（与移动同一条规矩）
+					if dx != 0 && dy != 0 && !m.CanWalk(c[0]+dx, c[1]) && !m.CanWalk(c[0], c[1]+dy) {
+						continue
+					}
+					n := [2]int{c[0] + dx, c[1] + dy}
+					if out[n] || !m.CanWalk(n[0], n[1]) {
+						continue
+					}
+					out[n] = true
+					next = append(next, n)
+				}
+			}
+		}
+		frontier = next
+	}
+	return out
 }

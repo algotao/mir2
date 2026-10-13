@@ -282,6 +282,219 @@ impl Drag {
     }
 }
 
+// ---------- Parent / align / clip / layer layout ----------
+
+/// 沿一个轴贴齐父控件：起始边 / 居中 / 结束边。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AxisAlign {
+    Start,
+    Center,
+    End,
+}
+
+/// 锚点对齐属性。rect 的 x/y 是相对锚点的偏移，w/h 保持像素尺寸。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Align {
+    pub horizontal: AxisAlign,
+    pub vertical: AxisAlign,
+}
+
+impl Align {
+    pub(crate) const TOP_LEFT: Self = Self {
+        horizontal: AxisAlign::Start,
+        vertical: AxisAlign::Start,
+    };
+    pub(crate) const BOTTOM_LEFT: Self = Self {
+        horizontal: AxisAlign::Start,
+        vertical: AxisAlign::End,
+    };
+}
+
+/// 控件命中策略：忽略自身、作为可点目标、或拦截其区域内的地图输入。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InputPolicy {
+    Ignore,
+    Target,
+    Block,
+}
+
+/// 场景树中的一个布局节点。
+///
+/// `parent` 为空时相对 viewport 对齐；有父控件时 `rect` 是父控件局部坐标。
+/// `z` 越大越靠上；`clip_children` 将子控件绘制/命中裁剪在自身矩形中。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LayoutNode {
+    pub id: &'static str,
+    pub parent: Option<&'static str>,
+    pub rect: crate::layout::LRect,
+    pub align: Align,
+    pub z: i32,
+    pub clip_children: bool,
+    pub input: InputPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ResolvedNode {
+    pub id: &'static str,
+    pub rect: crate::layout::LRect,
+    pub clip: Option<crate::layout::LRect>,
+    pub z: i32,
+    pub input: InputPolicy,
+    order: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct WidgetTree {
+    nodes: Vec<LayoutNode>,
+}
+
+impl WidgetTree {
+    pub(crate) fn push(&mut self, node: LayoutNode) {
+        self.nodes.push(node);
+    }
+
+    /// 设计器修改 anchor/局部矩形时更新节点。
+    #[allow(dead_code)]
+    pub(crate) fn node_mut(&mut self, id: &str) -> Option<&mut LayoutNode> {
+        self.nodes.iter_mut().find(|node| node.id == id)
+    }
+
+    /// 统一解析 parent + align + clip；绘制与命中应消费同一份 `ResolvedNode`。
+    pub(crate) fn resolve(
+        &self,
+        viewport: crate::layout::LRect,
+    ) -> Result<Vec<ResolvedNode>, &'static str> {
+        for i in 0..self.nodes.len() {
+            if self.nodes[..i]
+                .iter()
+                .any(|node| node.id == self.nodes[i].id)
+            {
+                return Err("duplicate widget id");
+            }
+        }
+        let mut out: Vec<Option<ResolvedNode>> = vec![None; self.nodes.len()];
+        let mut visiting = vec![false; self.nodes.len()];
+        for i in 0..self.nodes.len() {
+            self.resolve_one(i, viewport, &mut visiting, &mut out)?;
+        }
+        Ok(out.into_iter().flatten().collect())
+    }
+
+    fn resolve_one(
+        &self,
+        i: usize,
+        viewport: crate::layout::LRect,
+        visiting: &mut [bool],
+        out: &mut [Option<ResolvedNode>],
+    ) -> Result<(), &'static str> {
+        if out[i].is_some() {
+            return Ok(());
+        }
+        if visiting[i] {
+            return Err("widget parent cycle");
+        }
+        visiting[i] = true;
+        let node = self.nodes[i];
+        let (base, clip, parent_z) = if let Some(parent_id) = node.parent {
+            let p = self
+                .nodes
+                .iter()
+                .position(|candidate| candidate.id == parent_id)
+                .ok_or("widget parent does not exist")?;
+            self.resolve_one(p, viewport, visiting, out)?;
+            let parent = out[p].ok_or("widget parent resolution failed")?;
+            let child_clip = if self.nodes[p].clip_children {
+                intersect(parent.clip, parent.rect)
+            } else {
+                parent.clip
+            };
+            (parent.rect, child_clip, parent.z)
+        } else {
+            (viewport, None, 0)
+        };
+        let rect = align_rect(node.rect, base, node.align);
+        out[i] = Some(ResolvedNode {
+            id: node.id,
+            rect,
+            clip,
+            z: parent_z.saturating_add(node.z),
+            input: node.input,
+            order: i,
+        });
+        visiting[i] = false;
+        Ok(())
+    }
+
+    /// 返回最上层命中项；Block 作为一个正常命中返回，调用方据此拦截地图输入。
+    pub(crate) fn hit_test(
+        &self,
+        viewport: crate::layout::LRect,
+        p: (f32, f32),
+    ) -> Result<Option<ResolvedNode>, &'static str> {
+        let mut nodes = self.resolve(viewport)?;
+        nodes.retain(|node| {
+            node.input != InputPolicy::Ignore
+                && node.rect.hit(p, 0.0)
+                && node.clip.is_none_or(|clip| clip.hit(p, 0.0))
+        });
+        nodes.sort_by_key(|node| (node.z, node.order));
+        Ok(nodes.pop())
+    }
+}
+
+pub(crate) fn align_rect(
+    local: crate::layout::LRect,
+    parent: crate::layout::LRect,
+    align: Align,
+) -> crate::layout::LRect {
+    use AxisAlign::{Center, End, Start};
+    let x = match align.horizontal {
+        Start => parent.x + local.x,
+        Center => parent.x + (parent.w - local.w) / 2.0 + local.x,
+        End => parent.x + parent.w - local.w - local.x,
+    };
+    let y = match align.vertical {
+        Start => parent.y + local.y,
+        Center => parent.y + (parent.h - local.h) / 2.0 + local.y,
+        End => parent.y + parent.h - local.h - local.y,
+    };
+    crate::layout::LRect::new(x, y, local.w, local.h)
+}
+
+/// 将屏幕矩形反算成对齐偏移（编辑器拖动父窗口后仍保持同一 anchor）。
+pub(crate) fn unalign_rect(
+    screen: crate::layout::LRect,
+    parent: crate::layout::LRect,
+    align: Align,
+) -> crate::layout::LRect {
+    use AxisAlign::{Center, End, Start};
+    let x = match align.horizontal {
+        Start => screen.x - parent.x,
+        Center => screen.x - parent.x - (parent.w - screen.w) / 2.0,
+        End => parent.x + parent.w - screen.x - screen.w,
+    };
+    let y = match align.vertical {
+        Start => screen.y - parent.y,
+        Center => screen.y - parent.y - (parent.h - screen.h) / 2.0,
+        End => parent.y + parent.h - screen.y - screen.h,
+    };
+    crate::layout::LRect::new(x, y, screen.w, screen.h)
+}
+
+fn intersect(
+    parent: Option<crate::layout::LRect>,
+    child: crate::layout::LRect,
+) -> Option<crate::layout::LRect> {
+    let Some(parent) = parent else {
+        return Some(child);
+    };
+    let x = parent.x.max(child.x);
+    let y = parent.y.max(child.y);
+    let right = (parent.x + parent.w).min(child.x + child.w);
+    let bottom = (parent.y + parent.h).min(child.y + child.h);
+    (right > x && bottom > y).then(|| crate::layout::LRect::new(x, y, right - x, bottom - y))
+}
+
 #[cfg(test)]
 mod grid_tests {
     use super::*;
@@ -530,5 +743,151 @@ mod tests {
             "设计矩形须显式换到画布，才能和鼠标同空间命中"
         );
         assert_eq!(ui.release(p), Some(A));
+    }
+}
+
+#[cfg(test)]
+mod layout_tree_tests {
+    use super::*;
+    use crate::layout::LRect;
+
+    fn node(
+        id: &'static str,
+        parent: Option<&'static str>,
+        rect: LRect,
+        align: Align,
+        z: i32,
+        clip_children: bool,
+        input: InputPolicy,
+    ) -> LayoutNode {
+        LayoutNode {
+            id,
+            parent,
+            rect,
+            align,
+            z,
+            clip_children,
+            input,
+        }
+    }
+
+    #[test]
+    fn parent_移动时子控件跟随_align按父矩形计算() {
+        let mut tree = WidgetTree::default();
+        tree.push(node(
+            "panel",
+            None,
+            LRect::new(10.0, 0.0, 100.0, 60.0),
+            Align::BOTTOM_LEFT,
+            0,
+            false,
+            InputPolicy::Block,
+        ));
+        tree.push(node(
+            "child",
+            Some("panel"),
+            LRect::new(4.0, 6.0, 20.0, 10.0),
+            Align::TOP_LEFT,
+            1,
+            false,
+            InputPolicy::Target,
+        ));
+        let viewport = LRect::new(0.0, 0.0, 400.0, 300.0);
+        let first = tree.resolve(viewport).unwrap();
+        assert_eq!(first[0].rect, LRect::new(10.0, 240.0, 100.0, 60.0));
+        assert_eq!(first[1].rect, LRect::new(14.0, 246.0, 20.0, 10.0));
+
+        tree.node_mut("panel").unwrap().rect.x = 30.0;
+        let moved = tree.resolve(viewport).unwrap();
+        assert_eq!(moved[1].rect, LRect::new(34.0, 246.0, 20.0, 10.0));
+
+        tree.node_mut("child").unwrap().align = Align {
+            horizontal: AxisAlign::Center,
+            vertical: AxisAlign::Center,
+        };
+        assert_eq!(
+            tree.resolve(viewport).unwrap()[1].rect,
+            LRect::new(74.0, 271.0, 20.0, 10.0),
+            "子控件可相对父控件中心锚定"
+        );
+    }
+
+    #[test]
+    fn clip和z序共同决定命中优先级() {
+        let mut tree = WidgetTree::default();
+        tree.push(node(
+            "window",
+            None,
+            LRect::new(0.0, 0.0, 50.0, 50.0),
+            Align::TOP_LEFT,
+            0,
+            true,
+            InputPolicy::Block,
+        ));
+        tree.push(node(
+            "inside",
+            Some("window"),
+            LRect::new(40.0, 10.0, 20.0, 20.0),
+            Align::TOP_LEFT,
+            1,
+            false,
+            InputPolicy::Target,
+        ));
+        tree.push(node(
+            "top_overlay",
+            None,
+            LRect::new(10.0, 10.0, 10.0, 10.0),
+            Align::TOP_LEFT,
+            5,
+            false,
+            InputPolicy::Target,
+        ));
+        let vp = LRect::new(0.0, 0.0, 100.0, 100.0);
+        assert_eq!(
+            tree.hit_test(vp, (15.0, 15.0)).unwrap().unwrap().id,
+            "top_overlay"
+        );
+        assert_eq!(
+            tree.hit_test(vp, (45.0, 15.0)).unwrap().unwrap().id,
+            "inside"
+        );
+        assert_eq!(
+            tree.hit_test(vp, (25.0, 15.0)).unwrap().unwrap().id,
+            "window",
+            "窗口空白也拦截地图输入"
+        );
+        assert_eq!(
+            tree.hit_test(vp, (55.0, 15.0)).unwrap(),
+            None,
+            "子控件超出父 clip 的部分不可命中"
+        );
+        assert_eq!(tree.hit_test(vp, (80.0, 80.0)).unwrap(), None);
+    }
+
+    #[test]
+    fn parent环和缺失parent拒绝解析() {
+        let mut tree = WidgetTree::default();
+        tree.push(node(
+            "a",
+            Some("b"),
+            LRect::new(0.0, 0.0, 1.0, 1.0),
+            Align::TOP_LEFT,
+            0,
+            false,
+            InputPolicy::Target,
+        ));
+        tree.push(node(
+            "b",
+            Some("a"),
+            LRect::new(0.0, 0.0, 1.0, 1.0),
+            Align::TOP_LEFT,
+            0,
+            false,
+            InputPolicy::Target,
+        ));
+        assert_eq!(
+            tree.resolve(LRect::new(0.0, 0.0, 10.0, 10.0)),
+            Err("widget parent cycle")
+        );
     }
 }

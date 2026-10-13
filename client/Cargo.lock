@@ -427,6 +427,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mir2-imgtool"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "mir2-core",
+]
+
+[[package]]
 name = "mir2-net"
 version = "0.1.0"
 dependencies = [

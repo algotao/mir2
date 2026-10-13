@@ -8,13 +8,11 @@ use chrono::Timelike;
 use sdl3::pixels::Color;
 use sdl3::render::{BlendMode, FRect, TextureCreator, WindowCanvas};
 
-use crate::colors::C_HUD_COORD;
-use crate::fill;
+use crate::colors::C_HUD_TEXT;
 use crate::gfx::trunc;
 use crate::layout::{
-    exp_at, gauge_band, hud_right_x, level_at, weight_at, HUD_BOARD, HUD_DIGIT0, HUD_EXP,
-    HUD_NUM_PLATE, HUD_NUM_PLATE_LIB, HUD_ORB,
-    HUD_ORB_SOLO, HUD_ORB_SOLO_FILL, HUD_SIDE_W, ORB_AT, ORB_SOLO_AT, ORB_TEXT_DY,
+    gauge_band, HUD_BOARD_1024, HUD_BOARD_1024_LIB, HUD_DIGIT0, HUD_EXP, HUD_ORB, HUD_ORB_SOLO,
+    HUD_ORB_SOLO_FILL,
 };
 use crate::net::Net;
 use crate::window::WIN_H;
@@ -86,71 +84,36 @@ pub(crate) fn draw_hud<'a, T>(
     // 鼠标在**画布**里的位置（经验条/负重条的悬停提示要按它判）
     mouse: (f32, f32),
 ) -> Result<(), sdl3::Error> {
-    let (bw, bh) = ui.size(dir, "Prguse", HUD_BOARD).unwrap_or((800, 251));
+    // ★ 底栏布局（D-134）：`hud_panel` 是 parent，孩子坐标经 get() 解析成画布坐标。
+    let lay = crate::layout::hud_layout();
+    let panel = lay
+        .get(crate::layout::HUD_PANEL_ID)
+        .expect("底栏 parent 必须存在");
+    let orb = lay.get("orb").expect("血魔球应是底栏子控件");
+    let plate_hp = lay.get("plate_hp").expect("HP 数值应是底栏子控件");
+    let plate_mp = lay.get("plate_mp").expect("MP 数值应是底栏子控件");
+    let level_num = lay.get("level_num").expect("等级应是底栏子控件");
+    let exp_bar = lay.get("exp_bar").expect("经验条应是底栏子控件");
+    let weight_bar = lay.get("weight_bar").expect("负重条应是底栏子控件");
+    let atk_text = lay.get("atk_text").expect("攻击模式文字应是底栏子控件");
+    let clock = lay.get("clock").expect("时钟应是底栏子控件");
+    // ★ 底栏只有一个有效资源：清单要求的 `Prguse3[690]`（1024×251）。
+    // 缺失已在启动预检时阻止运行；这里再用 expect 作最后一道断言，不拼接、不回退。
+    let (bw, bh) = ui
+        .size(dir, HUD_BOARD_1024_LIB, HUD_BOARD_1024)
+        .expect("素材清单要求的 Prguse3[690] 底栏图必须存在");
     let (bw, bh) = (bw as f32, bh as f32);
-    // 原版：`btop := SCREENHEIGHT - d.height`
-    let board_y = WIN_H as f32 - bh;
-    // ⚠️ 一张 alpha 贴图就等价于原版那两刀（上半 120px 走色键、下半不透明）：
-    // 我们的解码把调色板索引 0 当透明，上半正好是空的。
-    //
-    // 面板分三段贴（见 `HUD_SIDE_W`）：左右两块 **1:1**；中间那段不再整段拉宽
-    //（用户 2026-10-12 对照官方 1024 截图："官方看上去没有拉伸，我们的是被拉伸的"），
-    // 拆成两层 ——
-    //
-    //   ① 顶带（0..120）：**平铺**。城垛纹是 8px 严格周期、`400 % 8 == 0` ⇒ 接缝
-    //      正好落在整周期上，拱形装饰重复出现 —— 与官方截图一致（花纹不拉宽）。
-    //   ② 聊天带（120..251）："左框 7px | 白区拉伸 | 右框 6px"。白区是**纯白**
-    //      （207..594 逐像素量过），拉伸无害；框沿原样，不会被拉胖。
-    let mid_w = crate::layout::hud_mid_w();
-    let chat_top = crate::layout::CHAT_BOX_LOCAL.1;
-    // ⓪ **左右两块 1:1**（球那一块 / 按钮·状态那一块）—— 2026-10-12 改中段平铺时
-    // 一度把这整段删了 ⇒ 底栏只剩中间一条（用户截图：地图上浮着球和文字）。
-    for (sx, dx) in [(0.0, 0.0), (bw - HUD_SIDE_W, hud_right_x())] {
-        ui.draw_src(
-            canvas,
-            tc,
-            dir,
-            "Prguse",
-            HUD_BOARD,
-            FRect::new(sx, 0.0, HUD_SIDE_W, bh),
-            FRect::new(dx, board_y, HUD_SIDE_W, bh),
-            255,
-        );
-    }
-    let mut x = HUD_SIDE_W;
-    while x < HUD_SIDE_W + mid_w - 0.5 {
-        let w = 400.0_f32.min(HUD_SIDE_W + mid_w - x);
-        ui.draw_src(
-            canvas,
-            tc,
-            dir,
-            "Prguse",
-            HUD_BOARD,
-            FRect::new(HUD_SIDE_W, 0.0, w, chat_top),
-            FRect::new(x, board_y, w, chat_top),
-            255,
-        );
-        x += 400.0;
-    }
-    let band_y = board_y + chat_top;
-    let band_h = bh - chat_top;
-    // 左框（源 200..207，原样）| 白区（源 207..594，拉伸）| 右框（源 594..600，原样）
-    for (sx, sw, dx, dw) in [
-        (HUD_SIDE_W, 7.0, HUD_SIDE_W, 7.0),
-        (207.0, 387.0, 207.0, mid_w - 13.0),
-        (594.0, 6.0, HUD_SIDE_W + mid_w - 6.0, 6.0),
-    ] {
-        ui.draw_src(
-            canvas,
-            tc,
-            dir,
-            "Prguse",
-            HUD_BOARD,
-            FRect::new(sx, chat_top, sw, band_h),
-            FRect::new(dx, band_y, dw, band_h),
-            255,
-        );
-    }
+    let (board_x, board_y) = (panel.x, panel.y);
+    ui.draw_src(
+        canvas,
+        tc,
+        dir,
+        HUD_BOARD_1024_LIB,
+        HUD_BOARD_1024,
+        FRect::new(0.0, 0.0, bw, bh),
+        FRect::new(board_x, board_y, bw, bh),
+        255,
+    );
 
     // **底栏右上那 4 个功能按钮**（人物/包裹/技能/选项，图号 8-11）：
     // 常态就在底栏 `Prguse[1]` 里 ⇒ 只在**悬停**时把高亮图叠上去。
@@ -203,9 +166,11 @@ pub(crate) fn draw_hud<'a, T>(
             && ability.is_some_and(|a| a.level < 28)
             && max_hp > 0);
     if solo {
-        let (ow, oh) = ui.size(dir, "Prguse", HUD_ORB_SOLO).unwrap_or((92, 90));
+        let (ow, oh) = ui
+            .size(dir, "Prguse", HUD_ORB_SOLO)
+            .expect("清单必需图 Prguse[5] 单球底图缺失");
         let (ow, oh) = (ow as i32, oh as i32);
-        let ball_y = board_y + ORB_SOLO_AT.1;
+        let ball_y = orb.y;
         // 球底（原版 `rc.Right := d.ClientRect.Right - 2`）
         ui.draw_src(
             canvas,
@@ -214,7 +179,7 @@ pub(crate) fn draw_hud<'a, T>(
             "Prguse",
             HUD_ORB_SOLO,
             FRect::new(0.0, 0.0, (ow - 2) as f32, oh as f32),
-            FRect::new(ORB_SOLO_AT.0, ball_y, (ow - 2) as f32, oh as f32),
+            FRect::new(orb.x, ball_y, (ow - 2) as f32, oh as f32),
             255,
         );
         // 血条（同一套裁切：`rc.Top := Round(rc.Bottom / Max * (Max - Cur))`）
@@ -226,19 +191,16 @@ pub(crate) fn draw_hud<'a, T>(
             "Prguse",
             HUD_ORB_SOLO_FILL,
             FRect::new(0.0, top as f32, (ow - 2) as f32, h as f32),
-            FRect::new(
-                ORB_SOLO_AT.0,
-                ball_y + top as f32,
-                (ow - 2) as f32,
-                h as f32,
-            ),
+            FRect::new(orb.x, ball_y + top as f32, (ow - 2) as f32, h as f32),
             255,
         );
     } else if max_hp > 0 && max_mp > 0 {
-        let (ow, oh) = ui.size(dir, "Prguse", HUD_ORB).unwrap_or((92, 90));
+        let (ow, oh) = ui
+            .size(dir, "Prguse", HUD_ORB)
+            .expect("清单必需图 Prguse[4] 血魔球缺失");
         let (ow, oh) = (ow as i32, oh as i32);
         let half = ow / 2 - 1; // 原版：`rc.Right := d.ClientRect.Right div 2 - 1`
-        let ball_y = board_y + ORB_AT.1;
+        let ball_y = orb.y;
         // HP：源矩形右边界砍到中线
         let (top, h) = gauge_band(hp as f32 / max_hp as f32, oh);
         ui.draw_src(
@@ -248,7 +210,7 @@ pub(crate) fn draw_hud<'a, T>(
             "Prguse",
             HUD_ORB,
             FRect::new(0.0, top as f32, half as f32, h as f32),
-            FRect::new(ORB_AT.0, ball_y + top as f32, half as f32, h as f32),
+            FRect::new(orb.x, ball_y + top as f32, half as f32, h as f32),
             255,
         );
         // MP：源矩形左边界从中线 +1 起，落点 x 也加它（原版 `40 + rc.Left`）
@@ -262,7 +224,7 @@ pub(crate) fn draw_hud<'a, T>(
             HUD_ORB,
             FRect::new(left as f32, top as f32, (ow - 1 - left) as f32, h as f32),
             FRect::new(
-                ORB_AT.0 + left as f32,
+                orb.x + left as f32,
                 ball_y + top as f32,
                 (ow - 1 - left) as f32,
                 h as f32,
@@ -276,70 +238,35 @@ pub(crate) fn draw_hud<'a, T>(
     // ⚠️ 官方 1.76 的**底部面板**没有这两个数（只有人物状态窗口 `FState.pas:2866-2867`），
     // 这是照用户给的参考图加的：左 HP、右 MP，各自贴着自己那半边。
     if max_hp > 0 {
-        let text_y = board_y + ORB_TEXT_DY;
-        // ★ 数值底下那块**底板**（用户 2026-10-12 第 7 条："原版显示红蓝数字位置，有
-        // 背景图"）= `Prguse2[302]`（64×14，**暗色凹槽**：外框亮边、内部压暗）——
-        // 逐像素看过形状才敢用它（`Prguse[26]` 是 44×16 但上面**已经印了字**，不能用）。
-        // 两块板左右并排（12..76 / 76..140）正好托住球底下那一行；数字**居中**在板内。
-        //
-        // ⚠️ 取不到这张图时退回"画一块"：宁可有个朴素的暗底，也别让数字糊在球座花纹上。
-        let (plate_w, plate_h) = ui
-            .size(dir, HUD_NUM_PLATE_LIB, HUD_NUM_PLATE)
-            .map_or((64.0, 14.0), |(w, h)| (w as f32, h as f32));
-        let has_plate = ui.size(dir, HUD_NUM_PLATE_LIB, HUD_NUM_PLATE).is_some();
-
-        // HP：板贴在球左下
+        // ★ 字的 Y **由板算出来**（板内垂直居中）—— 拖板/改板高，字都跟着走
+        //（用户 2026-10-12："调整框的大小和 Y 时，其 Y 位置没有变化"）。
+        // ⚠️ 曾经有独立的 `num_text_y`（"数值行"）项，它只是挡事的重复把手 ⇒ 已删。
+        let text_y = crate::layout::num_text_y_of;
+        // 数值不单独画背景：`Prguse3[690]` 的底栏已自带相应底纹（用户 2026-10-12）。
+        // `plate_hp` / `plate_mp` 现在仅作为**文字布局框**，用于定位与垂直居中。
         let hp_s = format!("{hp}/{max_hp}");
-        let hp_x = ORB_SOLO_AT.0 - 26.0;
-        if has_plate {
-            ui.draw_src(
-                canvas,
-                tc,
-                dir,
-                HUD_NUM_PLATE_LIB,
-                HUD_NUM_PLATE,
-                FRect::new(0.0, 0.0, plate_w, plate_h),
-                FRect::new(hp_x, text_y - 2.0, plate_w, plate_h),
-                255,
-            );
-        } else {
-            num_plate(canvas, hp_x, text_y, names.width(&hp_s) + 6.0)?;
-        }
+        let (hp_x, hp_w) = (plate_hp.x, plate_hp.w);
         names.draw_centered(
             canvas,
             tc,
             &hp_s,
-            hp_x + plate_w / 2.0,
-            text_y,
-            (C_HUD_COORD.r, C_HUD_COORD.g, C_HUD_COORD.b),
+            hp_x + hp_w / 2.0,
+            text_y(plate_hp),
+            (C_HUD_TEXT.r, C_HUD_TEXT.g, C_HUD_TEXT.b),
             Some((0, 0, 0)),
         )?;
 
         // MP：板接在 HP 那块右边
         if max_mp > 0 {
             let mp_s = format!("{mp}/{max_mp}");
-            let mp_x = ORB_AT.0 + 36.0;
-            if has_plate {
-                ui.draw_src(
-                    canvas,
-                    tc,
-                    dir,
-                    HUD_NUM_PLATE_LIB,
-                    HUD_NUM_PLATE,
-                    FRect::new(0.0, 0.0, plate_w, plate_h),
-                    FRect::new(mp_x, text_y - 2.0, plate_w, plate_h),
-                    255,
-                );
-            } else {
-                num_plate(canvas, mp_x, text_y, names.width(&mp_s) + 6.0)?;
-            }
+            let (mp_x, mp_w) = (plate_mp.x, plate_mp.w);
             names.draw_centered(
                 canvas,
                 tc,
                 &mp_s,
-                mp_x + plate_w / 2.0,
-                text_y,
-                (C_HUD_COORD.r, C_HUD_COORD.g, C_HUD_COORD.b),
+                mp_x + mp_w / 2.0,
+                text_y(plate_mp),
+                (C_HUD_TEXT.r, C_HUD_TEXT.g, C_HUD_TEXT.b),
                 Some((0, 0, 0)),
             )?;
         }
@@ -350,8 +277,10 @@ pub(crate) fn draw_hud<'a, T>(
     let level = net
         .and_then(|n| n.world.ability.as_ref().map(|a| a.level))
         .unwrap_or(1);
-    let (dw, dh) = ui.size(dir, "Prguse", HUD_DIGIT0).unwrap_or((12, 10));
-    let level_at = level_at();
+    let (dw, dh) = ui
+        .size(dir, "Prguse", HUD_DIGIT0)
+        .expect("清单必需图 Prguse[30] 等级数字缺失");
+    let level_at = (level_num.x, level_num.y);
     for (i, ch) in level.to_string().chars().enumerate() {
         let Some(d) = ch.to_digit(10) else { continue };
         ui.draw_src(
@@ -381,18 +310,36 @@ pub(crate) fn draw_hud<'a, T>(
     // 味儿的写法）；这里**每条自己判**（`Max<=0` 或 `Cur<=0` 就不画那一条）。实战一致：
     // 1 级的 MaxExp 是 100、MaxWeight 也 > 0。
     if let Some(a) = net.and_then(|n| n.world.ability.as_ref()) {
-        draw_prop_bar(canvas, ui, tc, dir, a.exp, a.max_exp, exp_at());
-        draw_prop_bar(canvas, ui, tc, dir, a.weight, a.max_weight, weight_at());
+        draw_prop_bar(
+            canvas,
+            ui,
+            tc,
+            dir,
+            a.exp,
+            a.max_exp,
+            (exp_bar.x, exp_bar.y),
+        );
+        draw_prop_bar(
+            canvas,
+            ui,
+            tc,
+            dir,
+            a.weight,
+            a.max_weight,
+            (weight_bar.x, weight_bar.y),
+        );
         // **悬停提示**（用户 2026-10-12 第 8/9 条）：鼠标压在哪条上，就在它**下方**
         // 写一行 —— 原版是 `TFrmDlg` 里那两条 `SetDlgItemText`，落点也是条下面。
-        let (bar_w, bar_h) = ui.size(dir, "Prguse", HUD_EXP).unwrap_or((76, 13));
+        let (bar_w, bar_h) = ui
+            .size(dir, "Prguse", HUD_EXP)
+            .expect("清单必需图 Prguse[7] 经验/负重条缺失");
         for (at, s) in [
             (
-                exp_at(),
+                (exp_bar.x, exp_bar.y),
                 format!("当前经验 {} {}%", a.exp, percent(a.exp, a.max_exp)),
             ),
             (
-                weight_at(),
+                (weight_bar.x, weight_bar.y),
                 format!("包裹负重{}/{}", a.weight, a.max_weight),
             ),
         ] {
@@ -427,9 +374,9 @@ pub(crate) fn draw_hud<'a, T>(
         canvas,
         tc,
         &format!("[{}]", crate::ATTACK_MODE_NAMES[mode]),
-        hud_right_x() + 56.0,
-        WIN_H as f32 - 136.0,
-        (C_HUD_COORD.r, C_HUD_COORD.g, C_HUD_COORD.b),
+        atk_text.x,
+        atk_text.y,
+        (C_HUD_TEXT.r, C_HUD_TEXT.g, C_HUD_TEXT.b),
         Some((0, 0, 0)),
     )?;
     {
@@ -438,9 +385,9 @@ pub(crate) fn draw_hud<'a, T>(
             canvas,
             tc,
             &format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second()),
-            hud_right_x() + 66.0,
-            WIN_H as f32 - 22.0,
-            (C_HUD_COORD.r, C_HUD_COORD.g, C_HUD_COORD.b),
+            clock.x,
+            clock.y,
+            (C_HUD_TEXT.r, C_HUD_TEXT.g, C_HUD_TEXT.b),
             Some((0, 0, 0)),
         )?;
     }
@@ -453,15 +400,16 @@ pub(crate) fn draw_hud<'a, T>(
         let shown = chat.lines.len().min(CHAT_VIEW_LINES);
         if shown > 0 {
             let skip = chat.lines.len() - shown;
-            // ⚠️ **不再铺深底**：底栏 `Prguse[1]` 那块（面板坐标 x207..594/y120..243）
-            // 本来就是**纯白**的聊天区（逐像素量过）⇒ 原来再铺 `RGB(24,24,30)`
-            // 等于把白底盖掉（用户 2026-10-11：背景应是白色）。
-            // 只有量不到那块板时才补一层白底（防止文字糊在世界画面上）。
-            let (bx, by, bw, bh) = crate::layout::chat_box();
-            if ui.size(dir, "Prguse", HUD_BOARD).is_none() {
-                canvas.set_draw_color(Color::RGB(255, 255, 255));
-                canvas.fill_rect(FRect::new(bx, by, bw, bh))?;
-            }
+            // 1024 底栏 `Prguse3[690]` 的这块**不是纯白**；聊天视口由控件布局定义，
+            // 始终先铺白底，避免文字压在石纹背景上。无素材回退已移除，见启动预检。
+            let (bx, by, bw, bh) = (
+                lay.get("chat_box").expect("聊天框应是底栏子控件").x,
+                lay.get("chat_box").expect("聊天框应是底栏子控件").y,
+                lay.get("chat_box").expect("聊天框应是底栏子控件").w,
+                lay.get("chat_box").expect("聊天框应是底栏子控件").h,
+            );
+            canvas.set_draw_color(Color::RGB(255, 255, 255));
+            canvas.fill_rect(FRect::new(bx, by, bw, bh))?;
             // 文字**贴着白框底边往上排**（新的一行在最下面）—— 原来固定从框顶
             // 开始 ⇒ 只有一两行时看着"飘在上面"（用户 2026-10-11：位置偏上）。
             for (i, (line, col, bg)) in chat.lines.iter().skip(skip).enumerate() {
@@ -479,15 +427,7 @@ pub(crate) fn draw_hud<'a, T>(
                         crate::layout::CHAT_LINE_H,
                     ))?;
                 }
-                names.draw(
-                    canvas,
-                    tc,
-                    line,
-                    bx + 4.0,
-                    y,
-                    (col.r, col.g, col.b),
-                    None,
-                )?;
+                names.draw(canvas, tc, line, bx + 4.0, y, (col.r, col.g, col.b), None)?;
             }
         }
     }
@@ -522,22 +462,12 @@ pub(crate) fn draw_hud<'a, T>(
                 ),
                 8.0,
                 WIN_H as f32 - 20.0,
-                (C_HUD_COORD.r, C_HUD_COORD.g, C_HUD_COORD.b),
+                (C_HUD_TEXT.r, C_HUD_TEXT.g, C_HUD_TEXT.b),
                 Some((0, 0, 0)),
             )?;
         }
     }
     Ok(())
-}
-
-/// 数值底下那块**底板**（暗底 + 上下各 1px 亮边）。
-///
-/// 原版这里是一张图（用户 2026-10-12 第 7 条："原版显示红蓝数字位置，有背景图"），
-/// 但本套素材里没有对应的空白底板（`Prguse[26]` 44×16 上面**已经印了字**）⇒ 画一块。
-fn num_plate(canvas: &mut WindowCanvas, x: f32, y: f32, w: f32) -> Result<(), sdl3::Error> {
-    fill(canvas, x - 3.0, y - 2.0, w, 15.0, Color::RGBA(18, 18, 22, 225))?;
-    fill(canvas, x - 3.0, y - 2.0, w, 1.0, Color::RGBA(150, 132, 96, 200))?;
-    fill(canvas, x - 3.0, y + 12.0, w, 1.0, Color::RGBA(150, 132, 96, 200))
 }
 
 /// 百分比（整数，向下取整）；`max == 0` 时给 0 —— 只用在提示文案里。
@@ -566,7 +496,9 @@ fn draw_prop_bar<'a, T>(
     if cur == 0 || max == 0 {
         return;
     }
-    let (w, h) = ui.size(dir, "Prguse", HUD_EXP).unwrap_or((76, 13));
+    let (w, h) = ui
+        .size(dir, "Prguse", HUD_EXP)
+        .expect("清单必需图 Prguse[7] 经验/负重条缺失");
     // 整数算法：W * Cur / Max（原版是浮点除法 + Round，差最多一像素）。
     let fill = ((w as u64 * cur as u64) / max as u64).min(w as u64) as u32;
     if fill == 0 {
@@ -719,25 +651,24 @@ pub(crate) fn draw_bag<'a, T>(
     let (rect, page) = bag_geom(n.world.bag.len(), page, shop_open);
     let (x, y, w, h) = rect;
     canvas.set_blend_mode(BlendMode::Blend);
-    if ui.size(dir, "Prguse", crate::layout::BAG_BG).is_some() {
-        ui.draw_src(
-            canvas,
-            tc,
-            dir,
-            "Prguse",
-            crate::layout::BAG_BG,
-            FRect::new(0.0, 0.0, w, h),
-            FRect::new(x, y, w, h),
-            255,
-        );
-    } else {
-        // 素材不在：画个深底 + 边框，版式不变（开发机上常见）
-        canvas.set_blend_mode(BlendMode::Blend);
-        canvas.set_draw_color(Color::RGBA(0, 0, 0, 215));
-        canvas.fill_rect(FRect::new(x, y, w, h))?;
-        canvas.set_draw_color(Color::RGB(190, 170, 120));
-        canvas.draw_rect(FRect::new(x, y, w, h))?;
-    }
+    let (bg_w, bg_h) = ui
+        .size(dir, "Prguse", crate::layout::BAG_BG)
+        .expect("素材清单要求 Prguse[3] 背包窗背景");
+    assert_eq!(
+        (bg_w as f32, bg_h as f32),
+        (w, h),
+        "背包背景尺寸与窗口布局不一致"
+    );
+    ui.draw_src(
+        canvas,
+        tc,
+        dir,
+        "Prguse",
+        crate::layout::BAG_BG,
+        FRect::new(0.0, 0.0, bg_w as f32, bg_h as f32),
+        FRect::new(x, y, w, h),
+        255,
+    );
 
     // **关闭钮走控件层**（`widget::Button`，素材 64 是**按下**态的高亮图；
     // 常态那个红叉印在底图 `Prguse[3]` 里 ⇒ 只在按下时叠）。
@@ -909,25 +840,20 @@ fn draw_dialog<'a, T>(
     };
     let (x, y, w, h) = panel;
     canvas.set_blend_mode(BlendMode::Blend);
-    // 背板：`Prguse[384]`（416×176，**原生尺寸不缩放**）。素材取不到就退回
-    // "半透明黑底 + 描边"——版式不变，只是不好看（开发机上常见）。
-    if ui.size(dir, "Prguse", crate::dialog::DIALOG_BG).is_some() {
-        ui.draw_src(
-            canvas,
-            tc,
-            dir,
-            "Prguse",
-            crate::dialog::DIALOG_BG,
-            FRect::new(0.0, 0.0, w, h),
-            FRect::new(x, y, w, h),
-            255,
-        );
-    } else {
-        canvas.set_draw_color(Color::RGBA(0, 0, 0, 210));
-        canvas.fill_rect(FRect::new(x, y, w, h))?;
-        canvas.set_draw_color(Color::RGB(200, 180, 120));
-        canvas.draw_rect(FRect::new(x, y, w, h))?;
-    }
+    // 背板 `Prguse[384]` 是启动必需素材；缺图由 preflight 阻止，不用自绘兜底遮盖错误。
+    let (bg_w, bg_h) = ui
+        .size(dir, "Prguse", crate::dialog::DIALOG_BG)
+        .expect("素材清单要求 Prguse[384] NPC 对话窗背板");
+    ui.draw_src(
+        canvas,
+        tc,
+        dir,
+        "Prguse",
+        crate::dialog::DIALOG_BG,
+        FRect::new(0.0, 0.0, bg_w as f32, bg_h as f32),
+        FRect::new(x, y, w, h),
+        255,
+    );
     canvas.set_blend_mode(BlendMode::None);
     // 正文 + **行内可点文字**。先排版（只读字体量宽）、再落笔（可变借用）—— 两段借用分开。
     // ⚠️ 只排**看得见**的那些行（滚动窗口内的行号从 0 起）—— 直接拿 `lines` 的下标
@@ -997,16 +923,22 @@ pub(crate) struct Confirm {
     pub cancel: mir2_core::select_ui::Rect,
 }
 
-/// 量一次确认框的几何（素材不在 ⇒ `None`，与"素材缺失"同一条纪律）。
-pub(crate) fn confirm_geom(ui: &mut ui::UiCache, dir: &Path, win: (u32, u32)) -> Option<Confirm> {
-    let frame = ui.size(dir, "Prguse", 360)?;
-    let ok = ui.size(dir, "Prguse", 363).unwrap_or((0, 0));
-    let cancel = ui.size(dir, "Prguse", 52).unwrap_or((0, 0));
+/// 量确认框几何；三张图都是启动清单必需素材，缺失由预检/expect 报错，禁止自绘或跳过。
+pub(crate) fn confirm_geom(ui: &mut ui::UiCache, dir: &Path, win: (u32, u32)) -> Confirm {
+    let frame = ui
+        .size(dir, "Prguse", 360)
+        .expect("清单要求 Prguse[360] 确认框");
+    let ok = ui
+        .size(dir, "Prguse", 363)
+        .expect("清单要求 Prguse[363] 确认按钮");
+    let cancel = ui
+        .size(dir, "Prguse", 52)
+        .expect("清单要求 Prguse[52] 取消按钮");
     let b = mir2_core::select_ui::MsgBox::build(win, frame, ok);
     // [确定] 那颗是**居中**的 ⇒ [取消] 摆在它左边，两颗合起来看着才居中
     let (cw, ch) = (cancel.0 as f32, cancel.1 as f32);
     let gap = 12.0;
-    Some(Confirm {
+    Confirm {
         frame: b.frame,
         ok: b.ok,
         cancel: mir2_core::select_ui::Rect {
@@ -1015,7 +947,7 @@ pub(crate) fn confirm_geom(ui: &mut ui::UiCache, dir: &Path, win: (u32, u32)) ->
             w: cw,
             h: ch,
         },
-    })
+    }
 }
 
 /// 画确认框（框 + 一句话 + [确定]/[取消]）。
@@ -1028,9 +960,7 @@ pub(crate) fn draw_confirm<'a, T>(
     win: (u32, u32),
     msg: &str,
 ) -> Result<(), sdl3::Error> {
-    let Some(c) = confirm_geom(ui, dir, win) else {
-        return Ok(());
-    };
+    let c = confirm_geom(ui, dir, win);
     // ⚠️ 同 `hud_img` 那条：这里的框/按钮都在**画布坐标** ⇒ 走 `draw_src`，
     // 不能用 `ui.draw`（它内部还会再乘 `UI_SCALE`）。
     hud_img_rect(canvas, tc, ui, dir, 360, c.frame);
@@ -1062,9 +992,9 @@ fn hud_img_rect<'a, T>(
     idx: u32,
     r: mir2_core::select_ui::Rect,
 ) {
-    let Some((iw, ih)) = ui.size(dir, "Prguse", idx) else {
-        return;
-    };
+    let (iw, ih) = ui
+        .size(dir, "Prguse", idx)
+        .unwrap_or_else(|| panic!("素材清单内 Prguse[{idx}] 缺失；禁止静默跳过 HUD 控件"));
     let _ = ui.draw_src(
         canvas,
         tc,
@@ -1188,14 +1118,18 @@ pub(crate) fn draw_belt<'a, T>(
                 );
             }
         }
-        // 格号（原版 `PomiTextOut(Left+13, Top+19)`）
+        // 格号（原版 `PomiTextOut` 画在格内）。
+        //
+        // ⚠️ 2026-10-12 用户：**写在每格的右下方、白字黑描边**（原来在左下方、米黄）
+        // ⇒ 右对齐要按字宽回退（`texts.width`）。
+        let num = format!("{}", i + 1);
         texts.draw(
             canvas,
             tc,
-            &format!("{}", i + 1),
-            x + 3.0,
+            &num,
+            x + w - texts.width(&num) - 3.0,
             y + h - 12.0,
-            (214, 200, 150),
+            (255, 255, 255),
             Some((0, 0, 0)),
         )?;
     }

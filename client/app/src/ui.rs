@@ -24,9 +24,9 @@ use mir2_core::wzl::{BBox, Wzl};
 /// 缓存上限（界面素材用量小，越界直接清空）。
 const UI_CACHE_CAP: usize = 256;
 
-/// **设计空间 → 画布**的缩放：登录/选角那套界面素材原生是 **800×600**
-///（实测 `ChrSel[22]` = 800×600、`Prguse[65]` = 800×600；本套素材里**没有** 1024 版，
-/// `Prguse[2]` 在 D-50 里量过是空壳），而画布是 [`crate::WIN_W`]×[`crate::WIN_H`]（1024×768）。
+/// **设计空间 → 画布**的控件缩放：登录/选角的表单几何仍按 800×600 设计空间表达；
+/// 当前全屏背景则只使用清单必需的 1024×768 `ui1[2850/2851]` 原生图，走 `draw_fullscreen`，
+/// 不缩放。画布是 [`crate::WIN_W`]×[`crate::WIN_H`]（1024×768）。
 ///
 /// # 为什么是"拉伸"而不是"居中 1:1 + 补边"（2026-10-09 改，D-52）
 ///
@@ -332,5 +332,33 @@ impl<'a> UiCache<'a> {
         let q = t.tex.query();
         canvas.copy(&t.tex, Some(src), Some(dst)).ok()?;
         Some((q.width, q.height))
+    }
+
+    /// 画一张**原生 1024×768 的全屏底图**：1:1 铺满画布，**不经过 `UI_SCALE`**。
+    ///
+    /// 返回是否画上了；false 是资源错误，运行时调用方必须报错，不允许改画旧版素材。
+    ///
+    /// 当前登录/选角仅使用清单指定的 `ui1[2850]` / `[2851]` 原生背景；旧 800 图保留
+    /// 仅供历史素材对照，不进入有效打包清单。
+    ///
+    /// ⚠️ 尺寸必须正好等于画布：不匹配时返回 false，由调用方的必需资源断言终止。
+    /// ⚠️ 画布坐标（不是设计空间）：`draw_src` 不乘 `UI_SCALE`，别再自己乘一次（D-64）。
+    pub fn draw_fullscreen<T>(
+        &mut self,
+        canvas: &mut WindowCanvas,
+        tc: &'a TextureCreator<T>,
+        dir: &Path,
+        lib: &'static str,
+        idx: u32,
+    ) -> bool {
+        let Some((w, h)) = self.size(dir, lib, idx) else {
+            return false;
+        };
+        if (w, h) != (crate::window::WIN_W, crate::window::WIN_H) {
+            return false;
+        }
+        let r = FRect::new(0.0, 0.0, w as f32, h as f32);
+        self.draw_src(canvas, tc, dir, lib, idx, r, r, 255)
+            .is_some()
     }
 }

@@ -535,3 +535,52 @@ func TestShopSellPartialStack(t *testing.T) {
 		t.Errorf("金币 = %d，期望 500（再卖 6 瓶 × 50）", p.Char.Data.Gold)
 	}
 }
+
+// TestShopGoodsUsesFirstMatchingCategory 用户 2026-10-12："服装店老板、武器店老板
+// 为什么在卖普通物品" —— 分类必须**只取第一个命中**的，不能把所有命中的累加起来
+// （"武器店老板"会同时命中"武器"和杂货的"店"）。
+func TestShopGoodsUsesFirstMatchingCategory(t *testing.T) {
+	sword := wuItem(1, "木剑", 5, data.MinMax{})
+	sword.Price = 100
+	dress := wuItem(2, "布衣", 10, data.MinMax{})
+	dress.Price = 100
+	drug := wuItem(3, "金创药", 0, data.MinMax{})
+	drug.Price = 100
+	meat := wuItem(4, "肉", 40, data.MinMax{})
+	meat.Price = 100
+	book := wuItem(5, "火球术", 4, data.MinMax{})
+	book.Price = 100
+	items := []*data.StdItem{sword, dress, drug, meat, book}
+	s, _, _, _ := shopTestServer(t, "", items...)
+	// ⚠️ 用**真实**的商人代码 + 名字（用户 2026-10-12 纠正：武器店叫"精武馆老板"
+	// 2Gwe / "卫家店" 2Bwe，卖衣服的叫"安家布衣" 3Bdr —— 名字里没有"武器/衣"）
+	cases := []struct {
+		id   string
+		name string
+		want []uint8
+	}{
+		{"2Gwe", "精武馆老板", []uint8{5}},
+		{"2Bwe", "卫家店", []uint8{5}},
+		{"3Bdr", "安家布衣", []uint8{10}},
+		{"1Bme", "屠夫", []uint8{40, 41}},
+		{"4Bdu", "赖家店老板", []uint8{0, 25}},
+		{"5Bbo", "比奇书店", []uint8{4}},
+	}
+	for _, c := range cases {
+		got := s.shopGoods(&data.NPC{ID: c.id, Name: c.name, IsMerchant: true})
+		if len(got) == 0 {
+			t.Fatalf("%s(%s)：货架是空的", c.name, c.id)
+		}
+		for _, it := range got {
+			ok := false
+			for _, w := range c.want {
+				if it.StdMode == w {
+					ok = true
+				}
+			}
+			if !ok {
+				t.Errorf("%s(%s) 的货架混进了 %s（StdMode %d）", c.name, c.id, it.Name, it.StdMode)
+			}
+		}
+	}
+}

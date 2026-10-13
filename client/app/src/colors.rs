@@ -89,8 +89,15 @@ pub(crate) const C_CHAT_BAD: Color = Color::RGB(178, 24, 24);
 pub(crate) const C_CHAT_EXP_FG: Color = Color::RGB(255, 255, 255);
 pub(crate) const C_CHAT_EXP_BG: Color = Color::RGB(178, 24, 24);
 
-/// HUD 里"地图名 + 坐标"那行（左下角）。
+/// HUD 文字**原本**的米黄 `RGB(255,236,180)`（地图名+坐标、时钟、血魔数值…）。
+///
+/// ⚠️ 2026-10-12：用户要这几处（血 / 魔 / 时间 / 攻击模式 / 地图位置）**全部纯白**
+/// ⇒ 都改用 [`C_HUD_TEXT`]；这个常量留着作对照（没人用了，将来要换回米黄直接用它）。
+#[allow(dead_code)]
 pub(crate) const C_HUD_COORD: Color = Color::RGB(255, 236, 180);
+
+/// 底栏上那几处**纯白**文字（血 / 魔数值、时钟、地图名+坐标）。
+pub(crate) const C_HUD_TEXT: Color = Color::RGB(255, 255, 255);
 
 /// 伤害飘字的三档亮度（8x8 调试字体只有一档颜色 ⇒ 用亮度代替透明度淡出）。
 pub(crate) const C_DMG_HOT: Color = Color::RGB(255, 240, 120);

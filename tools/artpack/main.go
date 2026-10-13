@@ -1,13 +1,12 @@
-// Command artpack 是**美术容器**（M2PK kind=3）的命令行工具。
+// Command artpack 是客户端美术容器的构建与验证工具。
 //
-// 它把 `mir2c/data` 里的图库（`.wzl` + `.wzx`，每张图各自 zlib）重排成
-// "每 N 张一组 + 每组一条 brotli 流"的 IMGP 载荷，一库一块装进容器。
-// 规格见 internal/m2pk/image.go，决策见 docs/decisions.md D-31。
+// 唯一图库选择源是 `client/assets/image-libraries.tsv`：只打包清单列出的逻辑图库与图号，
+// 未列出的源素材一律不进入 images.m2pk。规格见 internal/m2pk/image.go / D-31、D-135。
 //
 // 用法：
 //
-//	artpack pack   -src DIR -out FILE [-group N] [-workers N] [-lib a,b] [-quiet]
-//	artpack verify -in FILE -src DIR
+//	artpack pack   -src DIR -out FILE -manifest FILE [-group N] [-workers N] [-quality N] [-quiet]
+//	artpack verify -in FILE -src DIR -manifest FILE
 //	artpack info   -in FILE [-list]
 //
 // 与 `m2pk verify` 的区别：美术容器的块不是源文件字节（重排过），所以校验是
@@ -55,18 +54,18 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `artpack —— 美术容器工具（M2PK kind=3，图库分组拼接）
 
-  pack   -src DIR -out FILE [-group N] [-workers N] [-lib a,b] [-quiet]
-         把 .wzl/.wzx 重排成"每 N 张一组 + 每组一条 brotli 流"，一库一块
+  pack   -src DIR -out FILE -manifest FILE [-group N] [-workers N] [-quality N] [-quiet]
+         按客户端唯一素材清单选择图库/图号，稀疏图号保留原索引，不重排；质量 0..11
 
-  verify -in FILE -src DIR
-         逐图比对记录与 raw 像素（语义等价的无损校验，D-06 硬要求）
+  verify -in FILE -src DIR -manifest FILE
+         只按同一清单逐图比对记录与 raw 像素；清单外图库会报错
 
   info   -in FILE [-list]
          打印统计；-list 逐库列出
 
 示例：
-  artpack pack   -src $WS/mir2c/data -out assets/image/images.m2pk
-  artpack verify -in assets/image/images.m2pk -src $WS/mir2c/data
+  artpack pack   -src $WS/mir2c/data2 -out assets/image/images.m2pk -manifest client/assets/image-libraries.tsv
+  artpack verify -in assets/image/images.m2pk -src $WS/mir2c/data2 -manifest client/assets/image-libraries.tsv
 `)
 }
 
@@ -82,87 +81,28 @@ type libStat struct {
 	base   int64 // 现状：源 .wzl + .wzx 的字节数
 }
 
-func parseLibs(s string) map[string]bool {
-	if strings.TrimSpace(s) == "" {
-		return nil
-	}
-	out := map[string]bool{}
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.ToLower(strings.TrimSpace(p)); p != "" {
-			out[p] = true
-		}
-	}
-	return out
-}
-
 func cmdPack(args []string) error {
 	fs := flag.NewFlagSet("pack", flag.ExitOnError)
 	srcDir := fs.String("src", "", "源目录（含 .wzl + .wzx）")
 	out := fs.String("out", "", "输出容器路径")
+	manifestPath := fs.String("manifest", "", "客户端唯一素材清单（TSV）")
 	group := fs.Int("group", m2pk.DefaultImageGroup, "每组图数（1..1024）")
 	workers := fs.Int("workers", 0, "并行编码组数（0 = 自动）")
-	libsFlag := fs.String("lib", "", "只打包这些库（逗号分隔，规范化名；空 = 全部）")
+	quality := fs.Int("quality", 8, "brotli 质量（0..11；低质量较快、容器略大）")
 	quiet := fs.Bool("quiet", false, "不打印进度")
 	fs.Parse(args)
 
-	if *srcDir == "" || *out == "" {
+	if *srcDir == "" || *out == "" || *manifestPath == "" {
 		fs.Usage()
-		return fmt.Errorf("必须有 -src 与 -out")
+		return fmt.Errorf("必须有 -src、-out 与 -manifest；禁止不带清单打全库")
 	}
-
-	srcs, err := m2pk.ScanDir(*srcDir, []string{"wzl"})
+	manifest, err := loadImageManifest(*manifestPath)
 	if err != nil {
 		return err
 	}
-	only := parseLibs(*libsFlag)
-	if only != nil {
-		var keep []m2pk.Source
-		for _, s := range srcs {
-			if only[s.Name] {
-				keep = append(keep, s)
-			}
-		}
-		for name := range only {
-			found := false
-			for _, s := range srcs {
-				if s.Name == name {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return fmt.Errorf("artpack: 源目录里没有库 %q", name)
-			}
-		}
-		srcs = keep
-	}
-	if len(srcs) == 0 {
-		return fmt.Errorf("artpack: 源目录里没有 .wzl（%s）", *srcDir)
-	}
-
-	// 空库 / 缺索引的库跳过（客户端遇到"容器里没有"会回退裸目录，行为一致）。
-	// 不静默：每个都打印原因，最后再汇总一行。
-	var skipped []string
-	{
-		var keep []m2pk.Source
-		for _, s := range srcs {
-			n, err := m2pk.WzlImageCount(s.Path)
-			switch {
-			case err != nil:
-				skipped = append(skipped, fmt.Sprintf("%s（读不到 .wzx：%v）", s.Name, err))
-			case n <= 0:
-				skipped = append(skipped, fmt.Sprintf("%s（图数为 0，空库）", s.Name))
-			default:
-				keep = append(keep, s)
-			}
-		}
-		srcs = keep
-	}
-	for _, s := range skipped {
-		fmt.Fprintf(os.Stderr, "  跳过 %s\n", s)
-	}
-	if len(srcs) == 0 {
-		return fmt.Errorf("artpack: 没有可打包的图库（全部跳过）")
+	srcs, rules, err := manifest.selectedSources(*srcDir)
+	if err != nil {
+		return err
 	}
 
 	// 现状基线：源 .wzl + .wzx 的字节数（我们替换的就是这两份）。
@@ -181,9 +121,13 @@ func cmdPack(args []string) error {
 				if err != nil {
 					return nil, err
 				}
-				payload, st, err := m2pk.EncodeImageLib(wz, *group, *workers)
+				selected := manifestSource{src: wz, rule: rules[s.Name]}
+				payload, st, err := m2pk.EncodeImageLibWithQuality(selected, *group, *workers, *quality)
 				if err != nil {
 					return nil, err
+				}
+				if st.Broken != 0 {
+					return nil, fmt.Errorf("图库 %s 有 %d 张清单内素材损坏；拒绝生成不完整容器", s.Name, st.Broken)
 				}
 				stats[i].imgs = st.Count
 				stats[i].groups = st.Groups
@@ -268,13 +212,22 @@ func cmdVerify(args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	in := fs.String("in", "", "容器路径")
 	src := fs.String("src", "", "源目录（含 .wzl + .wzx）")
+	manifestPath := fs.String("manifest", "", "客户端唯一素材清单（TSV；必须与 pack 一致）")
 	fs.Parse(args)
-	if *in == "" || *src == "" {
+	if *in == "" || *src == "" || *manifestPath == "" {
 		fs.Usage()
-		return fmt.Errorf("必须有 -in 与 -src")
+		return fmt.Errorf("必须有 -in、-src 与 -manifest")
+	}
+	manifest, err := loadImageManifest(*manifestPath)
+	if err != nil {
+		return err
+	}
+	srcs, rules, err := manifest.selectedSources(*src)
+	if err != nil {
+		return err
 	}
 	start := time.Now()
-	if err := m2pk.VerifyImage(*in, *src); err != nil {
+	if err := verifySelectedImage(*in, srcs, rules); err != nil {
 		return err
 	}
 	r, err := m2pk.Open(*in)

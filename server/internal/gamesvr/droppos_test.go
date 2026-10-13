@@ -186,3 +186,24 @@ var (
 	_ world.Positioned = (*Player)(nil)
 	_ world.Positioned = (*entity.Monster)(nil)
 )
+
+// TestDropAvoidsUnreachableCell 用户 2026-10-12："金币会掉落在不可到达位置，应避开"。
+//
+// 造一张"死亡点右边隔着一道墙"的图：墙那边的格子 `CanWalk` 为真（可以站），但从死亡点
+// **走不过去** ⇒ 落点不能选它。
+func TestDropAvoidsUnreachableCell(t *testing.T) {
+	// 死亡点 (5,5)；x=6 整列是墙；x>=7 那几列可站（但隔着墙，走不过去）
+	s, m := dropTestServer()
+	for y := 0; y < 20; y++ {
+		m.SetBlock(6, y, true)
+	}
+	x, y := s.dropPosition(m, 5, 5, 3, 0)
+	if x >= 7 {
+		t.Errorf("落点 (%d,%d) 在墙那边（x>=7）—— 玩家走不到", x, y)
+	}
+	// 落点必须可达（在同侧）
+	reach := reachableFrom(m, 5, 5, 4)
+	if !reach[[2]int{x, y}] && x != 5 {
+		t.Errorf("落点 (%d,%d) 不在可达集合里", x, y)
+	}
+}

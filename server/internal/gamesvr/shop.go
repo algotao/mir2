@@ -45,7 +45,9 @@ type shopCategoryDef struct {
 var shopCategory = []shopCategoryDef{
 	{[]string{"屠夫", "肉店", "肉"}, []uint8{40, 41}},    // 肉、食品
 	{[]string{"武器", "卫家", "刀", "剑"}, []uint8{5, 6}}, // 武器
-	{[]string{"布衣", "衣服", "衣"}, []uint8{10, 11}},    // 衣服
+	// ⚠️ "服装"必须写上：官方 NPC 叫"服装店老板"（名字里**没有**"衣"字）⇒ 只写
+	// "衣/衣服"会滑到杂货的"店"上（用户 2026-10-12）。
+	{[]string{"服装", "布衣", "衣服", "衣"}, []uint8{10, 11}}, // 衣服
 	{[]string{"首饰", "饰品", "项链", "戒指"}, []uint8{19, 20, 22, 23, 24, 26}},
 	// 药品。⚠️ 药粉类（灰色药粉/黄色药粉/超级…）与护身符是 **StdMode 25**，
 	// 不加进来的话"制药"的成品一件都不在商品表里 ⇒ `@makedrug` 永远失败
@@ -55,17 +57,68 @@ var shopCategory = []shopCategoryDef{
 	{[]string{"杂货", "店", "商"}, []uint8{0, 3, 40, 41, 42}}, // 杂货
 }
 
+// shopKindFromCode 从**商人代码**判商品类别（原版 Merchant.txt 的 NPC 代码，
+// 形如 `2Bwe` / `3Bdr` / `4Bdu`：首位数字是大类，第二个字母是地图，剩下的两个字母
+// 才是"卖什么"）。
+//
+// ⚠️ 这比按名字猜可靠得多（用户 2026-10-12 给的"服装店老板/武器店"都是看错的名字，
+// 真实 NPC 叫"安家布衣"(3Bdr) 与"精武馆老板"(2Gwe) / "卫家店"(2Bwe)）；名字里
+// 根本没有"衣"或"武器"这两个词。返回 nil = 认不出。
+func shopKindFromCode(id string) []uint8 {
+	s := strings.ToLower(strings.TrimSpace(id))
+	if len(s) < 3 {
+		return nil
+	}
+	kind := s[2:] // 去掉 "2B" 这类前缀
+	switch {
+	case strings.HasPrefix(kind, "we"), strings.HasPrefix(kind, "blacksmith"):
+		return []uint8{5, 6} // 武器
+	case strings.HasPrefix(kind, "dr"):
+		return []uint8{10, 11} // 衣服
+	case strings.HasPrefix(kind, "me"):
+		return []uint8{40, 41} // 肉 / 食品
+	case strings.HasPrefix(kind, "du"), strings.HasPrefix(kind, "dm"):
+		return []uint8{0, 25} // 药品（药粉/护身符是 StdMode 25）
+	case strings.HasPrefix(kind, "bo"):
+		return []uint8{4} // 技能书
+	case strings.HasPrefix(kind, "st"), strings.HasPrefix(kind, "br"),
+		strings.HasPrefix(kind, "ne"), strings.HasPrefix(kind, "ri"),
+		strings.HasPrefix(kind, "ac"):
+		return []uint8{19, 20, 22, 23, 24, 26} // 首饰
+	case strings.HasPrefix(kind, "wh"):
+		return nil // 仓库：保管，不卖东西
+	}
+	return nil
+}
+
 // maxGoods 是单个商店的商品上限（物品表有 686 条，全列太长）。
 const maxGoods = 20
 
 // shopGoods 返回某商人的商品列表。
 func (s *Server) shopGoods(npc *data.NPC) []*data.StdItem {
-	var modes []uint8
-	for _, c := range shopCategory {
-		for _, kw := range c.keywords {
-			if strings.Contains(npc.Name, kw) {
-				modes = append(modes, c.stdModes...)
+	// ① **先按商人代码判**（最可靠，见 `shopKindFromCode`）
+	modes := shopKindFromCode(npc.ID)
+
+	// ② 代码认不出 ⇒ 退回按名字关键字（命中第一个就停）。
+	// ⚠️ **命中第一个分类就停**（用户 2026-10-12："服装店/武器店在卖普通物品"）：
+	// 原来会把**所有**命中的分类累加 —— "武器店老板"既命中"武器"又命中"店"（杂货）、
+	// "服装店老板"既命中"衣"又命中"店" ⇒ 武器/衣服和一堆杂物混着卖。
+	// `shopCategory` 的排列顺序就是"具体到宽泛"（杂货的"店/商"在最后）⇒ 取第一个即可。
+	//
+	// ⚠️ **只在代码认不出时才走这条路**：否则"4Bdu 赖家店老板"（药品）会因为名字里
+	// 有个"店"字再叠上杂货 ⇒ 药店里出现肉。
+	if len(modes) == 0 {
+		found := false
+		for _, c := range shopCategory {
+			if found {
 				break
+			}
+			for _, kw := range c.keywords {
+				if strings.Contains(npc.Name, kw) {
+					modes = append(modes, c.stdModes...)
+					found = true
+					break
+				}
 			}
 		}
 	}

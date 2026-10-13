@@ -5,18 +5,22 @@
 # 本脚本产出 assets/image/images.m2pk（脚本产物，见 assets.md §6）。
 #
 # 用法：
-#   tools/artpack/build.sh                        # 自动探测源目录，默认每组 32 张
-#   MIR2_IMAGE_SRC=/path/to/data tools/artpack/build.sh
-#   MIR2_IMAGE_OUT=/tmp/x.m2pk MIR2_IMAGE_GROUP=64 tools/artpack/build.sh
+#   tools/artpack/build.sh                        # 清单驱动，只打包客户端有效素材
+#   MIR2_IMAGE_SRC=/path/to/data2 tools/artpack/build.sh
+#   MIR2_IMAGE_OUT=/tmp/x.m2pk MIR2_IMAGE_GROUP=64 MIR2_IMAGE_WORKERS=1 tools/artpack/build.sh
+# 默认 nice 降优先级、单 worker、brotli q8，避免长期抢满 CPU；都可显式覆写。
 #
 # 依赖：仅 Go 工具链（CGO_ENABLED=0）。
-# 打包是离线一次性动作（brotli q11，1.7 GB 素材约 10 分钟），跑完**逐图回验**
+# 打包是离线一次性动作，默认 q8/单 worker/nice 降优先级；完成后**逐图回验**
 # （记录 + raw 像素，D-06 硬要求）。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="${MIR2_IMAGE_OUT:-$ROOT/assets/image/images.m2pk}"
 GROUP="${MIR2_IMAGE_GROUP:-32}"
+WORKERS="${MIR2_IMAGE_WORKERS:-1}"
+QUALITY="${MIR2_IMAGE_QUALITY:-8}"
+NICE="${MIR2_IMAGE_NICE:-15}"
 
 # 源目录：唯一真源 = 客户端集（mir2c/data2）。刻意不自动回退到别的副本——
 # 换了素材却悄悄换了整个游戏的美术，属于最难排查的一类 bug，宁可报错。
@@ -51,8 +55,9 @@ mkdir -p "$(dirname "$OUT")"
 
 echo
 echo "== 打包 =="
-CGO_ENABLED=0 go run "$ROOT/tools/artpack" pack -src "$SRC" -out "$OUT" -group "$GROUP"
+MANIFEST="$ROOT/client/assets/image-libraries.tsv"
+nice -n "$NICE" env CGO_ENABLED=0 go run "$ROOT/tools/artpack" pack -src "$SRC" -out "$OUT" -manifest "$MANIFEST" -group "$GROUP" -workers "$WORKERS" -quality "$QUALITY"
 
 echo
 echo "== 回验（逐图：记录 + raw 像素）=="
-CGO_ENABLED=0 go run "$ROOT/tools/artpack" verify -in "$OUT" -src "$SRC"
+nice -n "$NICE" env CGO_ENABLED=0 go run "$ROOT/tools/artpack" verify -in "$OUT" -src "$SRC" -manifest "$MANIFEST"

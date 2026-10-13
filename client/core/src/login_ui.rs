@@ -28,8 +28,17 @@
 pub struct Art;
 
 impl Art {
-    /// 登录场景全屏背景（800×600，门口石头）。
+    /// 旧 800×600 登录背景，保留作素材对照/历史测试；正式客户端不回退使用，且不进入有效包。
     pub const BG: (&'static str, u32) = ("ChrSel", 22);
+    /// 登录场景背景的 **1024 原生版**（`ui1[2850]`，1024×768）。
+    ///
+    /// 2026-10-12 换上：与 `BG` **同一套构图**（石门 + 两侧火把 + 门楣），只是按
+    /// 1024×768 重画 ⇒ 直接 1:1 铺满画布，**不再拉伸**（拉伸那版是 `ui::UI_SCALE` 的
+    /// 1.28 倍线性放大，非整数倍 ⇒ 糊，见 `app/src/ui.rs` 的 `UI_SCALE` 说明）。
+    ///
+    /// 该图是客户端必需素材，在 `image-libraries.tsv` 与启动 preflight 中登记；缺失必须报错，
+    /// 不回退使用旧的 800 图。
+    pub const BG_1024: (&'static str, u32) = crate::image_manifest::assets::LOGIN_BACKGROUND.pair();
     /// 开门动画的首帧；`+ k`（k = 0..9）取第 k 帧。
     pub const DOOR: (&'static str, u32) = ("ChrSel", 23);
     /// 开门动画帧数。

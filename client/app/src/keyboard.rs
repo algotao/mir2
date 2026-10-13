@@ -154,6 +154,39 @@ pub(crate) fn handle_key_down(
         Some(Keycode::F1) if ctrl(keymod) => app.scene = crate::app_state::Scene::Login,
         Some(Keycode::F2) if ctrl(keymod) => app.scene = crate::app_state::Scene::World,
         Some(Keycode::F3) if ctrl(keymod) => app.scene = crate::app_state::Scene::AssetView,
+        // **界面开发器**（D-134）：Ctrl+L 进出编辑模式。里面的键只在编辑模式下吃，
+        // 免得跟正常操作抢（G/S/R/方向键在世界里另有用途）。
+        Some(Keycode::L) if ctrl(keymod) && app.scene == crate::app_state::Scene::World => {
+            app.layout_edit.toggle()
+        }
+        Some(Keycode::G) if app.layout_edit.on => app.layout_edit.cycle_grid(),
+        Some(Keycode::A) if app.layout_edit.on => app.layout_edit.cycle_align(shift(keymod)),
+        // 放大镜：以**当前鼠标位置**为中心（用户 2026-10-12："用 +- 号以鼠标位置为中心
+        // 放大画面倍数，最高 8 倍、最小 1 倍"）
+        Some(Keycode::Equals | Keycode::Plus) if app.layout_edit.on => {
+            app.layout_edit.zoom_by(1.0, app.mouse)
+        }
+        Some(Keycode::Minus) if app.layout_edit.on => app.layout_edit.zoom_by(-1.0, app.mouse),
+        Some(Keycode::S) if app.layout_edit.on => app.layout_edit.save(),
+        Some(Keycode::R) if app.layout_edit.on => app.layout_edit.reset_selected(),
+        Some(Keycode::Escape) if app.layout_edit.on => app.layout_edit.toggle(),
+        // 方向键微调（Shift 加速到 10px）
+        Some(Keycode::Left) if app.layout_edit.on => {
+            let d = if shift(keymod) { -10.0 } else { -1.0 };
+            app.layout_edit.nudge(d, 0.0)
+        }
+        Some(Keycode::Right) if app.layout_edit.on => {
+            let d = if shift(keymod) { 10.0 } else { 1.0 };
+            app.layout_edit.nudge(d, 0.0)
+        }
+        Some(Keycode::Up) if app.layout_edit.on => {
+            let d = if shift(keymod) { -10.0 } else { -1.0 };
+            app.layout_edit.nudge(0.0, d)
+        }
+        Some(Keycode::Down) if app.layout_edit.on => {
+            let d = if shift(keymod) { 10.0 } else { 1.0 };
+            app.layout_edit.nudge(0.0, d)
+        }
         Some(Keycode::M) if ctrl(keymod) => {
             app.music_on = !app.music_on;
             sound.set_music_on(app.music_on);
@@ -222,10 +255,12 @@ pub(crate) fn handle_key_down(
         // 素材浏览器（开发用）
         _ if app.scene == crate::app_state::Scene::AssetView => match keycode {
             Some(Keycode::LeftBracket) => {
-                app.asset_view.previous_library(crate::assets::LIBS.len());
+                let count = crate::assets::packaged_libraries().map_or(0, |libs| libs.len());
+                app.asset_view.previous_library(count);
             }
             Some(Keycode::RightBracket) => {
-                app.asset_view.next_library(crate::assets::LIBS.len());
+                let count = crate::assets::packaged_libraries().map_or(0, |libs| libs.len());
+                app.asset_view.next_library(count);
             }
             Some(Keycode::Comma) | Some(Keycode::Left) => app.asset_view.previous_image(),
             Some(Keycode::Period) | Some(Keycode::Right) => app.asset_view.next_image(),

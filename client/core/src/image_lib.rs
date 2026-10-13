@@ -35,31 +35,31 @@ use crate::m2pk::{Archive, Entry};
 use crate::wzl::{stride_of, to_rgba, Record, Sprite, RECORD_LEN};
 
 thread_local! {
-    /// 进程级懒打开的美术容器（`None` = 没容器 / 打不开）。
+    /// 进程级懒打开的美术容器；错误也缓存下来，避免每帧重复尝试/静默回退。
     ///
     /// 用 `thread_local` 而不是全局 `static`：`Archive` 里是 `Rc` + `RefCell`
-    ///（非 `Sync`），而这本来就是**渲染线程自己的缓存** —— 与 app 里那些
-    /// 图库/纹理缓存同一线程。
-    static ART: OnceCell<Option<Rc<Archive>>> = const { OnceCell::new() };
+    ///（非 `Sync`），而这本来就是**渲染线程自己的缓存** —— 与 app 里那些图库/纹理缓存同一线程。
+    static ART: OnceCell<Result<Rc<Archive>, String>> = const { OnceCell::new() };
 }
 
-/// 打开（并缓存）美术容器；没有容器或打不开时返回 `None`，调用方回退裸目录。
-///
-/// 只把索引区读进内存（全量 1.4 GB，不能整文件读；见 [`Archive::open_lazy`]）。
-pub fn art_archive() -> Option<Rc<Archive>> {
+/// 打开（并缓存）美术容器。容器缺失/损坏是启动错误，**不再回退到裸目录**。
+pub fn art_archive_required() -> Result<Rc<Archive>, String> {
     ART.with(|cell| {
-        cell.get_or_init(|| match crate::paths::image_container() {
-            None => None,
-            Some(p) => match Archive::open_lazy(&p) {
-                Ok(a) => Some(Rc::new(a)),
-                Err(e) => {
-                    eprintln!("[art] {} 打不开（{e}）⇒ 回退裸 .wzl", p.display());
-                    None
-                }
-            },
+        cell.get_or_init(|| {
+            let p = crate::paths::image_container().ok_or_else(|| {
+                "找不到 assets/image/images.m2pk（运行 tools/artpack/build.sh）".to_string()
+            })?;
+            Archive::open_lazy(&p)
+                .map(Rc::new)
+                .map_err(|e| format!("{} 打不开：{e}", p.display()))
         })
         .clone()
     })
+}
+
+/// 兼容测试/诊断代码的便捷入口；生产渲染必须使用 [`art_archive_required`]。
+pub fn art_archive() -> Option<Rc<Archive>> {
+    art_archive_required().ok()
 }
 
 /// 魔数。
@@ -187,6 +187,11 @@ impl PackedLib {
             data_off,
             cache: RefCell::new(Vec::new()),
         }))
+    }
+
+    /// 图库名（M2PK entry 名，规范化为小写）。
+    pub fn name(&self) -> &str {
+        &self.entry.name
     }
 
     /// 图数（与源 `.wzx` 一致，索引语义按位对齐）。
@@ -409,8 +414,12 @@ mod tests {
         }
 
         let dir = Path::new(&dir);
+        let manifest =
+            crate::image_manifest::ImageManifest::shared().expect("共享图片清单必须有效");
         let mut compared = 0usize;
 
+        // 这些库的**清单所选图号**全量对拍。稀疏图库不选中的索引必须在容器中为空，
+        // 但索引空间仍与源完全一致（不能重排）。
         let full = ["Prguse", "Items", "Weapon"];
         for name in full {
             let Ok(raw) = Wzl::open(dir.join(name)) else {
@@ -424,6 +433,19 @@ mod tests {
             };
             assert_eq!(raw.len(), packed.len(), "{name} 图数不一致");
             for i in 0..raw.len() {
+                if !manifest.allows_image(name, i) {
+                    let Wzl::Packed(packed_lib) = &packed else {
+                        panic!("容器打开结果不应是 Raw")
+                    };
+                    assert!(
+                        packed_lib
+                            .record(i)
+                            .is_none_or(|r| r.width == 0 || r.height == 0),
+                        "{name}#{i} 清单外图号不应保留有效记录"
+                    );
+                    compared += 1;
+                    continue;
+                }
                 match (raw.decode(i), packed.decode(i)) {
                     (None, None) => {}
                     (Some(a), Some(b)) => {

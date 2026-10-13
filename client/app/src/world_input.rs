@@ -263,6 +263,98 @@ fn handle_ui_press(app: &mut AppState, press: Press) -> bool {
 /// 这里保留原分支的检查顺序与 early-return：特别是 modal confirm 和命中窗口后，
 /// 不能再穿透成走路或点 NPC。
 #[allow(clippy::too_many_arguments)]
+/// 光标是不是压在**开着的浮窗**上（对话 / 包裹 / 状态 / 商品列表 / 卖窗 / 确认框）。
+///
+/// ⚠️ **P0**（用户 2026-10-12）：压着窗就不许把点击透给下一层的地图 —— 原来只在各窗
+/// 分支里"事后清掉走路意图"，`[move]` 日志已经打出去了，而 **MouseUp 那条路根本没
+/// 判** ⇒ 单击对话窗真的会把人走过去。
+///
+/// 抽成一个函数是因为按下 / 松开**两条路都要判**（原版也是两个入口各判一次）。
+pub(crate) fn over_ui_window(
+    app: &AppState,
+    ui: &mut ui::UiCache<'_>,
+    dir: Option<&std::path::Path>,
+    x: f32,
+    y: f32,
+) -> bool {
+    use crate::widget::{Align, InputPolicy, LayoutNode};
+    let viewport = crate::layout::LRect::new(0.0, 0.0, WIN_W as f32, WIN_H as f32);
+    let mut tree = crate::layout::hud_layout().widget_tree();
+    let mut add_window = |id, rect: (f32, f32, f32, f32), z| {
+        tree.push(LayoutNode {
+            id,
+            parent: None,
+            rect: crate::layout::LRect::new(rect.0, rect.1, rect.2, rect.3),
+            align: Align::TOP_LEFT,
+            z,
+            clip_children: true,
+            input: InputPolicy::Block,
+        });
+    };
+
+    // z 顺序与模态优先级集中在这棵树；所有打开的窗口区域都拦截地图输入。
+    if app.win.bag() {
+        let rect = hud::bag_geom(
+            app.net.as_ref().map_or(0, |n| n.world.bag.len()),
+            app.bag_page.page(),
+            app.win.shop(),
+        )
+        .0;
+        add_window("window_bag", rect, 10);
+    }
+    if app.win.status() {
+        add_window("window_status", crate::status::panel_rect(), 20);
+    }
+    if let Some(shop) = app.net.as_ref().and_then(|n| n.world.shop.as_ref()) {
+        add_window("window_shop", crate::shop::panel(), 30);
+        if shop.is_sell() {
+            add_window("window_sell", crate::shop::sell_panel(), 31);
+        }
+    }
+    if app.net.as_ref().is_some_and(|n| n.world.dialog.is_some()) {
+        add_window("window_dialog", crate::dialog::dialog_panel(), 40);
+    }
+    if app.confirm.is_open() {
+        let dir = dir.expect("确认窗打开时必须有已预检的素材上下文");
+        let c = hud::confirm_geom(ui, dir, (WIN_W, WIN_H));
+        tree.push(LayoutNode {
+            id: "modal_confirm",
+            parent: None,
+            rect: viewport,
+            align: Align::TOP_LEFT,
+            z: 100,
+            clip_children: false,
+            input: InputPolicy::Block,
+        });
+        tree.push(LayoutNode {
+            id: "confirm_frame",
+            parent: Some("modal_confirm"),
+            rect: crate::layout::LRect::new(c.frame.x, c.frame.y, c.frame.w, c.frame.h),
+            align: Align::TOP_LEFT,
+            z: 1,
+            clip_children: true,
+            input: InputPolicy::Block,
+        });
+        for (id, r) in [("confirm_ok", c.ok), ("confirm_cancel", c.cancel)] {
+            tree.push(LayoutNode {
+                id,
+                parent: Some("confirm_frame"),
+                rect: crate::layout::LRect::new(r.x - c.frame.x, r.y - c.frame.y, r.w, r.h),
+                align: Align::TOP_LEFT,
+                z: 1,
+                clip_children: false,
+                input: InputPolicy::Target,
+            });
+        }
+    }
+    tree.hit_test(viewport, (x, y))
+        .expect("visible-window widget tree must be valid")
+        .is_some()
+}
+
+// ⚠️ 参数多是有意的：这条是 SDL 事件的**唯一**入口，把应用状态拆成参数传进来
+// 才好单测（架构方向 ①：SDL 只在适配层）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_world_mouse_down<'a>(
     app: &mut AppState,
     mouse_btn: MouseButton,
@@ -276,6 +368,17 @@ pub(crate) fn handle_world_mouse_down<'a>(
     hover: Option<u64>,
 ) {
     let in_world = app.net.as_ref().is_some_and(|n| n.world.in_world());
+    // ⓪ **界面开发器**（D-134）：编辑模式下鼠标归它 —— 选控件 / 拖动 / 改大小，
+    // 不穿透到世界（否则拖控件会顺带把人走过去）。
+    if app.layout_edit.on {
+        if mouse_btn == MouseButton::Left {
+            app.mouse = (x, y);
+            // ⚠️ 屏幕坐标 → **逻辑**坐标（画面被放大时鼠标要反算回去，D-134）
+            app.layout_edit
+                .mouse_down_screen((x, y), app.layout_edit.to_logic((x, y)));
+        }
+        return;
+    }
     match mouse_btn {
         MouseButton::Left | MouseButton::Right if in_world => {
             let cell = screen_to_cell(app.cam, x, y);
@@ -295,29 +398,23 @@ pub(crate) fn handle_world_mouse_down<'a>(
             // 点框外/别处一律当作"取消"（不走路、不穿透到世界）。
             if app.confirm.is_open() {
                 if mouse_btn == MouseButton::Left {
-                    if let Some(dir) = asset_dir.as_deref() {
-                        let c = hud::confirm_geom(ui, dir, (WIN_W, WIN_H));
-                        if let Some(c) = c {
-                            // OnClick 规范 ⇒ 按下只记，松开才执行（见 `widget`）
-                            if c.ok.hit(app.mouse) {
-                                app.ui_click.press(
-                                    Press::ConfirmOk,
-                                    crate::widget::canvas_rect((c.ok.x, c.ok.y, c.ok.w, c.ok.h)),
-                                );
-                            } else if c.cancel.hit(app.mouse) {
-                                app.ui_click.press(
-                                    Press::ConfirmCancel,
-                                    crate::widget::canvas_rect((
-                                        c.cancel.x, c.cancel.y, c.cancel.w, c.cancel.h,
-                                    )),
-                                );
-                            } else if !c.frame.hit(app.mouse) {
-                                // 点框外 = 收起模态（不是按钮）⇒ 即时生效
-                                app.confirm.cancel();
-                            }
-                        } else {
-                            app.confirm.cancel(); // 量不到素材 ⇒ 别把人卡住
-                        }
+                    let dir = asset_dir.as_deref().expect("确认窗必须有素材上下文");
+                    let c = hud::confirm_geom(ui, dir, (WIN_W, WIN_H));
+                    // OnClick 规范 ⇒ 按下只记，松开才执行（见 `widget`）
+                    if c.ok.hit(app.mouse) {
+                        app.ui_click.press(
+                            Press::ConfirmOk,
+                            crate::widget::canvas_rect((c.ok.x, c.ok.y, c.ok.w, c.ok.h)),
+                        );
+                    } else if c.cancel.hit(app.mouse) {
+                        app.ui_click.press(
+                            Press::ConfirmCancel,
+                            crate::widget::canvas_rect((
+                                c.cancel.x, c.cancel.y, c.cancel.w, c.cancel.h,
+                            )),
+                        );
+                    } else if !c.frame.hit(app.mouse) {
+                        app.confirm.cancel();
                     }
                 }
                 app.world_control.consume_world_click();
@@ -439,7 +536,12 @@ pub(crate) fn handle_world_mouse_down<'a>(
                     return;
                 }
             }
-            let (ct, mt) = if did_butch || app.world_control.butch_target.is_some() {
+            // ⚠️ **P0**（用户 2026-10-12）：光标压在开着的浮窗上 ⇒ **不走路、不锁怪**，
+            // 也别打 `[move]` 那行日志（原来打完才被各窗分支清掉，日志误导排查）。
+            let over_ui = over_ui_window(app, ui, asset_dir.as_deref(), x, y);
+            let (ct, mt) = if over_ui {
+                (None, None)
+            } else if did_butch || app.world_control.butch_target.is_some() {
                 // 挖肉中（含"这一下就是挖肉"）⇒ **不走路、不选目标**
                 //（用户 2026-10-10 第 1 条：挖肉时人物不该动）
                 (None, None)
@@ -479,12 +581,19 @@ pub(crate) fn handle_world_mouse_down<'a>(
                                                           // 按下逻辑**，于是"鼠标那一格"被反复重新当成目标。少了它，
                                                           // 目标格是按下那一刻定死的 ⇒ 走到那儿就停（用户 2026-10-08 报的
                                                           // "按住只能走数次"）。
-            app.world_control.held_move = Some(if mouse_btn == MouseButton::Right {
-                crate::world_control::MoveButton::Run
+            if !over_ui {
+                app.world_control.held_move = Some(if mouse_btn == MouseButton::Right {
+                    crate::world_control::MoveButton::Run
+                } else {
+                    crate::world_control::MoveButton::Walk
+                });
+                app.world_control.retarget_at = Instant::now();
             } else {
-                crate::world_control::MoveButton::Walk
-            });
-            app.world_control.retarget_at = Instant::now();
+                // ⚠️ 连 `press_at` 一起清：MouseUp 那条路（"单击走一格"）靠它判断，
+                // 不清的话点上对话窗松手仍会把人走过去（用户 2026-10-12 的 P0）。
+                app.world_control.press_at = None;
+                app.world_control.pending_pickup = None;
+            }
             match ct {
                 Some(id) => {
                     println!("[net] 锁定目标 ActorId={id}（靠近后自动出手）");
@@ -552,95 +661,87 @@ pub(crate) fn handle_world_mouse_down<'a>(
             // ②″ F10 状态窗：点 X = 关窗、点箭头 = 翻页、点槽 = 报一下那件；
             // 点在窗里别处 = 吞掉（与背包窗同一套）
             if app.win.status() {
-                if let Some(dir) = asset_dir.as_deref() {
-                    if let Some(bg) = ui.size(dir, crate::status::BG_LIB, crate::status::BG) {
-                        let (wx, wy, ww, wh) = crate::status::panel(bg);
-                        if x >= wx && x < wx + ww && y >= wy && y < wy + wh {
-                            ui_consumed = true;
-                            match crate::status::hit((x - wx, y - wy), app.status_page.page()) {
-                                // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
-                                crate::status::Hit::Close => {
-                                    let c = crate::status::CLOSE;
-                                    app.ui_click.press(
-                                        Press::Status(crate::status::Hit::Close),
-                                        crate::widget::canvas_rect((wx + c.0, wy + c.1, c.2, c.3)),
-                                    );
-                                }
-                                crate::status::Hit::Arrow(d) => {
-                                    let a = if d < 0 {
-                                        crate::status::ARROW_UP_RECT
-                                    } else {
-                                        crate::status::ARROW_DOWN_RECT
-                                    };
-                                    app.ui_click.press(
-                                        Press::Status(crate::status::Hit::Arrow(d)),
-                                        crate::widget::canvas_rect((wx + a.0, wy + a.1, a.2, a.3)),
-                                    );
-                                }
-                                crate::status::Hit::Slot(slot) => {
-                                    if let Some(n) = app.net.as_ref() {
-                                        let name = crate::status::slot_name(slot);
-                                        if app.status_page.page() == 0 {
-                                            if let Some(Some(it)) = n.world.equip.get(slot) {
-                                                n.equip_unequip(slot as u32);
-                                                println!("[net] 脱下 {}（{}）", it.name, name);
-                                            } else {
-                                                println!(
-                                                    "[ui] 装备槽 {}（{}）是空的",
-                                                    slot + 1,
-                                                    name
-                                                );
-                                            }
-                                        } else {
-                                            let msg = match n.world.equip.get(slot) {
-                                                Some(Some(it)) => format!(
-                                                    "装备槽 {}（{}）：{}",
-                                                    slot + 1,
-                                                    name,
-                                                    it.name
-                                                ),
-                                                _ => {
-                                                    format!("装备槽 {}（{}）是空的", slot + 1, name)
-                                                }
-                                            };
-                                            println!("[ui] {msg}");
-                                            if let Some(n) = app.net.as_mut() {
-                                                n.chat.push(trunc(&msg, 30), C_CHAT_SYS);
-                                            }
-                                        }
-                                    }
-                                }
-                                // 技能页：**点一行 = 选中它**（选中后按 F1..F8 设快捷键；
-                                // 原版是弹一个选键对话框，我们还没有那块面板）。
-                                crate::status::Hit::Skill(row) => {
-                                    let base = app.magic_page.page() * crate::status::SKILL_ROWS;
-                                    let picked = app
-                                        .net
-                                        .as_ref()
-                                        .and_then(|n| n.world.magics.get(base + row))
-                                        .map(|m| (m.skill_id, m.name.clone()));
-                                    if let Some((id, name)) = picked {
-                                        app.magic_selected = Some(id);
-                                        println!("[ui] 选中技能 {name}（按 F1..F8 设快捷键）");
-                                        if let Some(n) = app.net.as_mut() {
-                                            n.chat.push(
-                                                trunc(
-                                                    &format!("选中 {name}，按 F1-F8 设快捷键"),
-                                                    30,
-                                                ),
-                                                C_CHAT_SYS,
-                                            );
-                                        }
-                                    }
-                                }
-                                crate::status::Hit::None => {}
-                            }
-                            app.world_control.combat_target = None;
-                            app.world_control.move_target = None;
-                            app.world_control.press_at = None;
-                            app.world_control.held_move = None;
+                let dir = asset_dir
+                    .as_deref()
+                    .expect("assets preflight guarantees a source context");
+                let bg = ui
+                    .size(dir, crate::status::BG_LIB, crate::status::BG)
+                    .expect("素材清单要求 Prguse[370] 人物信息面板背景");
+                let (wx, wy, ww, wh) = crate::status::panel(bg);
+                if x >= wx && x < wx + ww && y >= wy && y < wy + wh {
+                    ui_consumed = true;
+                    match crate::status::hit((x - wx, y - wy), app.status_page.page()) {
+                        // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
+                        crate::status::Hit::Close => {
+                            let c = crate::status::CLOSE;
+                            app.ui_click.press(
+                                Press::Status(crate::status::Hit::Close),
+                                crate::widget::canvas_rect((wx + c.0, wy + c.1, c.2, c.3)),
+                            );
                         }
+                        crate::status::Hit::Arrow(d) => {
+                            let a = if d < 0 {
+                                crate::status::ARROW_UP_RECT
+                            } else {
+                                crate::status::ARROW_DOWN_RECT
+                            };
+                            app.ui_click.press(
+                                Press::Status(crate::status::Hit::Arrow(d)),
+                                crate::widget::canvas_rect((wx + a.0, wy + a.1, a.2, a.3)),
+                            );
+                        }
+                        crate::status::Hit::Slot(slot) => {
+                            if let Some(n) = app.net.as_ref() {
+                                let name = crate::status::slot_name(slot);
+                                if app.status_page.page() == 0 {
+                                    if let Some(Some(it)) = n.world.equip.get(slot) {
+                                        n.equip_unequip(slot as u32);
+                                        println!("[net] 脱下 {}（{}）", it.name, name);
+                                    } else {
+                                        println!("[ui] 装备槽 {}（{}）是空的", slot + 1, name);
+                                    }
+                                } else {
+                                    let msg = match n.world.equip.get(slot) {
+                                        Some(Some(it)) => {
+                                            format!("装备槽 {}（{}）：{}", slot + 1, name, it.name)
+                                        }
+                                        _ => {
+                                            format!("装备槽 {}（{}）是空的", slot + 1, name)
+                                        }
+                                    };
+                                    println!("[ui] {msg}");
+                                    if let Some(n) = app.net.as_mut() {
+                                        n.chat.push(trunc(&msg, 30), C_CHAT_SYS);
+                                    }
+                                }
+                            }
+                        }
+                        // 技能页：**点一行 = 选中它**（选中后按 F1..F8 设快捷键；
+                        // 原版是弹一个选键对话框，我们还没有那块面板）。
+                        crate::status::Hit::Skill(row) => {
+                            let base = app.magic_page.page() * crate::status::SKILL_ROWS;
+                            let picked = app
+                                .net
+                                .as_ref()
+                                .and_then(|n| n.world.magics.get(base + row))
+                                .map(|m| (m.skill_id, m.name.clone()));
+                            if let Some((id, name)) = picked {
+                                app.magic_selected = Some(id);
+                                println!("[ui] 选中技能 {name}（按 F1..F8 设快捷键）");
+                                if let Some(n) = app.net.as_mut() {
+                                    n.chat.push(
+                                        trunc(&format!("选中 {name}，按 F1-F8 设快捷键"), 30),
+                                        C_CHAT_SYS,
+                                    );
+                                }
+                            }
+                        }
+                        crate::status::Hit::None => {}
                     }
+                    app.world_control.combat_target = None;
+                    app.world_control.move_target = None;
+                    app.world_control.press_at = None;
+                    app.world_control.held_move = None;
                 }
             }
             // ②′ 背包窗：左键抓起；双击可穿戴物品 = 穿、其他物品 = 使用；
@@ -846,6 +947,11 @@ pub(crate) fn handle_world_mouse_up(
     y: f32,
     hover: Option<u64>,
 ) -> MouseUpOutcome {
+    // ⓪ **界面开发器**（D-134）：松开 = 结束拖动，不走世界的单击逻辑。
+    if app.layout_edit.on {
+        app.layout_edit.mouse_up();
+        return MouseUpOutcome::Consumed;
+    }
     // ① **OnClick**：左键按下 + 松开在**同一控件**才执行
     //（规范见 `widget` 模块头的表：拖出控件再松开 / 右键 / 只有
     // MouseDown ⇒ 都不触发）。右键不会走到这里（`release` 只对左键调）。

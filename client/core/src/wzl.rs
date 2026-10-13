@@ -1,9 +1,9 @@
-//! 图库（`.wzl` + `.wzx`）读取 —— **两种载体，一套解码**。
+//! 图库读取：生产客户端**只读清单限定的** `assets/image/images.m2pk`；裸 `.wzl/.wzx`
+//! 入口仅供离线工具/真素材测试，不参与运行时回退。
 //!
-//! 1. **裸目录**（`mir2c/data`）：每张图各自一个 zlib 流。规格见 `docs/assets.md §3.2b`；
-//!    参考实现 `$WS/Crystal/LibraryEditor/Graphics/WeMadeLibrary.cs`。
-//! 2. **美术容器**（`assets/image/images.m2pk`，`kind=3`）：把每张图的 raw 像素解出来、
-//!    按 N 张一组拼接、每组一条 brotli 流（见 `crate::image_lib` 与 `docs/assets.md §5c`）。
+//! - 裸图库：每张图各自一个 zlib 流（`Raw`，离线测试用）。
+//! - 美术容器（`kind=3`）：每 N 张一组、每组一条 brotli 流；稀疏图号以空记录占位，
+//!   不压缩重编号（`Packed`，见 `crate::image_lib` 与 `client/assets/image-libraries.tsv`）。
 //!
 //! ```text
 //! 头部 64 字节（可忽略——偏移一律以 .wzx 为准）
@@ -30,10 +30,12 @@
 //!（[`to_rgba`]），行距也只有一份（[`stride_of`]）—— 容器那条路只是换了个
 //! "从哪儿拿到 raw"，绝不许自己再写一遍像素换算。
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::{Mutex, OnceLock};
 
 use crate::m2pk::Archive;
 use crate::palette::PALETTE;
@@ -193,10 +195,24 @@ pub fn to_rgba(type_flag: u8, width: u16, height: u16, raw: &[u8]) -> Option<Vec
 /// 上层（`app` / `e2e`）只认这个类型：`len` / `record` / `decode` 的语义与返回值
 /// 在两种载体下**完全一致**，所以换载体不需要改渲染代码。
 pub enum Wzl {
-    /// 裸目录里的 `.wzl` + `.wzx`（每图一个 zlib 流）。
+    /// 裸目录里的 `.wzl` + `.wzx`（仅测试/离线工具可用；客户端运行时不走这条）。
     Raw(Raw),
     /// 容器里的 IMGP 分组载荷（见 [`crate::image_lib`]）。
     Packed(crate::image_lib::PackedLib),
+}
+
+static REPORTED_IMAGE_ISSUES: OnceLock<Mutex<HashSet<(String, usize)>>> = OnceLock::new();
+
+fn manifest_allows(library: &str, index: usize) -> bool {
+    crate::image_manifest::ImageManifest::shared().is_ok_and(|m| m.allows_image(library, index))
+}
+
+fn report_image_issue(library: &str, index: usize, reason: &str) {
+    let issues = REPORTED_IMAGE_ISSUES.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut seen) = issues.lock() else { return };
+    if seen.insert((library.to_string(), index)) {
+        eprintln!("[asset:error] {library}[{index}] {reason}; 修正 client/assets/image-libraries.tsv 并重打 images.m2pk");
+    }
 }
 
 impl Wzl {
@@ -214,23 +230,6 @@ impl Wzl {
         Ok(crate::image_lib::PackedLib::open(archive, name)?.map(Wzl::Packed))
     }
 
-    /// **容器优先**打开图库；容器里没有（或压根没容器）就回退裸目录。
-    ///
-    /// 这是上层唯一该用的入口：产物在就用产物，不在就直读原始素材 ——
-    /// 两条路解出的像素逐字节相同（见 `to_rgba` 的说明）。
-    pub fn open_preferring(
-        archive: Option<&Rc<Archive>>,
-        dir: &Path,
-        name: &str,
-    ) -> io::Result<Self> {
-        if let Some(a) = archive {
-            if let Some(lib) = Self::open_packed(a.clone(), name)? {
-                return Ok(lib);
-            }
-        }
-        Self::open(dir.join(name))
-    }
-
     pub fn len(&self) -> usize {
         match self {
             Wzl::Raw(r) => r.len(),
@@ -245,7 +244,17 @@ impl Wzl {
     pub fn record(&self, index: usize) -> Option<Record> {
         match self {
             Wzl::Raw(r) => r.record(index),
-            Wzl::Packed(p) => p.record(index),
+            Wzl::Packed(p) => {
+                if !manifest_allows(p.name(), index) {
+                    report_image_issue(p.name(), index, "图号未列入客户端素材清单 / 未打包");
+                    return None;
+                }
+                let rec = p.record(index);
+                if rec.is_none() {
+                    report_image_issue(p.name(), index, "索引越界或容器记录缺失");
+                }
+                rec
+            }
         }
     }
 
@@ -253,7 +262,25 @@ impl Wzl {
     pub fn decode(&self, index: usize) -> Option<Sprite> {
         match self {
             Wzl::Raw(r) => r.decode(index),
-            Wzl::Packed(p) => p.decode(index),
+            Wzl::Packed(p) => {
+                let name = p.name();
+                if !manifest_allows(name, index) {
+                    report_image_issue(name, index, "图号未列入客户端素材清单 / 未打包");
+                    return None;
+                }
+                let Some(rec) = p.record(index) else {
+                    report_image_issue(name, index, "图号超出容器记录范围");
+                    return None;
+                };
+                if rec.is_blank() {
+                    return None; // 清单内合法空白帧，不当作缺素材
+                }
+                let sprite = p.decode(index);
+                if sprite.is_none() {
+                    report_image_issue(name, index, "容器记录有尺寸，但像素缺失/损坏");
+                }
+                sprite
+            }
         }
     }
 }
@@ -353,7 +380,13 @@ impl Raw {
     ///
     /// 反向的例子：`Objects25~27` 那批 1×1 / 4×1 的**真空白图**下一条偏移对不上 ⇒ 判为
     /// 空白 —— 不会把下一条记录头的头几个字节当成像素，在地图上画出一堆杂点。
-    fn raw_span(&self, index: usize, rec_off: usize, start: usize, len: usize) -> Option<(usize, usize)> {
+    fn raw_span(
+        &self,
+        index: usize,
+        rec_off: usize,
+        start: usize,
+        len: usize,
+    ) -> Option<(usize, usize)> {
         match self.index.offset(index + 1).map(|v| v as usize) {
             Some(next) if next > rec_off => (next == start + len).then_some((start, start + len)),
             _ => {

@@ -34,6 +34,8 @@ pub(crate) fn run_app<T>(
     let mut sprite_tex: Option<Texture<'_>> = None;
     // hover / 系统光标 / 懒素材几何是 renderer 的 view cache，不属于游戏 AppState。
     let mut frame_state = render::FrameState::default();
+    // 界面开发器的放大镜：放大时先把整帧画到这张纹理（按需建一次）。
+    let mut zoom_tex: Option<Texture<'_>> = None;
 
     // SDL / GPU 资源（有平台句柄或缓存生命周期，不属于纯运行态）
     let cursor_arrow = Cursor::from_system(SystemCursor::Arrow)?;
@@ -115,6 +117,9 @@ pub(crate) fn run_app<T>(
                 Event::MouseMotion { x, y, .. } => {
                     app.mouse = (x, y);
                     app.ui_click.set_mouse(crate::widget::canvas_pt(app.mouse));
+                    // 界面开发器：拖动中（D-134）。屏幕坐标 → 逻辑坐标（放大时反算）
+                    let logic = app.layout_edit.to_logic((x, y));
+                    app.layout_edit.mouse_move(logic);
                 }
                 Event::MouseWheel { y, .. } if app.scene == crate::app_state::Scene::World => {
                     world_input::handle_mouse_wheel(&mut app, y)
@@ -250,26 +255,93 @@ pub(crate) fn run_app<T>(
         // 前景动画的节拍：官方 `m_nAniCount` **每 50 ms 加一**（`PlayScn.pas:963`，
         // 固定定时器、与帧率无关）。所以这里按**真实时间**算，而不是每帧 +1 ——
         // 否则灯会随机器性能忽快忽慢。
-        if let Some(image) = render::draw_frame(
-            &app,
-            &mut frame_state,
-            &mut canvas,
-            &tex_creator,
-            &mut ui,
-            &mut ui_texts,
-            &mut names,
-            &mut shop_texts,
-            &mut libs,
-            &mut tiles,
-            &mut draws,
-            &mut sprites,
-            &asset_dir,
-            archive.as_ref(),
-            &cursor_arrow,
-            &cursor_cross,
-            &mut loaded,
-            &mut sprite_tex,
-        )? {
+        // **界面开发器的放大镜**（D-134）：放大时先把整帧 1:1 画进一张纹理，
+        // 再把这张纹理按倍数贴回屏幕（以"缩放那一刻的鼠标位置"为中心）。
+        //
+        // 为什么不直接 `canvas.set_scale`：那是以**原点**为中心放大，拖不到鼠标那里；
+        // 而 SDL 的视口不支持负偏移 ⇒ 只能走"渲染到纹理 + copy 到算好的矩形"。
+        let zoom = app.layout_edit.zoom();
+        let image = if app.layout_edit.on && zoom > 1.0 && app.scene == app_state::Scene::World {
+            let tex = zoom_tex.get_or_insert_with(|| {
+                tex_creator
+                    .create_texture_target(
+                        tex_creator.default_pixel_format(),
+                        window::WIN_W,
+                        window::WIN_H,
+                    )
+                    .expect("放大镜的目标纹理")
+            });
+            let mut drawn = None;
+            canvas
+                .with_texture_canvas(tex, |c| {
+                    drawn = render::draw_frame(
+                        &app,
+                        &mut frame_state,
+                        c,
+                        &tex_creator,
+                        &mut ui,
+                        &mut ui_texts,
+                        &mut names,
+                        &mut shop_texts,
+                        &mut libs,
+                        &mut tiles,
+                        &mut draws,
+                        &mut sprites,
+                        &asset_dir,
+                        archive.as_ref(),
+                        &cursor_arrow,
+                        &cursor_cross,
+                        &mut loaded,
+                        &mut sprite_tex,
+                    )
+                    .ok();
+                })
+                .map_err(|e| match e {
+                    sdl3::render::TargetRenderError::SdlError(s) => s,
+                })?;
+            // 贴回：逻辑 (0,0) 落在屏幕 `center - center*z`
+            let (cx, cy) = app.layout_edit.zoom_center();
+            canvas.set_draw_color(colors::C_BG);
+            canvas.clear();
+            canvas.copy(
+                tex,
+                None,
+                FRect::new(
+                    cx - cx * zoom,
+                    cy - cy * zoom,
+                    window::WIN_W as f32 * zoom,
+                    window::WIN_H as f32 * zoom,
+                ),
+            )?;
+            drawn.flatten()
+        } else {
+            render::draw_frame(
+                &app,
+                &mut frame_state,
+                &mut canvas,
+                &tex_creator,
+                &mut ui,
+                &mut ui_texts,
+                &mut names,
+                &mut shop_texts,
+                &mut libs,
+                &mut tiles,
+                &mut draws,
+                &mut sprites,
+                &asset_dir,
+                archive.as_ref(),
+                &cursor_arrow,
+                &cursor_cross,
+                &mut loaded,
+                &mut sprite_tex,
+            )?
+        };
+        // 编辑器的控件框**画在放大之后**（跟着放大换算），字才不会被拉糊。
+        if app.layout_edit.on {
+            app.layout_edit
+                .draw(&mut canvas, &mut names, &tex_creator)?;
+        }
+        if let Some(image) = image {
             app.asset_view.select_image(image);
         }
 

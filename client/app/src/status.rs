@@ -45,8 +45,8 @@ use crate::net::Net;
 use crate::ui;
 
 /// 窗框（`Prguse[370]`，232×325）。
-pub(crate) const BG_LIB: &str = "Prguse";
-pub(crate) const BG: u32 = 370;
+pub(crate) const BG_LIB: &str = mir2_core::image_manifest::assets::STATUS_BACKGROUND.library;
+pub(crate) const BG: u32 = mir2_core::image_manifest::assets::STATUS_BACKGROUND.index;
 /// 页数：0 装备 / 1 属性 / **2 技能**（原版是 0 状态 / 1 属性 / 2 技能 / 3 技能，
 /// 我们把技能接在第 3 页 —— 原版 F11 也是 `StatePage := 3`）。
 pub(crate) const PAGES: usize = 3;
@@ -63,11 +63,17 @@ pub(crate) const CONTENT_Y: f32 = 52.0;
 /// 小人/衣服等大图的库（**`StateItem`**，见模块头硬规则 2）。
 pub(crate) const ITEM_LIB: &str = "StateItem";
 
-pub(crate) const CLOSE_IMG: u32 = 371;
-pub(crate) const ARROW_UP: u32 = 373;
-pub(crate) const ARROW_DOWN: u32 = 372;
-const FIG_M: u32 = 376;
-const FIG_F: u32 = 377;
+pub(crate) const CLOSE_IMG: u32 = mir2_core::image_manifest::assets::STATUS_CLOSE.index;
+pub(crate) const ARROW_UP: u32 = mir2_core::image_manifest::assets::STATUS_ARROW_UP.index;
+pub(crate) const ARROW_DOWN: u32 = mir2_core::image_manifest::assets::STATUS_ARROW_DOWN.index;
+/// 小人底图的**库**（与窗框/头发同一个库）。
+///
+/// ⚠️ 2026-10-12 试过 `Prguse3[29 男]` / `[30 女]`（168×**234**），锚点与宽度都一样
+///（(7,-44) / 168），只是高 35px ⇒ 6 个小槽的框（烤在图里）跟着往下挪，而 `SLOTS`
+/// 是按 199 高的旧图量的 ⇒ 图标与框错开。**换回 `Prguse[376/377]`**（168×199）。
+const FIG_LIB: &str = BG_LIB;
+const FIG_M: u32 = mir2_core::image_manifest::assets::STATUS_FIGURE_MALE.index;
+const FIG_F: u32 = mir2_core::image_manifest::assets::STATUS_FIGURE_FEMALE.index;
 /// 发型图号基址：`440 + 发型*2 + 性别`（男 0 / 女 1）。
 const HAIR_BASE: u32 = 440;
 
@@ -255,9 +261,9 @@ pub(crate) fn draw<'a, T>(
     if !n.world.in_world() {
         return Ok(());
     }
-    let Some(bg) = ui.size(dir_assets, BG_LIB, BG) else {
-        return Ok(()); // 素材不在：什么都不画（那屏另有横幅提示）
-    };
+    let bg = ui
+        .size(dir_assets, BG_LIB, BG)
+        .expect("素材清单要求 Prguse[370] 人物信息面板背景");
     let (x, y, w, h) = panel(bg);
     canvas.set_blend_mode(BlendMode::Blend);
     let _ = ui.draw_src(
@@ -305,14 +311,14 @@ fn draw_figure<'a, T>(
     let (hair, sex) = feature_of(n);
     // ⚠️ 原点 = "锚点补偿后的落点"：这组图（裸体/头发/衣服/武器）各带自己的 WZL 锚点，
     // 必须**同一起点**画才互相咬合。但我们想要的不是"起点"，是**人形图落在 (cx,cy)** ——
-    // 人形图 [376] 自带锚点 (7, -44)，直接拿 (cx,cy) 当起点 ⇒ 整组被抬高 44px
+    // 人形图自带锚点 (7, -44)，直接拿 (cx,cy) 当起点 ⇒ 整组被抬高 44px
     //（用户 2026-10-10 第 9 条：形象偏上了很多）。所以起点 = 期望落点 − 人形的锚点，
     // 其余层用各自锚点照常叠加，相对位置不变、整体落到该在的地方。
     let fig = if sex == 1 { FIG_F } else { FIG_M };
-    let (ax, ay) = ui.anchor(dir_assets, BG_LIB, fig).unwrap_or((0, 0));
+    let (ax, ay) = ui.anchor(dir_assets, FIG_LIB, fig).unwrap_or((0, 0));
     let (ox, oy) = (cx - ax as f32, cy - ay as f32);
     // 裸体底图（男/女）
-    anchored(canvas, tc, ui, dir_assets, BG_LIB, fig, ox, oy);
+    anchored(canvas, tc, ui, dir_assets, FIG_LIB, fig, ox, oy);
     // 头发（发型 0 = 光头：素材里那块本来就取不到，取不到就跳过）
     anchored(
         canvas,
@@ -335,7 +341,7 @@ fn draw_figure<'a, T>(
     }
     // 6 个小槽里的图标：居中放进槽框（官方不缩放，我们也照原样贴）。
     // ⚠️ SLOTS 是按**原来那组图的落点**量的 ⇒ 人形组挪了多少，图标也要跟着挪多少
-    //（Δ = 新原点 − 旧原点），否则槽框（烤在 [376] 里，跟着图走）和图标分家。
+    //（Δ = 新原点 − 旧原点），否则槽框（烤在人形图里，跟着图走）和图标分家。
     let (dx, dy) = (ox - (x + CONTENT_X), oy - (y + CONTENT_Y));
     for &slot in SMALL_SLOTS.iter() {
         let Some(Some(item)) = n.world.equip.get(slot) else {

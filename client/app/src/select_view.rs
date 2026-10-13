@@ -68,7 +68,7 @@ impl Select {
             return text.draw_ui(
                 canvas,
                 tc,
-                "选角素材缺失：需要 Prguse[65..72]（见 MIR2_ASSET_DIR）",
+                "选角必需素材缺失：需要 ui1[2851] 与 Prguse[66..72]（清单已校验）",
                 16.0,
                 16.0,
                 (255, 220, 220),
@@ -78,17 +78,10 @@ impl Select {
 
         canvas.set_draw_color(sdl3::pixels::Color::RGB(0, 0, 0));
         canvas.clear();
-        // 底图**拉伸 1.28 倍铺满**画布（2026-10-09 改，见 `ui::UI_SCALE`）：落点就是设计空间的
-        // (0,0)（`l.bg` 在 `win = 800×600` 下恒为 (0,0)），`ui.draw` 把位置与尺寸一起乘 1.28
-        // ⇒ 800×1.28 = 1024、600×1.28 = 768，正好铺满。D-51 那套"1:1 居中 + 石纹平铺补边"删掉。
-        ui.draw(
-            canvas,
-            tc,
-            dir,
-            su::Art::BG.0,
-            su::Art::BG.1,
-            l.bg.0,
-            l.bg.1,
+        // 选角背景只有客户端清单要求的 1024 原生图 `ui1[2851]`；缺失由启动预检阻止。
+        assert!(
+            ui.draw_fullscreen(canvas, tc, dir, su::Art::BG_1024.0, su::Art::BG_1024.1),
+            "必需素材 ui1[2851] 选角背景缺失"
         );
 
         // 「开始」那颗**石台**：只存在于新版底图 `Prguse2[480]` 里，1.76 的底图没有 ⇒ 裁过来叠上。
@@ -264,19 +257,25 @@ fn draw_newchar<'a, T>(
     hover: Option<su::DialogHit>,
 ) -> Result<(), sdl3::Error> {
     let b = su::DialogBox::build(win);
-    // ① 窗底图（`Prguse[73]`）
-    if let Some((iw, ih)) = ui.size(dir, su::Art::NEW_CHR_BG.0, su::Art::NEW_CHR_BG.1) {
-        let _ = ui.draw_src(
-            canvas,
-            tc,
-            dir,
-            su::Art::NEW_CHR_BG.0,
-            su::Art::NEW_CHR_BG.1,
-            FRect::new(0.0, 0.0, iw as f32, ih as f32),
-            FRect::new(b.frame.x, b.frame.y, iw as f32, ih as f32),
-            255,
-        );
-    }
+    // ① 窗底图（`Prguse[73]`，静态必需素材；不以空窗或自绘板兜底）。
+    let (iw, ih) = ui
+        .size(dir, su::Art::NEW_CHR_BG.0, su::Art::NEW_CHR_BG.1)
+        .expect("素材清单要求 Prguse[73] 建角窗背景");
+    assert_eq!(
+        (iw as f32, ih as f32),
+        (b.frame.w, b.frame.h),
+        "建角窗素材尺寸与布局不一致"
+    );
+    let _ = ui.draw_src(
+        canvas,
+        tc,
+        dir,
+        su::Art::NEW_CHR_BG.0,
+        su::Art::NEW_CHR_BG.1,
+        FRect::new(0.0, 0.0, iw as f32, ih as f32),
+        FRect::new(b.frame.x, b.frame.y, iw as f32, ih as f32),
+        255,
+    );
     // ② 职业 / 性别的高亮（选中**或**悬停）
     for (i, r) in b.job.iter().enumerate() {
         if d.job == i || hover == Some(su::DialogHit::Job(i)) {

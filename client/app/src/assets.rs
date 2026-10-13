@@ -18,127 +18,121 @@ use crate::gfx::{center_x, checkerboard, frame, text, trunc};
 use crate::layout::INFO_LINE_H;
 use crate::window::WIN_W;
 
-/// 打开一个图库：**美术容器优先**（`assets/image/images.m2pk`，`kind=3`），
-/// 容器里没有这个库（或压根没容器）就回退裸目录的 `.wzl` + `.wzx`。
+/// 从唯一正式产物 `assets/image/images.m2pk` 打开已登记图库；**不回退裸目录**。
 ///
-/// 两条载体解出的像素**逐字节相同**（像素解码只有一份，见 `mir2_core::wzl::to_rgba`），
-/// 所以 `app` / `ui` / 各缓存统一走这一个入口，不必各自判断。
+/// 缺容器、缺库、清单外图库或坏载荷都是素材构建错误：主程序 preflight 阻止启动，
+/// 运行时访问动态缺失图号由 core 记录 `[asset:error]`，要求修素材清单/数据，不静默降级。
 ///
-/// 容器句柄是进程级懒打开的（`mir2_core::image_lib::art_archive`）—— 只把索引区
-/// 读进内存（全量 1.4 GB，不能整文件读），图库内容按组取。
-pub(crate) fn open_lib(dir: &Path, name: &str) -> Option<Wzl> {
-    let art = mir2_core::image_lib::art_archive();
-    Wzl::open_preferring(art.as_ref(), dir, name).ok()
-}
-
-// ---------- 启动自检：素材缺哪些（架构方向 ⑦）----------
-//
-// ⚠️ 素材取不到时各窗是**静默不画**（有意的纪律：宁可不画也不画错），
-// 代价是"少画了什么"没人知道 ⇒ 排查"为什么这个按钮没出来"只能靠肉眼找。
-//
-// 这里把各窗**必须**的图号集中登记一遍（**直接引用各窗自己的常量** ⇒
-// 常量改了这里跟着变，不会漂），启动时过一遍，缺的打一条日志。
-
-/// 一条"这块素材必须有"的登记。
-pub(crate) struct Req {
-    pub lib: &'static str,
-    pub idx: u32,
-    /// 它是干什么的（缺了会怎样）。
-    pub what: &'static str,
-}
-
-/// 各窗必须的素材（**直接引用常量**，不写死数字）。
-pub(crate) fn required() -> Vec<Req> {
-    let mut v = Vec::new();
-    let mut add = |lib: &'static str, idx: u32, what: &'static str| v.push(Req { lib, idx, what });
-
-    // 登录界面（`core::login_ui::Art`）
-    let la = mir2_core::login_ui::Art::BG;
-    add(la.0, la.1, "登录底图");
-    for (b, w) in [
-        (mir2_core::login_ui::Art::BTN_OK, "登录 [提交]"),
-        (mir2_core::login_ui::Art::BTN_NEW, "登录 [新用户]"),
-        (mir2_core::login_ui::Art::BTN_CHGPW, "登录 [改密码]"),
-        (mir2_core::login_ui::Art::BTN_CLOSE, "登录 [关闭]"),
-        (mir2_core::login_ui::Art::BTN_SIGNUP_OK, "建号 [确定]"),
-        (mir2_core::login_ui::Art::BTN_SIGNUP_CANCEL, "建号 [取消]"),
-        (mir2_core::login_ui::Art::MSGBOX, "报错弹窗"),
-        (mir2_core::login_ui::Art::MSGBOX_OK, "弹窗 [确定]"),
-    ] {
-        add(b.0, b.1, w);
+/// 容器句柄是进程级懒打开的（`mir2_core::image_lib::art_archive_required`）；仅将索引
+/// 载入内存，图库像素按组随机访问。`dir` 参数仅为兼容 `UiCache` 的同一调用签名保留。
+pub(crate) fn open_lib(_dir: &Path, name: &str) -> Option<Wzl> {
+    let manifest = mir2_core::image_manifest::ImageManifest::shared()
+        .unwrap_or_else(|e| panic!("客户端图片清单错误: {e}"));
+    if !manifest.allows_library(name) {
+        eprintln!("[asset:error] 控件请求清单外图库 {name}；请将有效素材登记到 client/assets/image-libraries.tsv");
+        return None;
     }
+    let archive = match mir2_core::image_lib::art_archive_required() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("[asset:error] {e}");
+            return None;
+        }
+    };
+    match Wzl::open_packed(archive, name) {
+        Ok(Some(lib)) => Some(lib),
+        Ok(None) => {
+            eprintln!("[asset:error] 清单图库 {name} 不在 images.m2pk 中");
+            None
+        }
+        Err(e) => {
+            eprintln!("[asset:error] 打开图库 {name} 失败: {e}");
+            None
+        }
+    }
+}
 
-    // 选角 + 建号框（`core::select_ui::Art`）
-    for (b, w) in mir2_core::select_ui::Art::MENU_DOWN
+// ---------- 启动期严格预检（唯一素材清单）----------
+//
+// 预检直接消费 `client/assets/image-libraries.tsv`（由 core 解析），不在 app 里再维护
+// 第二份图号表。容器图库缺失、多余或静态必需图缺失都会阻止启动。
+
+/// 启动期严格校验图片容器集合与静态必需图号；缺失/多余都阻止进入游戏。
+pub(crate) fn preflight() -> Result<(), String> {
+    use std::collections::HashSet;
+    let manifest = mir2_core::image_manifest::ImageManifest::shared().map_err(str::to_string)?;
+    let archive = mir2_core::image_lib::art_archive_required()?;
+    let entries: HashSet<&str> = archive.entries().iter().map(|e| e.name.as_str()).collect();
+
+    for rule in &manifest.rules {
+        let found = entries.iter().any(|name| {
+            if rule.prefix {
+                name.starts_with(&rule.name)
+            } else {
+                *name == rule.name
+            }
+        });
+        if !found {
+            return Err(format!("清单图库 {} 缺失（{}）", rule.name, rule.purpose));
+        }
+    }
+    for name in &entries {
+        if !manifest.allows_library(name) {
+            return Err(format!(
+                "images.m2pk 含清单外图库 {name}；请按 image-libraries.tsv 重建"
+            ));
+        }
+    }
+    for req in &manifest.required {
+        let lib = mir2_core::wzl::Wzl::open_packed(archive.clone(), &req.library)
+            .map_err(|e| format!("打开必需图库 {}: {e}", req.library))?
+            .ok_or_else(|| format!("必需图库 {} 缺失", req.library))?;
+        let sprite = lib.decode(req.index as usize).ok_or_else(|| {
+            format!(
+                "必需素材 {}[{}] 缺失/空白：{}",
+                req.library, req.index, req.purpose
+            )
+        })?;
+        if sprite.is_empty() {
+            return Err(format!(
+                "必需素材 {}[{}] 是空图：{}",
+                req.library, req.index, req.purpose
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// F3 素材观察器只浏览**实际打包且清单允许**的图库（不再扫描原始素材目录）。
+pub(crate) fn packaged_libraries() -> Result<Vec<String>, String> {
+    let manifest = mir2_core::image_manifest::ImageManifest::shared().map_err(str::to_string)?;
+    let archive = mir2_core::image_lib::art_archive_required()?;
+    let mut libraries: Vec<String> = manifest
+        .rules
         .iter()
-        .zip(MENU_WHAT.iter())
-    {
-        add(b.0, b.1, w);
+        .filter(|r| !r.prefix)
+        .map(|r| r.name.clone())
+        .collect();
+    // 通配图库只加入容器里实际出现且符合该前缀的名字。
+    for rule in manifest.rules.iter().filter(|r| r.prefix) {
+        libraries.extend(
+            archive
+                .entries()
+                .iter()
+                .map(|e| e.name.as_str())
+                .filter(|name| name.starts_with(&rule.name))
+                .map(str::to_string),
+        );
     }
-    for b in mir2_core::select_ui::Art::SEL_DOWN {
-        add(b.0, b.1, "选角「选择」按下态");
+    libraries.sort();
+    libraries.dedup();
+    for name in &libraries {
+        if archive.lookup(name).is_none() {
+            return Err(format!("清单图库 {name} 不在 images.m2pk 中"));
+        }
     }
-    for (b, w) in [
-        (mir2_core::select_ui::Art::BG, "选角底图"),
-        (mir2_core::select_ui::Art::NEW_CHR_BG, "建号窗底图"),
-        (mir2_core::select_ui::Art::NEW_CHR_OK, "建号 [确定]"),
-        (mir2_core::select_ui::Art::NEW_CHR_CLOSE, "建号 [关闭]"),
-    ] {
-        add(b.0, b.1, w);
-    }
-    // 职业 ×3 / 性别 ×2 的高亮（74/75/76 与 77/78）
-    let job = mir2_core::select_ui::Art::NEW_CHR_JOB;
-    for (i, w) in JOB_WHAT.iter().enumerate() {
-        add(job.0, job.1 + i as u32, w);
-    }
-    let sex = mir2_core::select_ui::Art::NEW_CHR_SEX;
-    for (i, w) in SEX_WHAT.iter().enumerate() {
-        add(sex.0, sex.1 + i as u32, w);
-    }
-
-    // 世界里的窗
-    add("Prguse", crate::layout::BAG_BG, "包裹底图");
-    add("Prguse", crate::layout::BAG_CLOSE_IMG, "包裹 [关闭] 高亮");
-    add(crate::status::BG_LIB, crate::status::BG, "状态窗底图");
-    add("Prguse", crate::status::CLOSE_IMG, "状态窗 [关闭] 高亮");
-    add("Prguse", crate::status::ARROW_UP, "状态窗 上翻页");
-    add("Prguse", crate::status::ARROW_DOWN, "状态窗 下翻页");
-    add("Prguse", crate::shop::BUY_BG, "交易窗底图");
-    // 交易窗三个按钮的高亮图（用户 2026-10-11 给的编号：OK 386 / 左 387 / 右 388）
-    // ⚠️ 79/80（建号发型）**不在**这里：官方是空实现、且 80 素材不存在（D-72）。
-    add("Prguse", crate::shop::BUY_OK_HOVER, "交易 [确定] 高亮");
-    add("Prguse", crate::shop::BUY_PREV_HOVER, "交易 [左] 高亮");
-    add("Prguse", crate::shop::BUY_NEXT_HOVER, "交易 [右] 高亮");
-    add("Prguse", crate::shop::SELL_SLOT_IMG, "卖货窗底图");
-    add("Prguse", crate::shop::SELL_OK_IMG, "卖货窗 [OK] 高亮");
-    add("Prguse", crate::dialog::DIALOG_BG, "对话窗背板");
-    v
+    Ok(libraries)
 }
-
-const MENU_WHAT: [&str; 5] = [
-    "菜单 开始",
-    "菜单 创建",
-    "菜单 删除",
-    "菜单 制作群",
-    "菜单 退出",
-];
-const JOB_WHAT: [&str; 3] = ["建号 战士", "建号 法师", "建号 道士"];
-const SEX_WHAT: [&str; 2] = ["建号 男", "建号 女"];
-
-/// **启动自检**：过一遍 [`required`]，返回缺的那些。
-///
-/// `size` 由调用方给（`ui.size(dir, lib, idx)`）—— 只读容器头、不解压像素 ⇒ 很快。
-pub(crate) fn audit(mut size: impl FnMut(&'static str, u32) -> Option<(u32, u32)>) -> Vec<Req> {
-    required()
-        .into_iter()
-        .filter(|r| size(r.lib, r.idx).is_none())
-        .collect()
-}
-
-/// 登录模式可浏览的图库。
-pub(crate) const LIBS: &[&str] = &[
-    "Prguse", "Hum", "Weapon", "hair2", "Items", "Mon1", "Tiles", "Magic", "ChrSel", "Effect",
-];
 
 // ---------- 配色 ----------
 
@@ -159,6 +153,12 @@ pub(crate) fn draw_asset_view<'a, T>(
     img_idx: usize,
     started: Instant,
 ) -> Result<Option<usize>, sdl3::Error> {
+    let libs = packaged_libraries().unwrap_or_default();
+    if libs.is_empty() {
+        text(canvas, "NO PACKAGED IMAGE LIBRARIES", 24.0, 60.0, C_ERR)?;
+        return Ok(None);
+    }
+    let lib_idx = lib_idx % libs.len();
     let t1 = "ASSET  BROWSER   (F1 = LOGIN,  F2 = MAP)";
     text(canvas, t1, center_x(t1, 0.0, WIN_W as f32), 14.0, C_TITLE)?;
     let t2 = format!(
@@ -185,7 +185,7 @@ pub(crate) fn draw_asset_view<'a, T>(
     let mut ready = false;
 
     if let Some(dir) = asset_dir {
-        let name = LIBS[lib_idx];
+        let name = libs[lib_idx].as_str();
         if loaded.as_ref().map(|(i, _)| *i) != Some(lib_idx) {
             *loaded = open_lib(dir, name).map(|l| (lib_idx, l));
             *sprite_tex = None;
@@ -271,7 +271,7 @@ pub(crate) fn draw_asset_view<'a, T>(
     }
     py += 8.0;
     for line in [
-        format!("LIB [{}/{}]  =  {}", lib_idx + 1, LIBS.len(), LIBS[lib_idx]),
+        format!("LIB [{}/{}]  =  {}", lib_idx + 1, libs.len(), libs[lib_idx]),
         format!("IMG {}", selected_image),
         "[ ] CHANGE LIB      , . CHANGE IMG".to_string(),
         "F1 LOGIN   F2 MAP   M MUSIC   ESC QUIT".to_string(),

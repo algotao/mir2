@@ -77,6 +77,8 @@ pub(crate) struct AppState {
     pub dialog_seq_seen: u64,
     pub confirm: confirm::Confirm,
     pub belt: [Option<crate::layout::BeltSlot>; crate::layout::BELT_SLOTS],
+    /// F-Ctrl+L **界面开发器**的运行态（D-134）。
+    pub layout_edit: crate::layoutedit::LayoutEdit,
     pub minimap_on: bool,
     pub bigmap_on: bool,
     pub sfx_on: bool,
@@ -124,6 +126,7 @@ impl AppState {
             dialog_seq_seen: 0,
             confirm: confirm::Confirm::new(),
             belt: [None; crate::layout::BELT_SLOTS],
+            layout_edit: crate::layoutedit::LayoutEdit::default(),
             minimap_on: false,
             bigmap_on: false,
             sfx_on: true,

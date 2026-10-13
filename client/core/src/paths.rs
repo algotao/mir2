@@ -10,12 +10,10 @@ use std::path::{Path, PathBuf};
 
 /// 美术目录（`.wzl` / `.wzx` 所在）。
 ///
-/// `$MIR2_ASSET_DIR` → `$MIR2C_DATA` → **与仓库并列**的 `mir2c/data2`
-///（`data2` 没了就退回 `data`，见下面）。
+/// `$MIR2_ASSET_DIR` → `$MIR2C_DATA` → **与仓库并列**的唯一默认真源 `mir2c/data2`。
 ///
-/// ⚠️ 2026-10-12：默认从 `data` 换成 **`data2`**（用户："data2 是最新资源"）——
-/// 它才是 `tools/artpack/build.sh` 的唯一真源；容器缺失时走的直读路径必须指着同一份，
-/// 否则"容器与直读"会解出两套美术。老的 `data` 留着对照，所以这里**兜底**到它。
+/// ⚠️ 2026-10-13：不再从 `data2` 回退到旧 `data`。用户指定 `data2` 是最新资源；旧副本
+/// 可以留作人工对照，但运行与打包不能因缺少真源而悄悄切到另一套素材。
 pub fn asset_dir() -> Option<PathBuf> {
     for key in ["MIR2_ASSET_DIR", "MIR2C_DATA"] {
         if let Ok(v) = std::env::var(key) {
@@ -28,12 +26,11 @@ pub fn asset_dir() -> Option<PathBuf> {
     // 检出布局：<ws>/mir2（本仓库）与 <ws>/mir2c（素材）**并列**。
     // 由 CARGO_MANIFEST_DIR 反推：client/{core,app} → 上三级 = <ws>
     let ws = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    // 先 `data2`（当前真源），再 `data`（老的，留着对照）
-    ["mir2c/data2", "mir2c/data"]
-        .iter()
-        .map(|rel| ws.join(rel))
-        .find(|p| p.is_dir())
-        .and_then(|p| p.canonicalize().ok())
+    let canonical = ws.join("mir2c/data2");
+    canonical
+        .is_dir()
+        .then(|| canonical.canonicalize().ok())
+        .flatten()
 }
 
 /// 音频目录（`sound.lst` + 那些 `.wav` 所在）。
@@ -44,7 +41,7 @@ pub fn asset_dir() -> Option<PathBuf> {
 ///
 /// ⚠️ 两个坑：
 ///
-/// 1. **不能**用 `asset_dir()` 直接拼：美术目录是 `mir2c/data`，而音频在
+/// 1. **不能**用 `asset_dir()` 直接拼：美术真源是 `mir2c/data2`，而音频在
 ///    `mir2c/wav`（同级，不是子目录）—— 原版清单里的路径 `wav\103.wav` 正是
 ///    **相对游戏根目录**写的（`SoundUtil.pas:151-178`）。
 /// 2. **产物优先于原始素材**（与 `maps.m2pk` 同一规矩）：`assets/audio` 是转换过的

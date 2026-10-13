@@ -186,6 +186,11 @@ pub(crate) fn ctrl(m: sdl3::keyboard::Mod) -> bool {
     m.intersects(sdl3::keyboard::Mod::LCTRLMOD) || m.intersects(sdl3::keyboard::Mod::RCTRLMOD)
 }
 
+/// 按住了 Shift 吗（界面开发器里用它把方向键的步长放大到 10px，D-134）。
+pub(crate) fn shift(m: sdl3::keyboard::Mod) -> bool {
+    m.intersects(sdl3::keyboard::Mod::LSHIFTMOD) || m.intersects(sdl3::keyboard::Mod::RSHIFTMOD)
+}
+
 // ---------- 小地图 / 大地图（原版 `PlayScn.pas:791` 的 `DrawMiniMap`）----------
 
 /// 鼠标连续走路：**这一步该走还是该跑**（`None` = 已经站在目标格上、收工）。

@@ -14,6 +14,8 @@ pub mod blend;
 pub mod entrance;
 /// 美术容器里的图库载荷（IMGP）：按组懒解压 + 缓存，像素解码与 `wzl` 共用。
 pub mod image_lib;
+/// 客户端运行时图片资源的唯一清单（与 Go `tools/artpack` 共读 TSV）。
+pub mod image_manifest;
 pub mod login_ui;
 pub mod m2pk;
 pub mod map;

@@ -703,10 +703,7 @@ fn 窗口尺寸参数解析() {
     }
 }
 
-/// **登录/选角背景是 800×600**（真素材）—— 它们在 1024×768 的窗口里**居中**摆。
-///
-/// 2026-10-09 之前设计空间就是 800×600，这条断言写作"素材 == 设计尺寸"；
-/// 现在设计空间改成 1024×768（原生渲染、不放大），这条只钉素材尺寸。
+/// 登录/选角当前只使用清单必需的 1024×768 原生背景；旧 800×600 图已从有效包移除。
 #[test]
 fn 登录与选角背景正好是设计尺寸() {
     let Ok(dir) = std::env::var("MIR2_ASSET_DIR").or_else(|_| std::env::var("MIR2C_DATA")) else {
@@ -718,22 +715,19 @@ fn 登录与选角背景正好是设计尺寸() {
     for (what, lib, idx) in [
         (
             "登录背景",
-            mir2_core::login_ui::Art::BG.0,
-            mir2_core::login_ui::Art::BG.1,
+            mir2_core::login_ui::Art::BG_1024.0,
+            mir2_core::login_ui::Art::BG_1024.1,
         ),
         (
             "选角背景",
-            mir2_core::select_ui::Art::BG.0,
-            mir2_core::select_ui::Art::BG.1,
+            mir2_core::select_ui::Art::BG_1024.0,
+            mir2_core::select_ui::Art::BG_1024.1,
         ),
     ] {
-        // ⚠️ 登录/选角那套素材是 **800×600**，而窗口/设计空间是 1024×768 ⇒
-        // 它们是**居中摆**、不缩放（原版也是这么干的：`(SCREENWIDTH-800) div 2`）。
-        // 这条钉住"素材尺寸没变" —— 变了各自的 `Layout::build` 会自动跟着居中。
         assert_eq!(
             ui.size(&dir, lib, idx),
-            Some((800, 600)),
-            "{what}（{lib}[{idx}]）该是 800×600（居中摆在 {WIN_W}×{WIN_H} 里）"
+            Some((1024, 768)),
+            "{what}（{lib}[{idx}]）必须是清单规定的原生 1024×768 背景"
         );
     }
 }
@@ -2590,5 +2584,37 @@ fn 底栏控件都在画布内() {
         x * scale > w,
         "若按设计坐标画，功能钮会飞出画布右边（{x}×{scale} = {} > {w}）",
         x * scale
+    );
+}
+
+/// **P0**（用户 2026-10-12）：点在弹出来的窗上，不该把点击透给下一层的地图。
+///
+/// 只测"命中判定"这一层（`over_ui_window`），不碰 SDL —— 走路那段靠它短路，
+/// 松手那条路靠"按下时清掉 `press_at`"挡住。
+///
+/// ⚠️ 用**包裹窗**这条分支：它不需要连服务端（`Net` 的构造要真连接，测不了）。
+#[test]
+fn 点在窗上不算点地图() {
+    use crate::world_input::over_ui_window;
+
+    let mut app = crate::app_state::AppState::new();
+    let mut ui = crate::ui::UiCache::new();
+    // 普通世界区域仍是地图；底栏 parent 即使点在空白处也要拦截（不穿透走路）。
+    assert!(!over_ui_window(&app, &mut ui, None, 500.0, 300.0));
+    assert!(
+        over_ui_window(&app, &mut ui, None, 10.0, 700.0),
+        "底栏空白由 parent Block 拦截"
+    );
+
+    app.win.toggle_bag();
+    let ((bx, by, bw, bh), _page) = crate::hud::bag_geom(0, 0, false);
+    let (cx, cy) = (bx + bw / 2.0, by + bh / 2.0);
+    assert!(
+        over_ui_window(&app, &mut ui, None, cx, cy),
+        "包裹窗中心应判为压着窗"
+    );
+    assert!(
+        !over_ui_window(&app, &mut ui, None, bx + bw + 40.0, cy),
+        "窗外不该被算成压着窗"
     );
 }

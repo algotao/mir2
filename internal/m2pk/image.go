@@ -178,8 +178,9 @@ func (s *WzlSource) Count() int { return len(s.offs) }
 //
 // 判据与 Rust 侧 `wzl::Raw::raw_span` **必须逐字一致**（否则容器与直读两条路会解出
 // 不同的图，回验会挂）：
-//   · 下一张图的偏移**正好**等于 本条 + 16 + RawLen ⇒ 数据确实占这么多；
-//   · 或这张是**最后一张**（下一条偏移为 0 / 回退）且区间落在文件内。
+//
+//	· 下一张图的偏移**正好**等于 本条 + 16 + RawLen ⇒ 数据确实占这么多；
+//	· 或这张是**最后一张**（下一条偏移为 0 / 回退）且区间落在文件内。
 //
 // 反向的例子：`Objects25~27` 那批 1×1 / 4×1 的**真空白图**下一条偏移对不上 ⇒ 这里
 // 返回 `ok=false` ⇒ 按空白处理，不会把下一条记录头的头几个字节当成像素。
@@ -301,10 +302,15 @@ func zlibInflate(src []byte) ([]byte, error) {
 	return io.ReadAll(zr)
 }
 
-// EncodeImageLib 把 `src` 编码成 IMGP 载荷。
-//
-// 各组**独立编码**（因此 workers 不影响输出字节，与 `Pack` 同一纪律）。
+// EncodeImageLib 把 `src` 编码成 IMGP 载荷，使用体积优先默认质量。
 func EncodeImageLib(src ImageSource, groupSize, workers int) ([]byte, ImageStats, error) {
+	return EncodeImageLibWithQuality(src, groupSize, workers, DefaultQuality)
+}
+
+// EncodeImageLibWithQuality 提供可配置质量的 IMGP 编码。
+//
+// 各组**独立编码**（因此 workers 不影响输出语义，与 `Pack` 同一纪律）。
+func EncodeImageLibWithQuality(src ImageSource, groupSize, workers, quality int) ([]byte, ImageStats, error) {
 	var st ImageStats
 	count := src.Count()
 	if count <= 0 {
@@ -315,6 +321,12 @@ func EncodeImageLib(src ImageSource, groupSize, workers int) ([]byte, ImageStats
 	}
 	if groupSize > MaxImageGroup {
 		return nil, st, fmt.Errorf("m2pk: 每组图数 %d 超过上限 %d", groupSize, MaxImageGroup)
+	}
+	if quality <= 0 {
+		quality = DefaultQuality
+	}
+	if quality > 11 {
+		quality = 11
 	}
 
 	// 记录表（小：16 B/图）先定下来，组内偏移与"空白"归一化都基于它。
@@ -385,7 +397,7 @@ func EncodeImageLib(src ImageSource, groupSize, workers int) ([]byte, ImageStats
 				}
 				var out bytes.Buffer
 				bw := brotli.NewWriterOptions(&out, brotli.WriterOptions{
-					Quality: DefaultQuality,
+					Quality: quality,
 					LGWin:   DefaultLGWin,
 				})
 				if _, err := bw.Write(acc.Bytes()); err != nil {

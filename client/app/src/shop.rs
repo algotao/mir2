@@ -24,17 +24,17 @@ use crate::ui;
 /// 387/388 的主色是 `#291884` ⇒ 底图里同色的两个圆钮就是左/右。
 /// （之前按"底部左/右各一块 47 宽"猜的位置是错的 —— 左/右是 24×24 圆钮，
 /// 而且那两个 47 宽的框正好压在它们上面。）
-pub(crate) const BUY_BG: u32 = 385;
-pub(crate) const BUY_OK_HOVER: u32 = 386;
+pub(crate) const BUY_BG: u32 = mir2_core::image_manifest::assets::SHOP_BUY_BACKGROUND.index;
+pub(crate) const BUY_OK_HOVER: u32 = mir2_core::image_manifest::assets::SHOP_BUY_OK_HOVER.index;
 /// **左**（翻上一页）圆钮的 hover 态。
 ///
 /// ⚠️ 2026-10-12 改：**原来写的是 387，两张接反了**（用户："左右箭头按下图片反了"）。
 /// 逐像素看过（`wzldump` 导出 + 只取纯白笔画）：**388 是左箭头**（竖边在 x≈10、
 /// 尖端朝左到 x=5，右侧 x11..16 是箭杆），**387 是右箭头**（竖边在 x≈11、尖端朝右
 /// 到 x=16，左侧 x5..9 是箭杆）—— 白色重心 388 偏左（9.88）、387 偏右（11.81）。
-pub(crate) const BUY_PREV_HOVER: u32 = 388;
+pub(crate) const BUY_PREV_HOVER: u32 = mir2_core::image_manifest::assets::SHOP_BUY_PREV_HOVER.index;
 /// **右**（翻下一页）圆钮的 hover 态（同上：= 387）。
-pub(crate) const BUY_NEXT_HOVER: u32 = 387;
+pub(crate) const BUY_NEXT_HOVER: u32 = mir2_core::image_manifest::assets::SHOP_BUY_NEXT_HOVER.index;
 
 /// 一页几行。
 pub(crate) const ROWS: usize = 6;
@@ -167,18 +167,20 @@ pub(crate) fn draw<'a, T>(
     let (x, y, w, h) = panel();
     // 底图 = `Prguse[385]`（原生尺寸贴上去：窗框、右上红叉、底部两个按钮都在图里），
     // 我们只往上面排文字与商品行。
-    if let Some((iw, ih)) = ui.size(dir, "Prguse", BUY_BG) {
-        let _ = ui.draw_src(
-            canvas,
-            tc,
-            dir,
-            "Prguse",
-            BUY_BG,
-            FRect::new(0.0, 0.0, iw as f32, ih as f32),
-            FRect::new(x, y, w, h),
-            255,
-        );
-    }
+    let (iw, ih) = ui
+        .size(dir, "Prguse", BUY_BG)
+        .expect("素材清单要求 Prguse[385] 买窗背景");
+    assert_eq!((iw as f32, ih as f32), (w, h), "买窗素材尺寸与布局不一致");
+    let _ = ui.draw_src(
+        canvas,
+        tc,
+        dir,
+        "Prguse",
+        BUY_BG,
+        FRect::new(0.0, 0.0, iw as f32, ih as f32),
+        FRect::new(x, y, w, h),
+        255,
+    );
 
     let page = page.min(pages(shop.items.len()) - 1);
     let base = page * ROWS;
@@ -319,10 +321,10 @@ pub(crate) fn sell_panel() -> (f32, f32, f32, f32) {
 /// **放物品的槽** = `Prguse[392]`（140×181，链子挂坠+圆槽，物品放进去显示在中间）。
 ///
 /// 2026-10-10 用户比对素材给出的图号；之前是自绘的金属圈，现在换成官方槽。
-pub(crate) const SELL_SLOT_IMG: u32 = 392;
+pub(crate) const SELL_SLOT_IMG: u32 = mir2_core::image_manifest::assets::SHOP_SELL_BACKGROUND.index;
 /// **OK 的高亮态** = `Prguse[393]`（24×13，用户 2026-10-11 第 3 条给的编号；
 /// 逐像素看过：蓝底白字"OK"，比底图 392 里那枚亮）。
-pub(crate) const SELL_OK_IMG: u32 = 393;
+pub(crate) const SELL_OK_IMG: u32 = mir2_core::image_manifest::assets::SHOP_SELL_OK_HOVER.index;
 /// 槽在窗口内的落点：素材 392 **本身就是整个卖窗**（标题栏/圆槽/OK/关闭叉都在
 /// 图里）⇒ 整张原样贴在窗口原点，不再自己挪。
 pub(crate) const SELL_SLOT: (f32, f32, f32, f32) = (0.0, 0.0, 140.0, 181.0);
@@ -404,18 +406,20 @@ pub(crate) fn draw_sell<'a, T>(
     // ⚠️ **先贴素材**：素材整张盖上会盖掉先画的字（用户 2026-10-10：
     // 「预估金额没有显示」就是"卖:"和金额先画、被素材盖了）。
     let (sx, sy, sw, sh) = SELL_SLOT;
-    if let Some((iw, ih)) = ui.size(dir, "Prguse", SELL_SLOT_IMG) {
-        let _ = ui.draw_src(
-            canvas,
-            tc,
-            dir,
-            "Prguse",
-            SELL_SLOT_IMG,
-            FRect::new(0.0, 0.0, iw as f32, ih as f32),
-            FRect::new(x + sx, y + sy, sw, sh),
-            255,
-        );
-    }
+    let (iw, ih) = ui
+        .size(dir, "Prguse", SELL_SLOT_IMG)
+        .expect("素材清单要求 Prguse[392] 卖窗背景");
+    assert_eq!((iw as f32, ih as f32), (sw, sh), "卖窗素材尺寸与布局不一致");
+    let _ = ui.draw_src(
+        canvas,
+        tc,
+        dir,
+        "Prguse",
+        SELL_SLOT_IMG,
+        FRect::new(0.0, 0.0, iw as f32, ih as f32),
+        FRect::new(x + sx, y + sy, sw, sh),
+        255,
+    );
 
     // "卖:" + 金额（放进槽里的那件能卖多少钱）—— 画在素材标题栏上（只有文字）
     texts.draw(

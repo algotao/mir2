@@ -67,21 +67,11 @@ fn hit_cell(x: f32, y: f32) -> Option<usize> {
     Some(cy as usize * c + cx as usize)
 }
 
-pub(crate) fn list_libs(dir: &Path) -> Vec<String> {
-    let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return out;
-    };
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|s| s.to_str()) == Some("wzl") {
-            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                out.push(stem.to_string());
-            }
-        }
-    }
-    out.sort();
-    out
+pub(crate) fn list_libs(_dir: &Path) -> Vec<String> {
+    crate::assets::packaged_libraries().unwrap_or_else(|e| {
+        eprintln!("[asset:error] {e}");
+        Vec::new()
+    })
 }
 
 pub(crate) fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), Box<dyn Error>> {
@@ -293,7 +283,8 @@ pub(crate) fn run(dir: &Path, libs: &[String], start_idx: usize) -> Result<(), B
 }
 
 fn open_wzl(dir: &Path, lib: &str) -> Result<Wzl, Box<dyn Error>> {
-    Wzl::open(dir.join(lib)).map_err(|e| format!("打开 {lib}: {e}").into())
+    crate::assets::open_lib(dir, lib)
+        .ok_or_else(|| format!("清单图库 {lib} 缺失或打开失败（不回退裸 WZL）").into())
 }
 
 /// 一张图的描述行（悬停/选中通用）。

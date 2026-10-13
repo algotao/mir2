@@ -416,7 +416,16 @@ pub struct World {
     /// 这是"世界在动"最直接的观测量：联调时看它涨没涨，比盯着画面猜靠谱。
     pub entity_events: u64,
     /// 累计收到多少条**看不懂**的消息（§4.1：记数 + 忽略，不 panic）。
+    ///
+    /// ⚠️ 这一条是**协议漂移的判据**（e2e 拿它当硬断言）：只统计"解不出来"的信封
+    /// （对端用了我们没有的消息号）。**"没见过的实体在动/掉血"不算** —— 那是另一种
+    /// 事（见 [`World::orphan_events`]），混在一起会让这条判据在正常场景里乱响。
     pub unknown: u64,
+    /// 累计收到多少条**无主更新**（没见过的实体在移动/掉血/做动作）。
+    ///
+    /// 与 `unknown` 分开（2026-10-13）：它通常只是"服务端的账本比我们的视野大一点"
+    /// （视野边缘的怪、广播范围差异），**不是**协议对不上 ⇒ 只观测、不做硬断言。
+    pub orphan_events: u64,
     /// 累计收到多少条伤害事件（"在打架"的观测量）。
     pub damage_events: u64,
     /// 累计收到多少条动作（挥砍/受击/死亡）。
@@ -442,6 +451,27 @@ pub struct World {
     pub self_feature: Option<proto::EntityFeature>,
     /// 待消费的伤害事件（调用方 `take_damage()` 取走）。
     damage: Vec<DamageEvent>,
+    /// 收到的**系统消息**正文（服务端 `SystemNotice`，即原版 `SM_SYSMESSAGE`）。
+    ///
+    /// 为什么要有它：GM 命令的回执（"没有足够的权限"）、脚本提示（"学会了…"、
+    /// "普修完成"）**全走这一条**，而新协议没有聊天下行 ⇒ 它是"服务端到底认没认
+    /// 这条命令"的**唯一**观测点。从 Go 的 `mir2cli`（`waitSysMsgText`）搬过来的
+    /// 判据就是靠它落地。
+    ///
+    /// ⚠️ 只增不减：调用方 [`World::take_notices`] 取走（与 `take_damage` 同一套路）。
+    notices: Vec<String>,
+    /// 累计收到多少条系统消息（取走之后仍能判"又来了一条"）。
+    pub notice_events: u64,
+    /// 累计换过几次图（`ChangeMap`）。
+    ///
+    /// ⚠️ 为什么不能"看 `map_name` 变没变"：`@map 0101` 再 `@map 0` 回来，首尾同名
+    /// ⇒ 判不出"中间真的切过"。用例要的是"这条命令生效了"，所以记的是**次数**。
+    pub map_changes: u64,
+    /// 自己死过几次（`Death` 打在自己身上）。
+    ///
+    /// ⚠️ 同理不能只看 `self_dead`：死亡回城的 `ChangeMap` 会把它清回 `false`，
+    /// 而"回城"与"死了"常常在同一个收包窗口里到齐。
+    pub self_deaths: u64,
     /// 累计收到多少条**移动被拒**（`MoveRejected`）。
     ///
     /// ⚠️ 调用方要拿它**变没变**来判断"刚刚被拒了一次"（新协议这条是原版 `SM_MOVEFAIL`
@@ -554,6 +584,7 @@ impl World {
                 Change::World
             }
             Body::ChangeMap(cm) => {
+                self.map_changes += 1;
                 self.map_name = cm.map_name.clone();
                 self.map_title = cm.map_title.clone();
                 self.minimap_index = cm.minimap_index; // 换图 = 换一张缩略图
@@ -605,7 +636,7 @@ impl World {
                     e.feature = Some(*feature);
                     Change::World
                 } else {
-                    self.unknown += 1;
+                    self.orphan_events += 1;
                     Change::None
                 }
             }
@@ -633,7 +664,7 @@ impl World {
                 } else {
                     // ⚠️ 没见过的实体在移动：**不要凭空造一个**（那会造出没有名字/外观的幽灵）。
                     // 正常不会发生（先出现后移动），发生了就记数——这通常是服务端的账本有漏。
-                    self.unknown += 1;
+                    self.orphan_events += 1;
                     return Change::None;
                 }
                 self.entity_events += 1;
@@ -666,7 +697,7 @@ impl World {
                     e.hp = h.hp;
                     e.max_hp = h.max_hp;
                 } else {
-                    self.unknown += 1;
+                    self.orphan_events += 1;
                     return Change::None;
                 }
                 Change::World
@@ -686,6 +717,7 @@ impl World {
                     // 自己死了：位置与血量由 `ChangeMap`（回城）/`EntityHealth` 收尾，
                     // 这里只记数，不去动 `entities`。
                     self.self_dead = true;
+                    self.self_deaths += 1;
                     return Change::World;
                 }
                 match self.entities.get_mut(&x.entity_id) {
@@ -696,7 +728,7 @@ impl World {
                         e.action = Some(action::DEATH);
                     }
                     None => {
-                        self.unknown += 1;
+                        self.orphan_events += 1;
                         return Change::None;
                     }
                 }
@@ -713,7 +745,7 @@ impl World {
                     self.self_action = Some(a.action);
                     self.self_action_seq = self.self_action_seq.wrapping_add(1);
                 } else {
-                    self.unknown += 1;
+                    self.orphan_events += 1;
                     return Change::None;
                 }
                 Change::World
@@ -913,6 +945,13 @@ impl World {
                 }
                 Change::World
             }
+            // 系统消息：GM 回执 / 脚本提示。**不重画**（它不是世界状态），
+            // 但必须留痕 —— 否则"服务端拒了这条命令"在客户端侧完全不可见。
+            Body::SystemNotice(n) => {
+                self.notices.push(n.text.clone());
+                self.notice_events += 1;
+                Change::None
+            }
             Body::MoveRejected(r) => {
                 // 这一步没成：服务端给了**权威位置**（我们不做预测 ⇒ 通常与 `self_pos` 相同，
                 // 但"越界/阻挡"那条也可能把我们从错的位置拽回来）。照原版 `SM_MOVEFAIL`
@@ -932,6 +971,13 @@ impl World {
     /// 取走而非"读后保留"，是因为调用方**每帧**都会来取一次，留着只会无限膨胀。
     pub fn take_damage(&mut self) -> Vec<DamageEvent> {
         std::mem::take(&mut self.damage)
+    }
+
+    /// 取走累计的**系统消息**正文（与 [`World::take_damage`] 同一套路）。
+    ///
+    /// 判据用法：`notices.iter().any(|s| s.contains("学会了"))`。
+    pub fn take_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notices)
     }
 
     /// `cell` 上有没有**可攻击的活目标**（返回它的 ActorId）—— 左键点怪就锁它。
@@ -1243,7 +1289,8 @@ mod tests {
             !w.entities.contains_key(&999),
             "不该凭空造一个没有名字的实体"
         );
-        assert_eq!(w.unknown, 1, "要记数（这通常是服务端的账本有漏）");
+        // ⚠️ 记在 `orphan_events`（不是 `unknown`）：这是"账本漏"，不是"解不出来"
+        assert_eq!(w.orphan_events, 1, "要记数（这通常是服务端的账本有漏）");
     }
 
     #[test]
@@ -1471,7 +1518,7 @@ mod tests {
             entity_id: 999,
             killer_id: 0,
         })));
-        assert_eq!(w.unknown, 3, "没见过的实体不该被凭空造出来，但要记数");
+        assert_eq!(w.orphan_events, 3, "没见过的实体不该被凭空造出来，但要记数");
         assert_eq!(w.entities.len(), before.entities.len());
     }
 

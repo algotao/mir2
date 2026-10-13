@@ -385,8 +385,24 @@ fn usage() {
          \n\
          world（会话层，走的是与 app 同一份握手/世界状态机，D-18）：\n\
          \x20 -addr/-session/-char  同上\n\
-         \x20 -move-steps N     进世界后向右走 N 步（每步等过限流窗口）\n\
-         \x20 -expect-map/-expect-pos/-expect-entities/-expect-entity-at X,Y\n\
+         \x20 动作（**按命令行顺序执行**，每步之后收 -settle-ms 的包）：\n\
+         \x20   -say <文本>     说一句话；`@` 开头 = GM 命令（新协议上唯一的 GM 入口）\n\
+         \x20                   例：-say \"@spawn 鸡 1\"、-say \"@map 0101\"\n\
+         \x20   -wait <毫秒> / -move-steps N / -run-steps N\n\
+         \x20   -attack <id> / -attack-nearest [-until-dead]\n\
+         \x20   -pickup <gid> / -pickup-all / -npc <id> / -npc-nearest / -npc-select <n>\n\
+         \x20   -buy <名[:数量]> / -sell / -sell-name <名>\n\
+         \x20   -use <槽位> / -use-name <名> / -equip|-unequip|-repair <槽位>\n\
+         \x20   -cast <技能号[:目标id]> / -butch <id> / -butch-nearest\n\
+         \x20   -scenario <名>   搬自 `server/cmd/mir2cli` 的用例预设：\n\
+         \x20                    maptest / stack / gold / die / butch / shop / learn / gm\n\
+         \x20 断言：\n\
+         \x20   -expect-map/-expect-pos/-expect-entities/-expect-entity-at X,Y\n\
+         \x20   -expect-damage N / -expect-kill / -expect-death / -expect-map-change\n\
+         \x20   -expect-bag N / -expect-bag-name <名> / -expect-item <名[:数量]>\n\
+         \x20   -expect-gold N / -expect-ground N / -expect-magic <技能号>\n\
+         \x20   -expect-notice <子串> / -expect-no-notice <子串>（系统消息＝GM 回执）\n\
+         \x20   -settle-ms N     每步之后收多久包（默认 800）\n\
          \n\
          选项：\n\
          \x20 -w N -h N        视口尺寸（默认 {DEFAULT_W}x{DEFAULT_H}，与 app 的地图区一致）\n\

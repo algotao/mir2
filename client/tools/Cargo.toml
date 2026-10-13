@@ -1,0 +1,12 @@
+[package]
+name = "mir2-imgtool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# ★ 像素解码**只复用** core 那一份（`core/src/wzl.rs::to_rgba`）：
+# 这里绝不自己再写一遍 8 位调色板 / 16 位 RGB565 的换算。
+mir2-core = { path = "../core" }
+# 写 PNG 的 IDAT（纯 Rust deflate，与 e2e 的 `png.rs` 同一个选择）
+flate2.workspace = true

@@ -76,6 +76,7 @@ pub(crate) use assets::*;
 pub(crate) mod colors;
 pub(crate) use colors::*;
 pub(crate) mod layout;
+mod layoutcfg;
 pub(crate) use layout::*;
 pub(crate) mod gfx;
 pub(crate) use gfx::*;
@@ -114,6 +115,7 @@ pub(crate) mod net;
 pub(crate) use net::*;
 pub(crate) mod input;
 mod keyboard;
+mod layoutedit;
 mod network_tick;
 mod overlay_state;
 pub(crate) use input::*;
@@ -140,14 +142,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let argv: Vec<String> = std::env::args().collect();
     if let Some(pos) = argv.iter().position(|a| a == "--assetview" || a == "-a") {
         let lib = argv.get(pos + 1).filter(|s| !s.starts_with('-')).cloned();
+        // F3 观察器只看客户端 images.m2pk 里、清单允许的图库；不扫描/回退裸 WZL。
         let dir = mir2_core::paths::asset_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        if !dir.is_dir() {
-            eprintln!("素材目录不存在：{dir:?}（设 MIR2_ASSET_DIR 指定）");
-            std::process::exit(2);
-        }
         let libs = assetview::list_libs(&dir);
         if libs.is_empty() {
-            eprintln!("{dir:?} 下没有 .wzl 图库");
+            eprintln!("images.m2pk 缺失/无清单图库；运行 tools/artpack/build.sh");
             std::process::exit(2);
         }
         let want = lib.unwrap_or_else(|| "Prguse".to_string());
@@ -197,28 +196,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // ---------- 资产 ----------
-    let asset_dir = mir2_core::paths::asset_dir();
-    // **启动自检：素材缺哪些**（架构方向 ⑦）
-    //
-    // ⚠️ 素材取不到时各窗是**静默不画**（有意的纪律：宁可不画也不画错），
-    // 代价是"少画了什么"没人知道 ⇒ 这里开局报一遍，排查"这个按钮怎么没出来"
-    // 就不用靠肉眼找了。
-    if let Some(dir) = asset_dir.as_deref() {
-        let missing = {
-            let mut ui0 = ui::UiCache::new();
-            crate::assets::audit(|lib, idx| ui0.size(dir, lib, idx))
-        };
-        if missing.is_empty() {
-            println!("[mir2-app] 素材自检：齐的");
-        } else {
-            println!(
-                "[mir2-app] 素材自检：缺 {} 张 ⇒ 对应的控件会不画",
-                missing.len()
-            );
-            for m in &missing {
-                println!("           缺 Prguse/{}[{}] = {}", m.lib, m.idx, m.what);
-            }
-        }
+    // 资源必须来自清单驱动的 `images.m2pk`；源目录只作为旧 API 的无意义路径参数传递，
+    // **绝不回退读取裸 WZL**。容器缺失、图库多余/缺失、任一静态必需图缺失 => 立即退出。
+    let source_dir = mir2_core::paths::asset_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let asset_dir = Some(source_dir);
+    crate::assets::preflight().map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("美术资源检查失败：{e}"),
+        )
+    })?;
+    println!("[mir2-app] 图片资源：清单与 images.m2pk 一致");
+    // 布局配置（D-134）：单文件入库配置只覆盖被编辑过的项。
+    if let Some(l) = crate::layoutcfg::load(&crate::layoutcfg::layout_path()) {
+        crate::layout::with_hud_layout(|cur| *cur = l);
     }
     let container_path = mir2_core::paths::map_container();
     let archive = match &container_path {
