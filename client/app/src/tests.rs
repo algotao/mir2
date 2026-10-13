@@ -2617,6 +2617,7 @@ fn 底栏控件都在画布内() {
 /// ⚠️ 用**包裹窗**这条分支：它不需要连服务端（`Net` 的构造要真连接，测不了）。
 #[test]
 fn 点在窗上不算点地图() {
+    let _layout = layout_test_guard();
     use crate::world_input::over_ui_window;
 
     let mut app = crate::app_state::AppState::new();
@@ -2638,5 +2639,55 @@ fn 点在窗上不算点地图() {
     assert!(
         !over_ui_window(&app, &mut ui, None, bx + bw + 40.0, cy),
         "窗外不该被算成压着窗"
+    );
+}
+
+#[test]
+fn 可见窗口命中与绘制层级同序且模态地图覆盖层拦截输入() {
+    let _layout = layout_test_guard();
+    struct Restore(crate::layout::LayoutDocument);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::layout::with_layout_document(|document| *document = self.0.clone());
+        }
+    }
+    let _restore = Restore(crate::layout::layout_document());
+    crate::layout::with_layout_document(|document| {
+        *document = crate::layout::LayoutDocument::default_layout();
+    });
+
+    let mut app = crate::app_state::AppState::new();
+    app.win.toggle_bag();
+    app.win.toggle_status();
+    let ((bx, by, bw, bh), _) = crate::hud::bag_geom(0, 0, false);
+    crate::layout::with_layout_document(|document| {
+        let status = document.get("window_status").unwrap();
+        document.set(
+            "window_status",
+            crate::layout::LRect::new(bx, by, status.w, status.h),
+        );
+    });
+    let mut ui = crate::ui::UiCache::new();
+    let overlap = (bx + bw.min(10.0), by + bh.min(10.0));
+    let (_, top) = crate::world_input::world_ui_hit(&app, &mut ui, None, overlap);
+    assert_eq!(top, Some("window_status"), "后绘制的状态窗应压在背包之上");
+
+    app.win.close_status();
+    app.minimap_on = true;
+    let (_, top) =
+        crate::world_input::world_ui_hit(&app, &mut ui, None, (WIN_W as f32 - 60.0, 60.0));
+    assert_eq!(top, Some("window_minimap"), "小地图可见区域应拦截地图点击");
+
+    app.bigmap_on = true;
+    let (_, top) = crate::world_input::world_ui_hit(
+        &app,
+        &mut ui,
+        None,
+        (WIN_W as f32 / 2.0, WIN_H as f32 / 2.0),
+    );
+    assert_eq!(
+        top,
+        Some("window_bigmap"),
+        "大地图覆盖层应比小地图高且拦截输入"
     );
 }

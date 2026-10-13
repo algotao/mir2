@@ -661,6 +661,61 @@ pub(crate) enum EditorScope {
     Select,
 }
 
+/// World 场景可见窗口与覆盖层的共用底到顶顺序；renderer 遍历此表，命中使用 `z()`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorldUiLayer {
+    Dialog,
+    Bag,
+    Shop,
+    Sell,
+    BagOverlay,
+    Minimap,
+    Bigmap,
+    Status,
+    Confirm,
+}
+
+impl WorldUiLayer {
+    pub(crate) const fn z(self) -> i32 {
+        match self {
+            Self::Dialog => 10,
+            Self::Bag => 20,
+            Self::Shop => 30,
+            Self::Sell => 31,
+            Self::BagOverlay => 35,
+            Self::Minimap => 40,
+            Self::Bigmap => 41,
+            Self::Status => 50,
+            Self::Confirm => 100,
+        }
+    }
+}
+
+pub(crate) const WORLD_UI_STACK: [WorldUiLayer; 9] = [
+    WorldUiLayer::Dialog,
+    WorldUiLayer::Bag,
+    WorldUiLayer::Shop,
+    WorldUiLayer::Sell,
+    WorldUiLayer::BagOverlay,
+    WorldUiLayer::Minimap,
+    WorldUiLayer::Bigmap,
+    WorldUiLayer::Status,
+    WorldUiLayer::Confirm,
+];
+
+const fn world_ui_stack_is_ordered() -> bool {
+    let mut i = 1;
+    while i < WORLD_UI_STACK.len() {
+        if WORLD_UI_STACK[i - 1].z() >= WORLD_UI_STACK[i].z() {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+const _: () = assert!(world_ui_stack_is_ordered());
+
 const EDITOR_SCOPES: [EditorScope; 3] =
     [EditorScope::World, EditorScope::Login, EditorScope::Select];
 

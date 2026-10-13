@@ -258,25 +258,12 @@ fn handle_ui_press(app: &mut AppState, press: Press) -> bool {
     false
 }
 
-/// 世界模式 MouseDown：浮窗优先消费，其余再落到移动/挖肉/NPC/诊断探针。
-///
-/// 这里保留原分支的检查顺序与 early-return：特别是 modal confirm 和命中窗口后，
-/// 不能再穿透成走路或点 NPC。
-#[allow(clippy::too_many_arguments)]
-/// 光标是不是压在**开着的浮窗**上（对话 / 包裹 / 状态 / 商品列表 / 卖窗 / 确认框）。
-///
-/// ⚠️ **P0**（用户 2026-10-12）：压着窗就不许把点击透给下一层的地图 —— 原来只在各窗
-/// 分支里"事后清掉走路意图"，`[move]` 日志已经打出去了，而 **MouseUp 那条路根本没
-/// 判** ⇒ 单击对话窗真的会把人走过去。
-///
-/// 抽成一个函数是因为按下 / 松开**两条路都要判**（原版也是两个入口各判一次）。
-pub(crate) fn over_ui_window(
+pub(crate) fn world_ui_hit(
     app: &AppState,
     ui: &mut ui::UiCache<'_>,
     dir: Option<&std::path::Path>,
-    x: f32,
-    y: f32,
-) -> bool {
+    p: (f32, f32),
+) -> (bool, Option<&'static str>) {
     use crate::widget::{Align, EditPolicy, InputPolicy, LayoutNode, VisualSource};
     let viewport = crate::layout::LRect::new(0.0, 0.0, WIN_W as f32, WIN_H as f32);
     let mut tree = crate::layout::layout_document().widget_tree();
@@ -294,7 +281,14 @@ pub(crate) fn over_ui_window(
         });
     };
 
-    // z 顺序与模态优先级集中在这棵树；所有打开的窗口区域都拦截地图输入。
+    // z 值与 render.rs 的实际后绘顺序一致：对话 → 包裹 → 商店/卖窗 → 地图 → 状态窗。
+    if app.net.as_ref().is_some_and(|n| n.world.dialog.is_some()) {
+        add_window(
+            "window_dialog",
+            crate::dialog::dialog_panel(),
+            crate::layout::WorldUiLayer::Dialog.z(),
+        );
+    }
     if app.win.bag() {
         let rect = hud::bag_geom(
             app.net.as_ref().map_or(0, |n| n.world.bag.len()),
@@ -302,19 +296,47 @@ pub(crate) fn over_ui_window(
             app.win.shop(),
         )
         .0;
-        add_window("window_bag", rect, 10);
-    }
-    if app.win.status() {
-        add_window("window_status", crate::status::panel_rect(), 20);
+        add_window("window_bag", rect, crate::layout::WorldUiLayer::Bag.z());
     }
     if let Some(shop) = app.net.as_ref().and_then(|n| n.world.shop.as_ref()) {
-        add_window("window_shop", crate::shop::panel(), 30);
+        add_window(
+            "window_shop",
+            crate::shop::panel(),
+            crate::layout::WorldUiLayer::Shop.z(),
+        );
         if shop.is_sell() {
-            add_window("window_sell", crate::shop::sell_panel(), 31);
+            add_window(
+                "window_sell",
+                crate::shop::sell_panel(),
+                crate::layout::WorldUiLayer::Sell.z(),
+            );
         }
     }
-    if app.net.as_ref().is_some_and(|n| n.world.dialog.is_some()) {
-        add_window("window_dialog", crate::dialog::dialog_panel(), 40);
+    if app.minimap_on {
+        add_window(
+            "window_minimap",
+            (
+                WIN_W as f32 - crate::minimap::MINIMAP_PX,
+                0.0,
+                crate::minimap::MINIMAP_PX,
+                crate::minimap::MINIMAP_PX,
+            ),
+            crate::layout::WorldUiLayer::Minimap.z(),
+        );
+    }
+    if app.bigmap_on {
+        add_window(
+            "window_bigmap",
+            (0.0, 0.0, WIN_W as f32, WIN_H as f32),
+            crate::layout::WorldUiLayer::Bigmap.z(),
+        );
+    }
+    if app.win.status() {
+        add_window(
+            "window_status",
+            crate::status::panel_rect(),
+            crate::layout::WorldUiLayer::Status.z(),
+        );
     }
     if app.confirm.is_open() {
         let dir = dir.expect("确认窗打开时必须有已预检的素材上下文");
@@ -324,7 +346,7 @@ pub(crate) fn over_ui_window(
             parent: None,
             rect: viewport,
             align: Align::TOP_LEFT,
-            z: 100,
+            z: crate::layout::WorldUiLayer::Confirm.z(),
             clip_children: false,
             input: InputPolicy::Block,
             edit: EditPolicy::LOCKED,
@@ -355,9 +377,39 @@ pub(crate) fn over_ui_window(
             });
         }
     }
-    tree.hit_test(viewport, (x, y))
-        .expect("visible-window widget tree must be valid")
-        .is_some()
+    let hit = tree
+        .hit_test(viewport, p)
+        .expect("visible-window widget tree must be valid");
+    let id = hit.map(|node| node.id);
+    let window = id.filter(|id| {
+        matches!(
+            *id,
+            "window_dialog"
+                | "window_bag"
+                | "window_shop"
+                | "window_sell"
+                | "window_minimap"
+                | "window_bigmap"
+                | "window_status"
+                | "modal_confirm"
+                | "confirm_frame"
+                | "confirm_ok"
+                | "confirm_cancel"
+        )
+    });
+    (hit.is_some(), window)
+}
+
+/// 命中判定测试入口；生产按下分支直接复用 z-stack 返回的顶层窗口 ID。
+#[cfg(test)]
+pub(crate) fn over_ui_window(
+    app: &AppState,
+    ui: &mut ui::UiCache<'_>,
+    dir: Option<&std::path::Path>,
+    x: f32,
+    y: f32,
+) -> bool {
+    world_ui_hit(app, ui, dir, (x, y)).0
 }
 
 // ⚠️ 参数多是有意的：这条是 SDL 事件的**唯一**入口，把应用状态拆成参数传进来
@@ -428,11 +480,12 @@ pub(crate) fn handle_world_mouse_down<'a>(
                 app.world_control.consume_world_click();
                 return;
             }
+            let (ui_hit, top_window) = world_ui_hit(app, ui, asset_dir.as_deref(), (x, y));
             // ①‴ **底栏右上那 4 个功能按钮**（人物/包裹/技能/选项，
             // 图号 8-11，用户 2026-10-11）：点它们 = 按对应的功能键，
             // 走**同一个** `toggle_*` ⇒ 鼠标与键盘行为一致。
             // ⚠️ 面板盖在世界之上 ⇒ 点中就要 `ui_consumed`（不然人还会走）。
-            if mouse_btn == MouseButton::Left {
+            if mouse_btn == MouseButton::Left && top_window.is_none() {
                 if let Some(b) = crate::layout::hud_btn_at(crate::widget::canvas_pt(app.mouse)) {
                     // OnClick 规范 ⇒ 按下只记（动作在 MouseUp 里做）
                     app.ui_click.press(Press::Hud(b), b.rect());
@@ -546,7 +599,7 @@ pub(crate) fn handle_world_mouse_down<'a>(
             }
             // ⚠️ **P0**（用户 2026-10-12）：光标压在开着的浮窗上 ⇒ **不走路、不锁怪**，
             // 也别打 `[move]` 那行日志（原来打完才被各窗分支清掉，日志误导排查）。
-            let over_ui = over_ui_window(app, ui, asset_dir.as_deref(), x, y);
+            let over_ui = ui_hit || ui_consumed;
             let (ct, mt) = if over_ui {
                 (None, None)
             } else if did_butch || app.world_control.butch_target.is_some() {
@@ -617,58 +670,60 @@ pub(crate) fn handle_world_mouse_down<'a>(
             //
             // ⚠️ 这两条排在"走路/锁怪"那段**之后**，靠"清掉已写好的意图"
             // 实现（把上面那一大段包进 if 会多一层缩进、更容易漏改）。
-            if let Some(n) = app.net.as_ref() {
-                if let Some((panel, lines, scroll)) =
-                    hud::dialog_geom(app.net.as_ref(), app.dlg_scroll.scroll())
-                {
-                    // **行内可点文字**：命中矩形由 `dialog::dialog_line_pieces`
-                    // 算（与 `draw_dialog` 是同一份 ⇒ 画哪点哪），
-                    // 片段自带**选项序号**（服务端把 `<打开/@trading>` 改写成了
-                    // `<打开/@1>`），直接拿它回包。
-                    let hit = {
-                        let mut measure = |t: &str| ui_texts.width(t);
-                        // ⚠️ 命中要带上**滚动位置**：画的是卷过之后的那几行，
-                        // 拿未卷的行号去判就会点空/点到隔壁（画与命中同源）。
-                        dialog::dialog_link_at(panel, &lines, (x, y), scroll, &mut measure)
-                    };
-                    if let Some(idx) = hit {
-                        if let Some(d) = n.world.dialog.as_ref() {
-                            n.npc_select(d.npc_id, idx);
-                            println!("[net] 对话选项 {idx}");
+            if top_window == Some("window_dialog") {
+                if let Some(n) = app.net.as_ref() {
+                    if let Some((panel, lines, scroll)) =
+                        hud::dialog_geom(app.net.as_ref(), app.dlg_scroll.scroll())
+                    {
+                        // **行内可点文字**：命中矩形由 `dialog::dialog_line_pieces`
+                        // 算（与 `draw_dialog` 是同一份 ⇒ 画哪点哪），
+                        // 片段自带**选项序号**（服务端把 `<打开/@trading>` 改写成了
+                        // `<打开/@1>`），直接拿它回包。
+                        let hit = {
+                            let mut measure = |t: &str| ui_texts.width(t);
+                            // ⚠️ 命中要带上**滚动位置**：画的是卷过之后的那几行，
+                            // 拿未卷的行号去判就会点空/点到隔壁（画与命中同源）。
+                            dialog::dialog_link_at(panel, &lines, (x, y), scroll, &mut measure)
+                        };
+                        if let Some(idx) = hit {
+                            if let Some(d) = n.world.dialog.as_ref() {
+                                n.npc_select(d.npc_id, idx);
+                                println!("[net] 对话选项 {idx}");
+                            }
+                        } else if dialog::dialog_close_hit(panel, (x, y)) {
+                            // 右上角那个红 X（用户 2026-10-09 第 1 条：
+                            // 「对话窗口右上角有个X按钮，现在你没有接上"关闭/退出"」）
+                            // ⚠️ 与点「退出」/按 ESC **完全同一条路**
+                            //（用户 2026-10-10 第 2 条：点 X 也要关掉
+                            // 物品列表与包裹）—— 所以复用同一个出口：
+                            // 发 `NpcClose` + 本地 `close_dialog()`（它连带收货架）。
+                            if let Some(d) = n.world.dialog.as_ref() {
+                                n.npc_close(d.npc_id);
+                            }
+                            if let Some(n) = app.net.as_mut() {
+                                n.world.close_dialog();
+                            }
+                            println!("[net] 对话关闭（点 X，与退出同一条路）");
                         }
-                    } else if dialog::dialog_close_hit(panel, (x, y)) {
-                        // 右上角那个红 X（用户 2026-10-09 第 1 条：
-                        // 「对话窗口右上角有个X按钮，现在你没有接上"关闭/退出"」）
-                        // ⚠️ 与点「退出」/按 ESC **完全同一条路**
-                        //（用户 2026-10-10 第 2 条：点 X 也要关掉
-                        // 物品列表与包裹）—— 所以复用同一个出口：
-                        // 发 `NpcClose` + 本地 `close_dialog()`（它连带收货架）。
-                        if let Some(d) = n.world.dialog.as_ref() {
-                            n.npc_close(d.npc_id);
+                        // ⚠️ **只有点在面板里**才吞掉这次点击。
+                        // 用户 2026-10-09：「对话期间应仍能操作（走、跑、打架），
+                        // 现在不能跑不能走，人被定在那里」—— 原来是无条件清空意图，
+                        // 等于把整个屏幕都变成"对话区"。原版的对话窗是**非模态**的
+                        //（`NPCDialog` 就是个窗口，`DrawScrn.pas` 里它跟世界各画各的），
+                        // 外面照常点：此时才拦。
+                        if dialog::dialog_hit(panel, (x, y)) {
+                            app.world_control.combat_target = None;
+                            app.world_control.move_target = None;
+                            app.world_control.press_at = None;
+                            app.world_control.held_move = None;
+                            ui_consumed = true;
                         }
-                        if let Some(n) = app.net.as_mut() {
-                            n.world.close_dialog();
-                        }
-                        println!("[net] 对话关闭（点 X，与退出同一条路）");
-                    }
-                    // ⚠️ **只有点在面板里**才吞掉这次点击。
-                    // 用户 2026-10-09：「对话期间应仍能操作（走、跑、打架），
-                    // 现在不能跑不能走，人被定在那里」—— 原来是无条件清空意图，
-                    // 等于把整个屏幕都变成"对话区"。原版的对话窗是**非模态**的
-                    //（`NPCDialog` 就是个窗口，`DrawScrn.pas` 里它跟世界各画各的），
-                    // 外面照常点：此时才拦。
-                    if dialog::dialog_hit(panel, (x, y)) {
-                        app.world_control.combat_target = None;
-                        app.world_control.move_target = None;
-                        app.world_control.press_at = None;
-                        app.world_control.held_move = None;
-                        ui_consumed = true;
                     }
                 }
             }
             // ②″ F10 状态窗：点 X = 关窗、点箭头 = 翻页、点槽 = 报一下那件；
             // 点在窗里别处 = 吞掉（与背包窗同一套）
-            if app.win.status() {
+            if top_window == Some("window_status") {
                 let dir = asset_dir
                     .as_deref()
                     .expect("assets preflight guarantees a source context");
@@ -754,7 +809,7 @@ pub(crate) fn handle_world_mouse_down<'a>(
             }
             // ②′ 背包窗：左键抓起；双击可穿戴物品 = 穿、其他物品 = 使用；
             // 拿着物品点空格 = 移动、点已有物品 = 交换。卖出模式复用同一只手。
-            if app.win.bag() {
+            if top_window == Some("window_bag") {
                 let (bx, by) = crate::layout::bag_pos(app.win.shop());
                 let inside = x >= bx
                     && x < bx + crate::layout::BAG_W
@@ -808,7 +863,7 @@ pub(crate) fn handle_world_mouse_down<'a>(
             //（原版口径，用户 2026-10-10 第 7 条）；点在窗里别走路
             // ⚠️ 买/卖是**两个窗**：只有"买"模式才走商品列表窗
             //（卖模式下面那个窗出的是放物品的槽）
-            if app.win.shop() {
+            if top_window == Some("window_shop") {
                 if let Some(n) = app.net.as_ref() {
                     if let Some(sh) = n.world.shop.as_ref().filter(|s| !s.is_sell()) {
                         let (wx, wy, ww, wh) = crate::shop::panel();
@@ -861,7 +916,8 @@ pub(crate) fn handle_world_mouse_down<'a>(
             }
             // ②‴ 卖货窗：点圈 = 放下手上的东西；点 OK = 卖掉圈里那件
             //（原版拖放式，用户 2026-10-10 第 3 条）；点在窗里别走路。
-            if app.win.shop()
+            if top_window == Some("window_sell")
+                && app.win.shop()
                 && app.win.bag()
                 && app
                     .net

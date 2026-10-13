@@ -112,125 +112,187 @@ pub(crate) fn draw_frame<'a, T>(
                 )?;
             }
         }
-        // **退出 / 注销的确认框**（模态）⇒ 画在所有窗之上
-        if let (crate::app_state::Scene::World, Some(act)) = (app.scene, app.confirm.pending()) {
-            if let Some(dir) = asset_dir.as_deref() {
-                hud::draw_confirm(
-                    canvas,
-                    tex_creator,
-                    ui,
-                    ui_texts,
-                    dir,
-                    (WIN_W, WIN_H),
-                    act.prompt(),
-                )?;
-            }
-        }
-        // 背包窗画在**世界与 HUD 之上**（它是浮窗；原版也是最后贴）。
-        // 素材目录缺失时和 `draw_map_view` 一样什么都不画（那屏已经打了横幅提示）。
-        if app.win.bag() {
-            if let Some(dir) = asset_dir.as_deref() {
-                // 抓在手上 / 放进卖窗圆槽的那件 ⇒ 原格子隐藏（用户 2026-10-10）
-                let mut hide = Vec::new();
-                if let Some(h) = app.drag.held_slot() {
-                    hide.push(h);
-                }
-                if let Some(p) = app.drag.placed_slot() {
-                    hide.push(p);
-                }
-                // 关闭钮的 hover（高亮素材 64 叠上去）
-                hud::draw_bag(
-                    canvas,
-                    tex_creator,
-                    ui,
-                    ui_texts,
-                    dir,
-                    app.net.as_ref(),
-                    app.bag_page.page(),
-                    app.win.shop(),
-                    &hide,
-                    &app.ui_click,
-                )?;
-            }
-        }
-        // ⚠️ 买/卖是**两个不同的窗**（共用同一次货架数据，`ShopList.mode` 区分）：
-        // 买 ⇒ 商品列表窗；卖 ⇒ "卖:"条 + 悬挂的放物品槽 + OK。
-        // 三块绘制**并列**（上一版把卖窗嵌在购买窗的绘制块里，加了"卖模式不画
-        // 购买窗"的条件后把整个块短路了 ⇒ 卖窗永远不出现 —— 用户 2026-10-10 截图）。
         let shop_is_sell = app
             .net
             .as_ref()
-            .and_then(|n| n.world.shop.as_ref())
-            .is_some_and(|s| s.is_sell());
-        if let Some(dir) = asset_dir.as_deref() {
-            // ① 商店窗（买）：商品列表
-            if app.win.shop() && !shop_is_sell {
-                // 商店窗的悬停（OK 按钮的 hover 态要用）
-                // 高亮只在**按住**时展现（原版 `Downed`；不是 hover）
-                shop::draw(
-                    canvas,
-                    tex_creator,
-                    ui,
-                    shop_texts,
-                    dir,
-                    app.net.as_ref(),
-                    app.shop_ui.page(),
-                    app.shop_ui.sel(),
-                    &app.ui_click,
-                )?;
-            }
-            // ② 卖货窗（卖）：放物品的槽 + OK（hover 时叠高亮素材 393）
-            if app.win.shop() && app.win.bag() && shop_is_sell {
-                shop::draw_sell(
-                    canvas,
-                    tex_creator,
-                    ui,
-                    ui_texts,
-                    dir,
-                    app.net.as_ref(),
-                    app.drag.placed_slot(),
-                    &app.ui_click,
-                )?;
-            }
-            // ③ 物品悬停提示：鼠标压在包裹格上 ⇒ 显示名字/类别/耐久/卖价
-            if app.win.bag() {
-                if let Some(n) = app.net.as_ref() {
-                    let (bx, by) = crate::layout::bag_pos(app.win.shop());
-                    let lx = app.mouse.0 - bx;
-                    let ly = app.mouse.1 - by;
-                    if let Some(slot) = crate::layout::bag_slot_at((lx, ly)) {
-                        let idx = app.bag_page.page() * crate::layout::BAG_PAGE_SLOTS + slot;
-                        if let Some(Some(it)) = n.world.bag.get(idx) {
-                            if it.make_index != 0 && app.drag.held_slot().is_none() {
-                                hud::draw_item_tip(canvas, tex_creator, ui_texts, app.mouse, it)?;
+            .and_then(|net| net.world.shop.as_ref())
+            .is_some_and(|shop| shop.is_sell());
+        let minimap_world = app
+            .net
+            .as_ref()
+            .filter(|net| net.world.in_world())
+            .map(|net| {
+                (
+                    net.world.minimap_index,
+                    self_render_pos(
+                        net.anims.get(&net.world.self_id),
+                        net.world.self_pos,
+                        app.started,
+                    ),
+                    net.world.map_title.as_str(),
+                )
+            });
+
+        // 绘制与 world_input 命中共用同一层表。Dialog 已由 draw_map_view 画在底层；
+        // 其余窗口严格按 WorldUiLayer 从低到高绘制。
+        for layer in crate::layout::WORLD_UI_STACK {
+            match layer {
+                crate::layout::WorldUiLayer::Dialog => {
+                    // 已在 `draw_map_view` 的基础世界/HUD 阶段绘制。
+                }
+                crate::layout::WorldUiLayer::Bag => {
+                    if app.win.bag() {
+                        if let Some(dir) = asset_dir.as_deref() {
+                            let mut hide = Vec::new();
+                            if let Some(held) = app.drag.held_slot() {
+                                hide.push(held);
+                            }
+                            if let Some(placed) = app.drag.placed_slot() {
+                                hide.push(placed);
+                            }
+                            hud::draw_bag(
+                                canvas,
+                                tex_creator,
+                                ui,
+                                ui_texts,
+                                dir,
+                                app.net.as_ref(),
+                                app.bag_page.page(),
+                                app.win.shop(),
+                                &hide,
+                                &app.ui_click,
+                            )?;
+                        }
+                    }
+                }
+                crate::layout::WorldUiLayer::Shop => {
+                    if app.win.shop() && !shop_is_sell {
+                        if let Some(dir) = asset_dir.as_deref() {
+                            shop::draw(
+                                canvas,
+                                tex_creator,
+                                ui,
+                                shop_texts,
+                                dir,
+                                app.net.as_ref(),
+                                app.shop_ui.page(),
+                                app.shop_ui.sel(),
+                                &app.ui_click,
+                            )?;
+                        }
+                    }
+                }
+                crate::layout::WorldUiLayer::Sell => {
+                    if app.win.shop() && app.win.bag() && shop_is_sell {
+                        if let Some(dir) = asset_dir.as_deref() {
+                            shop::draw_sell(
+                                canvas,
+                                tex_creator,
+                                ui,
+                                ui_texts,
+                                dir,
+                                app.net.as_ref(),
+                                app.drag.placed_slot(),
+                                &app.ui_click,
+                            )?;
+                        }
+                    }
+                }
+                crate::layout::WorldUiLayer::BagOverlay => {
+                    if let Some(dir) = asset_dir.as_deref() {
+                        if app.win.bag() {
+                            if let Some(net) = app.net.as_ref() {
+                                let (bx, by) = crate::layout::bag_pos(app.win.shop());
+                                let local = (app.mouse.0 - bx, app.mouse.1 - by);
+                                if let Some(slot) = crate::layout::bag_slot_at(local) {
+                                    let index =
+                                        app.bag_page.page() * crate::layout::BAG_PAGE_SLOTS + slot;
+                                    if let Some(Some(item)) = net.world.bag.get(index) {
+                                        if item.make_index != 0 && app.drag.held_slot().is_none() {
+                                            hud::draw_item_tip(
+                                                canvas,
+                                                tex_creator,
+                                                ui_texts,
+                                                app.mouse,
+                                                item,
+                                            )?;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(held) = app.drag.held_slot() {
+                            if let Some(net) = app.net.as_ref() {
+                                if let Some(Some(item)) = net.world.bag.get(held) {
+                                    if let Some((width, height)) = ui.size(dir, "Items", item.looks)
+                                    {
+                                        let _ = ui.draw_src(
+                                            canvas,
+                                            tex_creator,
+                                            dir,
+                                            "Items",
+                                            item.looks,
+                                            FRect::new(0.0, 0.0, width as f32, height as f32),
+                                            FRect::new(
+                                                app.mouse.0 - 4.0,
+                                                app.mouse.1 - 4.0,
+                                                width as f32,
+                                                height as f32,
+                                            ),
+                                            255,
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
                 }
-            }
-            // ④ 抓在手上的物品：跟着鼠标走（原版就是把东西"拿在手里"）。
-            //
-            // ⚠️ 必须画在卖窗**之后**（最上层）：原来夹在买窗与卖窗之间 ⇒
-            // 物品移到卖窗上时被卖窗遮住（用户 2026-10-10）。
-            if let Some(held) = app.drag.held_slot() {
-                if let Some(n) = app.net.as_ref() {
-                    if let Some(Some(it)) = n.world.bag.get(held) {
-                        if let Some((iw, ih)) = ui.size(dir, "Items", it.looks) {
-                            let _ = ui.draw_src(
+                crate::layout::WorldUiLayer::Minimap | crate::layout::WorldUiLayer::Bigmap => {
+                    let small = layer == crate::layout::WorldUiLayer::Minimap;
+                    draw_minimaps(
+                        canvas,
+                        tex_creator,
+                        ui,
+                        asset_dir,
+                        names,
+                        minimap_world,
+                        small && app.minimap_on,
+                        !small && app.bigmap_on,
+                        (WIN_W, WIN_H),
+                    )?;
+                }
+                crate::layout::WorldUiLayer::Status => {
+                    if app.win.status() {
+                        if let Some(dir) = asset_dir.as_deref() {
+                            status::draw(
                                 canvas,
                                 tex_creator,
+                                ui,
+                                ui_texts,
                                 dir,
-                                "Items",
-                                it.looks,
-                                FRect::new(0.0, 0.0, iw as f32, ih as f32),
-                                FRect::new(
-                                    app.mouse.0 - 4.0,
-                                    app.mouse.1 - 4.0,
-                                    iw as f32,
-                                    ih as f32,
-                                ),
-                                255,
-                            );
+                                app.net.as_ref(),
+                                app.status_page.page(),
+                                app.magic_page.page(),
+                                app.magic_selected,
+                                &app.ui_click,
+                            )?;
+                        }
+                    }
+                }
+                crate::layout::WorldUiLayer::Confirm => {
+                    if let (crate::app_state::Scene::World, Some(act)) =
+                        (app.scene, app.confirm.pending())
+                    {
+                        if let Some(dir) = asset_dir.as_deref() {
+                            hud::draw_confirm(
+                                canvas,
+                                tex_creator,
+                                ui,
+                                ui_texts,
+                                dir,
+                                (WIN_W, WIN_H),
+                                act.prompt(),
+                            )?;
                         }
                     }
                 }
@@ -239,11 +301,11 @@ pub(crate) fn draw_frame<'a, T>(
         // 光标跟着悬停状态走：悬停的是**怪**才换准星（原版悬停谁都不换光标，
         // 这是 Crystal 那套；换成"能打的东西"上才有意义）
         let want_cross = hover.is_some_and(|id| {
-            app.net.as_ref().is_some_and(|n| {
-                n.world
+            app.net.as_ref().is_some_and(|net| {
+                net.world
                     .entities
                     .get(&id)
-                    .is_some_and(|e| e.kind == mir2_core::world::KIND_MONSTER)
+                    .is_some_and(|entity| entity.kind == mir2_core::world::KIND_MONSTER)
             })
         });
         if want_cross != frame.cursor_is_cross {
@@ -252,47 +314,6 @@ pub(crate) fn draw_frame<'a, T>(
                 cursor_cross.set();
             } else {
                 cursor_arrow.set();
-            }
-        }
-
-        // 小地图 / 大地图（原版 `PlayScn.pas:791` 的 `DrawMiniMap`）
-        draw_minimaps(
-            canvas,
-            tex_creator,
-            ui,
-            asset_dir,
-            names,
-            app.net.as_ref().filter(|n| n.world.in_world()).map(|n| {
-                (
-                    n.world.minimap_index,
-                    // ⚠️ 取**补间后**的位置（与画精灵同一份）：服务端位置只在
-                    // "到位"时变 ⇒ 拿它当图心就是"跑完一格图才跳一格"（用户报的）。
-                    self_render_pos(n.anims.get(&n.world.self_id), n.world.self_pos, app.started),
-                    // 区域标注按**地图显示名**查（服务端下发的 `map_title` 就是它）
-                    n.world.map_title.as_str(),
-                )
-            }),
-            app.minimap_on,
-            app.bigmap_on,
-            (WIN_W, WIN_H),
-        )?;
-        // 状态窗（F10）画在**小地图之后**：两者都在右上（官方也是贴右缘），
-        // 窗口该压在小地图上面，否则标题栏与关闭 X 会被盖住（命中与视觉就不一致了）。
-        if app.win.status() {
-            if let Some(dir) = asset_dir.as_deref() {
-                // 关闭钮的高亮 371 只在**按住**时叠（原版 `DCloseState` 走 `Downed`）
-                status::draw(
-                    canvas,
-                    tex_creator,
-                    ui,
-                    ui_texts,
-                    dir,
-                    app.net.as_ref(),
-                    app.status_page.page(),
-                    app.magic_page.page(),
-                    app.magic_selected,
-                    &app.ui_click,
-                )?;
             }
         }
     } else if app.scene == crate::app_state::Scene::Select {
