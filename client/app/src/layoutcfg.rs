@@ -4,10 +4,11 @@
 //! 依赖树划算，也守住"运行期零依赖"（C-7）与体积优先（D-01）。
 //!
 //! 文件只保存相对默认值改过的通用 widget 节点；child 保存 parent-local 矩形，根节点保存
-//! 相对 viewport/anchor 的偏移。固定尺寸节点不会写入可变尺寸。
+//! 相对 viewport/anchor 的偏移。固定尺寸节点不会写入可变尺寸。`schema_version` 标记坐标语义。
 //!
 //! ```json
 //! {
+//!   "schema_version": 1,
 //!   "plate_hp": [25, 208, 47, 20]
 //! }
 //! ```
@@ -17,67 +18,94 @@ use std::path::{Path, PathBuf};
 
 use crate::layout::{layout_item_ids, LRect, LayoutDocument};
 
+const CURRENT_SCHEMA_VERSION: u32 = 1;
+
 /// 布局文件的位置（**入库**，调完直接提交）。
 pub(crate) fn layout_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/ui/layout.json")
 }
 
-/// 解析出来的条目：`(id, [x, y, w, h])`。认不出的条目**整条丢掉**（不猜）。
+/// 解析数组型矩形条目；标量元数据会跳过，不会吞掉后面的布局项。
 pub(crate) fn parse(text: &str) -> Vec<(String, [f32; 4])> {
-    let b = text.as_bytes();
+    let bytes = text.as_bytes();
     let mut out = Vec::new();
-    let mut i = 0usize;
-    while let Some(q1) = text[i..].find('"') {
-        let key_start = i + q1 + 1;
-        let Some(q2) = text[key_start..].find('"') else {
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        let Some(quote) = text[cursor..].find('"') else {
             break;
         };
-        let key = &text[key_start..key_start + q2];
-        let after = key_start + q2 + 1;
-        // 键后面必须是 `: [ ... ]`
-        let rest = &text[after..];
-        let Some(colon) = rest.find(':') else { break };
-        let rest = &rest[colon + 1..];
-        let Some(b1) = rest.find('[') else { break };
-        let Some(b2) = rest[b1..].find(']') else {
+        let key_start = cursor + quote + 1;
+        let Some(key_len) = text[key_start..].find('"') else {
             break;
         };
-        let body = &rest[b1 + 1..b1 + b2];
-        let mut nums = [0f32; 4];
-        let mut n = 0usize;
-        for part in body.split(',') {
-            if n >= 4 {
+        let key = &text[key_start..key_start + key_len];
+        let mut value = key_start + key_len + 1;
+        while value < bytes.len() && bytes[value].is_ascii_whitespace() {
+            value += 1;
+        }
+        if value >= bytes.len() || bytes[value] != b':' {
+            cursor = value.saturating_add(1);
+            continue;
+        }
+        value += 1;
+        while value < bytes.len() && bytes[value].is_ascii_whitespace() {
+            value += 1;
+        }
+
+        if value < bytes.len() && bytes[value] == b'[' {
+            let body_start = value + 1;
+            let Some(end_rel) = text[body_start..].find(']') else {
                 break;
-            }
-            let t = part.trim();
-            if t.is_empty() {
-                continue;
-            }
-            match t.parse::<f32>() {
-                Ok(v) => {
-                    nums[n] = v;
-                    n += 1;
+            };
+            let end = body_start + end_rel;
+            let parts: Vec<_> = text[body_start..end]
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .collect();
+            if parts.len() == 4 {
+                let parsed: Option<Vec<f32>> =
+                    parts.iter().map(|part| part.parse::<f32>().ok()).collect();
+                if let Some(values) = parsed {
+                    let rect = [values[0], values[1], values[2], values[3]];
+                    if layout_item_ids().contains(&key)
+                        && rect.iter().all(|number| number.is_finite())
+                        && rect[2] > 0.0
+                        && rect[3] > 0.0
+                    {
+                        out.push((key.to_string(), rect));
+                    }
                 }
-                Err(_) => {
-                    n = 0;
-                    break;
-                }
             }
-        }
-        if n == 4
-            && layout_item_ids().contains(&key)
-            && nums.iter().all(|value| value.is_finite())
-            && nums[2] > 0.0
-            && nums[3] > 0.0
-        {
-            out.push((key.to_string(), nums));
-        }
-        i = after + colon + 1 + b1 + b2 + 1;
-        if i >= b.len() {
-            break;
+            cursor = end + 1;
+        } else {
+            // 例如 `"schema_version": 1`。跳到该属性分隔符再继续找下一个 key。
+            while value < bytes.len() && bytes[value] != b',' && bytes[value] != b'}' {
+                value += 1;
+            }
+            cursor = value.saturating_add(1);
         }
     }
     out
+}
+
+/// 无 version 字段的旧配置按 v0 屏幕绝对矩形迁移；未知/损坏版本拒绝加载。
+fn schema_version(text: &str) -> Result<u32, ()> {
+    let Some(key) = text.find("\"schema_version\"") else {
+        return Ok(0);
+    };
+    let rest = &text[key + "\"schema_version\"".len()..];
+    let colon = rest.find(':').ok_or(())?;
+    let value = rest[colon + 1..].trim_start();
+    let digits = value.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return Err(());
+    }
+    let suffix = value[digits..].trim_start();
+    if !suffix.starts_with(',') && !suffix.starts_with('}') {
+        return Err(());
+    }
+    value[..digits].parse().map_err(|_| ())
 }
 
 /// 通用节点锚点键为 `{id}_align`；`hud_panel_align` 与旧格式保持兼容。
@@ -113,16 +141,36 @@ fn axis_name(axis: crate::widget::AxisAlign) -> &'static str {
 /// 读文件 → 布局（文件不存在/全认不出 ⇒ `None`，调用方用缺省值）。
 pub(crate) fn load(path: &Path) -> Option<LayoutDocument> {
     let text = fs::read_to_string(path).ok()?;
-    let mut l = LayoutDocument::default_layout();
-    let entries = parse(&text);
-    let mut overrides = entries.len();
-    for (id, v) in entries {
-        l.set_stored(&id, LRect::new(v[0], v[1], v[2], v[3]));
+    let version = schema_version(&text).ok()?;
+    if version > CURRENT_SCHEMA_VERSION {
+        return None;
     }
+    let mut l = LayoutDocument::default_layout();
+    let mut entries = parse(&text);
+    let mut overrides = entries.len();
+
+    // 锚点先于矩形应用。v0 是旧的解析后绝对坐标，且 parent 必须先转换，
+    // 再将 children 反算为 parent-local；v1 起数组本身就是存储坐标。
     for id in layout_item_ids().iter().copied() {
         if let Some(align) = parse_align(&text, id) {
             l.set_align(id, align);
             overrides += 1;
+        }
+    }
+    if version == 0 {
+        let ids = layout_item_ids();
+        entries.sort_by_key(|(id, _)| {
+            ids.iter()
+                .position(|candidate| *candidate == id)
+                .unwrap_or(usize::MAX)
+        });
+    }
+    for (id, values) in entries {
+        let rect = LRect::new(values[0], values[1], values[2], values[3]);
+        if version == 0 {
+            l.set(&id, rect);
+        } else {
+            l.set_stored(&id, rect);
         }
     }
     if overrides > 0 {
@@ -177,7 +225,10 @@ pub(crate) fn save(path: &Path, cur: &LayoutDocument) -> std::io::Result<bool> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    fs::write(path, format!("{{\n{body}\n}}\n"))?;
+    fs::write(
+        path,
+        format!("{{\n  \"schema_version\": {CURRENT_SCHEMA_VERSION},\n{body}\n}}\n"),
+    )?;
     Ok(true)
 }
 
@@ -200,6 +251,14 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, "plate_hp");
         assert_eq!(got[0].1, [25.0, 725.0, 47.0, 14.0]);
+    }
+
+    #[test]
+    fn 标量schema版本不会跳过第一个布局节点() {
+        let got = parse(
+            "{\n  \"schema_version\": 1,\n  \"orb_align\": [\"center\", \"start\"],\n  \"plate_hp\": [25, 208, 47, 20]\n}",
+        );
+        assert_eq!(got, [("plate_hp".to_string(), [25.0, 208.0, 47.0, 20.0])]);
     }
 
     #[test]
@@ -436,5 +495,93 @@ mod tests {
         );
         assert!(!save(&path, &loaded).unwrap());
         assert!(!path.exists(), "无效的 baked menu override 应从配置清掉");
+    }
+
+    #[test]
+    fn v0绝对坐标按parent先后迁移并写回v1局部坐标() {
+        let path = std::env::temp_dir().join("mir2_layout_schema_migration.json");
+        let mut expected = LayoutDocument::default_layout();
+        let align = crate::widget::Align {
+            horizontal: crate::widget::AxisAlign::Center,
+            vertical: crate::widget::AxisAlign::End,
+        };
+        expected.set_align("hud_panel", align);
+        let default_panel = expected.get("hud_panel").unwrap();
+        let absolute_panel = LRect::new(
+            default_panel.x + 16.0,
+            default_panel.y - 8.0,
+            default_panel.w,
+            default_panel.h,
+        );
+        expected.set("hud_panel", absolute_panel);
+        let default_hp = expected.get("plate_hp").unwrap();
+        let absolute_hp = LRect::new(
+            default_hp.x + 5.0,
+            default_hp.y + 3.0,
+            default_hp.w,
+            default_hp.h,
+        );
+        expected.set("plate_hp", absolute_hp);
+
+        // 故意 child 在 parent 前：迁移器必须按 spec 顺序转换绝对坐标。
+        let legacy = format!(
+            "{{\n  \"plate_hp\": [{}, {}, {}, {}],\n  \"hud_panel\": [{}, {}, {}, {}],\n  \"hud_panel_align\": [\"center\", \"end\"]\n}}\n",
+            num(absolute_hp.x),
+            num(absolute_hp.y),
+            num(absolute_hp.w),
+            num(absolute_hp.h),
+            num(absolute_panel.x),
+            num(absolute_panel.y),
+            num(absolute_panel.w),
+            num(absolute_panel.h),
+        );
+        fs::write(&path, legacy).unwrap();
+        let migrated = load(&path).expect("v0 配置可迁移");
+        assert_eq!(migrated.get("hud_panel"), Some(absolute_panel));
+        assert_eq!(migrated.get("plate_hp"), Some(absolute_hp));
+        assert_eq!(migrated.align("hud_panel"), Some(align));
+
+        assert!(save(&path, &migrated).unwrap());
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("\"schema_version\": 1"));
+        let reloaded = load(&path).expect("v1 parent-local 配置应可读回");
+        assert_eq!(reloaded.get("hud_panel"), Some(absolute_panel));
+        assert_eq!(reloaded.get("plate_hp"), Some(absolute_hp));
+        assert_eq!(reloaded.align("hud_panel"), Some(align));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn 拒绝不支持或格式错误的schema版本() {
+        let path = std::env::temp_dir().join("mir2_layout_future_schema.json");
+        fs::write(
+            &path,
+            "{\n  \"schema_version\": 99,\n  \"plate_hp\": [1, 2, 3, 4]\n}\n",
+        )
+        .unwrap();
+        assert!(load(&path).is_none());
+        fs::write(
+            &path,
+            "{\n  \"schema_version\": 1oops,\n  \"plate_hp\": [1, 2, 3, 4]\n}\n",
+        )
+        .unwrap();
+        assert!(load(&path).is_none());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn 仓库内无版本布局迁移后控件仍在画布范围() {
+        let path = layout_path();
+        let layout = load(&path).expect("仓库布局文件可读");
+        for id in ["plate_hp", "plate_mp", "level_num", "atk_text", "clock"] {
+            let rect = layout.get(id).expect("登记的 HUD 节点应有布局");
+            assert!(
+                rect.x >= 0.0
+                    && rect.y >= 0.0
+                    && rect.x + rect.w <= crate::window::WIN_W as f32
+                    && rect.y + rect.h <= crate::window::WIN_H as f32,
+                "v0 坐标迁移后 {id} 应仍在画布范围：{rect:?}"
+            );
+        }
     }
 }

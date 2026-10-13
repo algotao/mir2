@@ -1466,8 +1466,7 @@ impl LayoutDocument {
         self.set_value(id, rect, align);
     }
 
-    /// 测试/工具设置解析空间绝对矩形；写入统一文档时反算成 parent-local/anchor-offset。
-    #[cfg(test)]
+    /// 设置解析空间绝对矩形；写入统一文档时反算成 parent-local/anchor-offset。
     pub(crate) fn set(&mut self, id: &str, rect: LRect) {
         let Some(scope) = self.scope_for_id(id) else {
             return;
