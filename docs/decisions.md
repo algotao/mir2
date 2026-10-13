@@ -6005,3 +6005,15 @@ dir, x, y, 0, '')`，`GetFeature` 里**没有**骷髅分支 ⇒ **外观一个�
 - 绘制仍由 app/core 场景适配器负责，widget schema 不含 SDL/业务动作；adapter 只读统一文档生成的解析几何。完全拆除投影 DTO 不属于本阶段范围。
 
 **验收**：无 HUD/scene 第二套可变布局字段；配置 ID 从 spec 派生；locked baked 节点拒绝 API/文件 override；绘制/命中投影同源测试及 Rust workspace 全量测试通过。
+
+---
+
+## D-138 场景交互边界的坐标类型（2026-10-13）
+
+坐标类型化采用增量迁移，不在单次改动中重写 core DTO 或整个布局编辑器。
+
+- 登录/选角指针输入在场景适配器以 `CPt` 接收，并转换为 `DPt` 后交给场景命中状态机；场景引擎转接 SDL `Ui` 时只接受 `CPt/CRect`。
+- `ui_pt` / `ui_inv_pt` 分别要求 `DPt` / `CPt`；设计空间 widget 矩形转换要求 `DRect`。Core 的遗留 `f32` DTO 仅在 Login/Select 适配边界显式拆包/构造，不让裸 tuple 穿过坐标换算 helper。
+- HUD/world 布局编辑器的 `LRect` 仍由 `EditorScope` 决定空间，本阶段不泛型化整个 `LayoutDocument` 或 SDL 绘制 API；后续按场景逐步增加 typed accessor。
+
+**验收**：错误空间的点/矩形不能传给登录/选角事件入口或跨空间转换 helper；现有 OnClick、设计/画布往返和 workspace 测试通过。

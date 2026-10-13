@@ -299,7 +299,7 @@ pub(crate) fn draw_frame<'a, T>(
         if let Some(scene) = app.select_scene.as_ref() {
             // 鼠标位置（**设计空间**）⇒ 只作为视图参数传入，不写回运行态
             let mouse = {
-                let p = ui::ui_inv_pt(app.mouse);
+                let p = ui::ui_inv_pt(crate::widget::canvas_pt(app.mouse));
                 (p.0 .0, p.1 .0)
             };
             scene.draw(

@@ -365,7 +365,8 @@ impl Select {
     }
 
     /// 命中 + **那块的矩形**（给控件引擎：按下记矩形，松开就不用再算一遍）。
-    fn hit_rect(&self, p: (f32, f32), l: &su::Layout) -> Option<(Hit, su::Rect)> {
+    fn hit_rect(&self, p: crate::space::DPt, l: &su::Layout) -> Option<(Hit, su::Rect)> {
+        let p = (p.0 .0, p.1 .0);
         // 先判"点角色本体"（凹槽整块）—— 与下面那两类不重叠，顺序无所谓（见 `su::slot_at`）
         if let Some((i, r)) = l
             .slots
@@ -405,7 +406,7 @@ impl Select {
     #[allow(dead_code)]
     pub fn on_down(
         &mut self,
-        p: (f32, f32),
+        p: crate::space::DPt,
         l: &su::Layout,
         msg: Option<su::MsgBox>,
         ui: &mut crate::widget::Ui,
@@ -417,14 +418,15 @@ impl Select {
     /// 场景适配器传入与绘制相同的可编辑建角窗口几何。
     pub fn on_down_with_dialog(
         &mut self,
-        p: (f32, f32),
+        p: crate::space::DPt,
         l: &su::Layout,
         msg: Option<su::MsgBox>,
         dialog: su::DialogBox,
         ui: &mut crate::widget::Ui,
     ) {
+        let design_xy = (p.0 .0, p.1 .0);
         if self.newchar.is_some() {
-            if let Some(dh) = dialog.hit(p) {
+            if let Some(dh) = dialog.hit(design_xy) {
                 ui.press(
                     crate::Press::NewChar(dh),
                     design_rect(dlg_rect(&dialog, dh)),
@@ -434,7 +436,7 @@ impl Select {
         }
         if self.pending.is_some() || self.msg.is_some() {
             if let Some(m) = msg {
-                if m.hit_ok(p) {
+                if m.hit_ok(design_xy) {
                     ui.press(crate::Press::Select(Hit::MsgOk), design_rect(m.ok));
                 }
             }
@@ -702,7 +704,12 @@ fn dlg_rect(b: &su::DialogBox, h: su::DialogHit) -> su::Rect {
 
 /// 设计空间矩形进入全局 widget 引擎前，显式转换到画布空间。
 fn design_rect(r: su::Rect) -> crate::widget::Rect {
-    crate::widget::design_rect((r.x, r.y, r.w, r.h))
+    crate::widget::design_rect((
+        crate::space::Dpx(r.x),
+        crate::space::Dpx(r.y),
+        crate::space::Dpx(r.w),
+        crate::space::Dpx(r.h),
+    ))
 }
 
 #[cfg(test)]
@@ -716,10 +723,12 @@ mod tests {
         down_at: (f32, f32),
         up_at: (f32, f32),
     ) -> Action {
+        let down_design = crate::space::DPt::from_xy(down_at.0, down_at.1);
+        let up_design = crate::space::DPt::from_xy(up_at.0, up_at.1);
         let mut ui = crate::widget::Ui::new();
-        ui.set_mouse(crate::ui::ui_pt(down_at));
-        s.on_down(down_at, l, msg, &mut ui);
-        match ui.release(crate::ui::ui_pt(up_at)) {
+        ui.set_mouse(crate::ui::ui_pt(down_design));
+        s.on_down(down_design, l, msg, &mut ui);
+        match ui.release(crate::ui::ui_pt(up_design)) {
             Some(crate::Press::Select(h)) => s.click_select(h, l),
             Some(crate::Press::NewChar(dh)) => s.click_newchar(dh),
             _ => s.click_outside(),

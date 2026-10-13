@@ -21,17 +21,12 @@ pub(crate) fn canvas_rect(r: (f32, f32, f32, f32)) -> Rect {
 
 /// SDL 逻辑画布坐标边界转成强类型点。
 pub(crate) fn canvas_pt(p: (f32, f32)) -> crate::space::CPt {
-    crate::space::CPt(crate::space::Cpx(p.0), crate::space::Cpx(p.1))
+    crate::space::CPt::from_xy(p.0, p.1)
 }
 
 /// 由设计空间几何建立画布矩形（显式做一次 800×600 → 画布转换）。
-pub(crate) fn design_rect(r: (f32, f32, f32, f32)) -> Rect {
-    crate::space::Dpx::rect_to_canvas((
-        crate::space::Dpx(r.0),
-        crate::space::Dpx(r.1),
-        crate::space::Dpx(r.2),
-        crate::space::Dpx(r.3),
-    ))
+pub(crate) fn design_rect(r: crate::space::DRect) -> Rect {
+    crate::space::Dpx::rect_to_canvas(r)
 }
 
 /// 局部面板矩形 + 全局画布原点 ⇒ 全局画布矩形。

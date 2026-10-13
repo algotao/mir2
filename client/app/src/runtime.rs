@@ -208,7 +208,12 @@ pub(crate) fn run_app<T>(
                     y,
                     ..
                 } if app.scene == crate::app_state::Scene::Select => {
-                    scene_input::select_down(&mut app, &mut ui, &asset_dir, (x, y));
+                    scene_input::select_down(
+                        &mut app,
+                        &mut ui,
+                        &asset_dir,
+                        crate::widget::canvas_pt((x, y)),
+                    );
                 }
                 Event::MouseButtonUp {
                     mouse_btn: MouseButton::Left,
@@ -216,7 +221,12 @@ pub(crate) fn run_app<T>(
                     y,
                     ..
                 } if app.scene == crate::app_state::Scene::Select => {
-                    let act = scene_input::select_up(&mut app, &mut ui, &asset_dir, (x, y));
+                    let act = scene_input::select_up(
+                        &mut app,
+                        &mut ui,
+                        &asset_dir,
+                        crate::widget::canvas_pt((x, y)),
+                    );
                     if do_select_action(act, &mut app.net, &mut app.select_scene, &sound, &sounds)?
                     {
                         break 'run;
@@ -228,7 +238,12 @@ pub(crate) fn run_app<T>(
                     y,
                     ..
                 } if app.scene == crate::app_state::Scene::Login => {
-                    scene_input::login_down(&mut app, &mut ui, &asset_dir, (x, y));
+                    scene_input::login_down(
+                        &mut app,
+                        &mut ui,
+                        &asset_dir,
+                        crate::widget::canvas_pt((x, y)),
+                    );
                 }
                 Event::MouseButtonUp {
                     mouse_btn: MouseButton::Left,
@@ -236,7 +251,12 @@ pub(crate) fn run_app<T>(
                     y,
                     ..
                 } if app.scene == crate::app_state::Scene::Login => {
-                    let act = scene_input::login_up(&mut app, &mut ui, &asset_dir, (x, y));
+                    let act = scene_input::login_up(
+                        &mut app,
+                        &mut ui,
+                        &asset_dir,
+                        crate::widget::canvas_pt((x, y)),
+                    );
                     // 按钮声（原版 `FState.pas:2376-2382` 的 `csNorm` ⇒ 103）
                     if act != login::Action::None {
                         sfx(&sound, &sounds, mir2_core::sound::idx::NORM_BUTTON_CLICK);

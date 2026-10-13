@@ -1018,8 +1018,13 @@ mod tests {
 
     #[test]
     fn 设计空间按钮矩形与画布鼠标同空间判定() {
-        let r = design_rect((10.0, 10.0, 20.0, 20.0));
-        let p = crate::ui::ui_pt((15.0, 15.0));
+        let r = design_rect((
+            crate::space::Dpx(10.0),
+            crate::space::Dpx(10.0),
+            crate::space::Dpx(20.0),
+            crate::space::Dpx(20.0),
+        ));
+        let p = crate::ui::ui_pt(crate::space::DPt::from_xy(15.0, 15.0));
         let mut ui = Ui::new();
         ui.set_mouse(p);
         ui.press(A, r);

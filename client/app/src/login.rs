@@ -69,9 +69,20 @@ pub(crate) enum Btn {
 /// 点 `p` 落在 `r` 里吗？是 ⇒ 给引擎的 `(按钮, 矩形)`。
 ///
 /// `widget::Rect` 是 `(x, y, w, h)`，而 `login_ui::Rect` 是结构体 ⇒ 在这里换一次。
-fn pick(r: mir2_core::login_ui::Rect, p: (f32, f32), b: Btn) -> Option<(Btn, crate::widget::Rect)> {
-    r.hit(p)
-        .then_some((b, crate::widget::design_rect((r.x, r.y, r.w, r.h))))
+fn pick(
+    r: mir2_core::login_ui::Rect,
+    p: crate::space::DPt,
+    b: Btn,
+) -> Option<(Btn, crate::widget::Rect)> {
+    r.hit((p.0 .0, p.1 .0)).then_some((
+        b,
+        crate::widget::design_rect((
+            crate::space::Dpx(r.x),
+            crate::space::Dpx(r.y),
+            crate::space::Dpx(r.w),
+            crate::space::Dpx(r.h),
+        )),
+    ))
 }
 
 /// 登录界面的状态。
@@ -267,7 +278,8 @@ impl Login {
     /// `(控件, 矩形)`，松开时对不上就不算点击 —— 登录界面也享受同一套规范。
     ///
     /// ⚠️ 输入框没有"按下"状态 —— 原版也只是把焦点交给那个 `TEdit`。
-    pub fn on_down(&mut self, p: (f32, f32), l: &Layout, ui: &mut crate::widget::Ui) {
+    pub fn on_down(&mut self, p: crate::space::DPt, l: &Layout, ui: &mut crate::widget::Ui) {
+        let design_xy = (p.0 .0, p.1 .0);
         // 建号面板只有 [确定]/[取消]/[X] 可点；登录面板是 [提交]/[新用户]/[改密码]/[X]
         let hit = if self.error.is_some() {
             // 报错弹窗是**模态**的 ⇒ 只有它那颗 [Ok] 可点
@@ -287,11 +299,11 @@ impl Login {
             return;
         }
         // 没按在按钮上 ⇒ 输入框点一下就换焦点（原版也只是把焦点交给那个 TEdit）
-        if l.account.hit(p) {
+        if l.account.hit(design_xy) {
             self.focus = 0;
-        } else if l.password.hit(p) {
+        } else if l.password.hit(design_xy) {
             self.focus = 1;
-        } else if self.signup() && l.confirm.hit(p) {
+        } else if self.signup() && l.confirm.hit(design_xy) {
             self.focus = 2;
         }
     }
@@ -371,10 +383,12 @@ mod tests {
     /// ⇒ 拖出去松开就不算点中，跟游戏里那条路是同一套。
     fn tap(s: &mut Login, l: &Layout, down_at: (f32, f32), up_at: (f32, f32)) -> Action {
         let mut ui = crate::widget::Ui::new();
-        let down_canvas = crate::ui::ui_pt(down_at);
-        let up_canvas = crate::ui::ui_pt(up_at);
+        let down_design = crate::space::DPt::from_xy(down_at.0, down_at.1);
+        let up_design = crate::space::DPt::from_xy(up_at.0, up_at.1);
+        let down_canvas = crate::ui::ui_pt(down_design);
+        let up_canvas = crate::ui::ui_pt(up_design);
         ui.set_mouse(down_canvas);
-        s.on_down(down_at, l, &mut ui);
+        s.on_down(down_design, l, &mut ui);
         match ui.release(up_canvas) {
             Some(crate::Press::Login(b)) => s.click(b, l),
             _ => Action::None,
@@ -607,7 +621,7 @@ mod tests {
         assert_eq!(tap(&mut s, &l, c, (l.ok.x - 50.0, c.1)), Action::None);
         // 点输入框只改焦点，不产生动作
         s.on_down(
-            (l.password.x + 2.0, l.password.y + 2.0),
+            crate::space::DPt::from_xy(l.password.x + 2.0, l.password.y + 2.0),
             &l,
             &mut crate::widget::Ui::new(),
         );

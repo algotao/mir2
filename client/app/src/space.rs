@@ -50,9 +50,25 @@ impl Cpx {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct DPt(pub Dpx, pub Dpx);
 
+impl DPt {
+    /// 从明确标注为设计空间的原始布局数值构造。
+    #[inline]
+    pub const fn from_xy(x: f32, y: f32) -> Self {
+        Self(Dpx(x), Dpx(y))
+    }
+}
+
 /// 画布像素的点。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CPt(pub Cpx, pub Cpx);
+
+impl CPt {
+    /// 从 SDL 逻辑画布坐标边界构造。
+    #[inline]
+    pub const fn from_xy(x: f32, y: f32) -> Self {
+        Self(Cpx(x), Cpx(y))
+    }
+}
 
 impl DPt {
     #[inline]
@@ -68,10 +84,7 @@ impl CPt {
     }
 }
 
-/// 设计空间的矩形（`(x, y, w, h)`）。
-///
-/// ⚠️ 下一步才用（把 `widget::Rect` 也类型化）；先留着，别到时再写一遍。
-#[allow(dead_code)]
+/// 设计空间的矩形（`(x, y, w, h)`）；转入 `widget::Rect` 前必须显式转换。
 pub type DRect = (Dpx, Dpx, Dpx, Dpx);
 
 /// 画布像素的矩形（`(x, y, w, h)`）—— 画与命中都用它，两者才不会跑偏。
@@ -119,7 +132,6 @@ pub fn hit_local(r: LRect, p: LPt) -> bool {
 
 impl Dpx {
     /// 矩形整体换算（画之前过这一道）。
-    #[allow(dead_code)] // 同上
     pub fn rect_to_canvas(r: DRect) -> CRect {
         (
             r.0.to_canvas(),

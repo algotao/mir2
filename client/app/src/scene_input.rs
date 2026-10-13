@@ -9,9 +9,8 @@ use std::path::PathBuf;
 use crate::app_state::AppState;
 use crate::ui::UiCache;
 use crate::{login, select, ui};
-fn design_xy(canvas_xy: (f32, f32)) -> (f32, f32) {
-    let p = ui::ui_inv_pt(canvas_xy);
-    (p.0 .0, p.1 .0)
+fn design_xy(canvas_xy: crate::space::CPt) -> crate::space::DPt {
+    ui::ui_inv_pt(canvas_xy)
 }
 
 /// 登录/建号登录面板按下：布局命中用设计坐标；`Login` 内部将按钮矩形转成 `CRect`。
@@ -19,7 +18,7 @@ pub(crate) fn login_down(
     app: &mut AppState,
     ui_cache: &mut UiCache<'_>,
     asset_dir: &Option<PathBuf>,
-    canvas_xy: (f32, f32),
+    canvas_xy: crate::space::CPt,
 ) {
     let Some(dir) = asset_dir.as_ref() else {
         return;
@@ -39,12 +38,12 @@ pub(crate) fn login_up(
     app: &mut AppState,
     ui_cache: &mut UiCache<'_>,
     asset_dir: &Option<PathBuf>,
-    canvas_xy: (f32, f32),
+    canvas_xy: crate::space::CPt,
 ) -> login::Action {
     let Some(dir) = asset_dir.as_ref() else {
         return login::Action::None;
     };
-    let canvas_p = crate::widget::canvas_pt(canvas_xy);
+    let canvas_p = canvas_xy;
     let layout = mir2_core::login_ui::Layout::build(crate::window::UI_WIN, |lib, idx| {
         ui_cache.size(dir, lib, idx)
     });
@@ -63,7 +62,7 @@ pub(crate) fn select_down(
     app: &mut AppState,
     ui_cache: &mut UiCache<'_>,
     asset_dir: &Option<PathBuf>,
-    canvas_xy: (f32, f32),
+    canvas_xy: crate::space::CPt,
 ) {
     let (Some(dir), Some(scene)) = (asset_dir.as_ref(), app.select_scene.as_mut()) else {
         return;
@@ -85,12 +84,12 @@ pub(crate) fn select_up(
     app: &mut AppState,
     ui_cache: &mut UiCache<'_>,
     asset_dir: &Option<PathBuf>,
-    canvas_xy: (f32, f32),
+    canvas_xy: crate::space::CPt,
 ) -> select::Action {
     let (Some(dir), Some(scene)) = (asset_dir.as_ref(), app.select_scene.as_mut()) else {
         return select::Action::None;
     };
-    let key = app.ui_click.release(crate::widget::canvas_pt(canvas_xy));
+    let key = app.ui_click.release(canvas_xy);
     let Some(layout) = mir2_core::select_ui::Layout::build(crate::window::UI_WIN, |lib, idx| {
         ui_cache.size(dir, lib, idx)
     }) else {

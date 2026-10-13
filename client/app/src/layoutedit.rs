@@ -143,7 +143,7 @@ impl LayoutEdit {
     pub(crate) fn pointer_to_layout(&self, screen: (f32, f32)) -> (f32, f32) {
         let canvas = self.to_logic(screen);
         if matches!(self.scope, EditorScope::Login | EditorScope::Select) {
-            let p = crate::ui::ui_inv_pt(canvas);
+            let p = crate::ui::ui_inv_pt(crate::widget::canvas_pt(canvas));
             (p.0 .0, p.1 .0)
         } else {
             canvas
@@ -889,7 +889,7 @@ mod tests {
         );
         let mut login_state = crate::login::Login::new();
         login_state.on_down(
-            (login.password.x + 2.0, login.password.y + 2.0),
+            crate::space::DPt::from_xy(login.password.x + 2.0, login.password.y + 2.0),
             &login,
             &mut crate::widget::Ui::new(),
         );
@@ -961,10 +961,11 @@ mod tests {
             select2.slots[0].x + select2.slots[0].w / 2.0,
             select2.slots[0].y + select2.slots[0].h / 2.0,
         );
-        let canvas_point = crate::ui::ui_pt(hit_at);
+        let hit_design = crate::space::DPt::from_xy(hit_at.0, hit_at.1);
+        let canvas_point = crate::ui::ui_pt(hit_design);
         widget_ui.set_mouse(canvas_point);
         select_state.on_down_with_dialog(
-            hit_at,
+            hit_design,
             &select2,
             None,
             layout_document().select_dialog_box(),
@@ -1003,10 +1004,11 @@ mod tests {
             select2.menu[1].x + select2.menu[1].w / 2.0,
             select2.menu[1].y + select2.menu[1].h / 2.0,
         );
-        let menu_canvas_point = crate::ui::ui_pt(menu_point);
+        let menu_design = crate::space::DPt::from_xy(menu_point.0, menu_point.1);
+        let menu_canvas_point = crate::ui::ui_pt(menu_design);
         menu_ui.set_mouse(menu_canvas_point);
         menu_state.on_down_with_dialog(
-            menu_point,
+            menu_design,
             &select2,
             None,
             layout_document().select_dialog_box(),
