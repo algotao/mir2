@@ -7,12 +7,12 @@
 //! 2. **调**：按住拖动 = 移动；压在右/下边缘 8px 内拖动 = 改大小；网格吸附 `G` 键切 1/8px；
 //! 3. **存**：`S` 写文件（只写与缺省不同的项），`R` 把选中项恢复缺省，`Esc` 退出。
 //!
-//! 编辑结果写入统一的 `layout::hud_layout()` 文档；场景绘制/命中 adapter 读取同一解析几何。
+//! 编辑结果写入统一的 `layout::layout_document()` 文档；场景绘制/命中 adapter 读取同一解析几何。
 
 use sdl3::pixels::Color;
 use sdl3::render::{FRect, WindowCanvas};
 
-use crate::layout::{hud_layout, with_hud_layout, EditorScope, HudLayout, LRect};
+use crate::layout::{layout_document, with_layout_document, EditorScope, LRect, LayoutDocument};
 use crate::layoutcfg;
 use crate::widget::{EditHistory, EditSession, WidgetTree};
 
@@ -71,7 +71,7 @@ impl LayoutEdit {
             return;
         }
         if let Some(session) = self.drag.take() {
-            with_hud_layout(|layout| {
+            with_layout_document(|layout| {
                 let mut tree = layout.editor_tree(self.scope);
                 if session.cancel(&mut tree).is_ok() {
                     layout.apply_widget_tree(&tree, self.scope);
@@ -118,7 +118,7 @@ impl LayoutEdit {
             return;
         }
         if let Some(session) = self.drag.take() {
-            with_hud_layout(|layout| {
+            with_layout_document(|layout| {
                 let mut tree = layout.editor_tree(self.scope);
                 if session.cancel(&mut tree).is_ok() {
                     layout.apply_widget_tree(&tree, self.scope);
@@ -184,7 +184,7 @@ impl LayoutEdit {
     pub(crate) fn toggle(&mut self) {
         self.on = !self.on;
         if let Some(session) = self.drag.take() {
-            with_hud_layout(|layout| {
+            with_layout_document(|layout| {
                 let mut tree = layout.editor_tree(self.scope);
                 if session.cancel(&mut tree).is_ok() {
                     layout.apply_widget_tree(&tree, self.scope);
@@ -198,7 +198,7 @@ impl LayoutEdit {
 
     /// `S`：把当前布局写回文件（只写被改过的项）。
     pub(crate) fn save(&mut self) {
-        let cur = hud_layout();
+        let cur = layout_document();
         let path = layoutcfg::layout_path();
         match layoutcfg::save(&path, &cur) {
             Ok(true) => self.last = format!("已保存 {}", path.display()),
@@ -211,11 +211,11 @@ impl LayoutEdit {
     /// `R`：选中项恢复缺省，作为一次通用布局操作记录。
     pub(crate) fn reset_selected(&mut self) {
         let Some(id) = self.sel else { return };
-        let default = HudLayout::default_layout().editor_tree(self.scope);
+        let default = LayoutDocument::default_layout().editor_tree(self.scope);
         let Some(after) = default.value(id) else {
             return;
         };
-        let operation = with_hud_layout(|layout| {
+        let operation = with_layout_document(|layout| {
             let mut tree = layout.editor_tree(self.scope);
             let before = tree.value(id)?;
             tree.set_value(id, after).ok()?;
@@ -239,7 +239,7 @@ impl LayoutEdit {
         if !self.on {
             return false;
         }
-        let tree = hud_layout().editor_tree(self.scope);
+        let tree = layout_document().editor_tree(self.scope);
         let row_y = TREE_Y + TREE_HEADER_H;
         let tree_h = TREE_HEADER_H + TREE_ROW_H * tree.nodes().len() as f32 + 4.0;
         if screen.0 >= TREE_X
@@ -265,7 +265,7 @@ impl LayoutEdit {
         if !self.on {
             return false;
         }
-        let tree = hud_layout().editor_tree(self.scope);
+        let tree = layout_document().editor_tree(self.scope);
         let Some(id) = self.pick(&tree, p) else {
             self.sel = None;
             self.drag = None;
@@ -280,7 +280,7 @@ impl LayoutEdit {
     pub(crate) fn mouse_move(&mut self, p: (f32, f32)) {
         let Some(session) = self.drag else { return };
         let grid = self.grid();
-        with_hud_layout(|layout| {
+        with_layout_document(|layout| {
             let mut tree = layout.editor_tree(self.scope);
             if session
                 .update(&mut tree, viewport(self.scope), p, grid)
@@ -295,7 +295,7 @@ impl LayoutEdit {
         let Some(session) = self.drag.take() else {
             return;
         };
-        let tree = hud_layout().editor_tree(self.scope);
+        let tree = layout_document().editor_tree(self.scope);
         if let Some(operation) = session.commit(&tree) {
             self.history.record(operation);
             if let Some(rect) = tree.resolved_rect(viewport(self.scope), operation.id) {
@@ -309,7 +309,7 @@ impl LayoutEdit {
 
     /// 撤销/重做通过 widget 层的几何快照执行。
     pub(crate) fn undo(&mut self) {
-        let id = with_hud_layout(|layout| {
+        let id = with_layout_document(|layout| {
             let mut tree = layout.editor_tree(self.scope);
             let id = self.history.undo(&mut tree).ok().flatten()?;
             layout.apply_widget_tree(&tree, self.scope);
@@ -321,7 +321,7 @@ impl LayoutEdit {
     }
 
     pub(crate) fn redo(&mut self) {
-        let id = with_hud_layout(|layout| {
+        let id = with_layout_document(|layout| {
             let mut tree = layout.editor_tree(self.scope);
             let id = self.history.redo(&mut tree).ok().flatten()?;
             layout.apply_widget_tree(&tree, self.scope);
@@ -335,9 +335,10 @@ impl LayoutEdit {
     /// 方向键微调也作为单个通用操作进入历史。
     pub(crate) fn nudge(&mut self, dx: f32, dy: f32) {
         let Some(id) = self.sel else { return };
-        let operation = with_hud_layout(|layout| {
+        let operation = with_layout_document(|layout| {
             let mut tree = layout.editor_tree(self.scope);
-            if !tree.node(id)?.edit.movable {
+            let node = tree.node(id)?;
+            if !node.edit.movable || node.visual != crate::widget::VisualSource::Independent {
                 return None;
             }
             let before = tree.value(id)?;
@@ -354,7 +355,7 @@ impl LayoutEdit {
         });
         if let Some(operation) = operation.filter(|op| op.before != op.after) {
             self.history.record(operation);
-            if let Some(rect) = hud_layout().get(id) {
+            if let Some(rect) = layout_document().get(id) {
                 self.last = format!("{} x={} y={} w={} h={}", id, rect.x, rect.y, rect.w, rect.h);
             }
         }
@@ -365,9 +366,10 @@ impl LayoutEdit {
         use crate::widget::AxisAlign::{Center, End, Start};
         let Some(id) = self.sel else { return };
         let axes = [Start, Center, End];
-        let operation = with_hud_layout(|layout| {
+        let operation = with_layout_document(|layout| {
             let mut tree = layout.editor_tree(self.scope);
-            if !tree.node(id)?.edit.movable {
+            let node = tree.node(id)?;
+            if !node.edit.movable || node.visual != crate::widget::VisualSource::Independent {
                 return None;
             }
             let before = tree.value(id)?;
@@ -426,7 +428,7 @@ impl LayoutEdit {
         // 文档坐标→画布坐标→编辑器放大屏幕坐标。文本标签只换位置、不拉伸。
         let zx = |x: f32| cx + (x - cx) * z;
         let zy = |y: f32| cy + (y - cy) * z;
-        let tree = hud_layout().editor_tree(self.scope);
+        let tree = layout_document().editor_tree(self.scope);
         let resolved = tree
             .resolve(viewport(self.scope))
             .expect("editable widget tree must be valid");
@@ -505,7 +507,12 @@ impl LayoutEdit {
             } else {
                 "[-] "
             };
-            let text = format!("{depth}{}", crate::layout::item_name(id));
+            let marker = match node.visual {
+                crate::widget::VisualSource::Independent => "",
+                crate::widget::VisualSource::BackgroundBaked => " [背景烘焙]",
+                crate::widget::VisualSource::BackgroundBakedWithOverlay => " [背景烘焙/按下层]",
+            };
+            let text = format!("{depth}{}{marker}", crate::layout::item_name(id));
             names.draw(
                 canvas,
                 tc,
@@ -573,8 +580,8 @@ mod tests {
 
     impl Drop for LayoutTestGuard {
         fn drop(&mut self) {
-            crate::layout::with_hud_layout(|layout| {
-                *layout = crate::layout::HudLayout::default_layout();
+            crate::layout::with_layout_document(|layout| {
+                *layout = crate::layout::LayoutDocument::default_layout();
             });
         }
     }
@@ -583,8 +590,8 @@ mod tests {
         let guard = crate::layout::LAYOUT_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        crate::layout::with_hud_layout(|layout| {
-            *layout = crate::layout::HudLayout::default_layout();
+        crate::layout::with_layout_document(|layout| {
+            *layout = crate::layout::LayoutDocument::default_layout();
         });
         LayoutTestGuard { _guard: guard }
     }
@@ -615,19 +622,19 @@ mod tests {
         };
         e.grid = 8.0;
         e.mouse_down((86.0, 653.0)); // 选中 orb
-        let before = hud_layout().get("orb").unwrap();
+        let before = layout_document().get("orb").unwrap();
         e.mouse_move((86.0 + 5.0, 653.0 + 5.0)); // 位移 5 ⇒ 吸附到 8
         e.mouse_up();
-        let after = hud_layout().get("orb").unwrap();
+        let after = layout_document().get("orb").unwrap();
         // ⚠️ 吸附是把落点对齐到 8 的**倍数**（不是"位移 8"）⇒ 期望要按吸附算
         let snap = |v: f32| (v / 8.0).round() * 8.0;
         assert_eq!(after.x, snap(before.x + 8.0));
         assert_eq!(after.y, snap(before.y + 8.0));
         assert_eq!(after.w, before.w, "移动不该改大小");
         e.undo();
-        assert_eq!(hud_layout().get("orb").unwrap(), before);
+        assert_eq!(layout_document().get("orb").unwrap(), before);
         e.redo();
-        assert_eq!(hud_layout().get("orb").unwrap(), after);
+        assert_eq!(layout_document().get("orb").unwrap(), after);
     }
 
     #[test]
@@ -637,13 +644,13 @@ mod tests {
             on: true,
             ..LayoutEdit::default()
         };
-        let r = hud_layout().get("plate_hp").unwrap();
+        let r = layout_document().get("plate_hp").unwrap();
         // 这个文字布局框声明允许 resize；原生像素球则是 MoveOnly。
         e.mouse_down((r.x + r.w, r.y + r.h));
-        let before = hud_layout().get("plate_hp").unwrap();
+        let before = layout_document().get("plate_hp").unwrap();
         e.mouse_move((r.x + r.w + 10.0, r.y + r.h + 6.0));
         e.mouse_up();
-        let after = hud_layout().get("plate_hp").unwrap();
+        let after = layout_document().get("plate_hp").unwrap();
         assert_eq!(after.w, before.w + 10.0);
         assert_eq!(after.h, before.h + 6.0);
         assert_eq!(after.x, before.x, "改大小不该挪位置");
@@ -688,25 +695,27 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         // 编辑器改一下底板
-        crate::layout::with_hud_layout(|l| {
+        crate::layout::with_layout_document(|l| {
             l.set(
                 "plate_hp",
                 crate::layout::LRect::new(30.0, 700.0, 50.0, 14.0),
             )
         });
-        assert!(crate::layoutcfg::save(&path, &crate::layout::hud_layout()).unwrap());
+        assert!(crate::layoutcfg::save(&path, &crate::layout::layout_document()).unwrap());
 
         // 复位成缺省，再从文件载回来
-        crate::layout::with_hud_layout(|l| *l = crate::layout::HudLayout::default_layout());
+        crate::layout::with_layout_document(|l| {
+            *l = crate::layout::LayoutDocument::default_layout()
+        });
         assert_ne!(
-            crate::layout::hud_layout().get("plate_hp"),
+            crate::layout::layout_document().get("plate_hp"),
             Some(crate::layout::LRect::new(30.0, 700.0, 50.0, 14.0))
         );
         if let Some(l) = crate::layoutcfg::load(&path) {
-            crate::layout::with_hud_layout(|cur| *cur = l);
+            crate::layout::with_layout_document(|cur| *cur = l);
         }
         assert_eq!(
-            crate::layout::hud_layout().get("plate_hp"),
+            crate::layout::layout_document().get("plate_hp"),
             Some(crate::layout::LRect::new(30.0, 700.0, 50.0, 14.0))
         );
         let _ = std::fs::remove_file(&path);
@@ -720,7 +729,7 @@ mod tests {
             on: true,
             ..LayoutEdit::default()
         };
-        let row = hud_layout()
+        let row = layout_document()
             .editor_tree(e.scope)
             .nodes()
             .iter()
@@ -744,7 +753,7 @@ mod tests {
             on: true,
             ..LayoutEdit::default()
         };
-        let before = hud_layout();
+        let before = layout_document();
         let panel0 = before.get(crate::layout::HUD_PANEL_ID).unwrap();
         let orb0 = before.get("orb").unwrap();
 
@@ -755,7 +764,7 @@ mod tests {
         e.mouse_move((p.0 + 16.0, p.1 + 8.0));
         e.mouse_up();
 
-        let after = hud_layout();
+        let after = layout_document();
         let panel1 = after.get(crate::layout::HUD_PANEL_ID).unwrap();
         let orb1 = after.get("orb").unwrap();
         assert_eq!(panel1.x, panel0.x + 16.0);
@@ -779,11 +788,14 @@ mod tests {
             on: true,
             ..LayoutEdit::default()
         };
-        with_hud_layout(|l| {
-            l.panel_align = crate::widget::Align {
-                horizontal: crate::widget::AxisAlign::Center,
-                vertical: crate::widget::AxisAlign::End,
-            };
+        with_layout_document(|l| {
+            l.set_align(
+                crate::layout::HUD_PANEL_ID,
+                crate::widget::Align {
+                    horizontal: crate::widget::AxisAlign::Center,
+                    vertical: crate::widget::AxisAlign::End,
+                },
+            );
             let panel = l.panel_rect();
             l.set(
                 crate::layout::HUD_PANEL_ID,
@@ -791,15 +803,20 @@ mod tests {
             );
         });
         e.sel = Some("exp_bar");
-        let before = hud_layout().get("exp_bar").unwrap();
-        let expected_local = HudLayout::default_layout().stored_rect("exp_bar").unwrap();
+        let before = layout_document().get("exp_bar").unwrap();
+        let expected_local = LayoutDocument::default_layout()
+            .stored_rect("exp_bar")
+            .unwrap();
         e.nudge(4.0, 0.0);
-        assert_eq!(hud_layout().get("exp_bar").unwrap().x, before.x + 4.0);
+        assert_eq!(layout_document().get("exp_bar").unwrap().x, before.x + 4.0);
         e.reset_selected();
-        let after = hud_layout();
+        let after = layout_document();
         assert_eq!(after.get("exp_bar").unwrap(), before);
         assert_eq!(after.stored_rect("exp_bar"), Some(expected_local));
-        assert_eq!(after.panel_align.vertical, crate::widget::AxisAlign::End);
+        assert_eq!(
+            after.align(crate::layout::HUD_PANEL_ID).unwrap().vertical,
+            crate::widget::AxisAlign::End
+        );
     }
 
     #[test]
@@ -809,13 +826,13 @@ mod tests {
             on: true,
             ..LayoutEdit::default()
         };
-        let before = hud_layout().get("window_status").unwrap();
+        let before = layout_document().get("window_status").unwrap();
         let p = (before.x + before.w / 2.0, before.y + before.h / 2.0);
         assert!(e.mouse_down(p));
         assert_eq!(e.selected(), Some("window_status"));
         e.mouse_move((p.0 + 18.0, p.1 - 9.0));
         e.mouse_up();
-        let moved = hud_layout().get("window_status").unwrap();
+        let moved = layout_document().get("window_status").unwrap();
         assert_eq!(
             moved,
             LRect::new(before.x + 18.0, before.y - 9.0, before.w, before.h)
@@ -825,12 +842,12 @@ mod tests {
             (moved.x, moved.y, moved.w, moved.h)
         );
         e.undo();
-        assert_eq!(hud_layout().get("window_status"), Some(before));
+        assert_eq!(layout_document().get("window_status"), Some(before));
         e.redo();
-        assert_eq!(hud_layout().get("window_status"), Some(moved));
+        assert_eq!(layout_document().get("window_status"), Some(moved));
 
         e.sel = Some("window_dialog");
-        let dialog = hud_layout().get("window_dialog").unwrap();
+        let dialog = layout_document().get("window_dialog").unwrap();
         e.nudge(-11.0, 6.0);
         assert_eq!(
             crate::dialog::dialog_panel(),
@@ -851,7 +868,7 @@ mod tests {
             ..LayoutEdit::default()
         };
         e.set_scene(crate::app_state::Scene::Login);
-        let before = hud_layout();
+        let before = layout_document();
         let panel = before.get("login.panel").unwrap();
         let account = before.get("login.account").unwrap();
         let p = (panel.x + 20.0, panel.y + 20.0);
@@ -860,7 +877,7 @@ mod tests {
         e.mouse_move((p.0 + 20.0, p.1 + 9.0));
         e.mouse_up();
 
-        let moved = hud_layout();
+        let moved = layout_document();
         let login = moved.login_layout(crate::layout::core_login_layout());
         assert_eq!(
             (login.dialog.x, login.dialog.y),
@@ -883,9 +900,9 @@ mod tests {
             "独立门动画不跟登录面板动"
         );
         e.undo();
-        assert_eq!(hud_layout().get("login.panel"), Some(panel));
+        assert_eq!(layout_document().get("login.panel"), Some(panel));
 
-        let door = hud_layout().get("login.door").unwrap();
+        let door = layout_document().get("login.door").unwrap();
         e.set_visible(Some(vec!["login.door"]));
         e.sel = Some("login.door");
         let p = (door.x + 20.0, door.y + 20.0);
@@ -893,9 +910,9 @@ mod tests {
         assert_eq!(e.selected(), Some("login.door"));
         e.mouse_move((p.0 + 7.0, p.1 + 5.0));
         e.mouse_up();
-        assert_eq!(hud_layout().login_door().x, door.x + 7.0);
+        assert_eq!(layout_document().login_door().x, door.x + 7.0);
         e.undo();
-        assert_eq!(hud_layout().login_door(), door);
+        assert_eq!(layout_document().login_door(), door);
     }
 
     #[test]
@@ -906,7 +923,7 @@ mod tests {
             ..LayoutEdit::default()
         };
         e.set_scene(crate::app_state::Scene::Select);
-        let before = hud_layout();
+        let before = layout_document();
         let base = crate::layout::core_select_layout();
         let select0 = before.select_layout(base);
         let root = before.get("select.panel").unwrap();
@@ -916,7 +933,7 @@ mod tests {
         e.mouse_move((p.0 + 12.0, p.1 + 6.0));
         e.mouse_up();
 
-        let moved = hud_layout();
+        let moved = layout_document();
         let select1 = moved.select_layout(base);
         assert_eq!(select1.bg, (12.0, 6.0));
         assert_eq!(select1.menu[0].x, select0.menu[0].x + 12.0);
@@ -926,15 +943,15 @@ mod tests {
             select0.slot_texts[0].name.1 + 6.0
         );
         e.undo();
-        assert_eq!(hud_layout().select_layout(base).bg, (0.0, 0.0));
+        assert_eq!(layout_document().select_layout(base).bg, (0.0, 0.0));
 
-        let slot = hud_layout().select_layout(base).slots[0];
+        let slot = layout_document().select_layout(base).slots[0];
         let p = (slot.x + slot.w / 2.0, slot.y + slot.h / 2.0);
         assert!(e.mouse_down(p));
         assert_eq!(e.selected(), Some("select.slot.left"));
         e.mouse_move((p.0 + 8.0, p.1 + 4.0));
         e.mouse_up();
-        let select2 = hud_layout().select_layout(base);
+        let select2 = layout_document().select_layout(base);
         assert_eq!(select2.slots[0].x, slot.x + 8.0);
         assert_eq!(select2.slots[0].y, slot.y + 4.0);
         assert_eq!(select2.slots[1], select0.slots[1]);
@@ -950,7 +967,7 @@ mod tests {
             hit_at,
             &select2,
             None,
-            hud_layout().select_dialog_box(),
+            layout_document().select_dialog_box(),
             &mut widget_ui,
         );
         assert_eq!(
@@ -958,29 +975,41 @@ mod tests {
             Some(crate::Press::Select(crate::select::Hit::Slot(0)))
         );
 
-        let create = hud_layout().select_layout(base).menu[1];
+        let create = layout_document().select_layout(base).menu[1];
+        let menu_tree = layout_document().editor_tree(EditorScope::Select);
+        let menu_node = menu_tree.node("select.menu.create").unwrap();
+        assert_eq!(
+            menu_node.visual,
+            crate::widget::VisualSource::BackgroundBakedWithOverlay
+        );
+        assert_eq!(menu_node.edit, crate::widget::EditPolicy::LOCKED);
         let p = (create.x + create.w / 2.0, create.y + create.h / 2.0);
         assert!(e.mouse_down(p));
         assert_eq!(e.selected(), Some("select.menu.create"));
-        e.mouse_move((p.0 + 5.0, p.1 + 2.0));
-        e.mouse_up();
-        let select3 = hud_layout().select_layout(base);
-        assert_eq!(select3.menu[1].x, create.x + 5.0);
-        assert_eq!(select3.menu[1].y, create.y + 2.0);
+        assert!(e.drag.is_none(), "背景烘焙菜单选中后不可独立拖动");
+        assert_eq!(
+            layout_document().select_layout(base).menu[1],
+            create,
+            "背景烘焙文字不能只移动命中/高亮层"
+        );
+        e.sel = Some("select.menu.create");
+        e.nudge(5.0, 2.0);
+        e.cycle_align(false);
+        assert_eq!(layout_document().select_layout(base).menu[1], create);
 
         let mut menu_state = crate::select::Select::new(Vec::new());
         let mut menu_ui = crate::widget::Ui::new();
         let menu_point = (
-            select3.menu[1].x + select3.menu[1].w / 2.0,
-            select3.menu[1].y + select3.menu[1].h / 2.0,
+            select2.menu[1].x + select2.menu[1].w / 2.0,
+            select2.menu[1].y + select2.menu[1].h / 2.0,
         );
         let menu_canvas_point = crate::ui::ui_pt(menu_point);
         menu_ui.set_mouse(menu_canvas_point);
         menu_state.on_down_with_dialog(
             menu_point,
-            &select3,
+            &select2,
             None,
-            hud_layout().select_dialog_box(),
+            layout_document().select_dialog_box(),
             &mut menu_ui,
         );
         assert_eq!(
@@ -988,12 +1017,12 @@ mod tests {
             Some(crate::Press::Select(crate::select::Hit::Menu(1)))
         );
         assert_eq!(
-            menu_state.click_select(crate::select::Hit::Menu(1), &select3),
+            menu_state.click_select(crate::select::Hit::Menu(1), &select2),
             crate::select::Action::None
         );
         assert!(menu_state.newchar_open(), "创建人物按钮执行原有业务动作");
 
-        let dialog0 = hud_layout().select_dialog_box();
+        let dialog0 = layout_document().select_dialog_box();
         let d = dialog0.frame;
         e.set_visible(Some(vec![
             "select.newchar",
@@ -1012,7 +1041,7 @@ mod tests {
         assert_eq!(e.selected(), Some("select.newchar"));
         e.mouse_move((p.0 - 9.0, p.1 + 11.0));
         e.mouse_up();
-        let dialog1 = hud_layout().select_dialog_box();
+        let dialog1 = layout_document().select_dialog_box();
         assert_eq!(dialog1.frame.x, d.x - 9.0);
         assert_eq!(dialog1.frame.y, (d.y + 11.0).round());
         assert_eq!(dialog1.name.x, dialog0.name.x - 9.0);

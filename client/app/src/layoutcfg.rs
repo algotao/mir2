@@ -15,7 +15,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::layout::{HudLayout, LRect, LAYOUT_ITEM_IDS};
+use crate::layout::{layout_item_ids, LRect, LayoutDocument};
 
 /// 布局文件的位置（**入库**，调完直接提交）。
 pub(crate) fn layout_path() -> PathBuf {
@@ -65,7 +65,7 @@ pub(crate) fn parse(text: &str) -> Vec<(String, [f32; 4])> {
             }
         }
         if n == 4
-            && LAYOUT_ITEM_IDS.contains(&key)
+            && layout_item_ids().contains(&key)
             && nums.iter().all(|value| value.is_finite())
             && nums[2] > 0.0
             && nums[3] > 0.0
@@ -111,15 +111,15 @@ fn axis_name(axis: crate::widget::AxisAlign) -> &'static str {
 }
 
 /// 读文件 → 布局（文件不存在/全认不出 ⇒ `None`，调用方用缺省值）。
-pub(crate) fn load(path: &Path) -> Option<HudLayout> {
+pub(crate) fn load(path: &Path) -> Option<LayoutDocument> {
     let text = fs::read_to_string(path).ok()?;
-    let mut l = HudLayout::default_layout();
+    let mut l = LayoutDocument::default_layout();
     let entries = parse(&text);
     let mut overrides = entries.len();
     for (id, v) in entries {
         l.set_stored(&id, LRect::new(v[0], v[1], v[2], v[3]));
     }
-    for id in LAYOUT_ITEM_IDS {
+    for id in layout_item_ids().iter().copied() {
         if let Some(align) = parse_align(&text, id) {
             l.set_align(id, align);
             overrides += 1;
@@ -134,10 +134,10 @@ pub(crate) fn load(path: &Path) -> Option<HudLayout> {
 }
 
 /// 写回文件：**只写与缺省不同的项**。没人动过 ⇒ 不落文件（保持仓库干净）。
-pub(crate) fn save(path: &Path, cur: &HudLayout) -> std::io::Result<bool> {
-    let def = HudLayout::default_layout();
+pub(crate) fn save(path: &Path, cur: &LayoutDocument) -> std::io::Result<bool> {
+    let def = LayoutDocument::default_layout();
     let mut body = String::new();
-    for id in LAYOUT_ITEM_IDS {
+    for id in layout_item_ids().iter().copied() {
         let (a, b) = match (cur.stored_rect(id), def.stored_rect(id)) {
             (Some(a), Some(b)) => (a, b),
             _ => continue,
@@ -153,7 +153,7 @@ pub(crate) fn save(path: &Path, cur: &HudLayout) -> std::io::Result<bool> {
             num(a.h)
         ));
     }
-    for id in LAYOUT_ITEM_IDS {
+    for id in layout_item_ids().iter().copied() {
         let (Some(current), Some(default)) = (cur.align(id), def.align(id)) else {
             continue;
         };
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn 只存与缺省不同的项() {
-        let mut l = HudLayout::default_layout();
+        let mut l = LayoutDocument::default_layout();
         let def = l.clone();
         let dir = std::env::temp_dir().join("mir2_layout_test");
         let _ = fs::create_dir_all(&dir);
@@ -266,15 +266,18 @@ mod tests {
 
     #[test]
     fn parent锚点和局部子项持久化() {
-        let mut l = HudLayout::default_layout();
+        let mut l = LayoutDocument::default_layout();
         let mut expected = l.get("orb").unwrap();
         expected.x += 24.0;
         expected.y += 12.0;
         l.set("orb", expected);
-        l.panel_align = crate::widget::Align {
-            horizontal: crate::widget::AxisAlign::Center,
-            vertical: crate::widget::AxisAlign::End,
-        };
+        l.set_align(
+            "hud_panel",
+            crate::widget::Align {
+                horizontal: crate::widget::AxisAlign::Center,
+                vertical: crate::widget::AxisAlign::End,
+            },
+        );
         l.set_align(
             "orb",
             crate::widget::Align {
@@ -294,7 +297,7 @@ mod tests {
         assert!(text.contains("\"orb_align\": [\"center\", \"start\"]"));
 
         let loaded = load(&path).unwrap();
-        assert_eq!(loaded.panel_align, l.panel_align);
+        assert_eq!(loaded.align("hud_panel"), l.align("hud_panel"));
         assert_eq!(
             loaded.get(crate::layout::HUD_PANEL_ID),
             Some(expected_panel)
@@ -307,7 +310,7 @@ mod tests {
 
     #[test]
     fn 通用节点配置持久化状态窗和对话窗位置锚点() {
-        let mut l = HudLayout::default_layout();
+        let mut l = LayoutDocument::default_layout();
         let status = l.get("window_status").unwrap();
         l.set(
             "window_status",
@@ -345,7 +348,7 @@ mod tests {
 
     #[test]
     fn 登录门和选角节点稀疏配置往返() {
-        let mut layout = HudLayout::default_layout();
+        let mut layout = LayoutDocument::default_layout();
         let panel = layout.get("login.panel").unwrap();
         layout.set(
             "login.panel",
@@ -376,10 +379,20 @@ mod tests {
             "select.slot.left",
             LRect::new(slot.x + 6.0, slot.y - 3.0, slot.w, slot.h),
         );
-        let create = layout.stored_rect("select.menu.create").unwrap();
+        let baked_menu = layout.stored_rect("select.menu.create").unwrap();
         layout.set_stored(
             "select.menu.create",
-            LRect::new(create.x + 5.0, create.y + 2.0, create.w, create.h),
+            LRect::new(
+                baked_menu.x + 5.0,
+                baked_menu.y + 2.0,
+                baked_menu.w,
+                baked_menu.h,
+            ),
+        );
+        assert_eq!(
+            layout.stored_rect("select.menu.create"),
+            Some(baked_menu),
+            "背景烘焙菜单忽略脱离背景的 stale layout override"
         );
         let expected = [
             ("login.panel", layout.get("login.panel").unwrap()),
@@ -387,10 +400,6 @@ mod tests {
             ("login.door", layout.get("login.door").unwrap()),
             ("select.panel", layout.get("select.panel").unwrap()),
             ("select.slot.left", layout.get("select.slot.left").unwrap()),
-            (
-                "select.menu.create",
-                layout.get("select.menu.create").unwrap(),
-            ),
         ];
 
         let path = std::env::temp_dir().join("mir2_layout_login_select_test.json");
@@ -400,10 +409,32 @@ mod tests {
         for (id, _) in expected {
             assert!(text.contains(&format!("\"{id}\"")), "缺少持久化项 {id}");
         }
+        assert!(
+            !text.contains("select.menu.create"),
+            "背景烘焙菜单节点的旧 override 不应重新持久化"
+        );
         let loaded = load(&path).unwrap();
         for (id, rect) in expected {
             assert_eq!(loaded.get(id), Some(rect), "{id} 载入后要保持同一解析矩形");
         }
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn 背景烘焙菜单的历史坐标覆盖载入后被清理() {
+        let path = std::env::temp_dir().join("mir2_layout_baked_menu_stale.json");
+        fs::write(
+            &path,
+            "{\n  \"select.menu.create\": [352, 498, 120, 21]\n}\n",
+        )
+        .unwrap();
+        let loaded = load(&path).expect("识别到历史菜单布局项");
+        let defaults = LayoutDocument::default_layout();
+        assert_eq!(
+            loaded.stored_rect("select.menu.create"),
+            defaults.stored_rect("select.menu.create")
+        );
+        assert!(!save(&path, &loaded).unwrap());
+        assert!(!path.exists(), "无效的 baked menu override 应从配置清掉");
     }
 }

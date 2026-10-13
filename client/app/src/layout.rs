@@ -120,9 +120,9 @@ impl HudBtn {
 
     /// 命中框（**屏幕坐标**；统一 24×24，比图略大一点好点）。
     ///
-    /// ⚠️ 读**当前布局**（D-134）：编辑器里可以直接拖这 4 颗。
+    /// 位置从 `LayoutDocument` 读取；常态图烘焙在底板中，所以只允许随底板整体移动。
     pub fn rect(self) -> crate::space::CRect {
-        let l = hud_layout();
+        let l = layout_document();
         let id = match self {
             Self::State => "btn_state",
             Self::Bag => "btn_bag",
@@ -193,7 +193,7 @@ pub(crate) struct BeltSlot {
     pub looks: u32,
 }
 
-/// 腰带的格间距（**由整排宽算** ⇒ 编辑器里改宽就是改间距，D-134）。
+/// 腰带的格间距公式；当前背景烘焙节点锁定宽度，公式保持绘制/命中排布同源。
 pub(crate) fn belt_step(row: LRect) -> f32 {
     (row.w - BELT_W) / (BELT_SLOTS as f32 - 1.0)
 }
@@ -202,7 +202,7 @@ pub(crate) fn belt_step(row: LRect) -> f32 {
 ///
 /// ⚠️ 2026-10-12：中段改**平铺**后这 6 格不再被拉宽 ⇒ 宽高都按原样（32×29）。
 pub(crate) fn belt_slot_rect(i: usize) -> crate::space::CRect {
-    let b = hud_layout()
+    let b = layout_document()
         .get("belt")
         .expect("belt is a HUD child widget");
     crate::space::canvas_rect(b.x + i as f32 * belt_step(b), b.y, BELT_W, BELT_H)
@@ -247,7 +247,7 @@ pub(crate) fn skill_step(row: LRect) -> f32 {
 }
 
 pub(crate) fn skill_slot_rect(i: usize) -> crate::space::CRect {
-    let b = hud_layout()
+    let b = layout_document()
         .get("skill_bar")
         .expect("skill bar is a HUD child widget");
     crate::space::canvas_rect(
@@ -341,10 +341,9 @@ impl QuickBtn {
 
     /// 命中框（**屏幕坐标**）。
     ///
-    /// ⚠️ 读**当前布局**（D-134）：`quick_row` 是整排一项 ⇒ 首颗位置 + 由整排宽算出的
-    /// 间距（改宽 = 改间距）。
+    /// 由布局 spec 中的整排节点统一计算首格/间距；常态图烘焙在底板，节点锁定并随底板移动。
     pub fn rect(self) -> crate::space::CRect {
-        let l = hud_layout();
+        let l = layout_document();
         let (row_id, i, n) = match self {
             Self::MiniMap => ("quick_row", 0.0, 5.0),
             Self::Trade => ("quick_row", 1.0, 5.0),
@@ -379,7 +378,7 @@ pub(crate) fn hud_quick_at(p: crate::space::CPt) -> Option<QuickBtn> {
 pub(crate) const HUD_ORB_SOLO: u32 = mir2_core::image_manifest::assets::HUD_ORB_SOLO.index;
 pub(crate) const HUD_ORB_SOLO_FILL: u32 =
     mir2_core::image_manifest::assets::HUD_ORB_SOLO_FILL.index;
-/// ⚠️ 现在单球也跟着 `HudLayout::orb` 走（D-134）⇒ 这个常量只作**对照**留着
+/// ⚠️ 现在单球也跟着 `LayoutDocument::orb` 走（D-134）⇒ 这个常量只作**对照**留着
 ///（原版单球落点比双球左 2 上 1）。
 #[allow(dead_code)]
 pub(crate) const ORB_SOLO_AT: (f32, f32) = (38.0, 90.0);
@@ -475,7 +474,7 @@ pub(crate) fn chat_box() -> (f32, f32, f32, f32) {
 pub(crate) fn chat_line_y(i: usize, shown: usize) -> f32 {
     // ⚠️ 读**当前布局**（D-134）而不是上面的 `chat_box()` 默认值 —— 否则在编辑器里
     // 挪了聊天框，框动了、字还在原地（用户 2026-10-12）。
-    let c = hud_layout()
+    let c = layout_document()
         .get("chat_box")
         .expect("chat box is a HUD child widget");
     let (_, y, _, h) = (c.x, c.y, c.w, c.h);
@@ -626,25 +625,12 @@ mod tests {
     }
 }
 
-// ---------- 可编辑的底栏布局（D-134 界面开发器）----------
+// ---------- 跨场景布局文档（D-134/D-136）----------
 //
-// ⚠️ 一期只收底栏（HUD）。每个字段都表达成**矩形**（连"数值行的 Y"也是一条横跨的
-// 细线，只取 `y`）⇒ 编辑器只需处理"拖 rect"，不用为标量单开一套交互。
-//
-// 缺省值 = 上面那些常量（照原版/官方截图量的）⇒ **没有配置文件时行为与今天完全一致**。
-// `assets/ui/layout.json` 里出现过的键覆盖对应项（只存被改过的，见 `layoutcfg`）。
+// 节点 spec 给出默认树；唯一可变状态是 `LayoutDocument::overrides`。
+// 场景投影是只读 adapter，编辑器与配置文件不会另存另一份 HUD/scene 几何。
 
-/// 右上按钮的缺省矩形（**面板坐标** → 屏幕；命中框统一 24×24，比图略大好点）。
-fn btn_rect((lx, ly): (f32, f32)) -> LRect {
-    LRect::new(
-        hud_local_x(lx),
-        crate::window::WIN_H as f32 - HUD_BOARD_H + ly,
-        24.0,
-        24.0,
-    )
-}
-
-/// 一个可编辑项的矩形（**画布坐标** 1024×768）。
+/// 一个布局矩形；坐标属于其 `EditorScope`，子节点相对 parent，根节点相对 viewport。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LRect {
     pub x: f32,
@@ -666,17 +652,17 @@ impl LRect {
     }
 }
 
-/// UI 布局 adapter：HUD 底栏是 parent；状态窗/对话窗是固定原生尺寸的可移动根节点。
-///
-/// 所有根/子节点经 `get()` 解析为画布坐标；通用编辑器操作 `WidgetTree`，再由本类型
-/// 将解析几何同步给现有绘制/业务布局。HUD 子项尺寸不随 parent 缩放。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// 布局作用域同时定义节点几何的坐标空间。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub(crate) enum EditorScope {
     #[default]
     World,
     Login,
     Select,
 }
+
+const EDITOR_SCOPES: [EditorScope; 3] =
+    [EditorScope::World, EditorScope::Login, EditorScope::Select];
 
 impl EditorScope {
     pub(crate) fn from_scene(scene: crate::app_state::Scene) -> Option<Self> {
@@ -700,37 +686,11 @@ impl EditorScope {
     }
 }
 
+/// 布局 spec（WidgetTree）是场景默认值，`overrides` 是跨场景唯一的用户可变布局状态。
+/// 绘制、命中、编辑与持久化都通过同一文档查询/更新，不另存 HUD 或 scene 可变几何字段。
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct HudLayout {
-    /// 底栏 parent 的锚点偏移与尺寸。默认 BottomLeft (0,0,1024,251)。
-    pub hud_panel: LRect,
-    pub panel_align: crate::widget::Align,
-    /// 窗口根节点布局；固定素材原生尺寸，只编辑锚点位置。
-    pub status_panel: LRect,
-    pub status_align: crate::widget::Align,
-    pub dialog_panel: LRect,
-    pub dialog_align: crate::widget::Align,
-    pub align_overrides: std::collections::HashMap<&'static str, crate::widget::Align>,
-    /// Login / door / character-select scene geometry stored in its 800×600 design space.
-    pub scene_rects: std::collections::HashMap<&'static str, LRect>,
-    /// 以下均为相对 `hud_panel` 的局部矩形。
-    pub orb: LRect,
-    pub plate_hp: LRect,
-    pub plate_mp: LRect,
-    pub exp_bar: LRect,
-    pub weight_bar: LRect,
-    pub level_num: LRect,
-    pub chat_box: LRect,
-    pub btn_state: LRect,
-    pub btn_bag: LRect,
-    pub btn_magic: LRect,
-    pub btn_option: LRect,
-    pub quick_row: LRect,
-    pub quick_right: LRect,
-    pub belt: LRect,
-    pub skill_bar: LRect,
-    pub atk_text: LRect,
-    pub clock: LRect,
+pub(crate) struct LayoutDocument {
+    overrides: std::collections::HashMap<&'static str, crate::widget::LayoutValue>,
 }
 
 pub(crate) const HUD_PANEL_ID: &str = "hud_panel";
@@ -796,86 +756,6 @@ pub(crate) fn item_name(id: &str) -> &str {
     }
 }
 
-/// HUD 绘制与输入 adapter 共用的子节点 id；通用编辑器/配置使用下方 `LAYOUT_ITEM_IDS`。
-pub(crate) const HUD_ITEM_IDS: [&str; 18] = [
-    HUD_PANEL_ID,
-    "orb",
-    "plate_hp",
-    "plate_mp",
-    "exp_bar",
-    "weight_bar",
-    "level_num",
-    "chat_box",
-    "btn_state",
-    "btn_bag",
-    "btn_magic",
-    "btn_option",
-    "quick_row",
-    "quick_right",
-    "belt",
-    "skill_bar",
-    "atk_text",
-    "clock",
-];
-
-/// 统一编辑器/持久化布局文档：HUD、世界窗口与登录/开门/选角场景节点。
-pub(crate) const LAYOUT_ITEM_IDS: [&str; 54] = [
-    HUD_PANEL_ID,
-    "orb",
-    "plate_hp",
-    "plate_mp",
-    "exp_bar",
-    "weight_bar",
-    "level_num",
-    "chat_box",
-    "btn_state",
-    "btn_bag",
-    "btn_magic",
-    "btn_option",
-    "quick_row",
-    "quick_right",
-    "belt",
-    "skill_bar",
-    "atk_text",
-    "clock",
-    "window_status",
-    "window_dialog",
-    "login.panel",
-    "login.account",
-    "login.password",
-    "login.confirm",
-    "login.ok",
-    "login.new",
-    "login.chgpw",
-    "login.close",
-    "login.signup_ok",
-    "login.signup_cancel",
-    "login.door",
-    "login.msgbox",
-    "login.msg_ok",
-    "select.panel",
-    "select.slot.left",
-    "select.slot.right",
-    "select.info.left",
-    "select.info.right",
-    "select.menu.start",
-    "select.menu.create",
-    "select.menu.delete",
-    "select.menu.credits",
-    "select.menu.exit",
-    "select.newchar",
-    "select.newchar.name",
-    "select.newchar.job.0",
-    "select.newchar.job.1",
-    "select.newchar.job.2",
-    "select.newchar.sex.0",
-    "select.newchar.sex.1",
-    "select.newchar.ok",
-    "select.newchar.close",
-    "select.msgbox",
-    "select.msg_ok",
-];
-
 fn scene_measure(lib: &'static str, index: u32) -> Option<(u32, u32)> {
     if let Some(size) = match (lib, index) {
         ("Prguse", 60) => Some((296, 254)),
@@ -939,6 +819,31 @@ fn enforce_edit_size(policy: crate::widget::EditPolicy, default: LRect, mut rect
     rect
 }
 
+#[allow(clippy::too_many_arguments)]
+fn layout_node(
+    id: &'static str,
+    parent: Option<&'static str>,
+    rect: LRect,
+    align: crate::widget::Align,
+    z: i32,
+    clip_children: bool,
+    input: crate::widget::InputPolicy,
+    edit: crate::widget::EditPolicy,
+    visual: crate::widget::VisualSource,
+) -> crate::widget::LayoutNode {
+    crate::widget::LayoutNode {
+        id,
+        parent,
+        rect,
+        align,
+        z,
+        clip_children,
+        input,
+        edit,
+        visual,
+    }
+}
+
 fn scene_node(
     id: &'static str,
     parent: Option<&'static str>,
@@ -948,16 +853,17 @@ fn scene_node(
     input: crate::widget::InputPolicy,
     edit: crate::widget::EditPolicy,
 ) -> crate::widget::LayoutNode {
-    crate::widget::LayoutNode {
+    layout_node(
         id,
         parent,
         rect,
-        align: crate::widget::Align::TOP_LEFT,
+        crate::widget::Align::TOP_LEFT,
         z,
         clip_children,
         input,
         edit,
-    }
+        crate::widget::VisualSource::Independent,
+    )
 }
 
 fn scene_default_tree(scope: EditorScope) -> crate::widget::WidgetTree {
@@ -1088,15 +994,17 @@ fn scene_default_tree(scope: EditorScope) -> crate::widget::WidgetTree {
             .into_iter()
             .enumerate()
             {
-                tree.push(scene_node(
+                let mut node = scene_node(
                     id,
                     Some("select.panel"),
                     local_to(panel, select_rect(l.menu[i])),
                     3,
                     false,
                     InputPolicy::Target,
-                    EditPolicy::MOVE_ONLY,
-                ));
+                    EditPolicy::LOCKED,
+                );
+                node.visual = crate::widget::VisualSource::BackgroundBakedWithOverlay;
+                tree.push(node);
             }
             let dialog = DialogBox::build(crate::window::UI_WIN);
             let frame = select_rect(dialog.frame);
@@ -1184,370 +1092,371 @@ fn scene_default_tree(scope: EditorScope) -> crate::widget::WidgetTree {
     tree
 }
 
-fn scene_default_rects() -> std::collections::HashMap<&'static str, LRect> {
-    [EditorScope::Login, EditorScope::Select]
-        .into_iter()
-        .flat_map(|scope| scene_default_tree(scope).nodes().to_vec())
-        .map(|node| (node.id, node.rect))
-        .collect()
+fn default_world_tree() -> crate::widget::WidgetTree {
+    use crate::widget::{Align, EditPolicy, InputPolicy, VisualSource, WidgetTree};
+    let board_y = crate::window::WIN_H as f32 - HUD_BOARD_H;
+    let panel = LRect::new(0.0, 0.0, crate::window::WIN_W as f32, HUD_BOARD_H);
+    let viewport = layout_viewport();
+    let mut tree = WidgetTree::default();
+    tree.push(layout_node(
+        HUD_PANEL_ID,
+        None,
+        panel,
+        Align::BOTTOM_LEFT,
+        0,
+        false,
+        InputPolicy::Block,
+        EditPolicy::MOVE_ONLY,
+        VisualSource::Independent,
+    ));
+    tree.push(layout_node(
+        "window_status",
+        None,
+        LRect::new(
+            (viewport.w - crate::status::BG_W).max(0.0),
+            crate::status::TOP,
+            crate::status::BG_W,
+            crate::status::BG_H,
+        ),
+        Align::TOP_LEFT,
+        20,
+        true,
+        InputPolicy::Target,
+        EditPolicy::MOVE_ONLY,
+        VisualSource::Independent,
+    ));
+    tree.push(layout_node(
+        "window_dialog",
+        None,
+        LRect::new(
+            crate::dialog::DIALOG_X,
+            crate::dialog::DIALOG_Y,
+            crate::dialog::DIALOG_W,
+            crate::dialog::DIALOG_H,
+        ),
+        Align::TOP_LEFT,
+        30,
+        true,
+        InputPolicy::Target,
+        EditPolicy::MOVE_ONLY,
+        VisualSource::Independent,
+    ));
+
+    let local_y = |screen_y: f32| screen_y - board_y;
+    let child = |id, rect, edit, visual| {
+        layout_node(
+            id,
+            Some(HUD_PANEL_ID),
+            rect,
+            Align::TOP_LEFT,
+            1,
+            false,
+            InputPolicy::Target,
+            edit,
+            visual,
+        )
+    };
+    for (id, rect, edit) in [
+        (
+            "orb",
+            LRect::new(ORB_AT.0, ORB_AT.1, 92.0, 90.0),
+            EditPolicy::MOVE_ONLY,
+        ),
+        (
+            "plate_hp",
+            LRect::new(NUM_PLATE_HP.0, ORB_TEXT_DY - 2.0, NUM_PLATE_HP.1, 20.0),
+            EditPolicy::MOVE_RESIZE,
+        ),
+        (
+            "plate_mp",
+            LRect::new(NUM_PLATE_MP.0, ORB_TEXT_DY - 2.0, NUM_PLATE_MP.1, 20.0),
+            EditPolicy::MOVE_RESIZE,
+        ),
+        (
+            "exp_bar",
+            LRect::new(exp_at().0, local_y(exp_at().1), 76.0, 13.0),
+            EditPolicy::MOVE_ONLY,
+        ),
+        (
+            "weight_bar",
+            LRect::new(weight_at().0, local_y(weight_at().1), 76.0, 13.0),
+            EditPolicy::MOVE_ONLY,
+        ),
+        (
+            "level_num",
+            LRect::new(level_at().0, local_y(level_at().1), 12.0, 10.0),
+            EditPolicy::MOVE_ONLY,
+        ),
+    ] {
+        tree.push(child(id, rect, edit, VisualSource::Independent));
+    }
+
+    let (chat_x, chat_y, chat_w, chat_h) = chat_box();
+    tree.push(child(
+        "chat_box",
+        LRect::new(chat_x, local_y(chat_y), chat_w, chat_h),
+        EditPolicy::MOVE_RESIZE,
+        VisualSource::Independent,
+    ));
+    for (id, button) in [
+        ("btn_state", HudBtn::State),
+        ("btn_bag", HudBtn::Bag),
+        ("btn_magic", HudBtn::Magic),
+        ("btn_option", HudBtn::Option),
+    ] {
+        tree.push(child(
+            id,
+            LRect::new(hud_local_x(button.at().0), button.at().1, 24.0, 24.0),
+            EditPolicy::LOCKED,
+            VisualSource::BackgroundBakedWithOverlay,
+        ));
+    }
+    for (id, x, count) in [
+        ("quick_row", QuickBtn::MiniMap.at().0, 5.0),
+        ("quick_right", QuickBtn::Logout.at().0, 2.0),
+    ] {
+        tree.push(child(
+            id,
+            LRect::new(
+                hud_local_x(x),
+                QuickBtn::MiniMap.at().1,
+                (count - 1.0) * QUICK_STEP + 28.0,
+                13.0,
+            ),
+            EditPolicy::LOCKED,
+            VisualSource::BackgroundBakedWithOverlay,
+        ));
+    }
+    tree.push(child(
+        "belt",
+        LRect::new(
+            hud_local_x(BELT_AT.0),
+            BELT_AT.1,
+            5.0 * BELT_STEP + BELT_W,
+            BELT_H,
+        ),
+        EditPolicy::LOCKED,
+        VisualSource::BackgroundBaked,
+    ));
+    let (skill_x, skill_y) = skill_bar_at();
+    tree.push(child(
+        "skill_bar",
+        LRect::new(
+            skill_x,
+            local_y(skill_y),
+            7.0 * SKILL_SLOT_STEP + SKILL_SLOT_W,
+            SKILL_SLOT_H,
+        ),
+        EditPolicy::MOVE_RESIZE,
+        VisualSource::Independent,
+    ));
+    tree.push(child(
+        "atk_text",
+        LRect::new(
+            hud_right_x() + 56.0,
+            local_y(crate::window::WIN_H as f32 - 136.0),
+            64.0,
+            14.0,
+        ),
+        EditPolicy::MOVE_ONLY,
+        VisualSource::Independent,
+    ));
+    tree.push(child(
+        "clock",
+        LRect::new(
+            hud_right_x() + 66.0,
+            local_y(crate::window::WIN_H as f32 - 22.0),
+            64.0,
+            14.0,
+        ),
+        EditPolicy::MOVE_ONLY,
+        VisualSource::Independent,
+    ));
+    tree
 }
 
-impl HudLayout {
+fn default_tree_for_scope(scope: EditorScope) -> crate::widget::WidgetTree {
+    match scope {
+        EditorScope::World => default_world_tree(),
+        EditorScope::Login | EditorScope::Select => scene_default_tree(scope),
+    }
+}
+
+fn layout_specs() -> &'static std::collections::HashMap<EditorScope, crate::widget::WidgetTree> {
+    static SPECS: std::sync::OnceLock<
+        std::collections::HashMap<EditorScope, crate::widget::WidgetTree>,
+    > = std::sync::OnceLock::new();
+    SPECS.get_or_init(|| {
+        let mut specs = std::collections::HashMap::new();
+        let mut ids = Vec::new();
+        for scope in EDITOR_SCOPES {
+            let tree = default_tree_for_scope(scope);
+            tree.resolve(scope.viewport())
+                .expect("layout schema must have unique ids and valid parents");
+            for node in tree.nodes() {
+                assert!(
+                    !ids.contains(&node.id),
+                    "duplicate cross-scene layout id {}",
+                    node.id
+                );
+                ids.push(node.id);
+            }
+            specs.insert(scope, tree);
+        }
+        specs
+    })
+}
+
+/// 配置文件 ID 清单直接从全场景共用的不可变布局 spec 派生。
+pub(crate) fn layout_item_ids() -> &'static [&'static str] {
+    static IDS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    IDS.get_or_init(|| {
+        EDITOR_SCOPES
+            .into_iter()
+            .flat_map(|scope| layout_specs()[&scope].nodes().iter().map(|node| node.id))
+            .collect()
+    })
+}
+
+impl LayoutDocument {
     pub(crate) fn default_layout() -> Self {
-        let board_y = crate::window::WIN_H as f32 - HUD_BOARD_H;
-        let screen_panel = LRect::new(0.0, board_y, crate::window::WIN_W as f32, HUD_BOARD_H);
-        let panel_align = crate::widget::Align::BOTTOM_LEFT;
-        let panel = LRect::new(0.0, 0.0, screen_panel.w, screen_panel.h);
-        let local = |r: LRect| LRect::new(r.x - screen_panel.x, r.y - screen_panel.y, r.w, r.h);
-        let text_y = board_y + ORB_TEXT_DY;
-        let (chat_x, chat_y, chat_w, chat_h) = chat_box();
-        let skill = {
-            let (x, y) = skill_bar_at();
-            LRect::new(x, y, 7.0 * SKILL_SLOT_STEP + SKILL_SLOT_W, SKILL_SLOT_H)
-        };
+        let _ = layout_specs();
         Self {
-            hud_panel: panel,
-            panel_align,
-            status_panel: LRect::new(
-                (crate::window::WIN_W as f32 - crate::status::BG_W).max(0.0),
-                crate::status::TOP,
-                crate::status::BG_W,
-                crate::status::BG_H,
-            ),
-            status_align: crate::widget::Align::TOP_LEFT,
-            dialog_panel: LRect::new(
-                crate::dialog::DIALOG_X,
-                crate::dialog::DIALOG_Y,
-                crate::dialog::DIALOG_W,
-                crate::dialog::DIALOG_H,
-            ),
-            dialog_align: crate::widget::Align::TOP_LEFT,
-            align_overrides: std::collections::HashMap::new(),
-            scene_rects: scene_default_rects(),
-            orb: local(LRect::new(ORB_AT.0, board_y + ORB_AT.1, 92.0, 90.0)),
-            plate_hp: local(LRect::new(
-                NUM_PLATE_HP.0,
-                text_y - 2.0,
-                NUM_PLATE_HP.1,
-                20.0,
-            )),
-            plate_mp: local(LRect::new(
-                NUM_PLATE_MP.0,
-                text_y - 2.0,
-                NUM_PLATE_MP.1,
-                20.0,
-            )),
-            exp_bar: local(LRect::new(exp_at().0, exp_at().1, 76.0, 13.0)),
-            weight_bar: local(LRect::new(weight_at().0, weight_at().1, 76.0, 13.0)),
-            level_num: local(LRect::new(level_at().0, level_at().1, 12.0, 10.0)),
-            chat_box: local(LRect::new(chat_x, chat_y, chat_w, chat_h)),
-            btn_state: local(btn_rect(HudBtn::State.at())),
-            btn_bag: local(btn_rect(HudBtn::Bag.at())),
-            btn_magic: local(btn_rect(HudBtn::Magic.at())),
-            btn_option: local(btn_rect(HudBtn::Option.at())),
-            quick_row: {
-                let (x, y) = QuickBtn::MiniMap.at();
-                local(LRect::new(
-                    hud_local_x(x),
-                    board_y + y,
-                    4.0 * QUICK_STEP + 28.0,
-                    13.0,
-                ))
-            },
-            quick_right: {
-                let (x, y) = QuickBtn::Logout.at();
-                local(LRect::new(
-                    hud_local_x(x),
-                    board_y + y,
-                    QUICK_STEP + 28.0,
-                    13.0,
-                ))
-            },
-            belt: local(LRect::new(
-                hud_local_x(BELT_AT.0),
-                board_y + BELT_AT.1,
-                5.0 * BELT_STEP + BELT_W,
-                BELT_H,
-            )),
-            skill_bar: local(skill),
-            atk_text: local(LRect::new(
-                hud_right_x() + 56.0,
-                crate::window::WIN_H as f32 - 136.0,
-                64.0,
-                14.0,
-            )),
-            clock: local(LRect::new(
-                hud_right_x() + 66.0,
-                crate::window::WIN_H as f32 - 22.0,
-                64.0,
-                14.0,
-            )),
+            overrides: std::collections::HashMap::new(),
         }
     }
 
-    pub(crate) fn panel_rect(&self) -> LRect {
-        crate::widget::align_rect(self.hud_panel, layout_viewport(), self.panel_align)
-    }
-
-    fn local_rect(&self, id: &str) -> Option<LRect> {
-        Some(match id {
-            "orb" => self.orb,
-            "plate_hp" => self.plate_hp,
-            "plate_mp" => self.plate_mp,
-            "exp_bar" => self.exp_bar,
-            "weight_bar" => self.weight_bar,
-            "level_num" => self.level_num,
-            "chat_box" => self.chat_box,
-            "btn_state" => self.btn_state,
-            "btn_bag" => self.btn_bag,
-            "btn_magic" => self.btn_magic,
-            "btn_option" => self.btn_option,
-            "quick_row" => self.quick_row,
-            "quick_right" => self.quick_right,
-            "belt" => self.belt,
-            "skill_bar" => self.skill_bar,
-            "atk_text" => self.atk_text,
-            "clock" => self.clock,
-            _ => return None,
-        })
-    }
-
-    /// 取解析后的矩形；HUD 使用画布空间，登录/选角使用 800×600 设计空间。
-    pub(crate) fn get(&self, id: &str) -> Option<LRect> {
-        if id == HUD_PANEL_ID {
-            return Some(self.panel_rect());
-        }
+    fn scope_for_id(&self, id: &str) -> Option<EditorScope> {
         if let Some(scope) = scene_scope_for_id(id) {
-            return self.editor_tree(scope).resolved_rect(scope.viewport(), id);
+            Some(scope)
+        } else {
+            layout_specs()
+                .get(&EditorScope::World)
+                .and_then(|tree| tree.node(id))
+                .map(|_| EditorScope::World)
         }
-        let viewport = layout_viewport();
-        match id {
-            "window_status" => Some(crate::widget::align_rect(
-                self.status_panel,
-                viewport,
-                self.status_align,
-            )),
-            "window_dialog" => Some(crate::widget::align_rect(
-                self.dialog_panel,
-                viewport,
-                self.dialog_align,
-            )),
-            _ => {
-                let local = self.local_rect(id)?;
-                Some(crate::widget::align_rect(
-                    local,
-                    self.panel_rect(),
-                    self.align(id).unwrap_or(crate::widget::Align::TOP_LEFT),
-                ))
+    }
+
+    fn tree(&self, scope: EditorScope) -> crate::widget::WidgetTree {
+        let mut tree = layout_specs().get(&scope).cloned().unwrap_or_default();
+        for node in tree.nodes_mut() {
+            if let Some(value) = self.overrides.get(node.id) {
+                node.rect = value.rect;
+                node.align = value.align;
             }
         }
+        tree
     }
 
-    /// 配置保存 parent-local 矩形或相对 viewport 的根节点矩形。
+    #[cfg(test)]
+    pub(crate) fn panel_rect(&self) -> LRect {
+        self.get(HUD_PANEL_ID).expect("HUD panel node exists")
+    }
+
+    pub(crate) fn get(&self, id: &str) -> Option<LRect> {
+        let scope = self.scope_for_id(id)?;
+        self.tree(scope).resolved_rect(scope.viewport(), id)
+    }
+
     pub(crate) fn stored_rect(&self, id: &str) -> Option<LRect> {
-        match id {
-            HUD_PANEL_ID => Some(self.hud_panel),
-            "window_status" => Some(self.status_panel),
-            "window_dialog" => Some(self.dialog_panel),
-            _ => self
-                .local_rect(id)
-                .or_else(|| self.scene_rects.get(id).copied()),
-        }
+        let scope = self.scope_for_id(id)?;
+        self.tree(scope).node(id).map(|node| node.rect)
     }
 
     pub(crate) fn align(&self, id: &str) -> Option<crate::widget::Align> {
-        match id {
-            HUD_PANEL_ID => Some(self.panel_align),
-            "window_status" => Some(self.status_align),
-            "window_dialog" => Some(self.dialog_align),
-            _ if self.local_rect(id).is_some() || self.scene_rects.contains_key(id) => Some(
-                self.align_overrides
-                    .get(id)
-                    .copied()
-                    .unwrap_or(crate::widget::Align::TOP_LEFT),
-            ),
-            _ => None,
+        let scope = self.scope_for_id(id)?;
+        self.tree(scope).node(id).map(|node| node.align)
+    }
+
+    fn set_value(&mut self, id: &str, rect: LRect, align: crate::widget::Align) {
+        let Some(scope) = self.scope_for_id(id) else {
+            return;
+        };
+        let Some(spec) = layout_specs().get(&scope).and_then(|tree| tree.node(id)) else {
+            return;
+        };
+        if (!spec.edit.movable && !spec.edit.resizable)
+            || spec.visual != crate::widget::VisualSource::Independent
+        {
+            return;
+        }
+        let rect = enforce_edit_size(spec.edit, spec.rect, rect);
+        if rect == spec.rect && align == spec.align {
+            self.overrides.remove(id);
+        } else {
+            self.overrides
+                .insert(spec.id, crate::widget::LayoutValue { rect, align });
         }
     }
 
     pub(crate) fn set_align(&mut self, id: &str, align: crate::widget::Align) {
-        match id {
-            HUD_PANEL_ID => self.panel_align = align,
-            "window_status" => self.status_align = align,
-            "window_dialog" => self.dialog_align = align,
-            _ if self.local_rect(id).is_some() || self.scene_rects.contains_key(id) => {
-                let Some(key) = LAYOUT_ITEM_IDS.iter().copied().find(|key| *key == id) else {
-                    return;
-                };
-                if align == crate::widget::Align::TOP_LEFT {
-                    self.align_overrides.remove(key);
-                } else {
-                    self.align_overrides.insert(key, align);
-                }
-            }
-            _ => {}
-        }
+        let Some(rect) = self.stored_rect(id) else {
+            return;
+        };
+        self.set_value(id, rect, align);
     }
 
-    pub(crate) fn set_stored(&mut self, id: &str, r: LRect) {
-        match id {
-            HUD_PANEL_ID => {
-                self.hud_panel.x = r.x;
-                self.hud_panel.y = r.y;
-            }
-            "window_status" => {
-                self.status_panel.x = r.x;
-                self.status_panel.y = r.y;
-            }
-            "window_dialog" => {
-                self.dialog_panel.x = r.x;
-                self.dialog_panel.y = r.y;
-            }
-            _ if self.scene_rects.contains_key(id) => {
-                let scope = scene_scope_for_id(id).expect("scene widget id has a scope");
-                let defaults = scene_default_tree(scope);
-                let node = defaults.node(id).expect("scene widget id is registered");
-                let value = enforce_edit_size(node.edit, node.rect, r);
-                let key = LAYOUT_ITEM_IDS
-                    .iter()
-                    .copied()
-                    .find(|key| *key == id)
-                    .expect("scene widget id must be registered");
-                self.scene_rects.insert(key, value);
-            }
-            _ => {
-                if let Some(node) = self.widget_tree().node(id) {
-                    if let Some(default) = Self::default_layout().stored_rect(id) {
-                        self.set_local(id, enforce_edit_size(node.edit, default, r));
-                        return;
-                    }
-                }
-                self.set_local(id, r);
-            }
-        }
+    pub(crate) fn set_stored(&mut self, id: &str, rect: LRect) {
+        let Some(scope) = self.scope_for_id(id) else {
+            return;
+        };
+        let Some(default_align) = layout_specs()
+            .get(&scope)
+            .and_then(|tree| tree.node(id))
+            .map(|node| node.align)
+        else {
+            return;
+        };
+        let align = self.align(id).unwrap_or(default_align);
+        self.set_value(id, rect, align);
     }
 
-    /// 编辑树：所有 HUD 控件都是底栏窗口的子节点；技能栏允许超出 parent 边界。
+    /// 测试/工具设置解析空间绝对矩形；写入统一文档时反算成 parent-local/anchor-offset。
+    #[cfg(test)]
+    pub(crate) fn set(&mut self, id: &str, rect: LRect) {
+        let Some(scope) = self.scope_for_id(id) else {
+            return;
+        };
+        let tree = self.tree(scope);
+        let Some(node) = tree.node(id) else { return };
+        let viewport = scope.viewport();
+        let parent = node
+            .parent
+            .and_then(|parent| tree.resolved_rect(viewport, parent))
+            .unwrap_or(viewport);
+        let align = node.align;
+        let rect = enforce_edit_size(node.edit, node.rect, rect);
+        let stored = crate::widget::unalign_rect(rect, parent, align);
+        self.set_value(id, stored, align);
+    }
+
+    /// 运行时 HUD 输入窗树由同一布局文档派生；动态模态层由 `world_input` 添加。
     pub(crate) fn widget_tree(&self) -> crate::widget::WidgetTree {
-        use crate::widget::{Align, EditPolicy, InputPolicy, LayoutNode, WidgetTree};
-        let mut tree = WidgetTree::default();
-        tree.push(LayoutNode {
-            id: HUD_PANEL_ID,
-            parent: None,
-            rect: self.hud_panel,
-            align: self.panel_align,
-            z: 0,
-            clip_children: false,
-            input: InputPolicy::Block,
-            edit: EditPolicy::MOVE_ONLY,
-        });
-        for id in HUD_ITEM_IDS.into_iter().filter(|id| *id != HUD_PANEL_ID) {
-            let Some(rect) = self.local_rect(id) else {
-                continue;
-            };
-            tree.push(LayoutNode {
-                id,
-                parent: Some(HUD_PANEL_ID),
-                rect,
-                align: self.align(id).unwrap_or(Align::TOP_LEFT),
-                z: 1,
-                clip_children: false,
-                input: InputPolicy::Target,
-                edit: if matches!(
-                    id,
-                    "plate_hp"
-                        | "plate_mp"
-                        | "chat_box"
-                        | "quick_row"
-                        | "quick_right"
-                        | "belt"
-                        | "skill_bar"
-                ) {
-                    EditPolicy::MOVE_RESIZE
-                } else {
-                    EditPolicy::MOVE_ONLY
-                },
-            });
+        let mut runtime = crate::widget::WidgetTree::default();
+        for node in self
+            .tree(EditorScope::World)
+            .nodes()
+            .iter()
+            .filter(|node| node.id != "window_status" && node.id != "window_dialog")
+        {
+            runtime.push(*node);
         }
-        tree
+        runtime
     }
 
-    /// 当前场景的 widget 文档；登录/选角几何保持 800×600 设计空间。
+    /// 当前场景的 widget 文档；默认 spec 与用户覆盖在同一个布局文档中解析。
     pub(crate) fn editor_tree(&self, scope: EditorScope) -> crate::widget::WidgetTree {
-        if scope != EditorScope::World {
-            let mut tree = scene_default_tree(scope);
-            for node in tree.nodes_mut() {
-                if let Some(rect) = self.scene_rects.get(node.id) {
-                    node.rect = *rect;
-                }
-                node.align = self.align(node.id).unwrap_or(node.align);
-            }
-            return tree;
-        }
-
-        use crate::widget::{EditPolicy, InputPolicy, LayoutNode, WidgetTree};
-        let hud = self.widget_tree();
-        let mut tree = WidgetTree::default();
-        for node in hud.nodes().iter().filter(|node| node.parent.is_none()) {
-            tree.push(*node);
-        }
-        tree.push(LayoutNode {
-            id: "window_status",
-            parent: None,
-            rect: self.status_panel,
-            align: self.status_align,
-            z: 20,
-            clip_children: true,
-            input: InputPolicy::Target,
-            edit: EditPolicy::MOVE_ONLY,
-        });
-        tree.push(LayoutNode {
-            id: "window_dialog",
-            parent: None,
-            rect: self.dialog_panel,
-            align: self.dialog_align,
-            z: 30,
-            clip_children: true,
-            input: InputPolicy::Target,
-            edit: EditPolicy::MOVE_ONLY,
-        });
-        for node in hud.nodes().iter().filter(|node| node.parent.is_some()) {
-            tree.push(*node);
-        }
-        tree
+        self.tree(scope)
     }
 
-    /// 将通用编辑文档应用回 HUD 繘制 adapter 或场景的局部矩形存储。
+    /// 编辑事务直接写回唯一布局文档；绘制与命中之后都从同一文档解析。
     pub(crate) fn apply_widget_tree(
         &mut self,
         tree: &crate::widget::WidgetTree,
-        scope: EditorScope,
+        _scope: EditorScope,
     ) {
-        if scope != EditorScope::World {
-            for node in tree.nodes() {
-                if !self.scene_rects.contains_key(node.id) {
-                    continue;
-                }
-                self.scene_rects.insert(node.id, node.rect);
-                self.set_align(node.id, node.align);
-            }
-            return;
-        }
-        let resolved = tree
-            .resolve(scope.viewport())
-            .expect("editable widget tree must be valid");
         for node in tree.nodes() {
-            if !LAYOUT_ITEM_IDS.contains(&node.id) {
-                continue;
-            }
-            self.set_align(node.id, node.align);
-            if let Some(rect) = resolved
-                .iter()
-                .find(|item| item.id == node.id)
-                .map(|item| item.rect)
-            {
-                self.set(node.id, rect);
-            }
+            self.set_value(node.id, node.rect, node.align);
         }
     }
 
@@ -1710,59 +1619,6 @@ impl HudLayout {
         msgbox.ok = convert(tree.resolved_rect(viewport, "select.msg_ok").unwrap());
         msgbox
     }
-
-    /// 编辑器输入绝对矩形；根节点反算 anchor，HUD 子节点反算 parent-local。
-    pub(crate) fn set(&mut self, id: &str, r: LRect) {
-        let Some(stored) = self.stored_rect(id) else {
-            return;
-        };
-        let align = self.align(id).unwrap_or(crate::widget::Align::TOP_LEFT);
-        if let Some(scope) = scene_scope_for_id(id) {
-            let tree = self.editor_tree(scope);
-            let parent = tree.node(id).and_then(|node| node.parent);
-            let parent_rect = parent
-                .and_then(|parent| tree.resolved_rect(scope.viewport(), parent))
-                .unwrap_or(scope.viewport());
-            self.set_stored(id, crate::widget::unalign_rect(r, parent_rect, align));
-            return;
-        }
-        match id {
-            HUD_PANEL_ID | "window_status" | "window_dialog" => {
-                let fixed = LRect::new(r.x, r.y, stored.w, stored.h);
-                self.set_stored(
-                    id,
-                    crate::widget::unalign_rect(fixed, layout_viewport(), align),
-                );
-            }
-            _ => {
-                let parent = self.panel_rect();
-                self.set_local(id, crate::widget::unalign_rect(r, parent, align));
-            }
-        }
-    }
-
-    fn set_local(&mut self, id: &str, local: LRect) {
-        match id {
-            "orb" => self.orb = local,
-            "plate_hp" => self.plate_hp = local,
-            "plate_mp" => self.plate_mp = local,
-            "exp_bar" => self.exp_bar = local,
-            "weight_bar" => self.weight_bar = local,
-            "level_num" => self.level_num = local,
-            "chat_box" => self.chat_box = local,
-            "btn_state" => self.btn_state = local,
-            "btn_bag" => self.btn_bag = local,
-            "btn_magic" => self.btn_magic = local,
-            "btn_option" => self.btn_option = local,
-            "quick_row" => self.quick_row = local,
-            "quick_right" => self.quick_right = local,
-            "belt" => self.belt = local,
-            "skill_bar" => self.skill_bar = local,
-            "atk_text" => self.atk_text = local,
-            "clock" => self.clock = local,
-            _ => {}
-        }
-    }
 }
 
 fn scene_scope_for_id(id: &str) -> Option<EditorScope> {
@@ -1788,22 +1644,23 @@ fn layout_viewport() -> LRect {
 ///
 /// ⚠️ 用全局而不是逐层传参：`draw_hud` 已经有 9 个参数，把布局再传一遍会把签名撑爆
 /// （D-134 里记了这笔账）。编辑器改完更新它即刻生效。
-static HUD_LAYOUT: std::sync::OnceLock<std::sync::RwLock<HudLayout>> = std::sync::OnceLock::new();
+static LAYOUT_DOCUMENT: std::sync::OnceLock<std::sync::RwLock<LayoutDocument>> =
+    std::sync::OnceLock::new();
 
-fn layout_lock() -> &'static std::sync::RwLock<HudLayout> {
-    HUD_LAYOUT.get_or_init(|| std::sync::RwLock::new(HudLayout::default_layout()))
+fn layout_document_lock() -> &'static std::sync::RwLock<LayoutDocument> {
+    LAYOUT_DOCUMENT.get_or_init(|| std::sync::RwLock::new(LayoutDocument::default_layout()))
 }
 
-pub(crate) fn hud_layout() -> HudLayout {
-    layout_lock()
+pub(crate) fn layout_document() -> LayoutDocument {
+    layout_document_lock()
         .read()
-        .map(|g| g.clone())
-        .unwrap_or_else(|_| HudLayout::default_layout())
+        .map(|document| document.clone())
+        .unwrap_or_else(|_| LayoutDocument::default_layout())
 }
 
-/// 改布局（编辑器用）。
-pub(crate) fn with_hud_layout<R>(f: impl FnOnce(&mut HudLayout) -> R) -> R {
-    match layout_lock().write() {
+/// 改布局文档（编辑器/配置装载用）。
+pub(crate) fn with_layout_document<R>(f: impl FnOnce(&mut LayoutDocument) -> R) -> R {
+    match layout_document_lock().write() {
         Ok(mut g) => f(&mut g),
         Err(mut g) => f(g.get_mut()),
     }
@@ -1821,32 +1678,49 @@ mod layout_tests {
     /// HUD 控件都应解析为 parent tree 中同一份画布矩形，且每个 child 坐标相对底栏存储。
     #[test]
     fn hud控件矩形与parent树解析一致() {
-        let l = HudLayout::default_layout();
+        let l = LayoutDocument::default_layout();
         let viewport = LRect::new(
             0.0,
             0.0,
             crate::window::WIN_W as f32,
             crate::window::WIN_H as f32,
         );
-        let resolved = l.widget_tree().resolve(viewport).unwrap();
-        for id in HUD_ITEM_IDS {
-            let from_api = l.get(id).unwrap_or_else(|| panic!("缺少布局节点 {id}"));
-            let from_tree = resolved.iter().find(|node| node.id == id).unwrap().rect;
-            assert_eq!(from_api, from_tree, "{id} 绘制/命中解析不一致");
+        let tree = l.widget_tree();
+        let resolved = tree.resolve(viewport).unwrap();
+        for node in tree.nodes() {
+            let from_api = l
+                .get(node.id)
+                .unwrap_or_else(|| panic!("缺少布局节点 {}", node.id));
+            let from_tree = resolved
+                .iter()
+                .find(|item| item.id == node.id)
+                .unwrap()
+                .rect;
+            assert_eq!(from_api, from_tree, "{} 绘制/命中解析不一致", node.id);
         }
         assert_eq!(l.panel_rect().y, crate::window::WIN_H as f32 - HUD_BOARD_H);
         assert!(l.get("quick_right").is_some(), "所有登记节点必须可读写");
+        let tree = l.widget_tree();
         assert_eq!(
-            l.widget_tree().node("orb").unwrap().edit,
+            tree.node("orb").unwrap().edit,
             crate::widget::EditPolicy::MOVE_ONLY,
             "原生尺寸球只允许移动"
         );
-        assert!(l.widget_tree().node("plate_hp").unwrap().edit.resizable);
+        assert!(tree.node("plate_hp").unwrap().edit.resizable);
+        for id in ["btn_state", "quick_row", "quick_right", "belt"] {
+            let node = tree.node(id).unwrap();
+            assert_eq!(
+                node.edit,
+                crate::widget::EditPolicy::LOCKED,
+                "{id} 的正常视觉烘焙在底板"
+            );
+            assert_ne!(node.visual, crate::widget::VisualSource::Independent);
+        }
     }
 
     #[test]
     fn 状态窗与对话窗根节点进入通用编辑树且保持固定尺寸() {
-        let mut l = HudLayout::default_layout();
+        let mut l = LayoutDocument::default_layout();
         l.set_align(
             "orb",
             crate::widget::Align {
@@ -1856,9 +1730,9 @@ mod layout_tests {
         );
         let tree = l.editor_tree(EditorScope::World);
         let resolved = tree.resolve(EditorScope::World.viewport()).unwrap();
-        for id in LAYOUT_ITEM_IDS.iter().take(20) {
+        for id in layout_item_ids().iter().take(20).copied() {
             let from_api = l.get(id).unwrap();
-            let from_tree = resolved.iter().find(|node| node.id == *id).unwrap();
+            let from_tree = resolved.iter().find(|node| node.id == id).unwrap();
             assert_eq!(from_api, from_tree.rect, "{id} 绘制/编辑矩形同源");
         }
         for id in ["window_status", "window_dialog"] {
@@ -1883,7 +1757,7 @@ mod layout_tests {
 
     #[test]
     fn 登录石门与选角节点共享对应设计空间解析几何() {
-        let layout = HudLayout::default_layout();
+        let layout = LayoutDocument::default_layout();
         for scope in [EditorScope::Login, EditorScope::Select] {
             let tree = layout.editor_tree(scope);
             let resolved = tree.resolve(scope.viewport()).unwrap();
@@ -1933,17 +1807,62 @@ mod layout_tests {
             );
             assert_eq!(
                 tree.node(id).unwrap().edit,
-                crate::widget::EditPolicy::MOVE_ONLY
+                crate::widget::EditPolicy::LOCKED,
+                "常态烘焙在背景中的菜单禁止独立移动"
+            );
+            assert_eq!(
+                tree.node(id).unwrap().visual,
+                crate::widget::VisualSource::BackgroundBakedWithOverlay
             );
         }
     }
 
     #[test]
     fn 登录选角编辑文档覆盖所有已登记场景节点() {
-        let layout = HudLayout::default_layout();
-        for id in LAYOUT_ITEM_IDS {
+        let layout = LayoutDocument::default_layout();
+        for id in layout_item_ids().iter().copied() {
             assert!(layout.stored_rect(id).is_some(), "缺少布局节点存储 {id}");
             assert!(layout.align(id).is_some(), "缺少布局节点锚点 {id}");
+        }
+    }
+
+    #[test]
+    fn 单一布局文档跨作用域持有稀疏覆盖并由schema导出节点() {
+        let mut document = LayoutDocument::default_layout();
+        assert!(document.overrides.is_empty());
+        let ids = layout_item_ids();
+        let unique: std::collections::HashSet<_> = ids.iter().copied().collect();
+        assert_eq!(unique.len(), ids.len(), "schema 导出的布局 ID 必须全局唯一");
+        for scope in EDITOR_SCOPES {
+            let tree = document.editor_tree(scope);
+            tree.resolve(scope.viewport()).expect("默认布局树有效");
+            for node in tree.nodes() {
+                assert!(ids.contains(&node.id), "未注册布局 ID {}", node.id);
+            }
+        }
+
+        for id in ["chat_box", "login.account", "select.info.left"] {
+            let before = document.get(id).unwrap();
+            document.set(
+                id,
+                LRect::new(before.x + 3.0, before.y + 2.0, before.w, before.h),
+            );
+        }
+        assert_eq!(document.overrides.len(), 3, "多个场景共用同一个稀疏覆盖表");
+        for id in ["chat_box", "login.account", "select.info.left"] {
+            assert_eq!(
+                document.get(id).unwrap().x,
+                document
+                    .editor_tree(scene_scope_for_id(id).unwrap_or(EditorScope::World))
+                    .resolved_rect(
+                        scene_scope_for_id(id)
+                            .unwrap_or(EditorScope::World)
+                            .viewport(),
+                        id
+                    )
+                    .unwrap()
+                    .x
+            );
         }
     }
 
@@ -1998,32 +1917,39 @@ mod layout_tests {
         assert_eq!(num_text_y_of(tall), 709.0);
     }
 
-    /// "整排"控件（快捷按钮 / 腰带 / 技能栏）的**改宽 = 改间距**（D-134）。
+    /// 整排的格距统一由节点宽度公式推导；背景烘焙控件虽锁定宽度，计算口径仍由此测试守住。
     #[test]
-    fn 整排控件改宽就是改间距() {
-        let l = HudLayout::default_layout();
+    fn 整排节点宽度与格距公式保持一致() {
+        let l = LayoutDocument::default_layout();
         // 缺省间距必须与老常量一致（否则一开编辑器界面就跳位）
+        let quick_row = l.stored_rect("quick_row").unwrap();
+        let quick_right = l.stored_rect("quick_right").unwrap();
+        let belt = l.stored_rect("belt").unwrap();
+        let skill = l.stored_rect("skill_bar").unwrap();
         assert!(
-            (quick_step(l.quick_row, 5.0) - 30.0).abs() < 0.01,
+            (quick_step(quick_row, 5.0) - 30.0).abs() < 0.01,
             "快捷排 30"
         );
         assert!(
-            (quick_step(l.quick_right, 2.0) - 30.0).abs() < 0.01,
+            (quick_step(quick_right, 2.0) - 30.0).abs() < 0.01,
             "注销/退出 30"
         );
-        assert!((belt_step(l.belt) - 43.0).abs() < 0.01, "腰带 43");
-        assert!((skill_step(l.skill_bar) - 37.0).abs() < 0.01, "技能栏 37");
+        assert!((belt_step(belt) - 43.0).abs() < 0.01, "腰带 43");
+        assert!((skill_step(skill) - 37.0).abs() < 0.01, "技能栏 37");
 
-        // 把整排拉宽 40 ⇒ 间距各涨 10（5 颗 4 段、8 格 7 段…）
-        let wide = LRect::new(l.belt.x, l.belt.y, l.belt.w + 20.0, l.belt.h);
+        // 把整排拉宽 20 ⇒ 间距增加 4（5 格之间有 5 段）。
+        let wide = LRect::new(belt.x, belt.y, belt.w + 20.0, belt.h);
         assert!((belt_step(wide) - 47.0).abs() < 0.01, "5 段 ⇒ 每段 +4");
     }
 
     /// 缺省布局必须把字放在板里（不是飘在板上/下）。
     #[test]
     fn 缺省布局里字在板内() {
-        let l = HudLayout::default_layout();
-        for (plate, name) in [(l.plate_hp, "hp"), (l.plate_mp, "mp")] {
+        let l = LayoutDocument::default_layout();
+        for (plate, name) in [
+            (l.stored_rect("plate_hp").unwrap(), "hp"),
+            (l.stored_rect("plate_mp").unwrap(), "mp"),
+        ] {
             let y = num_text_y_of(plate);
             assert!(
                 y >= plate.y && y + NUM_TEXT_H <= plate.y + plate.h + 0.51,

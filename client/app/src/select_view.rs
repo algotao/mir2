@@ -23,7 +23,7 @@ const C_SEL_HL: Rgb = (255, 255, 255);
 pub(crate) fn msgbox_geom(ui: &mut UiCache, dir: &Path, win: (u32, u32)) -> Option<su::MsgBox> {
     let frame = ui.size(dir, "Prguse", 360)?;
     let ok = ui.size(dir, "Prguse", 363).unwrap_or((0, 0));
-    Some(crate::layout::hud_layout().select_msgbox(su::MsgBox::build(win, frame, ok)))
+    Some(crate::layout::layout_document().select_msgbox(su::MsgBox::build(win, frame, ok)))
 }
 
 /// 视图专属的惰性素材几何缓存；不属于角色选择状态。
@@ -62,7 +62,7 @@ impl Select {
                 None,
             );
         };
-        let doc = crate::layout::hud_layout();
+        let doc = crate::layout::layout_document();
         let Some(base_layout) = su::Layout::build(win, |lib, idx| ui.size(dir, lib, idx)) else {
             canvas.set_draw_color(sdl3::pixels::Color::RGB(80, 0, 0));
             canvas.clear();

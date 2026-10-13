@@ -85,7 +85,7 @@ pub(crate) const BG_H: f32 = 325.0;
 
 /// 窗口矩形（**不需要素材**：按名义尺寸算；编辑器只允许移动，保持素材原生尺寸）。
 pub(crate) fn panel_rect() -> (f32, f32, f32, f32) {
-    let r = crate::layout::hud_layout()
+    let r = crate::layout::layout_document()
         .get("window_status")
         .unwrap_or_else(|| {
             crate::layout::LRect::new(

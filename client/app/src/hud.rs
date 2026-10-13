@@ -85,7 +85,7 @@ pub(crate) fn draw_hud<'a, T>(
     mouse: (f32, f32),
 ) -> Result<(), sdl3::Error> {
     // ★ 底栏布局（D-134）：`hud_panel` 是 parent，孩子坐标经 get() 解析成画布坐标。
-    let lay = crate::layout::hud_layout();
+    let lay = crate::layout::layout_document();
     let panel = lay
         .get(crate::layout::HUD_PANEL_ID)
         .expect("底栏 parent 必须存在");

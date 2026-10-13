@@ -212,7 +212,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[mir2-app] 图片资源：清单与 images.m2pk 一致");
     // 布局配置（D-134）：单文件入库配置只覆盖被编辑过的项。
     if let Some(l) = crate::layoutcfg::load(&crate::layoutcfg::layout_path()) {
-        crate::layout::with_hud_layout(|cur| *cur = l);
+        crate::layout::with_layout_document(|cur| *cur = l);
     }
     let container_path = mir2_core::paths::map_container();
     let archive = match &container_path {

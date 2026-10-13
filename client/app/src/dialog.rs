@@ -133,7 +133,7 @@ pub(crate) fn dialog_close_hit(panel: (f32, f32, f32, f32), mouse: (f32, f32)) -
 
 /// 对话面板的矩形 `(x, y, w, h)`（画布坐标）—— 原生固定尺寸，位置由通用布局文档提供。
 pub(crate) fn dialog_panel() -> (f32, f32, f32, f32) {
-    let r = crate::layout::hud_layout()
+    let r = crate::layout::layout_document()
         .get("window_dialog")
         .unwrap_or_else(|| crate::layout::LRect::new(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H));
     (r.x, r.y, r.w, r.h)

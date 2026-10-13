@@ -277,9 +277,9 @@ pub(crate) fn over_ui_window(
     x: f32,
     y: f32,
 ) -> bool {
-    use crate::widget::{Align, EditPolicy, InputPolicy, LayoutNode};
+    use crate::widget::{Align, EditPolicy, InputPolicy, LayoutNode, VisualSource};
     let viewport = crate::layout::LRect::new(0.0, 0.0, WIN_W as f32, WIN_H as f32);
-    let mut tree = crate::layout::hud_layout().widget_tree();
+    let mut tree = crate::layout::layout_document().widget_tree();
     let mut add_window = |id, rect: (f32, f32, f32, f32), z| {
         tree.push(LayoutNode {
             id,
@@ -290,6 +290,7 @@ pub(crate) fn over_ui_window(
             clip_children: true,
             input: InputPolicy::Block,
             edit: EditPolicy::LOCKED,
+            visual: VisualSource::Independent,
         });
     };
 
@@ -327,6 +328,7 @@ pub(crate) fn over_ui_window(
             clip_children: false,
             input: InputPolicy::Block,
             edit: EditPolicy::LOCKED,
+            visual: VisualSource::Independent,
         });
         tree.push(LayoutNode {
             id: "confirm_frame",
@@ -337,6 +339,7 @@ pub(crate) fn over_ui_window(
             clip_children: true,
             input: InputPolicy::Block,
             edit: EditPolicy::LOCKED,
+            visual: VisualSource::Independent,
         });
         for (id, r) in [("confirm_ok", c.ok), ("confirm_cancel", c.cancel)] {
             tree.push(LayoutNode {
@@ -348,6 +351,7 @@ pub(crate) fn over_ui_window(
                 clip_children: false,
                 input: InputPolicy::Target,
                 edit: EditPolicy::LOCKED,
+                visual: VisualSource::Independent,
             });
         }
     }

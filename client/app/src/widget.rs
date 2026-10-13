@@ -401,7 +401,7 @@ impl EditSession {
     ) -> Option<Self> {
         let node = tree.node(id)?;
         let policy = node.edit;
-        if !policy.movable && !policy.resizable {
+        if node.visual != VisualSource::Independent || (!policy.movable && !policy.resizable) {
             return None;
         }
         let start = tree.resolved_rect(viewport, id)?;
@@ -513,6 +513,18 @@ impl EditHistory {
     }
 }
 
+/// 节点正常视觉的来源；它决定编辑位置对渲染能否产生完整可见效果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum VisualSource {
+    /// 内容由绘制适配器按该节点的解析矩形独立绘制。
+    #[default]
+    Independent,
+    /// 正常外观已烘焙在父背景中，移动节点不会移动那层像素。
+    BackgroundBaked,
+    /// 常态烘焙在背景，按下/悬停时另绘制 overlay。
+    BackgroundBakedWithOverlay,
+}
+
 /// 场景树中的一个布局节点。
 ///
 /// `parent` 为空时相对 viewport 对齐；有父控件时 `rect` 是父控件局部坐标。
@@ -527,6 +539,7 @@ pub(crate) struct LayoutNode {
     pub clip_children: bool,
     pub input: InputPolicy,
     pub edit: EditPolicy,
+    pub visual: VisualSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -697,7 +710,7 @@ impl WidgetTree {
         Ok(nodes.pop())
     }
 
-    /// 编辑命中与业务 hit-test 分离：编辑器可直接拖 Ignore 节点，但只认可见、可编辑节点。
+    /// 编辑命中与业务 hit-test 分离：可见节点包括 LOCKED 节点，避免落到后面的可编辑 parent。
     pub(crate) fn edit_hit_test(
         &self,
         viewport: crate::layout::LRect,
@@ -706,11 +719,7 @@ impl WidgetTree {
     ) -> Result<Option<ResolvedNode>, &'static str> {
         let mut nodes = self.resolve(viewport)?;
         nodes.retain(|resolved| {
-            let Some(node) = self.node(resolved.id) else {
-                return false;
-            };
-            (node.edit.movable || node.edit.resizable)
-                && visible.is_none_or(|ids| ids.contains(&resolved.id))
+            visible.is_none_or(|ids| ids.contains(&resolved.id))
                 && resolved.rect.hit(p, 0.0)
                 && resolved.clip.is_none_or(|clip| clip.hit(p, 0.0))
         });
@@ -1046,6 +1055,7 @@ mod layout_tree_tests {
             clip_children,
             input,
             edit: EditPolicy::MOVE_RESIZE,
+            visual: VisualSource::Independent,
         }
     }
 
@@ -1198,6 +1208,21 @@ mod layout_tree_tests {
                 .id,
             "hidden_modal",
             "Ignore 业务 hit-test 节点仍可作为可见编辑目标"
+        );
+        let baked = tree.node_mut("hidden_modal").unwrap();
+        baked.visual = VisualSource::BackgroundBakedWithOverlay;
+        baked.edit = EditPolicy::MOVE_ONLY;
+        assert_eq!(
+            tree.edit_hit_test(viewport, (6.0, 6.0), Some(&door))
+                .unwrap()
+                .unwrap()
+                .id,
+            "hidden_modal",
+            "锁定节点命中后阻止后层 parent 被误拖"
+        );
+        assert!(
+            EditSession::begin(&tree, viewport, "hidden_modal", (6.0, 6.0), 8.0).is_none(),
+            "烘焙视觉不允许只移动编辑框和按下 overlay"
         );
     }
 

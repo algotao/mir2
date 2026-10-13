@@ -5985,9 +5985,23 @@ dir, x, y, 0, '')`，`GetFeature` 里**没有**骷髅分支 ⇒ **外观一个�
 - 除 HUD、状态窗和对话窗根节点外，Login 接入登录/建号 panel、账号/密码/确认输入框、登录按钮组、模态消息框与独立开门动画节点；Select 接入背景根、左右角色槽、信息文字组、新建角色窗/消息框，以及五个独立菜单 widget（开始/创建人物/删除人物/制作群/退出）。素材原生尺寸节点 MoveOnly；输入框/布局框按节点策略编辑。
 - Login 绘制与 `scene_input` 命中共同应用同一个解析后 `login_ui::Layout`；门帧动画读取独立固定尺寸 `login.door` 位置。Select 菜单按下高亮与点击命中共用五个菜单 widget 解析矩形；「开始」石台位置由开始按钮节点派生。
 - 选角背景采用必需的 1024×768 `ui1[2851]`；五个按钮矩形依据该背景与 `Prguse[68..72]` 在 1.28×画布上的模板匹配重测，真实素材回归锁定五项落点：x=`381/347/346/377/378`，y=`466/496/520/542/565`。旧 `Prguse[65]` 测试只作历史版式对照。
-- 正常菜单文字仍烘焙在背景图中；独立 widget 编辑命中区和按下高亮矩形。默认位置已对齐新版背景；编辑时移动 widget 主要调整命中/高亮，底图中的常态文字不会跟着移动。
+- 正常菜单文字仍烘焙在背景图中；菜单节点仅描述命中/按下 overlay 几何，视觉策略标为 `BackgroundBakedWithOverlay`，并锁定独立移动/缩放。新版背景菜单位置已校准。
 - 模态消息框/建角窗仍按独立可编辑根保存；编辑器层级列表允许选择当前不可见的动画/模态节点，再点回画面拖动。编辑模式下 SDL 业务动作不会收到这类点击。
 - `layout.json` 仍是稀疏覆盖：HUD、login、door、select、modal 节点矩形及 `{id}_align` 共用保存，兼容既有 `hud_panel_align`；固定原生素材根不开放 resize。
 - 编辑模式 `Ctrl+Z` / `Ctrl+Shift+Z` 或 `Ctrl+Y` 撤销/重做；`R` 复位也进入同一历史。业务动作和 SDL 绘制实现不进入 widget 编辑事务。
 
 **验收**：通用事务覆盖 MoveOnly/resize 限制、尺寸边界、取消、undo/redo；Login/Select 场景节点可编辑且布局适配同步绘制/命中；HUD 与 scene 配置 round-trip 测试、Rust app 全量测试通过。
+
+---
+
+## D-137 布局文档为唯一可变几何来源与 baked 视觉约束（2026-10-13）
+
+用户同意继续收敛布局事实源，并明确需要区分背景烘焙视觉与按矩形独立绘制视觉。
+
+- 全局不可变 schema 注册表按场景保存默认 `WidgetTree` spec；进程唯一 `LayoutDocument` 只保存稀疏 `LayoutValue` overrides。移除 HUD 字段式可变几何、`scene_rects` 与 `align_overrides`；全局读写 API 均以 `LayoutDocument` 命名。
+- 绘制/命中适配器仍可投影到既有 core `login_ui::Layout` / `select_ui::Layout` DTO，但这些 DTO 是只读运行时投影，编辑器及配置不得反向保存第二份矩形状态。
+- `layout_item_ids()` 从 World/Login/Select 默认 spec 生成；spec 启动时解析校验 parent/ID，跨场景重复 ID 会直接失败。`layoutcfg` 不再维护手写场景白名单，继续使用稀疏 JSON 格式和现有节点 ID。
+- `LayoutNode.visual` 区分 `Independent`、`BackgroundBaked`、`BackgroundBakedWithOverlay`。文档写入与编辑命中均拒绝烘焙视觉节点的几何修改；选角五项菜单保留独立 widget ID/按下 overlay 与命中几何，但默认背景文字烘焙节点为 LOCKED。`ui1[2851]` 的菜单默认矩形继续由真素材测试锁定。
+- 绘制仍由 app/core 场景适配器负责，widget schema 不含 SDL/业务动作；adapter 只读统一文档生成的解析几何。完全拆除投影 DTO 不属于本阶段范围。
+
+**验收**：无 HUD/scene 第二套可变布局字段；配置 ID 从 spec 派生；locked baked 节点拒绝 API/文件 override；绘制/命中投影同源测试及 Rust workspace 全量测试通过。

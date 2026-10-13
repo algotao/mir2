@@ -60,7 +60,7 @@ impl Login {
             ui.draw_fullscreen(canvas, tc, dir, Art::BG_1024.0, Art::BG_1024.1),
             "必需素材 ui1[2850] 登录背景缺失"
         );
-        let doc = crate::layout::hud_layout();
+        let doc = crate::layout::layout_document();
         let Some(base_layout) = Layout::build(win, |lib, idx| ui.size(dir, lib, idx)) else {
             let msg = "LOGIN ART MISSING - NEED Prguse.wzl";
             return text(
