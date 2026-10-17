@@ -76,7 +76,9 @@ enum Step {
     Run(u32),
     Attack(u64),
     /// 打**最近的一只活怪**；`until_dead` = 一直砍到它死（或超预算）。
-    AttackNearest { until_dead: bool },
+    AttackNearest {
+        until_dead: bool,
+    },
     Pickup(u64),
     /// 把脚下/视野里能捡的全捡一遍（`-die` 掉了几件就捡几件）。
     PickupAll,
@@ -88,14 +90,20 @@ enum Step {
     Sell,
     /// 按**名字**卖一件。
     SellName(String),
-    Buy { name: String, count: u32 },
+    Buy {
+        name: String,
+        count: u32,
+    },
     Use(u32),
     /// 按名字用一件（`@give` 来的技能书/药水，不用先查槽位）。
     UseName(String),
     Equip(u32),
     Unequip(u32),
     Repair(u32),
-    Cast { skill: u32, target: u64 },
+    Cast {
+        skill: u32,
+        target: u64,
+    },
     Butch(u64),
     /// 挖**最近的尸体**（原版 `CM_BUTCH`，死了的动物）。
     ButchNearest,
@@ -177,7 +185,10 @@ impl Args {
                 "-pickup-all" => steps.push(Step::PickupAll),
                 "-npc" => steps.push(Step::NpcClick(parse(&val("NPC ActorId")?, "-npc")?)),
                 "-npc-nearest" => steps.push(Step::NpcClickNearest),
-                "-npc-select" => steps.push(Step::NpcSelect(parse(&val("1-based 选项")?, "-npc-select")?)),
+                "-npc-select" => steps.push(Step::NpcSelect(parse(
+                    &val("1-based 选项")?,
+                    "-npc-select",
+                )?)),
                 "-sell" => steps.push(Step::Sell),
                 "-sell-name" => steps.push(Step::SellName(val("物品名")?)),
                 // `-buy 金创药(小量)` 或 `-buy 金创药(小量):5`
@@ -246,10 +257,7 @@ fn scenario(name: &str) -> Result<(Vec<Step>, Expects), String> {
         // 原 `-maptest`：@map 过去再 @map 回来，两边都要收到 ChangeMap
         "maptest" => {
             ex.map_changed = true;
-            vec![
-                Step::Say("@map 0101".into()),
-                Step::Say("@map 0".into()),
-            ]
+            vec![Step::Say("@map 0101".into()), Step::Say("@map 0".into())]
         }
         // 原 `-stack`：可叠加物再给 5 个，**占的格数不增加**（合成一格 6 个）
         "stack" => {
@@ -545,7 +553,9 @@ fn run(argv: &[String]) -> Result<(), String> {
             .map(|it| it.count)
             .sum::<u32>();
         if got < *want {
-            return Err(format!("「{name}」只有 {got} 个，应为至少 {want} 个（叠加了没？）"));
+            return Err(format!(
+                "「{name}」只有 {got} 个，应为至少 {want} 个（叠加了没？）"
+            ));
         }
         println!("[world] 「{name}」{got} 个（要求至少 {want}）");
     }
@@ -605,7 +615,10 @@ fn run(argv: &[String]) -> Result<(), String> {
         ));
     }
     if world.orphan_events > 0 {
-        println!("[world] 注：{} 条无主更新（没见过的实体在动/掉血）—— 只报告不断言", world.orphan_events);
+        println!(
+            "[world] 注：{} 条无主更新（没见过的实体在动/掉血）—— 只报告不断言",
+            world.orphan_events
+        );
     }
 
     println!(
@@ -739,10 +752,13 @@ fn run_step(
             }
         }
         Step::Attack(target) => {
-            cmd(sess, Cmd::Attack {
-                target_id: *target,
-                action: proto::AttackAction::AttackHit as i32,
-            })?;
+            cmd(
+                sess,
+                Cmd::Attack {
+                    target_id: *target,
+                    action: proto::AttackAction::AttackHit as i32,
+                },
+            )?;
             println!("[world] 攻击 ActorId={target}（普通砍）");
             settle(sess, world, settle_ms, changes);
         }
@@ -759,17 +775,22 @@ fn run_step(
                 //（mir2cli 的 `dirTowardAxis` 就是为这个分的家）。
                 if let Some(dir) = step_toward(world, id) {
                     if walks >= 20 {
-                        return Err(format!("走了 {walks} 步还是没贴到 ActorId={id}（被地形挡住了？）"));
+                        return Err(format!(
+                            "走了 {walks} 步还是没贴到 ActorId={id}（被地形挡住了？）"
+                        ));
                     }
                     walks += 1;
                     cmd(sess, Cmd::Move(dir))?;
                     settle(sess, world, 700, changes);
                     continue;
                 }
-                cmd(sess, Cmd::Attack {
-                    target_id: id,
-                    action: proto::AttackAction::AttackHit as i32,
-                })?;
+                cmd(
+                    sess,
+                    Cmd::Attack {
+                        target_id: id,
+                        action: proto::AttackAction::AttackHit as i32,
+                    },
+                )?;
                 hits += 1;
                 settle(sess, world, 700, changes);
                 // 不在视野里也算"打没了"（服务端会把尸体收走）⇒ 用 `map_or`
@@ -809,7 +830,13 @@ fn run_step(
         }
         Step::NpcSelect(index) => {
             let npc_id = world.dialog.as_ref().map(|d| d.npc_id).unwrap_or(0);
-            cmd(sess, Cmd::NpcSelect { npc_id, index: *index })?;
+            cmd(
+                sess,
+                Cmd::NpcSelect {
+                    npc_id,
+                    index: *index,
+                },
+            )?;
             println!("[world] 选择 NPC 对话选项 #{index}");
             settle(sess, world, settle_ms, changes);
         }
@@ -826,7 +853,14 @@ fn run_step(
             if make == 0 {
                 return Err("背包里没有可卖的东西".into());
             }
-            cmd(sess, Cmd::ShopSell { npc_id, make_index: make, count: 1 })?;
+            cmd(
+                sess,
+                Cmd::ShopSell {
+                    npc_id,
+                    make_index: make,
+                    count: 1,
+                },
+            )?;
             println!("[world] 卖给 NPC={npc_id}：实例号 {make} ×1");
             settle(sess, world, settle_ms, changes);
         }
@@ -842,13 +876,27 @@ fn run_step(
             if make == 0 {
                 return Err(format!("背包里没有「{name}」可卖"));
             }
-            cmd(sess, Cmd::ShopSell { npc_id, make_index: make, count: 1 })?;
+            cmd(
+                sess,
+                Cmd::ShopSell {
+                    npc_id,
+                    make_index: make,
+                    count: 1,
+                },
+            )?;
             println!("[world] 卖出「{name}」实例号 {make}");
             settle(sess, world, settle_ms, changes);
         }
         Step::Buy { name, count } => {
             let npc_id = world.dialog.as_ref().map(|d| d.npc_id).unwrap_or(0);
-            cmd(sess, Cmd::ShopBuy { npc_id, name: name.clone(), count: *count })?;
+            cmd(
+                sess,
+                Cmd::ShopBuy {
+                    npc_id,
+                    name: name.clone(),
+                    count: *count,
+                },
+            )?;
             println!("[world] 买入「{name}」×{count}");
             settle(sess, world, settle_ms, changes);
         }
@@ -873,12 +921,26 @@ fn run_step(
             settle(sess, world, settle_ms, changes);
         }
         Step::Repair(slot) => {
-            cmd(sess, Cmd::RepairItem { slot: *slot, special: false })?;
+            cmd(
+                sess,
+                Cmd::RepairItem {
+                    slot: *slot,
+                    special: false,
+                },
+            )?;
             settle(sess, world, settle_ms, changes);
         }
         Step::Cast { skill, target } => {
             let (x, y) = world.self_pos;
-            cmd(sess, Cmd::CastSkill { skill_id: *skill, target_entity_id: *target, x, y })?;
+            cmd(
+                sess,
+                Cmd::CastSkill {
+                    skill_id: *skill,
+                    target_entity_id: *target,
+                    x,
+                    y,
+                },
+            )?;
             println!("[world] 施放技能 {skill}（目标 {target}）");
             settle(sess, world, settle_ms, changes);
         }
@@ -887,14 +949,33 @@ fn run_step(
                 .entities
                 .get(id)
                 .map_or(world.self_pos, |e| (e.x, e.y));
-            cmd(sess, Cmd::Butch { target_id: *id, x, y, direction: 0 })?;
+            cmd(
+                sess,
+                Cmd::Butch {
+                    target_id: *id,
+                    x,
+                    y,
+                    direction: 0,
+                },
+            )?;
             println!("[world] 挖肉 ActorId={id}");
             settle(sess, world, settle_ms, changes);
         }
         Step::ButchNearest => {
             let id = nearest_corpse(world).ok_or("视野里没有可挖的尸体（怪砍死了吗？）")?;
-            let (x, y) = world.entities.get(&id).map_or(world.self_pos, |e| (e.x, e.y));
-            cmd(sess, Cmd::Butch { target_id: id, x, y, direction: 0 })?;
+            let (x, y) = world
+                .entities
+                .get(&id)
+                .map_or(world.self_pos, |e| (e.x, e.y));
+            cmd(
+                sess,
+                Cmd::Butch {
+                    target_id: id,
+                    x,
+                    y,
+                    direction: 0,
+                },
+            )?;
             println!("[world] 挖最近的尸体 ActorId={id}");
             settle(sess, world, settle_ms, changes);
         }

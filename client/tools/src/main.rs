@@ -36,7 +36,12 @@ fn main() {
         match argv[i].as_str() {
             "-src" => src = argv.get(i + 1).map(PathBuf::from),
             "-out" => out = argv.get(i + 1).map(PathBuf::from),
-            "-w" => width = argv.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(width),
+            "-w" => {
+                width = argv
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(width)
+            }
             "-dry" => dry = true,
             "-only" => {
                 // `-only 库:图号[,库:图号…]`：点名导出，不受 `-w` 限制。
@@ -45,7 +50,9 @@ fn main() {
                         let Some((lib, idx)) = item.rsplit_once(':') else {
                             die(&format!("-only 里 `{item}` 不是 `库:图号`"));
                         };
-                        let idx: u32 = idx.parse().unwrap_or_else(|e| die(&format!("-only `{item}`：{e}")));
+                        let idx: u32 = idx
+                            .parse()
+                            .unwrap_or_else(|e| die(&format!("-only `{item}`：{e}")));
                         only.push((lib.to_string(), idx));
                     }
                 }
@@ -103,7 +110,9 @@ fn main() {
         }
         for idx in 0..lib.len() {
             let idx = idx as u32;
-            let Some(rec) = lib.record(idx as usize) else { continue };
+            let Some(rec) = lib.record(idx as usize) else {
+                continue;
+            };
             if !only.is_empty() {
                 if !wanted(idx) {
                     continue;
@@ -122,7 +131,12 @@ fn main() {
                 println!("{stem}[{idx}] 宽 {} 但解码失败 → 跳过", rec.width);
                 continue;
             };
-            match write_rgba(&out.join(&name), sp.width as u32, sp.height as u32, &sp.rgba) {
+            match write_rgba(
+                &out.join(&name),
+                sp.width as u32,
+                sp.height as u32,
+                &sp.rgba,
+            ) {
                 Ok(()) => wrote += 1,
                 Err(e) => {
                     failed += 1;
@@ -170,7 +184,11 @@ fn die(msg: &str) -> ! {
 /// deflate，**不引第三方图像库**。区别是颜色类型 6（带 alpha）—— 界面图抠底
 /// 之后才能直接铺在深色背景上看。
 fn write_rgba(path: &Path, w: u32, h: u32, rgba: &[u8]) -> io::Result<()> {
-    assert_eq!(rgba.len(), w as usize * h as usize * 4, "RGBA 缓冲尺寸不符 {w}x{h}");
+    assert_eq!(
+        rgba.len(),
+        w as usize * h as usize * 4,
+        "RGBA 缓冲尺寸不符 {w}x{h}"
+    );
 
     let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
     let mut ihdr = Vec::with_capacity(13);
