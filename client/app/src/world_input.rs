@@ -333,8 +333,10 @@ pub(crate) fn chat_send(app: &mut AppState) {
     if text.is_empty() {
         return;
     }
-    if let Some(n) = app.net.as_ref() {
+    if let Some(n) = app.net.as_mut() {
         n.say(&text);
+        // 自己说话 ⇒ 回到底部（正在回看时也不该把刚说的话藏起来）
+        n.chat.scroll_to_bottom();
     }
 }
 
@@ -1281,6 +1283,21 @@ pub(crate) fn handle_mouse_wheel(app: &mut AppState, y: f32) {
                     app.shop_ui
                         .wheel(if y > 0.0 { 1 } else { -1 }, sh.items.len());
                 }
+            }
+        }
+    }
+    // ④ **聊天区滚轮回看**（D-154）：往上滚 = 看更旧的；滚到底自动贴回最新。
+    if !done {
+        if let Some(n) = app.net.as_mut() {
+            let c = crate::layout::layout_document()
+                .get("chat_box")
+                .expect("聊天框应是底栏子控件");
+            let over = app.mouse.0 >= c.x
+                && app.mouse.0 < c.x + c.w
+                && app.mouse.1 >= c.y
+                && app.mouse.1 < c.y + c.h;
+            if over {
+                n.chat.scroll_by(if y > 0.0 { 1 } else { -1 });
             }
         }
     }

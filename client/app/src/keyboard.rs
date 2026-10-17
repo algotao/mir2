@@ -149,6 +149,17 @@ pub(crate) fn handle_key_down(
         {
             crate::world_input::chat_open(app)
         }
+        // 聊天区翻页（D-154）：PageUp 看更旧的，PageDown 往回贴最新。
+        Some(Keycode::PageUp) if app.scene == crate::app_state::Scene::World => {
+            if let Some(n) = app.net.as_mut() {
+                n.chat.scroll_by(hud::CHAT_VIEW_LINES as i32);
+            }
+        }
+        Some(Keycode::PageDown) if app.scene == crate::app_state::Scene::World => {
+            if let Some(n) = app.net.as_mut() {
+                n.chat.scroll_by(-(hud::CHAT_VIEW_LINES as i32));
+            }
+        }
         // 数字键 1..6 = **用快捷栏**（与点那一格同一个动作）
         Some(Keycode::_1) if app.scene == crate::app_state::Scene::World => {
             crate::world_input::belt_key(&mut app.net, &mut app.belt, 0)

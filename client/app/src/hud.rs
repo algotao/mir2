@@ -33,25 +33,54 @@ pub(crate) type ChatLine = (String, Color, Option<Color>);
 #[derive(Default)]
 pub(crate) struct Chat {
     pub(crate) lines: std::collections::VecDeque<ChatLine>,
+    /// 回看偏移（D-154）：`0` = 贴最新；`n` = 从最新一行往上翻 `n` 行。
+    scroll: usize,
 }
 
 impl Chat {
     /// 推一行（不铺底）。超过 [`CHAT_CAP`] 就丢最旧的。
     pub(crate) fn push(&mut self, s: impl Into<String>, col: Color) {
         self.lines.push_back((s.into(), col, None));
-        self.trim();
+        self.after_push();
     }
 
     /// 推一行**带背景色**的（原版 `AddChatBoardString` 的第三个参数）。
     pub(crate) fn push_bg(&mut self, s: impl Into<String>, col: Color, bg: Color) {
         self.lines.push_back((s.into(), col, Some(bg)));
+        self.after_push();
+    }
+
+    /// 正在回看时来新行：偏移跟着 +1，画面不会跳（看的是同一段历史）。
+    fn after_push(&mut self) {
+        if self.scroll > 0 {
+            self.scroll += 1;
+        }
         self.trim();
     }
 
     fn trim(&mut self) {
         while self.lines.len() > CHAT_CAP {
             self.lines.pop_front();
+            // 丢掉最旧一行 ⇒ 回看偏移也要退一格，否则 clamp 后画面会抖
+            self.scroll = self.scroll.saturating_sub(1);
         }
+    }
+
+    /// 回看偏移（渲染用；调用方还要按当前行数再 clamp 一次）。
+    pub(crate) fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    /// 往上（`delta > 0`）/ 往下翻聊天记录；到顶/到底自动停。
+    pub(crate) fn scroll_by(&mut self, delta: i32) {
+        let max = self.lines.len().saturating_sub(CHAT_VIEW_LINES);
+        let next = self.scroll as i32 + delta;
+        self.scroll = next.clamp(0, max as i32) as usize;
+    }
+
+    /// 贴回最新（发新消息、切场景时用）。
+    pub(crate) fn scroll_to_bottom(&mut self) {
+        self.scroll = 0;
     }
 }
 
@@ -422,7 +451,9 @@ pub(crate) fn draw_hud<'a, T>(
         let chat = &n.chat;
         let shown = chat.lines.len().min(CHAT_VIEW_LINES);
         if shown > 0 {
-            let skip = chat.lines.len() - shown;
+            // 回看偏移（D-154）：贴底时从 `len - shown` 开始；往上翻就让起点前移。
+            let bottom = chat.lines.len() - shown;
+            let skip = bottom - chat.scroll().min(bottom);
             // 1024 底栏 `Prguse3[690]` 的这块**不是纯白**；聊天视口由控件布局定义，
             // 始终先铺白底，避免文字压在石纹背景上。无素材回退已移除，见启动预检。
             let (bx, by, bw, bh) = (
@@ -435,7 +466,7 @@ pub(crate) fn draw_hud<'a, T>(
             canvas.fill_rect(FRect::new(bx, by, bw, bh))?;
             // 文字**贴着白框底边往上排**（新的一行在最下面）—— 原来固定从框顶
             // 开始 ⇒ 只有一两行时看着"飘在上面"（用户 2026-10-11：位置偏上）。
-            for (i, (line, col, bg)) in chat.lines.iter().skip(skip).enumerate() {
+            for (i, (line, col, bg)) in chat.lines.iter().skip(skip).take(shown).enumerate() {
                 let y = crate::layout::chat_line_y(i, shown);
                 // 带底色的行（原版 `AddChatBoardString` 的 `bcolor`）：先铺一条**文字宽**
                 // 的色带再画字 —— `Prguse[1]` 那块是纯白聊天区，红底就是这么来的
@@ -1064,4 +1095,50 @@ pub(crate) fn draw_belt<'a, T>(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chat_with(n: usize) -> Chat {
+        let mut c = Chat::default();
+        for i in 0..n {
+            c.push(format!("行{i}"), Color::RGB(0, 0, 0));
+        }
+        c
+    }
+
+    #[test]
+    fn 聊天回看到顶就停() {
+        let mut c = chat_with(20);
+        c.scroll_by(100);
+        assert_eq!(c.scroll(), 20 - CHAT_VIEW_LINES);
+        assert_eq!(
+            c.lines.len() - CHAT_VIEW_LINES - c.scroll(),
+            0,
+            "翻到顶时从第一行开始画"
+        );
+        c.scroll_by(-100);
+        assert_eq!(c.scroll(), 0, "翻到底就是贴最新");
+    }
+
+    #[test]
+    fn 回看时来新消息画面不跳() {
+        let mut c = chat_with(20);
+        c.scroll_by(5);
+        let before = c.lines.len() - CHAT_VIEW_LINES - c.scroll();
+        c.push("新", Color::RGB(0, 0, 0));
+        let after = c.lines.len() - CHAT_VIEW_LINES - c.scroll();
+        assert_eq!(before, after, "看的是同一段历史");
+    }
+
+    #[test]
+    fn 满容量丢最旧时偏移跟着退() {
+        let mut c = chat_with(CHAT_CAP);
+        c.scroll_by(10);
+        c.push("新", Color::RGB(0, 0, 0));
+        assert_eq!(c.lines.len(), CHAT_CAP);
+        assert_eq!(c.scroll(), 10, "丢一行退一格，clamp 时不会抖");
+    }
 }

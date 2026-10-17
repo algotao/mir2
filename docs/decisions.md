@@ -6238,3 +6238,21 @@ D-148 留的唯一功能缺口：面板只能 `-`/`+`/↑↓ 调，"想买 20 �
 - 地面物品与背包刷新都走已有的 proto 出口（`GroundItemShow` / `BagItems`），不需要新下行。
 
 **验收**：Rust 新增 `bagdrag` 单测（交出手上那件且只交一次），`cargo test --workspace` **408 全过**；Go 新增 `TestProtoDropItem`（故意让 slot=2、MakeIndex=99，证明翻译走 slot 而不是实例号）与 `TestProtoDropItemEmptySlot`，`go test ./server/...` 全过。
+---
+
+## D-154 聊天区回看滚动 + 卖窗槽悬停提示（2026-10-17）
+
+三处收尾，都是"功能已通、尾巴没收"的账。
+
+**聊天回看（D-152 的尾巴）**
+- `Chat` 加 `scroll: usize`（`0` = 贴最新，`n` = 从最新往上翻 n 行），API：`scroll()` / `scroll_by(delta)` / `scroll_to_bottom()`。
+- **新消息不打断回看**：`after_push` 里 `scroll += 1`，画面停在原来那段历史；`trim` 丢掉最旧一行时 `scroll -= 1`，避免 clamp 后抖动（3 条单测钉住）。
+- 渲染：起点 = `len - shown - scroll`（再 clamp），并 `.take(shown)` —— 翻上去也不会画出框外。
+- 触发：**鼠标在聊天框上滚轮**（`handle_mouse_wheel` ④，前面背包/技能页/对话/商店的 `done` 优先级不变）+ **PageUp/PageDown**（世界场景，一次一屏）。自己发言后自动 `scroll_to_bottom()`。
+- 输入行仍占最底一行（回看时它压住的是历史行），与原版打字区一致。
+
+**卖窗槽悬停（D-150 的尾巴）**
+- `hover_tip` 补 ②′：卖窗圆槽命中（`shop::sell_hit == SellHit::Slot`）且 `Drag::placed_slot()` 有值 ⇒ 按格位回背包取 `BagItem`，与背包同一口径（名字/数量/持久/卖价）。
+- 至此**所有能放物品的地方**都有提示：背包、装备格、腰带、买窗货架行、卖窗圆槽。只剩对话/消息里的文本链接没有悬停语义（要等版式改动）。
+
+**验收**：`cargo test --workspace` **411 个测试全过**（新增 `hud` 聊天回看 3 条），无警告，`cargo fmt` 干净。

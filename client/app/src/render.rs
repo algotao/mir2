@@ -428,6 +428,24 @@ fn hover_tip(app: &AppState) -> Option<Vec<String>> {
         }
     }
 
+    // ②′ 卖窗的圆槽（已放进去、还没点 OK 的那件）：它还在背包里，按格位取。
+    if app.win.shop() && n.world.shop.as_ref().is_some_and(|s| s.is_sell()) {
+        let (x, y, w, h) = shop::sell_panel();
+        if inside((x, y, w, h)) {
+            if matches!(shop::sell_hit((m.0 - x, m.1 - y)), shop::SellHit::Slot) {
+                if let Some(it) = app
+                    .drag
+                    .placed_slot()
+                    .and_then(|i| n.world.bag.get(i))
+                    .and_then(|o| o.as_ref())
+                {
+                    return Some(bag_lines(it));
+                }
+            }
+            return None;
+        }
+    }
+
     // ③ 背包。手上拿着/槽里放着的那格被 `draw_bag` 隐藏了，提示也不出。
     if app.win.bag() {
         let (rect, page) = hud::bag_geom(n.world.bag.len(), app.bag_page.page(), app.win.shop());
