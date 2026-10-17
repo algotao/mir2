@@ -203,9 +203,18 @@ pub(crate) fn skill_hotkey(app: &mut AppState, slot: usize) {
 
 /// 执行浮窗状态机给出的副作用（SDL 命中与纯状态转换已经完成）。
 fn handle_ui_press(app: &mut AppState, press: Press) -> bool {
+    let effect = crate::overlay_state::reduce(app, press);
+    apply_effect(app, effect)
+}
+
+/// 把 reducer 给出的效果落成"发包 / 改场景 / 打印"。
+///
+/// 抽出来是因为**键盘**也要走同一条路：数量面板的 Enter/↑↓ 没有鼠标命中，
+/// 但成交必须和点 [确定] 一模一样（`qty_confirm` 直接调 reducer 再调这里）。
+fn apply_effect(app: &mut AppState, effect: crate::overlay_state::Effect) -> bool {
     use crate::overlay_state::Effect;
 
-    match crate::overlay_state::reduce(app, press) {
+    match effect {
         Effect::None => {}
         Effect::Say(msg) => ui_say(app.net.as_mut(), &msg),
         Effect::Notice(msg) => println!("[ui] {msg}"),
@@ -227,10 +236,10 @@ fn handle_ui_press(app: &mut AppState, press: Press) -> bool {
             skill_id,
             name,
         } => cast_skill(app, skill_id, &name),
-        Effect::Buy { npc, name } => {
+        Effect::Buy { npc, name, count } => {
             if let Some(n) = app.net.as_ref() {
-                n.shop_buy(npc, &name, 1);
-                println!("[net] 买入 {name}");
+                n.shop_buy(npc, &name, count);
+                println!("[net] 买入 {name} x{count}");
             }
         }
         Effect::Sell {
@@ -256,6 +265,35 @@ fn handle_ui_press(app: &mut AppState, press: Press) -> bool {
         Effect::Exit => return true,
     }
     false
+}
+
+/// 数量面板的键盘入口：`Enter` = 确定、`↑/↓`（可带 Shift）= 加减、`Esc` = 取消。
+///
+/// 与鼠标点 [确定] 走**同一条** reducer → `apply_effect`，所以两种入口不会分叉。
+pub(crate) fn qty_confirm(app: &mut AppState) -> bool {
+    let effect = crate::overlay_state::reduce(app, Press::Qty(crate::qty::Hit::Ok));
+    apply_effect(app, effect)
+}
+
+/// 数量面板的键盘加减（Shift = 一次 10 件）。
+pub(crate) fn qty_bump(app: &mut AppState, up: bool, coarse: bool) {
+    if let Some(q) = app.qty.as_mut() {
+        q.bump(up, coarse);
+    }
+}
+
+/// 数量面板里直接敲数字（面板是模态，1..6 不再属于快捷栏）。
+pub(crate) fn qty_digit(app: &mut AppState, d: u32) {
+    if let Some(q) = app.qty.as_mut() {
+        q.type_digit(d);
+    }
+}
+
+/// 数量面板里退格删一位。
+pub(crate) fn qty_backspace(app: &mut AppState) {
+    if let Some(q) = app.qty.as_mut() {
+        q.backspace();
+    }
 }
 
 pub(crate) fn world_ui_hit(
@@ -476,6 +514,27 @@ pub(crate) fn handle_world_mouse_down<'a>(
                         );
                     } else if !c.frame.hit(app.mouse) {
                         app.confirm.cancel();
+                    }
+                }
+                app.world_control.consume_world_click();
+                return;
+            }
+            // ①″′ **数量面板开着 ⇒ 它是模态**：只认面板里的四颗钮，点外面 = 取消
+            //（原版 `DInputDlg` 同样模态：不先确定/取消，点不到底下的货架）。
+            if app.qty.is_some() {
+                if mouse_btn == MouseButton::Left {
+                    let (qx, qy, qw, qh) = crate::shop::qty_panel();
+                    if x >= qx && x < qx + qw && y >= qy && y < qy + qh {
+                        let p = crate::widget::canvas_pt((x, y));
+                        for b in crate::shop::qty_buttons(qx, qy) {
+                            if crate::space::hit(b.rect, p) {
+                                // OnClick 规范 ⇒ 按下只记，松开才执行
+                                app.ui_click.press(b.key, b.rect);
+                                break;
+                            }
+                        }
+                    } else {
+                        app.qty = None;
                     }
                 }
                 app.world_control.consume_world_click();

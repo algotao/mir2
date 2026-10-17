@@ -42,6 +42,8 @@ pub(crate) fn tick(app: &mut AppState) {
     if shop_seq_now != app.shop_seen_seq {
         app.shop_seen_seq = shop_seq_now;
         app.shop_ui.close();
+        // 换了一份货架 ⇒ 数量面板问的那件商品可能已经不存在了
+        app.qty = None;
         if shop_seq_now > 0 {
             app.win.open_shop(); // 顺带把包裹打开（原版买东西时包裹就在旁边）
         }
@@ -56,6 +58,7 @@ pub(crate) fn tick(app: &mut AppState) {
     if app.net.as_ref().is_none_or(|n| n.world.shop.is_none()) && app.win.shop() {
         app.win.shop_gone();
         app.shop_ui.close();
+        app.qty = None;
         app.drag.clear();
     }
 

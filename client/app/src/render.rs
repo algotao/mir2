@@ -37,6 +37,8 @@ pub(crate) fn draw_frame<'a, T>(
     ui_texts: &mut TextCache<'a>,
     names: &mut TextCache<'a>,
     shop_texts: &mut TextCache<'a>,
+    // 小地图区域名的专用小字号（`MAP_LABEL_PX`）
+    map_texts: &mut TextCache<'a>,
     libs: &mut HashMap<String, Option<Wzl>>,
     tiles: &mut HashMap<crate::tiles::TileKey, TileTex<'a>>,
     draws: &mut Vec<TileDraw>,
@@ -180,6 +182,10 @@ pub(crate) fn draw_frame<'a, T>(
                                 &app.ui_click,
                             )?;
                         }
+                        // 「买几个」面板跟着买窗这一层（它在对话窗右侧，见 D-148）
+                        if let Some(q) = app.qty.as_ref() {
+                            shop::draw_qty(canvas, tex_creator, shop_texts, q, &app.ui_click)?;
+                        }
                     }
                 }
                 crate::layout::WorldUiLayer::Sell => {
@@ -196,31 +202,16 @@ pub(crate) fn draw_frame<'a, T>(
                                 &app.ui_click,
                             )?;
                         }
+                        // 「卖几个」面板跟着卖窗这一层
+                        if let Some(q) = app.qty.as_ref() {
+                            shop::draw_qty(canvas, tex_creator, ui_texts, q, &app.ui_click)?;
+                        }
                     }
                 }
                 crate::layout::WorldUiLayer::BagOverlay => {
                     if let Some(dir) = asset_dir.as_deref() {
-                        if app.win.bag() {
-                            if let Some(net) = app.net.as_ref() {
-                                let (bx, by) = crate::layout::bag_pos(app.win.shop());
-                                let local = (app.mouse.0 - bx, app.mouse.1 - by);
-                                if let Some(slot) = crate::layout::bag_slot_at(local) {
-                                    let index =
-                                        app.bag_page.page() * crate::layout::BAG_PAGE_SLOTS + slot;
-                                    if let Some(Some(item)) = net.world.bag.get(index) {
-                                        if item.make_index != 0 && app.drag.held_slot().is_none() {
-                                            hud::draw_item_tip(
-                                                canvas,
-                                                tex_creator,
-                                                ui_texts,
-                                                app.mouse,
-                                                item,
-                                            )?;
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        // 物品悬停提示统一在 `hover_tip`（所有窗口画完之后）——
+                        // 这里只画"手上拿着的那件"跟着鼠标走的图标。
                         if let Some(held) = app.drag.held_slot() {
                             if let Some(net) = app.net.as_ref() {
                                 if let Some(Some(item)) = net.world.bag.get(held) {
@@ -254,7 +245,7 @@ pub(crate) fn draw_frame<'a, T>(
                         tex_creator,
                         ui,
                         asset_dir,
-                        names,
+                        map_texts,
                         minimap_world,
                         small && app.minimap_on,
                         !small && app.bigmap_on,
@@ -297,6 +288,18 @@ pub(crate) fn draw_frame<'a, T>(
                     }
                 }
             }
+        }
+        // **物品悬停提示**（最上层；原版 `ShowHint` 也画在所有窗之上）。
+        // 悬停判定全在 `hover_tip` 里（与各窗自己的命中函数同源）。
+        if let Some(lines) = hover_tip(app) {
+            hint::draw(
+                canvas,
+                tex_creator,
+                ui_texts,
+                &lines,
+                app.mouse,
+                (WIN_W, WIN_H),
+            )?;
         }
         // 光标跟着悬停状态走：悬停的是**怪**才换准星（原版悬停谁都不换光标，
         // 这是 Crystal 那套；换成"能打的东西"上才有意义）
@@ -365,4 +368,98 @@ pub(crate) fn draw_frame<'a, T>(
 
     frame.hover = hover;
     Ok(asset_image_index)
+}
+
+/// 鼠标下面那件东西的提示行（**悬停判定的唯一入口**）。
+///
+/// 层序照 [`crate::layout::WORLD_UI_STACK`]：状态窗 → 买窗 → 背包 → 腰带（HUD 最底层）。
+/// 每处都用**它自己的命中函数**（`status::hit` / `shop::hit` / `layout::bag_slot_at`），
+/// 于是"能点到的位置 ⇔ 会出提示的位置"，提示不会跑到空白处。
+///
+/// 窗口内的空白处直接 `return None`：状态窗/买窗/背包是不透的，鼠标压在上面时
+/// 不该透出下一层的提示。
+fn hover_tip(app: &AppState) -> Option<Vec<String>> {
+    if app.layout_edit.on {
+        return None;
+    }
+    let n = app.net.as_ref()?;
+    if !n.world.in_world() {
+        return None;
+    }
+    let m = app.mouse;
+    let inside =
+        |r: (f32, f32, f32, f32)| m.0 >= r.0 && m.0 < r.0 + r.2 && m.1 >= r.1 && m.1 < r.1 + r.3;
+
+    // ① 状态窗（z 最高）。只有**装备页**的槽有图标；属性页同坐标是文字。
+    if app.win.status() {
+        let (x, y, w, h) = status::panel_rect();
+        if inside((x, y, w, h)) {
+            if app.status_page.page() == 0 {
+                if let status::Hit::Slot(slot) = status::hit((m.0 - x, m.1 - y), 0) {
+                    if let Some(Some(it)) = n.world.equip.get(slot) {
+                        return Some(bag_lines(it));
+                    }
+                }
+            }
+            return None;
+        }
+    }
+
+    // ② 买窗的货架行（卖窗没有列表；它的槽里是手上拖着的物品）
+    if app.win.shop() {
+        if let Some(s) = n.world.shop.as_ref().filter(|s| !s.is_sell()) {
+            let (x, y, w, h) = shop::panel();
+            if inside((x, y, w, h)) {
+                // 与 `shop::draw` 同一条 clamp：页码越界时按最后一页算
+                let page = app.shop_ui.page().min(shop::pages(s.items.len()) - 1);
+                let base = page * shop::ROWS;
+                if let shop::Hit::Row(i) = shop::hit((m.0 - x, m.1 - y), s.items.len()) {
+                    if let Some(it) = s.items.get(base + i) {
+                        return Some(hint::shop_lines(&it.name, it.price, it.dura_max, it.stock));
+                    }
+                }
+                return None;
+            }
+        }
+    }
+
+    // ③ 背包。手上拿着/槽里放着的那格被 `draw_bag` 隐藏了，提示也不出。
+    if app.win.bag() {
+        let (rect, page) = hud::bag_geom(n.world.bag.len(), app.bag_page.page(), app.win.shop());
+        if inside(rect) {
+            if let Some(slot) = crate::layout::bag_slot_at((m.0 - rect.0, m.1 - rect.1)) {
+                let idx = page * crate::layout::BAG_PAGE_SLOTS + slot;
+                if app.drag.held_slot() != Some(idx) && app.drag.placed_slot() != Some(idx) {
+                    if let Some(Some(it)) = n.world.bag.get(idx) {
+                        if it.make_index != 0 {
+                            return Some(bag_lines(it));
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+    }
+
+    // ④ 腰带（HUD 最底层，窗口都没压住时才轮到它）。
+    if let Some(i) = crate::layout::belt_slot_at(crate::widget::canvas_pt(m)) {
+        if let Some(b) = app.belt.get(i).copied().flatten() {
+            // 腰带只记实例号 ⇒ 回背包取名字/持久/卖价（背包会被重排，不能存格位号）
+            if let Some(it) = n
+                .world
+                .bag
+                .iter()
+                .flatten()
+                .find(|it| it.make_index == b.make_index)
+            {
+                return Some(bag_lines(it));
+            }
+        }
+    }
+    None
+}
+
+/// `BagItem` → 提示行（背包/装备/腰带三处同一口径）。
+fn bag_lines(it: &mir2_core::world::BagItem) -> Vec<String> {
+    hint::item_lines(&it.name, it.count, it.dura, it.dura_max, it.sell_price)
 }

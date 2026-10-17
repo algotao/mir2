@@ -16,6 +16,7 @@ pub(crate) enum Effect {
     Buy {
         npc: u64,
         name: String,
+        count: u32,
     },
     Sell {
         npc: u64,
@@ -170,7 +171,7 @@ pub(crate) fn reduce(app: &mut AppState, press: Press) -> Effect {
             app.shop_ui.page_step(1, items);
         }
         Press::Shop(crate::shop::Hit::Ok) => {
-            if let Some((npc, name)) = app
+            let picked = app
                 .net
                 .as_ref()
                 .and_then(|n| n.world.shop.as_ref())
@@ -178,14 +179,62 @@ pub(crate) fn reduce(app: &mut AppState, press: Press) -> Effect {
                     app.shop_ui
                         .sel()
                         .and_then(|selected| shop.items.get(selected))
-                        .map(|item| (shop.npc_id, item.name.clone()))
-                })
-            {
-                return Effect::Buy { npc, name };
+                        .map(|item| (shop.npc_id, item.clone()))
+                });
+            if let Some((npc, item)) = picked {
+                // `submenu = 1`（原版：不可叠加/成组的货）⇒ **先问数量**，
+                // 否则按"买 1 个"直接成交（老行为）。
+                if let Some(q) =
+                    crate::qty::Qty::for_buy(npc, &item.name, item.price, item.stock, item.submenu)
+                {
+                    app.qty = Some(q);
+                    return Effect::None;
+                }
+                return Effect::Buy {
+                    npc,
+                    name: item.name,
+                    count: 1,
+                };
             }
             if app.net.as_ref().is_some_and(|n| n.world.shop.is_some()) {
                 return Effect::Say("先点一件商品再点 OK".into());
             }
+        }
+        // ---------- 数量面板（D-148） ----------
+        Press::Qty(crate::qty::Hit::Minus) => {
+            if let Some(q) = app.qty.as_mut() {
+                q.dec();
+            }
+        }
+        Press::Qty(crate::qty::Hit::Plus) => {
+            if let Some(q) = app.qty.as_mut() {
+                q.inc();
+            }
+        }
+        Press::Qty(crate::qty::Hit::Cancel) => app.qty = None,
+        Press::Qty(crate::qty::Hit::Ok) => {
+            let Some(q) = app.qty.take() else {
+                return Effect::None;
+            };
+            let count = q.count();
+            return match q.target() {
+                crate::qty::Target::Buy { npc, name, .. } => Effect::Buy {
+                    npc: *npc,
+                    name: name.clone(),
+                    count,
+                },
+                crate::qty::Target::Sell {
+                    npc,
+                    make_index,
+                    name,
+                    ..
+                } => Effect::Sell {
+                    npc: *npc,
+                    make_index: *make_index,
+                    count,
+                    name: name.clone(),
+                },
+            };
         }
         Press::Shop(crate::shop::Hit::Close) => {
             app.win.close_shop();
@@ -203,7 +252,7 @@ pub(crate) fn reduce(app: &mut AppState, press: Press) -> Effect {
             let Some(make_index) = app.drag.placed_make() else {
                 return Effect::None;
             };
-            let Some((npc, count, name)) = app.net.as_ref().and_then(|n| {
+            let Some((npc, count, name, unit)) = app.net.as_ref().and_then(|n| {
                 let shop = n.world.shop.as_ref()?;
                 let item = n
                     .world
@@ -211,14 +260,24 @@ pub(crate) fn reduce(app: &mut AppState, press: Press) -> Effect {
                     .iter()
                     .flatten()
                     .find(|item| item.make_index == make_index)?;
-                Some((shop.npc_id, item.count.max(1), item.name.clone()))
+                Some((
+                    shop.npc_id,
+                    item.count.max(1),
+                    item.name.clone(),
+                    u64::from(item.sell_price),
+                ))
             }) else {
                 return Effect::None;
             };
+            // 整叠（>1）⇒ 先问"卖几个"；单件直接卖（老行为）。
+            if let Some(q) = crate::qty::Qty::for_sell(npc, make_index, &name, unit, count) {
+                app.qty = Some(q);
+                return Effect::None;
+            }
             return Effect::Sell {
                 npc,
                 make_index,
-                count,
+                count: 1,
                 name,
             };
         }
@@ -297,6 +356,51 @@ mod tests {
         reduce(&mut app, Press::Sell(crate::shop::SellHit::Slot));
         assert_eq!(app.drag.held_slot(), Some(0));
         assert_eq!(app.drag.placed_make(), None);
+    }
+
+    #[test]
+    fn 数量面板确定后还原成买入效果() {
+        use crate::qty::{Hit as Q, Qty};
+        let mut app = AppState::new();
+        app.qty = Qty::for_buy(9, "炼狱", 3000, 5, true);
+        assert_eq!(reduce(&mut app, Press::Qty(Q::Plus)), Effect::None);
+        assert_eq!(app.qty.as_ref().map(|q| q.count()), Some(2));
+        assert_eq!(
+            reduce(&mut app, Press::Qty(Q::Ok)),
+            Effect::Buy {
+                npc: 9,
+                name: "炼狱".into(),
+                count: 2,
+            }
+        );
+        assert!(app.qty.is_none(), "确定后面板要收起来");
+    }
+
+    #[test]
+    fn 数量面板取消与减号只改状态() {
+        use crate::qty::{Hit as Q, Qty};
+        let mut app = AppState::new();
+        app.qty = Qty::for_sell(3, 77, "金创药", 10, 6);
+        assert_eq!(reduce(&mut app, Press::Qty(Q::Minus)), Effect::None);
+        assert_eq!(app.qty.as_ref().map(|q| q.count()), Some(5));
+        assert_eq!(reduce(&mut app, Press::Qty(Q::Cancel)), Effect::None);
+        assert!(app.qty.is_none(), "取消 ⇒ 不发包、只关面板");
+    }
+
+    #[test]
+    fn 数量面板确定卖出发的是件数而非整叠() {
+        use crate::qty::{Hit as Q, Qty};
+        let mut app = AppState::new();
+        app.qty = Qty::for_sell(3, 77, "金创药", 10, 6);
+        assert_eq!(
+            reduce(&mut app, Press::Qty(Q::Ok)),
+            Effect::Sell {
+                npc: 3,
+                make_index: 77,
+                count: 6,
+                name: "金创药".into(),
+            }
+        );
     }
 
     #[test]

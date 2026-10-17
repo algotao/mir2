@@ -6142,3 +6142,59 @@ dir, x, y, 0, '')`，`GetFeature` 里**没有**骷髅分支 ⇒ **外观一个�
 **验收**：`TestShopGoodsScriptNotTruncated`（25 件全在）、`TestShopGoodsScriptUnresolvedDoesNotFallBack`、`TestSendGoodsNeedsBuyTag`、`TestSendGoodsStockFromScript`（存量 7）、`TestParseGoodsSection`、`TestMarketDefGoodsResolve`（146 个脚本，已知坏名字命中 9 次）；`go test ./server/...` **全通过**。
 
 顺带：`mir2-e2e` 用当前客户端重建后，`TestProtoRustCombat` / `TestProtoRustPickup` 暴露出的是**断言过期**（e2e 输出早改成了 `伤害=N` 汇总行、不再打"伤害：/背包："前缀）—— 已把断言改成 `伤害=1` 与"捡起"，背包件数仍由 `-expect-bag` 的退出码保证。
+
+---
+
+## D-148 商店「买几个 / 卖几个」数量面板（2026-10-17）
+
+`ShopItem.submenu` 一直在解析，但客户端没人用 ⇒ 一次只能买/卖 1 件（todo §1 的头号欠账）。服务端 `ShopBuy.count` / `ShopSell.count` 本来就支持，缺的只是客户端入口。
+
+- **纯状态**（`client/app/src/qty.rs`）：`Qty` 记"买谁、几件、多少钱"——买认**商品名**、卖认 **MakeIndex**；`for_buy` 只有 `submenu` 才返回 `Some`（可叠加物照旧直接买 1），`for_sell` 只有整叠 `> 1` 才问（单件直接卖）。加减、Shift 粗调 10 件、上限 999、总价（饱和乘法）全在这里，脱离 SDL 可测。
+- **reducer**（`overlay_state`）：`Press::Shop(Ok)` 命中 `submenu` ⇒ 开面板；`Press::Sell(Ok)` 整叠 ⇒ 开面板；`Press::Qty` 四颗钮；`Effect::Buy` 加 `count` 字段，`Effect::Sell` 复用它。
+- **UI**（`shop.rs`）：`qty_panel()` 落在**买窗正下方**（买窗 116..424 × 134..339、包裹 436 起、卖窗 284..424 ⇒ 不压任何窗）；`qty_buttons` 与鼠标命中同源；`draw_qty` 自绘深底 + 1px 金边（原版那张输入框的图号没比对出来），四颗钮的 hover/pressed 走控件引擎。
+- **键盘**：Enter = 确定、↑↓ = ±1（Shift = ±10）、Esc = 取消；面板开着时数字键 1..6 **不再**触发快捷栏（免得顺手嗑药）。
+- **模态**：点面板外 = 取消并吞掉这次点击（不走路）；换货架（`shop_seq` 变）/关商店时 `app.qty = None`。
+- **验收**：`qty` 7 条单测（submenu 才问、整叠才问、加减夹取、库存 0 兜底、总价、粗调、溢出饱和）+ reducer 3 条（确定/取消/卖件数）；`cargo test --workspace` **392 个测试全过**。
+- **仍未做**：面板里"打字输入件数"——世界模式下数字键归快捷栏，要做就得先给输入框分层（记在 todo §1）。
+- **⚠️ 语义订正（2026-10-17 晚，查原版源码后）**：原版**没有**数量输入界面。`submenu > 0` 不是"问数量"，而是"这件货有**明细列表**"——`FState.pas:5036-5039` 点 OK 发 `SendGetDetailItem`，打开该商品的多件实例（各自持久）；`FState.pas:4929` 还给 `submenu` 行画 `#31` 记号；`submenu = 0` 才直接买，且服务端一次只 `AddItemToBag` 一件（`ObjNpc.pas:1962-1989`）。卖货同样没有件数（`SendSellItem(merchant, itemindex, name)`，整叠卖）。所以 D-148 的面板属**私服便利**、并误用了 `submenu` 触发；按用户本意暂留待定（要么回滚，要么改挂可叠加物并明确标注偏离）。
+
+---
+
+## D-149 物品悬停提示（背包）+ 小地图区域名字号（2026-10-17）
+
+**提示框**（`client/app/src/hint.rs`，新模块）：
+
+- 纯函数：`item_lines`（名字 / 数量 / 持久 / 卖价，没有的项不写）、`size`、`place`（鼠标右下 12px；右/下贴边翻到另一侧；最后夹回屏幕）。
+- 绘制：深底 `(8,10,14,232)` + 1px 金边 `(170,140,70)` + 黄字带黑边（原版 `ShowHint` 就是黑底黄字；专用底图图号没比对出来，不自绘花框）。
+- 接入 `render.rs`：画在**所有窗口之上**；只覆盖**背包**；`drag.held_slot` / `drag.placed_slot` 那一格不出（它本来就被 `draw_bag` 隐藏了）；布局编辑器里不出。
+- **为什么只有四项**：`BagItem` / 服务端 `ItemStack` 只有名字/数量/持久/卖价；原版 `GetMouseItemInfo` 的攻击/魔法/道术词条服务端没下发 ⇒ 不编造。
+- 未覆盖：装备槽 / 腰带 / 商店货架行（各自需要命中区，内容可复用 `hint::item_lines`）。
+
+**小地图字号**：新增 `mir2_core::text::MAP_LABEL_PX = 9.0`（原来跟角色名共用 12px，120×120 的框里会把相邻地名挤到一起）；`draw_minimaps` 改用它，`render::draw_frame` 加 `map_texts` 参数、`runtime` 里建这份缓存。
+
+**验收**：`hint` 5 条单测（内容增减 / 右下贴边翻侧 / 左上角钳制 / 尺寸）；`cargo test --workspace` **399 个测试全过**。
+---
+
+## D-150 悬停提示铺到装备槽 / 腰带 / 货架行；背包双提示合并（2026-10-17）
+
+D-149 只接了背包，而且**旧的 `hud::draw_item_tip` 忘删** ⇒ 背包上同时画两个框（旧的在下、新的在上，字叠字）。这次一起收掉。
+
+- **单一入口**：`render::hover_tip(app)` 算"鼠标下面那件东西"要写哪几行，`render.rs` 只负责交给 `hint::draw`。层序照 `layout::WORLD_UI_STACK`：**状态窗 → 买窗 → 背包 → 腰带**（HUD 最底层）。
+- **命中与绘制同源**：每个窗口都用**它自己的命中函数**——状态窗用 `status::hit`（只认页 0 装备页的 `Hit::Slot`）、买窗用 `shop::hit` 的 `Hit::Row`（页码用与 `shop::draw` 同一条 clamp）、背包用 `layout::bag_slot_at`。于是"能点到 ⇔ 会出提示"。窗口矩形内的空白处直接返回空，不透出下一层的提示。
+- **腰带**：`layout::belt_slot_at` 命中 → `app.belt[i]` 只有 `make_index/looks` ⇒ 回背包按实例号取名字/数量/持久/卖价（背包会被重排，不能记格位号；与 `belt_use` 同一条纪律）。
+- **货架行**：新增 `hint::shop_lines`（名字 / 价格 / 持久上限 / 存量），**不复用** `item_lines` 的"数量/卖价"口径——货架项没有实例数据，把"存量"写成"数量"会是假话。数量 0 的项不写。
+- **删掉的**：`hud::draw_item_tip` / `tip_lines` / `kind_name`（旧版带"类别"那套，且只有背包在用）。悬停提示现在只有 `hint.rs` 一份实现。
+- **未覆盖**：卖窗的槽（里面是手上拖着的物品，已有跟随图标）、对话窗与消息里的文本链接。
+- **验收**：`hint` 6 条单测（新增货架行一条）；`cargo test --workspace` **400 个测试全过**，无警告。
+---
+
+## D-151 数量面板支持键盘直接输入件数（2026-10-17）
+
+D-148 留的唯一功能缺口：面板只能 `-`/`+`/↑↓ 调，"想买 20 个"要按 19 次。当时的顾虑是"世界里的数字键 1..6 归快捷栏"，但面板本身就是**模态**（D-148 已经让数字键在面板开着时不触发快捷栏）⇒ 这个冲突不存在。
+
+- **状态**（`qty.rs`）：`Qty` 多一份 `digits: String`。数字键**从零开始**重新输入（保留前导零：`0` 先按 1 件显示，再打 `5` 就是 5 件）；上限 `999`（三位封顶）；值始终 `clamp(1, max)`。退格删一位，删空回 1 件。
+- **按钮/↑↓ 一碰就清空 `digits`**：之后数字键重新"从零打"，不会和"当前件数"混成 12→123 那种意外。`set()` 同理。
+- **键盘**（`keyboard.rs`）：面板开着时是**全键模态**——数字键（`_0.._9` / `Kp0..Kp9`）打件数、`Backspace` 删一位，其余键（含 F1..F12、快捷栏）一律吞掉；`Esc`/`Enter`/`↑↓` 仍在最前面处理。
+- **UI**（`shop.rs`）：正文那个件数在"正在输入"时后缀一个 `_` 当光标（否则看不出还能继续打）。
+- **口径澄清**：面板仍按用户选的 A **保留**；`submenu` 触发语义未动，模块头已改成"这不是原版、属私服便利"（D-148 的订正）。
+- **验收**：`qty` 新增 3 条单测（打字+退格、超上限夹取、前导零）；`cargo test --workspace` **403 个测试全过**，无警告。

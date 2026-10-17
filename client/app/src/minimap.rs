@@ -77,8 +77,9 @@ pub(crate) fn draw_minimaps<'a, T>(
     tc: &'a TextureCreator<T>,
     ui: &mut ui::UiCache<'a>,
     asset_dir: &Option<std::path::PathBuf>,
-    // 画区域标注用的字体（原版小地图上就带"银杏山谷/边界村/店铺"这些字）
-    names: &mut crate::font::TextCache<'a>,
+    // 画区域标注用的字体（原版小地图上就带"银杏山谷/边界村/店铺"这些字）。
+    // 专用小一号（`MAP_LABEL_PX = 9`）：120×120 的框里 12px 会把相邻地名挤到一起。
+    labels: &mut crate::font::TextCache<'a>,
     // `(小地图图号, **补间后**的自己位置, 地图显示名)` —— 位置见 `self_render_pos`；
     // 显示名用来查 `core::map_labels`（那张表的键就是它，见生成器的说明）
     world: Option<(u32, (f32, f32), &str)>,
@@ -132,7 +133,7 @@ pub(crate) fn draw_minimaps<'a, T>(
             if px < sx || px > sx + sw || py < sy || py > sy + sh {
                 continue;
             }
-            names.draw(
+            labels.draw(
                 canvas,
                 tc,
                 text,

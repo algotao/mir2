@@ -11,7 +11,7 @@
 use std::time::Instant;
 
 use crate::{
-    assetview_state, bagdrag, confirm, login, pager, scrollview, select, shopui, windows,
+    assetview_state, bagdrag, confirm, login, pager, qty, scrollview, select, shopui, windows,
     world_control, Ui,
 };
 use mir2_core::map::Map;
@@ -71,6 +71,8 @@ pub(crate) struct AppState {
     pub magic_selected: Option<u32>,
     pub shop_seen_seq: u64,
     pub shop_ui: shopui::ShopUi,
+    /// 商店「买几个 / 卖几个」面板开着时的状态（`None` = 没开）。
+    pub qty: Option<qty::Qty>,
     pub ui_click: Ui,
     pub drag: bagdrag::BagDrag,
     pub dlg_scroll: scrollview::ScrollView,
@@ -120,6 +122,7 @@ impl AppState {
             magic_selected: None,
             shop_seen_seq: 0,
             shop_ui: shopui::ShopUi::new(),
+            qty: None,
             ui_click: Ui::new(),
             drag: bagdrag::BagDrag::new(),
             dlg_scroll: scrollview::ScrollView::new(),

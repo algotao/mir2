@@ -67,6 +67,8 @@ pub(crate) enum Press {
     Shop(crate::shop::Hit),
     /// 卖货窗的槽 / [OK] / [关闭]。
     Sell(crate::shop::SellHit),
+    /// 商店数量面板的 [−] / [+] / [确定] / [取消]（D-148）。
+    Qty(crate::qty::Hit),
     /// 选角场景的按钮（[`crate::select::Hit`]）。
     Select(crate::select::Hit),
     /// 建角对话框里的控件（[`mir2_core::select_ui::DialogHit`]）。

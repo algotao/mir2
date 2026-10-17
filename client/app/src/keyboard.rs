@@ -22,6 +22,24 @@ fn scene_key(k: Keycode) -> crate::app_state::SceneKey {
     }
 }
 
+/// 数字键 → `0..9`（主键盘 + 小键盘）。
+fn digit_key(k: Keycode) -> Option<u32> {
+    use Keycode::*;
+    Some(match k {
+        _0 | Kp0 => 0,
+        _1 | Kp1 => 1,
+        _2 | Kp2 => 2,
+        _3 | Kp3 => 3,
+        _4 | Kp4 => 4,
+        _5 | Kp5 => 5,
+        _6 | Kp6 => 6,
+        _7 | Kp7 => 7,
+        _8 | Kp8 => 8,
+        _9 | Kp9 => 9,
+        _ => return None,
+    })
+}
+
 /// 处理键盘事件。`true` 表示请求退出主循环（原 `break 'run`）。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_key_down(
@@ -40,6 +58,29 @@ pub(crate) fn handle_key_down(
         app.world_control.alt_down = true;
     }
     match keycode {
+        // **数量面板**（D-148）开着 ⇒ 它是世界里的**最上层模态**：
+        // ESC 只关它、Enter = 确定、↑/↓（Shift 粗调）改件数。
+        Some(Keycode::Escape) if app.qty.is_some() => app.qty = None,
+        Some(Keycode::Return) | Some(Keycode::KpEnter) if app.qty.is_some() => {
+            if crate::world_input::qty_confirm(app) {
+                return Ok(true);
+            }
+        }
+        Some(Keycode::Up) if app.qty.is_some() => {
+            crate::world_input::qty_bump(app, true, shift(keymod))
+        }
+        Some(Keycode::Down) if app.qty.is_some() => {
+            crate::world_input::qty_bump(app, false, shift(keymod))
+        }
+        // **数量面板开着时它是模态**：数字键直接打件数（主键盘/小键盘），退格删一位，
+        // 其余键一律吞掉（别顺手把快捷栏的药嗑了）。Esc/Enter/↑↓ 在上面已经处理。
+        Some(k) if app.qty.is_some() => {
+            if let Some(d) = digit_key(k) {
+                crate::world_input::qty_digit(app, d);
+            } else if k == Keycode::Backspace {
+                crate::world_input::qty_backspace(app);
+            }
+        }
         // ⚠️ **登录/选角里 ESC 先交给场景**（2026-10-09 修）。
         //
         // 这条 arm 排在所有 mode 分支之前，原来无条件 `break 'run` ⇒

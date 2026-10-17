@@ -501,3 +501,164 @@ pub(crate) fn sell_buttons(ox: f32, oy: f32) -> [crate::widget::Button; 3] {
         ),
     ]
 }
+
+// ---------- 买/卖数量面板（D-148） ----------
+//
+// ⚠️ 原版**没有**"买几个"的输入框（`submenu` 是商品明细列表，见 D-148 订正）；这块板
+// 属私服便利，与 `confirm` 窗同一档自绘样式，四颗按钮走控件层。
+// 键盘：面板是模态 ⇒ 数字键直接打件数、退格删一位（D-151），不会和快捷栏 1..6 打架。
+
+pub(crate) const QTY_W: f32 = 176.0;
+pub(crate) const QTY_H: f32 = 84.0;
+/// `[−]`：数字左边。
+const QTY_MINUS: (f32, f32, f32, f32) = (8.0, 42.0, 26.0, 20.0);
+/// `[+]`：数字右边。
+const QTY_PLUS: (f32, f32, f32, f32) = (142.0, 42.0, 26.0, 20.0);
+const QTY_OK: (f32, f32, f32, f32) = (22.0, 64.0, 62.0, 16.0);
+const QTY_CANCEL: (f32, f32, f32, f32) = (92.0, 64.0, 62.0, 16.0);
+
+/// 面板落点：**买窗正下方**那一块（买窗 116..424 × 134..339，下面是空的；
+/// 包裹在右侧 436 起、卖窗在 284..424，都不撞）。卖模式下买窗不画，这块同样空着。
+pub(crate) fn qty_panel() -> (f32, f32, f32, f32) {
+    let (px, py, pw, ph) = panel();
+    (px + (pw - QTY_W) / 2.0, py + ph + 6.0, QTY_W, QTY_H)
+}
+
+/// 数量面板的四颗按钮（窗口内 → 画布坐标做一次）。
+pub(crate) fn qty_buttons(ox: f32, oy: f32) -> [crate::widget::Button; 4] {
+    use crate::qty::Hit as Q;
+    use crate::widget::{Button, ButtonArt};
+    let mk = |r: (f32, f32, f32, f32), k: Q| Button {
+        key: crate::Press::Qty(k),
+        rect: crate::widget::offset_local_to_canvas(
+            r,
+            crate::space::CPt(crate::space::Cpx(ox), crate::space::Cpx(oy)),
+        ),
+        // 常态/按下都由 `draw_qty` 自己上色（没有官方图）
+        art: ButtonArt::default(),
+        enabled: true,
+    };
+    [
+        mk(QTY_MINUS, Q::Minus),
+        mk(QTY_PLUS, Q::Plus),
+        mk(QTY_OK, Q::Ok),
+        mk(QTY_CANCEL, Q::Cancel),
+    ]
+}
+
+/// 画数量面板：标题 + "共 N" + 中间那个件数 + 四颗按钮。
+///
+/// 只画，不改状态；按钮的高亮来自控件引擎（`Response`）⇒ 与点击同一套命中。
+pub(crate) fn draw_qty<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    texts: &mut crate::font::TextCache<'a>,
+    q: &crate::qty::Qty,
+    widget_ui: &crate::widget::Ui,
+) -> Result<(), sdl3::Error> {
+    let (x, y, w, h) = qty_panel();
+    fill(canvas, x, y, w, h, Color::RGBA(12, 14, 20, 236))?;
+    // 1px 金边（四根线；不画整框填充，省得盖住底下的对话文字）
+    let edge = Color::RGBA(154, 126, 62, 255);
+    fill(canvas, x, y, w, 1.0, edge)?;
+    fill(canvas, x, y + h - 1.0, w, 1.0, edge)?;
+    fill(canvas, x, y, 1.0, h, edge)?;
+    fill(canvas, x + w - 1.0, y, 1.0, h, edge)?;
+
+    texts.draw(canvas, tc, q.title(), x + 8.0, y + 5.0, C_HEAD, None)?;
+    texts.draw(
+        canvas,
+        tc,
+        &format!("共 {}", q.total()),
+        x + 8.0,
+        y + 24.0,
+        (190, 170, 120),
+        None,
+    )?;
+    // 正在用键盘打件数时后缀一个下划线当光标（不然看不出"还能继续打"）
+    let shown = if q.typed().is_empty() {
+        q.count().to_string()
+    } else {
+        format!("{}_", q.count())
+    };
+    texts.draw_centered(canvas, tc, &shown, x + w / 2.0, y + 45.0, C_SEL, None)?;
+
+    for b in qty_buttons(x, y) {
+        let r = b.response(widget_ui);
+        let bg = if r.pressed {
+            Color::RGBA(74, 62, 30, 255)
+        } else if r.hovered {
+            Color::RGBA(44, 40, 26, 255)
+        } else {
+            Color::RGBA(26, 26, 34, 255)
+        };
+        fill(
+            canvas,
+            b.rect.0 .0,
+            b.rect.1 .0,
+            b.rect.2 .0,
+            b.rect.3 .0,
+            bg,
+        )?;
+        fill(
+            canvas,
+            b.rect.0 .0,
+            b.rect.1 .0,
+            b.rect.2 .0,
+            1.0,
+            Color::RGBA(96, 84, 52, 255),
+        )?;
+        let label = match b.key {
+            crate::Press::Qty(crate::qty::Hit::Minus) => "-",
+            crate::Press::Qty(crate::qty::Hit::Plus) => "+",
+            crate::Press::Qty(crate::qty::Hit::Ok) => "确定",
+            crate::Press::Qty(crate::qty::Hit::Cancel) => "取消",
+            _ => "",
+        };
+        texts.draw_centered(
+            canvas,
+            tc,
+            label,
+            b.rect.0 .0 + b.rect.2 .0 / 2.0,
+            b.rect.1 .0 + 4.0,
+            C_TEXT,
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 数量面板落在买窗下方且不压包裹与卖窗() {
+        let (qx, qy, qw, qh) = qty_panel();
+        let (px, py, pw, ph) = panel();
+        assert!(qy >= py + ph, "应在买窗下方（否则盖住货架）");
+        assert!(qx >= px && qx + qw <= px + pw, "横向落在买窗范围内");
+        // 与 `layout::bag_pos(shop_open = true)` 同一条：包裹 x = 卖窗右缘 + 12
+        let (sx, _, sw, _) = sell_panel();
+        assert!(qx + qw <= sx + sw + 12.0, "右缘不能压到包裹窗");
+        assert!(qy + qh <= crate::WIN_H as f32, "不能掉出屏幕");
+    }
+
+    #[test]
+    fn 数量面板四颗按钮互不重叠且都在面板内() {
+        let (px, py, pw, ph) = qty_panel();
+        let bs = qty_buttons(px, py);
+        for (i, b) in bs.iter().enumerate() {
+            let (x, y, w, h) = (b.rect.0 .0, b.rect.1 .0, b.rect.2 .0, b.rect.3 .0);
+            assert!(x >= px && x + w <= px + pw, "第 {i} 颗超出面板横向");
+            assert!(y >= py && y + h <= py + ph, "第 {i} 颗超出面板纵向");
+            for other in &bs[i + 1..] {
+                let overlap = x < other.rect.0 .0 + other.rect.2 .0
+                    && other.rect.0 .0 < x + w
+                    && y < other.rect.1 .0 + other.rect.3 .0
+                    && other.rect.1 .0 < y + h;
+                assert!(!overlap, "第 {i} 颗与后面的按钮重叠了");
+            }
+        }
+    }
+}
