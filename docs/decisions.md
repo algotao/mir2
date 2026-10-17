@@ -6117,3 +6117,28 @@ dir, x, y, 0, '')`，`GetFeature` 里**没有**骷髅分支 ⇒ **外观一个�
 - 连带：制药要求"成品在该商人的商品表里"（原版遍历 `m_GoodsList`），`makedrug_test.go` 的夹具 NPC 编码 `9drug`（9=特殊 ⇒ 空货架）在新规则下永远制药失败 ⇒ 换成真实药商 `4Bdu`。
 
 **验收**：`TestShopGoodsUsesFirstMatchingCategory`（真实 ID → 品类，`7Gst` 走杂货，`6Bwh`/`9Bsender`/空 ID 空货架）、`TestShopGoodsUsesScriptGoods`（脚本只列蜡烛就只卖蜡烛，木剑不混入）；`go test ./server/internal/gamesvr/` 通过（仅 `TestProtoRustCombat`/`TestProtoRustPickup` 因 e2e 二进制未重建而红）。
+
+**审计补记（2026-10-17，落地当天）**：拿 `Merchant.txt` 的 146 行逐行对了 312 个 `market_def` 脚本 ——
+76 家走 `[goods]`（其中 **4 家超过 20 件上限**）、**63 家的 `[goods]` 段是空的**（39 家 9 类 + 11 家 6 类本来就不卖 ⇒ 实际只有 12 家 1/2/3 类按代码分类铺货）、5 家无脚本（全 9 类）、2 家 `[goods]` 一件都解析不到（`1Bme-0102` 把"干肉"写成"干肉产品"）。
+
+所以上面那句"列了什么就卖什么"目前只在**上限 20 件内、且至少解析出一件**时成立：超出的会被 `maxGoods` 截断（`7Bst-0` 的比奇传送石等 3 件、`7Mst-3` 的 2 件、`9snpc1-0` 的 16 件、`英雄使者-0` 的 24 件都拿不到）；一件都解析不到时会**静默回落**到按代码分类（屠夫变成卖全部肉类）。这些缺口和修法按影响排序记在 `docs/todo.md` §1「2026-10-17 货架审计」。
+
+---
+
+## D-147 货架审计的修复：上限、权威、@buy 门、存量（2026-10-17）
+
+针对 D-146 审计补记里的缺口，按影响排序修了前 5 条（数据 lint 一并补上）：
+
+- **脚本货架不再截断**：`shopShelves` 的 `[goods]` 分支去掉 `maxGoods` 上限（那是②自动铺货的显示上限）；真实数据里 4 家超 20 件（`7Bst-0` 23、`7Mst-3` 22、`9snpc1-0` 36、`英雄使者-0` 44），尾部商品此前**客户端看不见、也买不到**。
+- **权威到不回落**：`[goods]` 有内容、却一条都解析不到 ⇒ 空货架 + 一条日志（名字写错/没标价），不再回落到按代码分类；`[goods]` 段**为空**（63 家仓库/向导/未配货的店）仍按代码分类 —— 这是 1.76 数据的正常形态，必须区分。
+- **买窗要求 `@buy`**：`sendGoodsMode` 在 `mode == buy` 时查 `merchantScriptAllows(..., "@buy")`，没声明就不发 `ShopList`（`英雄使者-0` 头行只有 `@makedrug @@CreateHero`，却有 44 条货架 ⇒ 窗能开、点了必失败）。卖窗不看这一位（`handleSellItem` 成交时还会再查 `@sell`）。
+- **存量取脚本数量**：`shopShelf{Item, Stock}` 取代裸 `*StdItem` 列表；`Stock = GoodsEntry.Count`（原版 `nStock := List14.Count`），这一行没写数量才用 `shopStock = 100`。服务端仍不靠它扣库存（买入按名字即时生成）。
+- **数据 lint**：`TestMarketDefGoodsResolve` 扫全部 `market_def` 的 `[goods]`，名字必须能在物品表解析且 `Price > 0`；已知坏名字（`商品`、三个"…卷书"）走白名单 `knownBadGoods`，**新**错名立刻红。
+- **数据修正**：`1Bme-0102` 的 `干肉产品` → `干肉`；`4Edu-D71653` / `4Dungeon_clothes-D5063` / `4Angled_stone_reagent_store-D71653` 的 `随即传送卷` → `随机传送卷`。
+- **测试夹具**：`npcdlg_proto_test.go` 的内存脚本补上 `(@trading @buy @sell)` 头行 —— 没有头行本来就不该有商店入口，门加严后暴露的是夹具不真实。
+
+还剩（记在 `docs/todo.md` §1）：4 个占位/错名、`GoodsEntry.Hours` 未用、两处脚本键来源不同。
+
+**验收**：`TestShopGoodsScriptNotTruncated`（25 件全在）、`TestShopGoodsScriptUnresolvedDoesNotFallBack`、`TestSendGoodsNeedsBuyTag`、`TestSendGoodsStockFromScript`（存量 7）、`TestParseGoodsSection`、`TestMarketDefGoodsResolve`（146 个脚本，已知坏名字命中 9 次）；`go test ./server/...` **全通过**。
+
+顺带：`mir2-e2e` 用当前客户端重建后，`TestProtoRustCombat` / `TestProtoRustPickup` 暴露出的是**断言过期**（e2e 输出早改成了 `伤害=N` 汇总行、不再打"伤害：/背包："前缀）—— 已把断言改成 `伤害=1` 与"捡起"，背包件数仍由 `-expect-bag` 的退出码保证。
