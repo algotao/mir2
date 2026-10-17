@@ -238,6 +238,13 @@ impl Net {
                         format!("已连接（协议 {version}，能力 {}）", capabilities.join(","));
                     println!("[net] {}", self.status);
                 }
+                mir2_net::Ev::Closed(why) if why == mir2_net::NORMAL_CLOSE => {
+                    // **正常收尾**（服务端退出 / 发完 `Disconnect` 关连接 / 对端 EOF）：
+                    // 不弹窗、不写聊天、不设 `fail` —— 用户 2026-10-17 明确要求
+                    // 不要再出现"服务端关闭了连接"。终端留一行就够。
+                    self.status = "连接已关闭".into();
+                    println!("[net] 连接已关闭（服务端正常收尾）");
+                }
                 mir2_net::Ev::Closed(why) => {
                     self.chat.push(format!("断开：{why}"), C_CHAT_BAD);
                     self.status = format!("断开：{why}");

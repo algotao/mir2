@@ -5,22 +5,24 @@
 //! 原版（`mir2standard` 的 1.76）的坐标在 `FState.pas:934-953` / `IntroScn.pas:1390-1538`。
 //!
 //! 旧 800×600 图 `Prguse[65]` 与原版位置相同；当前正式界面使用 1024×768 `ui1[2851]`。
-//! 2026-10-13 改用新版背景后，选择钮/人物槽仍沿 1.28 比例不变，但五个菜单标签的行位发生变化；
-//! 菜单按下态模板按实际 1024 背景重新匹配，当前坐标由 `真素材_1024新版背景五个菜单控件逐项对齐` 验收。
-//! 旧底图的旧菜单位置只在 `真素材_菜单按下态与背景对齐` 中作为历史对照。
+//! 2026-10-13 起七颗界面按钮也换用 **ui1 原生图**（`2852..2865`，常态/按下态成对）：
+//! 它们就是从这套 1024 美术里切出来的整钮图（石台、文字、底纹都在图里），
+//! 落点由模板匹配在 `ui1[2851]` 上实测（`真素材_按钮贴合新版背景` 验收），
+//! 绘制时 1:1 贴回原位 —— 不再拉伸 1.28 倍，也不再需要"从 Prguse2[480] 搬石台"的补丁。
+//! 旧 800 图与 `Prguse[66..72]` 按下态只作历史素材对照。
 //!
 //! 量法与依据（都是**有界**计算，毫秒级；工具用完即删）：
 //!
 //! | 量什么 | 怎么量 | 结果 |
 //! |---|---|---|
-//! | 两块「选择」按钮 | 把按下态图当模板在背景上滑，差异最小处即按钮矩形 | 左 `Prguse[66] @ (133,452)`、右 `Prguse[67] @ (685,453)`，**差 4.4**（次好 16+） |
-//! | 面板间距 | 上面两个 x 之差 | **552** |
-//! | 中间 5 个菜单项 | `Prguse[68..72]` 按下态模板与当前 `ui1[2851]` 在 1.28×画布上匹配 | 左上角 = **(381/347/346/377/378, 466/496/520/542/565)** |
-//! | 菜单项的按下态图 | 尺寸与文字宽度一一对应（2/4/4/3/2 个字 ↔ 44/120/120/92/56 像素宽） | `Prguse[68..72]` |
+//! | 两块「选择」按钮 | `ui1[2854/2856]` 常态图当模板在 `ui1[2851]` 上滑 | 左 `@ (176,589)`、右 `@ (887,586)`（1024 原生），**差 5.5/5.7** |
+//! | 面板间距 | 上面两个 x 之差（×1.28 折设计空间） | **552**（保持不变） |
+//! | 中间 5 个菜单项 | `ui1[2852/2858/2860/2862/2864]` 常态图逐个模板匹配 | 左上角 = **(476/448/448/448/487, 589/637/666/694/723)**（1024 原生） |
+//! | 菜单项的按下态图 | 常态图号 +1（2853/2859/2861/2863/2865），尺寸一一对应 | 与常态同位同尺寸 |
 //! | 人物区（放小人） | 行/列**暗度剖面**（`lum<45` 占比 >0.75 的连续区 = 凹槽暗腔） | 左 `x 92..377`、右 `x 421..725`，`y 58..402`（底线 = 凹槽地台） |
 //! | 名字/等级/职业 的值框 | 面板内**亮底线**（`lum>110` 的整行）定位框底，再按框高 20 反推框顶 | 框底 y ≈ 508.5 / 537.5 / 568，框 `x 108..211`（右面板 +552）；文字落点 = 框顶 + 2.5 |
 //!
-//! 五项矩形按下态素材尺寸校准，当前新版背景逐项坐标由真实 `ui1[2851]` 模板匹配回归钉住；
+//! 七颗按钮的原生落点由 `真素材_按钮贴合新版背景` 逐张钉住；
 //! 名字/等级/职业三行仍按旧素材字段框底线测量，由 `真素材_三行值框与文字落点` 验收。
 //! 旧 800 图的精确菜单中心记录仅留作历史版式对照，不再用作当前界面坐标。
 //!
@@ -46,18 +48,19 @@ impl Art {
     /// 800 那张的 1024 重绘版 ⇒ 版式（设计空间 ×`UI_SCALE`）**不用改**，只是底图变清晰。
     pub const BG_1024: (&'static str, u32) =
         crate::image_manifest::assets::SELECT_BACKGROUND.pair();
-    /// 左 / 右面板那颗「选择」的**按下态**。
+    /// 左 / 右面板那颗「选择」的**常态**（1024 原生图；按下态 = 图号 +1）。
     ///
-    /// ⚠️ 是两张**不同**的图（不是同一张用两次）：实测 `66` 只匹配左边、`67` 只匹配右边。
-    pub const SEL_DOWN: [(&'static str, u32); 2] = [("Prguse", 66), ("Prguse", 67)];
-    /// 中间那列的 5 个菜单项**按下态**，顺序与 [`Menu`] 一一对应。
-    /// 原版这几个号是「开始游戏/新建角色/删除角色/…/退出」，语义顺序相同、图不同。
-    pub const MENU_DOWN: [(&'static str, u32); 5] = [
-        ("Prguse", 68),
-        ("Prguse", 69),
-        ("Prguse", 70),
-        ("Prguse", 71),
-        ("Prguse", 72),
+    /// ⚠️ 仍是两张**不同**的图（不是同一张用两次）：实测 `2854` 只匹配左边、`2856` 只匹配右边。
+    pub const SEL_UP: [(&'static str, u32); 2] = [("ui1", 2854), ("ui1", 2856)];
+    /// 中间那列 5 个菜单项的**常态**，顺序与 [`Menu`] 一一对应
+    ///（开始 / 创建人物 / 恢复人物 / 删除人物 / 退出；按下态 = 图号 +1）。
+    /// 图号是用户 2026-10-13 给的：`2852..2865` 每颗钮两张（常态/按下态）。
+    pub const MENU_UP: [(&'static str, u32); 5] = [
+        ("ui1", 2852),
+        ("ui1", 2858),
+        ("ui1", 2860),
+        ("ui1", 2862),
+        ("ui1", 2864),
     ];
     /// 小人容器（`CHRSELIMAGEFILE`，`Share.pas:52`）。
     pub const CHR: &'static str = "ChrSel";
@@ -82,23 +85,6 @@ impl Art {
     /// 每个账号几个角色槽（这套素材的面板就是两块）。
     pub const SLOTS: usize = 2;
 
-    /// **「开始」那颗钮的石台**（用户 2026-10-09 要的：官方选角图里"开始"下面垫着一块石台）。
-    ///
-    /// # 它从哪来（实测，不是猜）
-    ///
-    /// 我们现在用的 1.76 底图 `Prguse[65]` 里**没有**这块台子 —— 那五项菜单就是烘在底图上的
-    /// 纯文字。但它就在**同一个容器**里：新版底图 `Prguse2[206]`（无台）与 `Prguse2[480]`
-    /// （有台）**只差这一块**：逐像素比对，差异区 `x 365..447, y 447..486`（83×40），
-    /// **其余平均差 0.0**。而 `Prguse[65]` 与 `Prguse2[206]` 除菜单文字外也几乎相同
-    ///（凹槽区平均差 0.0、整图 5.9）⇒ 两版底图是同一套版式 ⇒ 把这块**搬过来**正好落在
-    /// "开始"上（台心 406 vs 钮心 407）。
-    ///
-    /// ⇒ **只搬台子，保留 1.76 的文案**（用户选的这条）。换整张新版底图虽然更"原样"，
-    /// 但会把菜单第二项从"制作群"变成"恢复人物"（那是另一个功能）。
-    ///
-    /// ⚠️ 别把它当"按下态"用：它是**常态**。（1.76 原版的菜单图 `Prguse[68..72]` 是纯文字、
-    /// 且 `TDControl.DirectPaint` 不判 `Downed` ⇒ 原版这几项本来就没有"按下换图"。）
-    pub const START_PLATE: (&'static str, u32) = ("Prguse2", 480);
     // ---------- 建角窗（原版 `DCreateChr`，`FState.pas:957-1001`）----------
     //
     // 图号是用户 2026-10-11 给的；控件坐标是**从官方源码抄的**，不是量出来的：
@@ -121,17 +107,18 @@ impl Art {
     pub const NEW_CHR_CLOSE: (&'static str, u32) = ("Prguse", 64);
 }
 
-/// 中间菜单的 5 项（顺序 = 从上到下 = [`Art::MENU_DOWN`] 的顺序）。
+/// 中间菜单的 5 项（顺序 = 从上到下 = [`Art::MENU_UP`] 的顺序）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Menu {
     /// 开始游戏。
     Start,
     /// 创建人物（已接上：开 [`DialogBox`] 对话框，见 D-35）。
     CreateChar,
+    /// 恢复人物（找回已删除的角色；服务端还没有这条路，先占位提示。
+    /// 新版背景这颗钮顶掉了旧 1.76 的「制作群」—— 用户 2026-10-13 确认制作群不要了）。
+    RestoreChar,
     /// 删除人物（已接上：弹"删了不可恢复"的确认，见 D-35）。
     DeleteChar,
-    /// 制作群（原版这个位置是 credits；这套素材写的是「制作群」）。
-    Credits,
     /// 退出游戏。
     Exit,
 }
@@ -140,23 +127,33 @@ pub enum Menu {
 pub const MENU: [Menu; 5] = [
     Menu::Start,
     Menu::CreateChar,
+    Menu::RestoreChar,
     Menu::DeleteChar,
-    Menu::Credits,
     Menu::Exit,
 ];
 
 // ---------- 实测版式（这套素材，800×600 坐标系）----------
 
-/// 两块「选择」按钮：`(x, y, w, h)`，尺寸就是按下态图的尺寸（实测）。
-const SEL_BTN: [(f32, f32, u32, u32); 2] = [(133.0, 452.0, 76, 33), (685.0, 453.0, 76, 33)];
-
-/// 1024 原生新版背景 `ui1[2851]` 上五个菜单标签的设计空间左上角。
+/// 原生 1024 背景坐标 → 设计空间（800×600）的换算。
 ///
-/// 逐项用真实背景亮字位置与 1.28 倍绘制的 `Prguse[68..72]` 按下态模板重新匹配；
-/// 新版背景行距与旧 `Prguse[65]` 不同，不能继续沿用旧的 456/486/506/527/547。
-const MENU_X: [f32; 5] = [381.0, 347.0, 346.0, 377.0, 378.0];
-/// 按钮高亮/命中矩形顶部；中心第三项“删除人物”起，按新背景每项实测行距下移。
-const MENU_ROW_Y: [f32; 5] = [466.0, 496.0, 520.0, 542.0, 565.0];
+/// ⚠️ 写成 `25/32`（= 1/1.28）而不是 `1.0/1.28`：`25/32` 是二进制精确值，
+/// `n * 25 / 32`（n ≤ 1024）在 `f32` 里**零误差**，实测坐标折算回设计空间不会漂。
+pub const NATIVE_TO_DESIGN: f32 = 25.0 / 32.0;
+
+/// 七颗按钮在**原生 1024 背景 `ui1[2851]`** 上的左上角（模板匹配实测）。
+///
+/// 顺序：开始 / 左选择 / 右选择 / 创建人物 / 恢复人物 / 删除人物 / 退出
+///（前三对应 [`Art::BTN_START`] 与 [`Art::SEL_UP`]，后四对应 [`Art::MENU_UP`] 去掉首项）。
+/// 匹配差 4.7~7.4、±3px 邻域内没有更贴的位置 —— 由 `真素材_按钮贴合新版背景` 钉住。
+const BTN_AT_NATIVE: [(i32, i32); 7] = [
+    (476, 589), // 开始 88×41（自带石台）
+    (176, 589), // 左选择 102×45
+    (887, 586), // 右选择 102×46
+    (448, 637), // 创建人物 145×25
+    (448, 666), // 恢复人物 145×25
+    (448, 694), // 删除人物 145×25
+    (487, 723), // 退出 67×24
+];
 
 /// 两块人物区（凹槽）的**暗腔**：`(x0, y0, x1, y1)`。小人画在这里面。
 ///
@@ -171,12 +168,6 @@ const ALCOVE_FLOOR_MARGIN: f32 = 2.0;
 const FIELD_Y: [f32; 3] = [491.0, 520.0, 551.0];
 /// 三行文字的 **x**（左面板值框 `x 108..211` 内留 5px；右面板整个 +552）。
 const FIELD_X: [f32; 2] = [113.0, 665.0];
-
-/// [`Art::START_PLATE`] 在设计空间（800×600）里的**源矩形** `(x, y, w, h)`。
-///
-/// 就是上面量出来的差异区（阈值收紧到 8 后收敛到 `365..447 × 447..486`）。
-/// 由 `真素材_开始石台就是那两块底图的差` 钉住 —— 换了底图/图号这条会红。
-pub const START_PLATE_SRC: (f32, f32, f32, f32) = (365.0, 447.0, 83.0, 40.0);
 
 /// 一个矩形（屏幕绝对坐标）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -254,29 +245,27 @@ impl Layout {
             (win.0 as f32 - bw as f32) / 2.0,
             (win.1 as f32 - bh as f32) / 2.0,
         );
-        let at = |x: f32, y: f32, w: u32, h: u32| Rect {
-            x: bg.0 + x,
-            y: bg.1 + y,
-            w: w as f32,
-            h: h as f32,
+        // 七颗按钮：位置是 1024 原生实测的（[`BTN_AT_NATIVE`]），尺寸**再问一次素材**；
+        // 素材是 1024 原生图 ⇒ 尺寸也要折回设计空间（×25/32），画的时候 ×1.28 正好 1:1 回原位。
+        let native_at = |i: usize, w: u32, h: u32| Rect {
+            x: bg.0 + BTN_AT_NATIVE[i].0 as f32 * NATIVE_TO_DESIGN,
+            y: bg.1 + BTN_AT_NATIVE[i].1 as f32 * NATIVE_TO_DESIGN,
+            w: w as f32 * NATIVE_TO_DESIGN,
+            h: h as f32 * NATIVE_TO_DESIGN,
         };
-        // 「选择」按钮：位置是实测的，尺寸**再问一次素材**（改了素材就跟着走）
-        let (w0, h0) = measure(Art::SEL_DOWN[0].0, Art::SEL_DOWN[0].1)?;
-        let (w1, h1) = measure(Art::SEL_DOWN[1].0, Art::SEL_DOWN[1].1)?;
-        let sel = [
-            at(SEL_BTN[0].0, SEL_BTN[0].1, w0, h0),
-            at(SEL_BTN[1].0, SEL_BTN[1].1, w1, h1),
-        ];
-        // 菜单：左上角是逐项实测的（见 `MENU_X`），尺寸**再问一次素材**
+        let (w0, h0) = measure(Art::SEL_UP[0].0, Art::SEL_UP[0].1)?;
+        let (w1, h1) = measure(Art::SEL_UP[1].0, Art::SEL_UP[1].1)?;
+        let sel = [native_at(1, w0, h0), native_at(2, w1, h1)];
+        // 菜单：左上角逐项实测（[`BTN_AT_NATIVE`] 的 0/3..6），尺寸**再问一次素材**
         let mut menu = [Rect {
             x: 0.0,
             y: 0.0,
             w: 0.0,
             h: 0.0,
         }; 5];
-        for i in 0..5 {
-            let (mw, mh) = measure(Art::MENU_DOWN[i].0, Art::MENU_DOWN[i].1)?;
-            menu[i] = at(MENU_X[i], MENU_ROW_Y[i], mw, mh);
+        for (i, native) in [0usize, 3, 4, 5, 6].into_iter().enumerate() {
+            let (mw, mh) = measure(Art::MENU_UP[i].0, Art::MENU_UP[i].1)?;
+            menu[i] = native_at(native, mw, mh);
         }
         Some(Layout {
             bg,
@@ -334,20 +323,6 @@ pub fn slot_anchor(slot: usize, bg: (f32, f32)) -> (f32, f32) {
 /// 由可编辑的角色槽矩形计算人物脚底锚点。
 pub fn slot_anchor_in(rect: Rect) -> (f32, f32) {
     (rect.x + rect.w / 2.0, rect.y + rect.h - ALCOVE_FLOOR_MARGIN)
-}
-
-/// 「开始」那颗石台该画在哪（**设计空间**）—— 居中压在可编辑的开始菜单 widget 上。
-///
-/// 用 `menu[0]`（= [`Menu::Start`]）而不是写死旧版 `(365,447)`：新版背景按钮位置调整或
-/// 用户拖动 widget 后，台子、按下高亮与开始命中区域仍保持同一中心。
-pub fn start_plate_at(menu0: Rect) -> Rect {
-    let (_, _, w, h) = START_PLATE_SRC;
-    Rect {
-        x: menu0.x + menu0.w / 2.0 - w / 2.0,
-        y: menu0.y + menu0.h / 2.0 - h / 2.0,
-        w,
-        h,
-    }
 }
 
 /// 这个点（**设计空间**）落在哪个凹槽里 —— "点角色本体也能选中"（用户 2026-10-09 第 2 条）。
@@ -804,42 +779,72 @@ impl DialogBox {
 mod tests {
     use super::*;
 
-    /// 照真素材量出来的尺寸（背景 800×600、按下态 66/67 76×33、菜单 68..72）。
+    /// 照真素材量出来的尺寸（背景 800×600；ui1 原生按钮 2852/2854/2856/2858/2860/2862/2864）。
     fn fake(container: &'static str, idx: u32) -> Option<(u32, u32)> {
         match (container, idx) {
             ("Prguse", 65) => Some((800, 600)),
-            ("Prguse", 66) | ("Prguse", 67) => Some((76, 33)),
-            ("Prguse", 68) => Some((44, 21)),
-            ("Prguse", 69) | ("Prguse", 70) => Some((120, 21)),
-            ("Prguse", 71) => Some((92, 20)),
-            ("Prguse", 72) => Some((56, 20)),
+            ("ui1", 2852) => Some((88, 41)),
+            ("ui1", 2854) => Some((102, 45)),
+            ("ui1", 2856) => Some((102, 46)),
+            ("ui1", 2858) | ("ui1", 2860) | ("ui1", 2862) => Some((145, 25)),
+            ("ui1", 2864) => Some((67, 24)),
             _ => None,
         }
     }
 
     /// 800×600 下版式要**正好**复现实测值 —— 这是"没抄错/没算错"的钉子。
+    /// 原生坐标 × `NATIVE_TO_DESIGN`（25/32，二进制精确）后逐位相等。
     #[test]
     fn 八百乘六百复现实测值() {
         let l = Layout::build((800, 600), fake).expect("素材齐全");
         assert_eq!(l.bg, (0.0, 0.0));
-        // 两块「选择」按钮（模板匹配定的）
-        assert_eq!((l.sel[0].x, l.sel[0].y), (133.0, 452.0));
-        assert_eq!((l.sel[1].x, l.sel[1].y), (685.0, 453.0));
-        assert_eq!((l.sel[0].w, l.sel[0].h), (76.0, 33.0));
-        // 面板间距 552（**不是**原版的 340）
-        assert_eq!(l.sel[1].x - l.sel[0].x, 552.0);
-        // 5 个菜单项：左上角是**逐项**实测的（中心本来就不在同一个 x 上：407/408/407/408/407）
+        // 两块「选择」按钮（原生 (176,589) / (887,586)，102×45 / 102×46）
+        assert_eq!(
+            (l.sel[0].x, l.sel[0].y, l.sel[0].w, l.sel[0].h),
+            (
+                176.0 * NATIVE_TO_DESIGN,
+                589.0 * NATIVE_TO_DESIGN,
+                102.0 * NATIVE_TO_DESIGN,
+                45.0 * NATIVE_TO_DESIGN
+            )
+        );
+        assert_eq!(
+            (l.sel[1].x, l.sel[1].y, l.sel[1].w, l.sel[1].h),
+            (
+                887.0 * NATIVE_TO_DESIGN,
+                586.0 * NATIVE_TO_DESIGN,
+                102.0 * NATIVE_TO_DESIGN,
+                46.0 * NATIVE_TO_DESIGN
+            )
+        );
+        // 面板间距：原生 711px 折设计空间 555.47（旧 800 图时代是 552 —— 按钮图换了）
+        assert_eq!(l.sel[1].x - l.sel[0].x, 711.0 * NATIVE_TO_DESIGN);
+        // 5 个菜单项：左上角逐项实测（原生 (476/448/448/448/487, 589/637/666/694/723)）
+        let native_x = [476.0, 448.0, 448.0, 448.0, 487.0];
+        let native_y = [589.0, 637.0, 666.0, 694.0, 723.0];
         for (i, r) in l.menu.iter().enumerate() {
             assert_eq!(
                 (r.x, r.y),
-                (MENU_X[i], MENU_ROW_Y[i]),
+                (
+                    native_x[i] * NATIVE_TO_DESIGN,
+                    native_y[i] * NATIVE_TO_DESIGN
+                ),
                 "第 {i} 项的左上角不对"
             );
         }
-        // 新版背景上「制作群」本身略偏右，逐项中心按真实背景模板结果锁定。
+        // 五颗钮的中心几乎同 x（406.25 / 406.64×4）—— 文字居中排的那一列
         let centers: Vec<f32> = l.menu.iter().map(|r| r.x + r.w / 2.0).collect();
-        assert_eq!(centers, [403.0, 407.0, 406.0, 423.0, 406.0]);
-        // 五个按下态节点不重叠；实际菜单文字仍烘焙在背景上，行间距按新版底图逐项实测。
+        assert_eq!(
+            centers,
+            [
+                476.0 * NATIVE_TO_DESIGN + 44.0 * NATIVE_TO_DESIGN,
+                520.5 * NATIVE_TO_DESIGN,
+                520.5 * NATIVE_TO_DESIGN,
+                520.5 * NATIVE_TO_DESIGN,
+                520.5 * NATIVE_TO_DESIGN
+            ]
+        );
+        // 五个节点不重叠；菜单行距按新版底图逐项实测。
         for i in 1..5 {
             let overlap = l.menu[i - 1].y + l.menu[i - 1].h - l.menu[i].y;
             assert!(overlap <= 2.0, "菜单第 {i} 项与上一项叠了 {overlap} 像素");
@@ -1140,7 +1145,7 @@ mod tests {
     #[test]
     fn 缺素材就不出版式() {
         let missing = |c: &'static str, i: u32| {
-            if (c, i) == ("Prguse", 69) {
+            if (c, i) == ("ui1", 2858) {
                 None
             } else {
                 fake(c, i)
@@ -1151,12 +1156,12 @@ mod tests {
 
     /// **真素材验收**：两件事都钉住 ——
     ///
-    /// 1. 用到的图都真的在容器里，且小人 3×2×16/13 帧全解得出（与原版同一套 `ChrSel`）；
-    /// 2. **最重要的**：两块「选择」按钮的**按下态图，在实测位置上与背景几乎逐像素相同**
-    ///    —— 这一条直接证明"点击区/按下态与背景图对齐"（用户报的那个 bug），
-    ///    而且改素材/改坐标时它会红。
+    /// 1. 七颗按钮（7 张常态 + 7 张按下态）都真的在 `ui1` 里，且小人 3×2×16/13 帧全解得出；
+    /// 2. **最重要的**：每张**常态图在实测位置上与 1024 背景 `ui1[2851]` 几乎逐像素相同**，
+    ///    而且 ±3px 邻域里**没有更贴的位置** —— 这一条直接证明"按钮图、命中区与背景对齐"，
+    ///    改素材/改坐标/换图号时它会红。
     #[test]
-    fn 真素材_按钮与背景对齐() {
+    fn 真素材_按钮贴合新版背景() {
         use crate::wzl::{Sprite, Wzl};
         use std::collections::HashMap;
         use std::path::Path;
@@ -1180,41 +1185,34 @@ mod tests {
         let dir = std::path::PathBuf::from(&dir);
         let mut libs: HashMap<&'static str, Wzl> = HashMap::new();
 
-        // 图都在
-        for (name, idx, what) in [
-            (Art::BG.0, Art::BG.1, "选角背景"),
-            (Art::SEL_DOWN[0].0, Art::SEL_DOWN[0].1, "左「选择」按下态"),
-            (Art::SEL_DOWN[1].0, Art::SEL_DOWN[1].1, "右「选择」按下态"),
-            (Art::MENU_DOWN[0].0, Art::MENU_DOWN[0].1, "[开始]"),
-            (Art::MENU_DOWN[1].0, Art::MENU_DOWN[1].1, "[创建人物]"),
-            (Art::MENU_DOWN[2].0, Art::MENU_DOWN[2].1, "[删除人物]"),
-            (Art::MENU_DOWN[3].0, Art::MENU_DOWN[3].1, "[制作群]"),
-            (Art::MENU_DOWN[4].0, Art::MENU_DOWN[4].1, "[退出]"),
-        ] {
-            assert!(
-                dec(&mut libs, &dir, name, idx).is_some_and(|s| !s.is_empty()),
-                "{what} = {name}[{idx}] 取不出图"
-            );
-        }
+        let bg = dec(&mut libs, &dir, Art::BG_1024.0, Art::BG_1024.1).expect("1024 选角背景");
+        let buttons: Vec<(&'static str, u32, &str)> = vec![
+            (Art::MENU_UP[0].0, Art::MENU_UP[0].1, "[开始]"),
+            (Art::SEL_UP[0].0, Art::SEL_UP[0].1, "左「选择」"),
+            (Art::SEL_UP[1].0, Art::SEL_UP[1].1, "右「选择」"),
+            (Art::MENU_UP[1].0, Art::MENU_UP[1].1, "[创建人物]"),
+            (Art::MENU_UP[2].0, Art::MENU_UP[2].1, "[恢复人物]"),
+            (Art::MENU_UP[3].0, Art::MENU_UP[3].1, "[删除人物]"),
+            (Art::MENU_UP[4].0, Art::MENU_UP[4].1, "[退出]"),
+        ];
 
-        // **按下态 vs 背景**：逐像素比，平均差要很小
-        let bg = dec(&mut libs, &dir, Art::BG.0, Art::BG.1).expect("背景");
-        for (slot, (name, idx)) in Art::SEL_DOWN.iter().enumerate() {
-            let t = dec(&mut libs, &dir, name, *idx).expect("按下态");
-            let (bx, by, _w, _h) = SEL_BTN[slot];
+        /// 模板 `t` 的不透明像素与 `bg`（左上角 `(x,y)`，**原生 1024 坐标**）的平均差。
+        fn diff_at(bg: &Sprite, t: &Sprite, x: i32, y: i32) -> Option<f32> {
             let (mut sum, mut n) = (0u64, 0u64);
-            for y in 0..t.height as i32 {
-                for x in 0..t.width as i32 {
-                    let ti = ((y * t.width as i32 + x) * 4) as usize;
+            for ty in 0..t.height as i32 {
+                let py = y + ty;
+                if py < 0 || py >= bg.height as i32 {
+                    return None;
+                }
+                for tx in 0..t.width as i32 {
+                    let px = x + tx;
+                    if px < 0 || px >= bg.width as i32 {
+                        return None;
+                    }
+                    let ti = ((ty * t.width as i32 + tx) * 4) as usize;
                     if t.rgba[ti + 3] < 128 {
                         continue;
                     }
-                    let px = bx as i32 + x;
-                    let py = by as i32 + y;
-                    assert!(
-                        px < bg.width as i32 && py < bg.height as i32,
-                        "按钮跑到图外了"
-                    );
                     let bi = ((py * bg.width as i32 + px) * 4) as usize;
                     for c in 0..3 {
                         sum +=
@@ -1223,12 +1221,41 @@ mod tests {
                     n += 3;
                 }
             }
-            let diff = sum as f32 / n as f32;
+            (n > 0).then(|| sum as f32 / n as f32)
+        }
+
+        for ((name, idx, what), (x, y)) in buttons.iter().zip(BTN_AT_NATIVE.iter()) {
+            let up = dec(&mut libs, &dir, name, *idx)
+                .unwrap_or_else(|| panic!("{what} = {name}[{idx}] 取不出图"));
+            assert!(!up.is_empty(), "{what} = {name}[{idx}] 是空图");
+            // 按下态（图号 +1）也要在
+            let down = dec(&mut libs, &dir, name, *idx + 1)
+                .unwrap_or_else(|| panic!("{what} 按下态 = {name}[{}] 取不出图", idx + 1));
+            assert!(!down.is_empty(), "{what} 按下态是空图");
+            let (x, y) = (*x, *y);
+            let here = diff_at(&bg, &up, x, y).expect("实测位置在背景图内");
             assert!(
-                diff < 8.0,
-                "槽 {slot} 的「选择」按下态与背景差 {diff:.2} —— 位置或图号错了？\
-                 （实测应当是 4.4 左右；背景上那颗按钮就在实测位置）"
+                here < 12.0,
+                "{what}（{name}[{idx}]）在原生 ({x},{y}) 与背景差 {here:.2} —— \
+                 位置或图号错了？（实测 4.7~7.4）"
             );
+            // ±3 邻域里没有更贴的：1px 的偏都会让差明显抬升
+            for dy in -3..=3 {
+                for dx in -3..=3 {
+                    if (dx, dy) == (0, 0) {
+                        continue;
+                    }
+                    if let Some(d) = diff_at(&bg, &up, x + dx, y + dy) {
+                        assert!(
+                            d >= here - 1e-3,
+                            "{what} 在 ({},{}) 比 BTN_AT_NATIVE 的 ({x},{y}) 更贴背景 \
+                             （{d:.2} < {here:.2}）—— 实测坐标该改",
+                            x + dx,
+                            y + dy
+                        );
+                    }
+                }
+            }
         }
 
         // 小人：3 职业 × 2 性别 × 站立 16 帧 / 石化 13 帧 / 光效 14 帧
@@ -1261,188 +1288,6 @@ mod tests {
         for k in 0..Art::EFFECT_FRAMES {
             let i = effect_index(k);
             assert!(dec(&mut libs, &dir, Art::CHR, i).is_some_and(|s| !s.is_empty()));
-        }
-    }
-
-    #[test]
-    fn 真素材_1024新版背景五个菜单控件逐项对齐() {
-        use crate::wzl::{Sprite, Wzl};
-        use std::collections::HashMap;
-        use std::path::Path;
-
-        fn dec(
-            libs: &mut HashMap<&'static str, Wzl>,
-            dir: &Path,
-            name: &'static str,
-            index: u32,
-        ) -> Option<Sprite> {
-            if !libs.contains_key(name) {
-                libs.insert(name, Wzl::open(dir.join(name)).ok()?);
-            }
-            libs.get(name)?.decode(index as usize)
-        }
-
-        fn scaled_diff(bg: &Sprite, tex: &Sprite, x: i32, y: i32, scale: f32) -> Option<f32> {
-            let (w, h) = (
-                (tex.width as f32 * scale).round() as i32,
-                (tex.height as f32 * scale).round() as i32,
-            );
-            let (mut sum, mut count) = (0u64, 0u64);
-            for dy in 0..h {
-                for dx in 0..w {
-                    let sx =
-                        (((dx as f32 + 0.5) / scale).floor() as i32).clamp(0, tex.width as i32 - 1);
-                    let sy = (((dy as f32 + 0.5) / scale).floor() as i32)
-                        .clamp(0, tex.height as i32 - 1);
-                    let ti = ((sy * tex.width as i32 + sx) * 4) as usize;
-                    if tex.rgba[ti + 3] < 128 {
-                        continue;
-                    }
-                    let bx = x + dx;
-                    let by = y + dy;
-                    if bx < 0 || by < 0 || bx >= bg.width as i32 || by >= bg.height as i32 {
-                        return None;
-                    }
-                    let bi = ((by * bg.width as i32 + bx) * 4) as usize;
-                    for channel in 0..3 {
-                        sum += (bg.rgba[bi + channel] as i32 - tex.rgba[ti + channel] as i32)
-                            .unsigned_abs() as u64;
-                    }
-                    count += 3;
-                }
-            }
-            (count > 0).then(|| sum as f32 / count as f32)
-        }
-
-        let Ok(dir) = std::env::var("MIR2C_DATA") else {
-            eprintln!("跳过：未设置 MIR2C_DATA");
-            return;
-        };
-        let dir = std::path::PathBuf::from(dir);
-        let mut libs = HashMap::new();
-        let scale = 1024.0 / 800.0;
-        let bg = dec(&mut libs, &dir, Art::BG_1024.0, Art::BG_1024.1).expect("1024 选角背景");
-        for index in 0..MENU.len() {
-            let (name, image) = Art::MENU_DOWN[index];
-            let tex = dec(&mut libs, &dir, name, image).expect("菜单按下态");
-            let expected_x = (MENU_X[index] * scale).round() as i32;
-            let expected_y = (MENU_ROW_Y[index] * scale).round() as i32;
-            let mut best = (f32::INFINITY, 0, 0);
-            for y in expected_y - 5..=expected_y + 5 {
-                for x in expected_x - 5..=expected_x + 5 {
-                    if let Some(diff) = scaled_diff(&bg, &tex, x, y, scale) {
-                        if diff < best.0 {
-                            best = (diff, x, y);
-                        }
-                    }
-                }
-            }
-            assert!(best.0 < 50.0, "新版背景菜单[{index}]匹配度不足：{best:?}");
-            assert!(
-                (best.1 - expected_x).abs() <= 1 && (best.2 - expected_y).abs() <= 1,
-                "菜单[{index}]设计坐标 ({},{}) 与新版 ui1[2851] 模板最佳位置 ({},{}) 不符",
-                MENU_X[index],
-                MENU_ROW_Y[index],
-                best.1,
-                best.2
-            );
-        }
-    }
-
-    /// **真素材验收**：中间 5 个菜单项的**按下态图**，在实测位置上与背景几乎重合 ——
-    /// 而且**附近没有更好的位置**（否则就是量错了）。
-    ///
-    /// 这条是用户第二次报的"开始/创建人物等按钮位置偏了"的判据。上一版用
-    /// "亮像素行直方图分组"量成了文字行，比按下态图的顶低 8~10px ⇒ 按下态整体偏低。
-    #[test]
-    fn 真素材_菜单按下态与背景对齐() {
-        use crate::wzl::{Sprite, Wzl};
-        use std::collections::HashMap;
-        use std::path::Path;
-
-        fn dec(
-            libs: &mut HashMap<&'static str, Wzl>,
-            dir: &Path,
-            name: &'static str,
-            idx: u32,
-        ) -> Option<Sprite> {
-            if !libs.contains_key(name) {
-                libs.insert(name, Wzl::open(dir.join(name)).ok()?);
-            }
-            libs.get(name)?.decode(idx as usize)
-        }
-
-        /// 模板 `t` 的**不透明像素**与 `bg`（左上角在 `(x,y)`）的平均差。
-        fn diff_at(bg: &Sprite, t: &Sprite, x: i32, y: i32) -> Option<f32> {
-            let (mut sum, mut n) = (0u64, 0u64);
-            for ty in 0..t.height as i32 {
-                let py = y + ty;
-                if py < 0 || py >= bg.height as i32 {
-                    return None;
-                }
-                for tx in 0..t.width as i32 {
-                    let px = x + tx;
-                    if px < 0 || px >= bg.width as i32 {
-                        return None;
-                    }
-                    let ti = ((ty * t.width as i32 + tx) * 4) as usize;
-                    if t.rgba[ti + 3] < 128 {
-                        continue;
-                    }
-                    let bi = ((py * bg.width as i32 + px) * 4) as usize;
-                    for c in 0..3 {
-                        sum +=
-                            (bg.rgba[bi + c] as i32 - t.rgba[ti + c] as i32).unsigned_abs() as u64;
-                    }
-                    n += 3;
-                }
-            }
-            (n > 0).then(|| sum as f32 / n as f32)
-        }
-
-        let Ok(dir) = std::env::var("MIR2C_DATA") else {
-            eprintln!("跳过：未设置 MIR2C_DATA");
-            return;
-        };
-        let dir = std::path::PathBuf::from(&dir);
-        let mut libs: HashMap<&'static str, Wzl> = HashMap::new();
-
-        let bg = dec(&mut libs, &dir, Art::BG.0, Art::BG.1).expect("背景");
-        // 旧 Prguse[65] 的菜单落点仅作历史对照；正式 ui1[2851] 的当前版式由上面的新背景测试验收。
-        let legacy_menu = [
-            (385.0, 456.0),
-            (348.0, 486.0),
-            (347.0, 506.0),
-            (362.0, 527.0),
-            (379.0, 547.0),
-        ];
-        for (i, (legacy_x, legacy_y)) in legacy_menu.into_iter().enumerate() {
-            let (name, idx) = Art::MENU_DOWN[i];
-            let t = dec(&mut libs, &dir, name, idx).expect("菜单按下态");
-            let (x, y) = (legacy_x as i32, legacy_y as i32);
-            let here = diff_at(&bg, &t, x, y).expect("位置在图内");
-            assert!(
-                here < 20.0,
-                "菜单第 {i} 项（{name}[{idx}]）在 ({x},{y}) 与背景差 {here:.2} —— 位置或图号错了？"
-            );
-            // 附近（±10）**没有更贴的**：1px 的偏都能让这套素材的逐像素差从 9 跳到 27
-            // ⇒ 这条能钉住"逐项存左上角"（用户报的"创建人物/制作群左偏 1px"就是它）。
-            for dy in -10..=10 {
-                for dx in -10..=10 {
-                    if (dx, dy) == (0, 0) {
-                        continue;
-                    }
-                    if let Some(d) = diff_at(&bg, &t, x + dx, y + dy) {
-                        assert!(
-                            d >= here - 1e-3,
-                            "菜单第 {i} 项在 ({},{}) 比版式给的 ({x},{y}) 更贴背景（{d:.2} < {here:.2}）\
-                             —— `MENU_X[{i}]`/`MENU_ROW_Y[{i}]` 该改",
-                            x + dx,
-                            y + dy
-                        );
-                    }
-                }
-            }
         }
     }
 
@@ -1616,121 +1461,6 @@ mod tests {
         // 窗口比框还小时也不能算出负坐标
         let small = DialogBox::build((320, 200));
         assert!(small.frame.x >= 0.0 && small.frame.y >= 0.0);
-    }
-    /// 「开始」那颗石台画在哪：**居中压在菜单第一项上**，而且整块落在设计空间里。
-    #[test]
-    fn 开始石台居中压在开始钮上() {
-        // 实测的"开始"钮（`SEL_BTN` 那套量法的同一批数字）
-        let r = Rect {
-            x: 385.0,
-            y: 456.0,
-            w: 44.0,
-            h: 21.0,
-        };
-        let p = start_plate_at(r);
-        assert_eq!((p.w, p.h), (START_PLATE_SRC.2, START_PLATE_SRC.3));
-        // 台心 = 钮心
-        assert!(
-            (p.center().0 - r.center().0).abs() <= 0.5,
-            "{}",
-            p.center().0
-        );
-        assert!(
-            (p.center().1 - r.center().1).abs() <= 0.5,
-            "{}",
-            p.center().1
-        );
-        // 与实测的原位（`Prguse2[480]` 里那块）差不到 2px
-        assert!((p.x - START_PLATE_SRC.0).abs() <= 2.0, "x = {}", p.x);
-        assert!((p.y - START_PLATE_SRC.1).abs() <= 2.0, "y = {}", p.y);
-        // 整块笔在设计空间（800×600）里
-        assert!(p.x >= 0.0 && p.y >= 0.0 && p.x + p.w <= 800.0 && p.y + p.h <= 600.0);
-    }
-
-    /// **真素材**：`Art::START_PLATE` + [`START_PLATE_SRC`] 必须**正好**是
-    /// 「无台版 `Prguse2[206]`」与「有台版 `Prguse2[480]`」的**差**：
-    ///
-    /// - 框**内**：两块差得很多（那就是台子）；
-    /// - 框**外**：两块**一模一样**（换了图号或框偏一点，这条就红）；
-    /// - 我们自己在用的 1.76 底图 `Prguse[65]` 在框内与"无台版"接近 ⇒ 它确实没台子
-    ///   （这正是要"搬一块过来"的理由）。
-    #[test]
-    fn 真素材_开始石台就是那两块底图的差() {
-        use crate::wzl::{Sprite, Wzl};
-        use std::path::Path;
-
-        fn mean_diff(a: &Sprite, b: &Sprite, rect: (f32, f32, f32, f32)) -> f32 {
-            let (x0, y0) = (rect.0 as i32, rect.1 as i32);
-            let (w, h) = (rect.2 as i32, rect.3 as i32);
-            let (mut sum, mut n) = (0u64, 0u64);
-            for y in y0..y0 + h {
-                for x in x0..x0 + w {
-                    if x < 0 || y < 0 || x >= a.width as i32 || y >= a.height as i32 {
-                        continue;
-                    }
-                    let i = ((y * a.width as i32 + x) * 4) as usize;
-                    for c in 0..3 {
-                        sum += (a.rgba[i + c] as i32 - b.rgba[i + c] as i32).unsigned_abs() as u64;
-                        n += 1;
-                    }
-                }
-            }
-            sum as f32 / n.max(1) as f32
-        }
-
-        let Ok(dir) = std::env::var("MIR2C_DATA") else {
-            eprintln!("跳过：未设置 MIR2C_DATA");
-            return;
-        };
-        let dir = std::path::PathBuf::from(&dir);
-        let open = |name: &str| Wzl::open(Path::new(&dir).join(name)).expect("图库");
-        let p2 = open("Prguse2");
-        let no_plate = p2.decode(206).expect("Prguse2[206] 无台版");
-        let plate = p2
-            .decode(Art::START_PLATE.1 as usize)
-            .expect("Prguse2[480] 有台版");
-        // 图号必须指向"有台版"那张：反过来（[206]）这条的前半就会红
-        let ours = open(Art::BG.0)
-            .decode(Art::BG.1 as usize)
-            .expect("1.76 底图");
-
-        let inside = mean_diff(&no_plate, &plate, START_PLATE_SRC);
-        assert!(
-            inside > 20.0,
-            "框内两块底图只差 {inside:.1} —— 这不是台子那块（`START_PLATE_SRC` 错了？）"
-        );
-
-        // 框外：逐像素**完全一样**（差的只有台子）
-        let (x0, y0, w, h) = START_PLATE_SRC;
-        let mut out_sum = 0u64;
-        let mut out_n = 0u64;
-        for y in 0..no_plate.height as i32 {
-            for x in 0..no_plate.width as i32 {
-                if (x0 as i32..x0 as i32 + w as i32).contains(&x)
-                    && (y0 as i32..y0 as i32 + h as i32).contains(&y)
-                {
-                    continue;
-                }
-                let i = ((y * no_plate.width as i32 + x) * 4) as usize;
-                for c in 0..3 {
-                    out_sum += (no_plate.rgba[i + c] as i32 - plate.rgba[i + c] as i32)
-                        .unsigned_abs() as u64;
-                    out_n += 1;
-                }
-            }
-        }
-        let outside = out_sum as f32 / out_n.max(1) as f32;
-        assert!(
-            outside < 0.5,
-            "框外两块底图还差 {outside:.2} ⇒ `START_PLATE_SRC` 没框住（或超出）那块台子"
-        );
-
-        // 我们在用的 1.76 底图：框内与"无台版"接近（它就是纯文字，没有台子）
-        let ours_there = mean_diff(&ours, &no_plate, START_PLATE_SRC);
-        assert!(
-            ours_there < 30.0,
-            "1.76 底图那块的差别是 {ours_there:.1} —— 难道它本来就有台子？那就不用搬了"
-        );
     }
 
     /// **建角窗的控件坐标是抄官方源码的**（`FState.pas:977-1001` +

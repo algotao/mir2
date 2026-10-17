@@ -53,14 +53,17 @@ impl Art {
     pub const BTN_NEW: (&'static str, u32) = ("Prguse", 61);
     /// [修改密码]。
     pub const BTN_CHGPW: (&'static str, u32) = ("Prguse", 53);
-    /// 建号面板的 [确定]（原版 `DNewAccountOk`，`FState.pas:868`：`g_WMainImages` 51）。
-    pub const BTN_SIGNUP_OK: (&'static str, u32) = ("Prguse", 51);
-    /// 建号面板的 [取消]（原版 `DNewAccountCancel`，`FState.pas:872`：52）。
+    /// 建号面板 [确定] / [取消] 的**设计空间尺寸**（2026-10-17 起自绘，见下）。
     ///
-    /// ⚠️ 原版建号面板还有一颗 [X]（图号 83），但**本套素材里它是空壳**（0×0）——
-    /// 与 `ChrSel[23]` 同一现象。所以这里只有 [确定]/[取消]，关掉建号面板用
-    /// 登录框自己那颗 [X]（`BTN_CLOSE`）。
-    pub const BTN_SIGNUP_CANCEL: (&'static str, u32) = ("Prguse", 52);
+    /// ⚠️ 不再用 `Prguse[51]/[52]`：原版那两颗是 `DNewAccountOk/Cancel`，但**这套素材里
+    /// `51` 印的是英文「CANCEL」**（与 `52` 的「取消」并排出现 ⇒ 用户看到
+    /// "一个 cancel、一个取消"）。素材里没有同风格的「确定」，所以这两颗改成自绘
+    ///（见 `app::login_view::draw_signup_btn`），尺寸取原版那两颗的 96×33/34。
+    ///
+    /// 原版建号面板还有一颗 [X]（图号 83），但**本套素材里它是空壳**（0×0）——
+    /// 所以关掉建号面板仍用登录框自己那颗 [X]（`BTN_CLOSE`）。
+    pub const SIGNUP_BTN_W: f32 = 96.0;
+    pub const SIGNUP_BTN_H: f32 = 33.0;
     /// [X]。
     pub const BTN_CLOSE: (&'static str, u32) = ("Prguse", 64);
     /// 通用消息框背景。
@@ -179,10 +182,7 @@ impl Layout {
         // ⚠️ 名字必须与上面那组区分开：同叫 `okw/okh` 的话后者会**遮蔽**前者，
         // 于是"提交"按钮会拿到消息框 [Ok] 的尺寸（80×34 而不是 76×33）——
         // 第一次这么写就被编译器的 unused 警告抓住了。
-        // 建号面板那两颗（原版 `DNewAccountOk/Cancel`）—— 缺了就整体 None，
-        // 与其它素材同一条纪律：宁可写"素材缺失"，也不画一个歪掉的登录框。
-        let (sow, soh) = measure(Art::BTN_SIGNUP_OK.0, Art::BTN_SIGNUP_OK.1)?;
-        let (scw, sch) = measure(Art::BTN_SIGNUP_CANCEL.0, Art::BTN_SIGNUP_CANCEL.1)?;
+        // 建号面板那两颗是**自绘**的（见 `Art::SIGNUP_BTN_W/H`），不依赖素材。
         let (mokw, mokh) = measure(Art::MSGBOX_OK.0, Art::MSGBOX_OK.1)?;
         let msgbox = Rect {
             x: (cw - mw as f32) / 2.0,
@@ -239,14 +239,14 @@ impl Layout {
             signup_ok: Rect {
                 x: dialog.x + BTN_NEW_AT.0,
                 y: dialog.y + BTN_NEW_AT.1,
-                w: sow as f32,
-                h: soh as f32,
+                w: Art::SIGNUP_BTN_W,
+                h: Art::SIGNUP_BTN_H,
             },
             signup_cancel: Rect {
                 x: dialog.x + BTN_CHGPW_AT.0,
                 y: dialog.y + BTN_CHGPW_AT.1,
-                w: scw as f32,
-                h: sch as f32,
+                w: Art::SIGNUP_BTN_W,
+                h: Art::SIGNUP_BTN_H,
             },
             // ⚠️ 消息框的 [Ok] 位置**不是查证过的数字**：`FState.pas:750-760` 只列了素材，
             // 没给偏移。这里按"框底居中、留 8px"推 —— 与登录框那几颗按钮的可靠性不同。
@@ -284,11 +284,23 @@ impl Layout {
     ///（先 1/8 降采样粗筛、再全分辨率细化，只算不透明像素）。实测最小差 **12.2**
     /// 在 `(153,96)`，四邻都是 13.0~13.5（判别度 ~1.0）；而原版的 `(252,106)` 是 **23.6**、
     /// `(0,0)` 是 26.0 —— 差得很干净。用门上的两处恶魔脸浮雕独立复核得 `(149,96)`/`(145,88)`
-    /// （同一侧，±5px 内）。由 [`真素材_门帧贴合背景`] 钉住。
+    /// （同一侧，±5px 内）。**仅作历史对照**，现行判据见 `真素材_门帧贴合1024底图`。
     ///
     /// ⚠️ 门**不是**整屏背景：帧是 **496×361** 的局部覆盖（实测 `ChrSel[24..32]`），
     /// 按"居中贴"画会把它糊到屏幕正中间去（踩过）。
-    pub const DOOR_AT: (f32, f32) = (153.0, 96.0);
+    ///
+    /// ⚠️ 2026-10-17 重标。门动画帧是 800 版美术（496×361），登录底图却是 1024 重绘版
+    /// （`ui1[2850]`）—— **两者的门洞不是严格 1.28 倍关系**。按 1.28 直接画，门框会
+    /// 明显压到门洞外（用户报的"开门动画与背景对不齐"）。用整帧 NCC 在 1024 底图上重搜：
+    /// scale **1.15**、原生落点 **(212,128)**（NCC 0.716，旧口径 1.28/(196,123) 明显更差），
+    /// 折设计空间就是 `212/1.28`。旧 800 底图上的 (153,96) 只作历史对照
+    ///（`真素材_门帧与800底图对齐` 仍在用）。
+    pub const DOOR_AT: (f32, f32) = (212.0 / 1.28, 128.0 / 1.28);
+    /// 门帧在设计空间里的**绘制**尺寸 = 原生 496×361 × 1.15 ÷ 1.28。
+    ///
+    /// ⚠️ 别再拿素材尺寸（`measure`）当绘制尺寸 —— 素材是 1024 原生像素，直接 ×1.28 画
+    /// 就是"门比洞大"。
+    pub const DOOR_SIZE: (f32, f32) = (496.0 * 1.15 / 1.28, 361.0 * 1.15 / 1.28);
 
     // ⚠️ 这里原来还有 `bg_at` / `legacy_at` 两个"把 800×600 居中摆进窗口"的换算 ——
     // 2026-10-09 删掉（D-52）：现在这套界面**整屏拉伸铺满**画布（跟官方一样），
@@ -307,8 +319,6 @@ mod tests {
             ("Prguse", 60) => Some((296, 254)),
             ("Prguse", 62) => Some((76, 33)),
             ("Prguse", 61) => Some((100, 32)),
-            ("Prguse", 51) => Some((96, 34)), // 建号面板 [确定]（D-32）
-            ("Prguse", 52) => Some((96, 33)), // 建号面板 [取消]
             ("Prguse", 64) => Some((16, 23)),
             ("Prguse", 53) => Some((128, 33)),
             ("Prguse", 360) => Some((452, 179)),
@@ -348,21 +358,38 @@ mod tests {
             // 两框同 x 同宽、密码在下面（原版两处都写 `cx-50` 与 112）
             assert_eq!((l.account.x, l.account.w), (l.password.x, l.password.w));
             assert!(l.password.y > l.account.y);
+            // 建号两颗是**自绘**的固定尺寸，不再依赖 `Prguse[51]/[52]`
+            //（这套素材的 51 印的是英文 CANCEL，用户 2026-10-17 报的）
+            assert_eq!(
+                (l.signup_ok.w, l.signup_ok.h),
+                (Art::SIGNUP_BTN_W, Art::SIGNUP_BTN_H)
+            );
+            assert_eq!(
+                (l.signup_cancel.w, l.signup_cancel.h),
+                (Art::SIGNUP_BTN_W, Art::SIGNUP_BTN_H)
+            );
+            assert!(
+                l.signup_ok.x + l.signup_ok.w <= l.signup_cancel.x,
+                "建号 [确定]/[取消] 叠在一起了"
+            );
         }
     }
 
-    /// 开门动画的位置是**设计空间**（800×600）的偏移，**不是**"居中贴"。
+    /// 开门动画的位置/尺寸都是**设计空间**的，且**不是**把素材按 1.28 放大。
     ///
-    /// 踩过的坑：当初按"居中"画，496×361 的门会跑到屏幕正中间，看着像"没有开门动画"。
-    /// 偏移的数值本身由 `真素材_门帧贴合背景` 钉住（这里只验它在画布内、且不是居中值）。
+    /// 踩过的两个坑：① 按"居中"画，门会跑到屏幕正中间；② 用 `ui.draw`
+    ///（素材尺寸 ×1.28）画，800 版门帧会比 1024 底图的门洞大一圈（用户 2026-10-17 报的）。
     #[test]
-    fn 开门偏移在设计空间内() {
+    fn 门框按1024底图拟合而不是素材原尺寸() {
         let (x, y) = Layout::DOOR_AT;
+        let (w, h) = Layout::DOOR_SIZE;
         assert!((0.0..800.0).contains(&x) && (0.0..600.0).contains(&y));
-        // 与"居中等宽覆盖"那个值**不同**（x 差 1px、y 差 23.5px —— 门是局部覆盖，
-        // 不是把 496×361 摆到正中间）
-        let centered = ((800.0 - 496.0) / 2.0, (600.0 - 361.0) / 2.0);
-        assert_ne!((x, y), centered);
+        // 画到画布后的实际尺寸 = 设计 ×1.28 = 素材 ×1.15
+        assert!((w * 1.28 - 496.0 * 1.15).abs() < 0.05);
+        assert!((h * 1.28 - 361.0 * 1.15).abs() < 0.05);
+        assert!(w * 1.28 < 496.0 * 1.28, "不能退回素材 ×1.28");
+        // 不是"居中贴"
+        let centered = ((800.0 - w) / 2.0, (600.0 - h) / 2.0);
         assert!(
             (y - centered.1).abs() > 20.0,
             "y 该明显偏离居中：{y} vs {}",
@@ -370,76 +397,102 @@ mod tests {
         );
     }
 
-    /// **真素材验收**：开门动画的落点要**贴合登录背景上的门口** ——
-    /// 拿"关着门"那一帧（`ChrSel[24]`）当模板在 `ChrSel[22]` 上滑，最小差必须在
-    /// `DOOR_AT`，而且**附近没有更好的位置**。
+    /// **真素材验收**：门帧要贴在 **1024 登录底图**（`ui1[2850]`）的门洞上。
     ///
-    /// 这条是用户报的"门打开动画的位置偏了"的判据：原版那两个字面量（`+252/+106`）
-    /// 是给它自己那套素材的，照抄会让门右偏约 100px。
+    /// 用户 2026-10-17 报"开门动画与背景对不齐"：旧口径把 800 版门帧按素材原尺寸 ×1.28
+    /// 画在 (196,123)，门框比 1024 底图的门洞大一圈。判据有两条：
+    /// 1. 按现状（`DOOR_AT`/`DOOR_SIZE` 反算出的 1.15 拟合位置）与底图的差要够小；
+    /// 2. **必须**明显好于旧口径 —— 谁把绘制改回"素材 ×1.28"这条就红。
     #[test]
-    fn 真素材_门帧贴合背景() {
-        use crate::wzl::Wzl;
+    fn 真素材_门帧贴合1024底图() {
+        use crate::wzl::{Sprite, Wzl};
 
         let Ok(dir) = std::env::var("MIR2C_DATA") else {
             eprintln!("跳过：未设置 MIR2C_DATA");
             return;
         };
         let dir = std::path::PathBuf::from(&dir);
-        let lib = Wzl::open(dir.join(Art::BG.0)).expect("ChrSel");
-        let bg = lib.decode(Art::BG.1 as usize).expect("登录背景");
-        let frame = lib
-            .decode((Art::DOOR.1 + 1) as usize)
-            .expect("关门那一帧（ChrSel[24]）");
+        let ui1 = Wzl::open(dir.join("ui1")).expect("ui1");
+        let chr = Wzl::open(dir.join("ChrSel")).expect("ChrSel");
+        let bg = ui1.decode(2850).expect("1024 登录背景");
+        let frame = chr.decode((Art::DOOR.1 + 1) as usize).expect("关门帧");
 
-        // 模板的**不透明像素**与背景（左上角在 (x,y)）的平均差。
-        // 步长 2 采样：17923 个不透明像素 → 约 4.5e3，够判别（实测次好差 16+）。
-        let diff_at = |x: i32, y: i32| -> Option<f32> {
+        /// 最近邻缩放到画布尺寸（绘制用双线性，但判别位置/比例够用）。
+        fn scaled(t: &Sprite, w: i32, h: i32) -> Sprite {
+            let mut out = Sprite {
+                width: w as u16,
+                height: h as u16,
+                anchor_x: 0,
+                anchor_y: 0,
+                rgba: vec![0; (w * h * 4) as usize],
+            };
+            for y in 0..h {
+                for x in 0..w {
+                    let sx = (x as f32 * t.width as f32 / w as f32) as i32;
+                    let sy = (y as f32 * t.height as f32 / h as f32) as i32;
+                    let si = ((sy * t.width as i32 + sx) * 4) as usize;
+                    let di = ((y * w + x) * 4) as usize;
+                    out.rgba[di..di + 4].copy_from_slice(&t.rgba[si..si + 4]);
+                }
+            }
+            out
+        }
+
+        // 模板的**不透明像素**与背景（左上角在 (x,y)）的平均差（步长 2 采样够判别）。
+        fn diff_at(bg: &Sprite, t: &Sprite, x: i32, y: i32) -> Option<f32> {
             let (mut sum, mut n) = (0u64, 0u64);
-            for ty in (0..frame.height as i32).step_by(2) {
+            for ty in (0..t.height as i32).step_by(2) {
                 let py = y + ty;
                 if py < 0 || py >= bg.height as i32 {
                     return None;
                 }
-                for tx in (0..frame.width as i32).step_by(2) {
+                for tx in (0..t.width as i32).step_by(2) {
                     let px = x + tx;
                     if px < 0 || px >= bg.width as i32 {
                         return None;
                     }
-                    let ti = ((ty * frame.width as i32 + tx) * 4) as usize;
-                    if frame.rgba[ti + 3] < 128 {
+                    let ti = ((ty * t.width as i32 + tx) * 4) as usize;
+                    if t.rgba[ti + 3] < 128 {
                         continue;
                     }
                     let bi = ((py * bg.width as i32 + px) * 4) as usize;
                     for c in 0..3 {
-                        sum += (bg.rgba[bi + c] as i32 - frame.rgba[ti + c] as i32).unsigned_abs()
-                            as u64;
+                        sum +=
+                            (bg.rgba[bi + c] as i32 - t.rgba[ti + c] as i32).unsigned_abs() as u64;
                     }
                     n += 3;
                 }
             }
             (n > 0).then(|| sum as f32 / n as f32)
-        };
-
-        let (dx, dy) = (Layout::DOOR_AT.0 as i32, Layout::DOOR_AT.1 as i32);
-        let here = diff_at(dx, dy).expect("落点在图内");
-        assert!(
-            here < 16.0,
-            "门帧在 {:?} 与背景差 {here:.2} —— 落点错了？",
-            Layout::DOOR_AT
-        );
-        // 附近（±8）不能有更好的位置
-        for oy in -8..=8 {
-            for ox in -8..=8 {
-                if let Some(d) = diff_at(dx + ox, dy + oy) {
-                    assert!(
-                        d >= here - 1e-3,
-                        "门帧在 ({},{}) 比 DOOR_AT 更贴背景（{d:.2} < {here:.2}）",
-                        dx + ox,
-                        dy + oy
-                    );
-                }
-            }
         }
+
+        // 现状口径：绘制尺寸 = DOOR_SIZE ×1.28，落点 = DOOR_AT ×1.28
+        let now = scaled(
+            &frame,
+            (Layout::DOOR_SIZE.0 * 1.28).round() as i32,
+            (Layout::DOOR_SIZE.1 * 1.28).round() as i32,
+        );
+        let (dx, dy) = (
+            (Layout::DOOR_AT.0 * 1.28).round() as i32,
+            (Layout::DOOR_AT.1 * 1.28).round() as i32,
+        );
+        let here = diff_at(&bg, &now, dx, dy).expect("落点在图内");
+        assert!(
+            here < 24.0,
+            "门帧在 ({dx},{dy}) 与 1024 底图差 {here:.2} —— 拟合错了？"
+        );
+
+        // 旧口径：素材原尺寸 ×1.28、落点 (196,123)
+        let old = scaled(
+            &frame,
+            (496.0f32 * 1.28).round() as i32,
+            (361.0f32 * 1.28).round() as i32,
+        );
+        let old_diff = diff_at(&bg, &old, 196, 123).expect("旧落点在图内");
+        assert!(
+            old_diff > here + 1.0,
+            "1.15 拟合必须比旧的 1.28 口径更贴底图（{here:.2} vs {old_diff:.2}）"
+        );
     }
 
     /// 素材缺一个就整体 `None`（宁可写"素材缺失"，也不画歪框）。
@@ -491,12 +544,6 @@ mod tests {
             (Art::BTN_OK.0, Art::BTN_OK.1, "[提交]"),
             (Art::BTN_NEW.0, Art::BTN_NEW.1, "[新用户]"),
             (Art::BTN_CHGPW.0, Art::BTN_CHGPW.1, "[修改密码]"),
-            (Art::BTN_SIGNUP_OK.0, Art::BTN_SIGNUP_OK.1, "建号 [确定]"),
-            (
-                Art::BTN_SIGNUP_CANCEL.0,
-                Art::BTN_SIGNUP_CANCEL.1,
-                "建号 [取消]",
-            ),
             (Art::BTN_CLOSE.0, Art::BTN_CLOSE.1, "[X]"),
             (Art::MSGBOX.0, Art::MSGBOX.1, "消息框"),
             (Art::MSGBOX_OK.0, Art::MSGBOX_OK.1, "消息框 [Ok]"),

@@ -8,16 +8,16 @@
 //! 原版的 `FState.pas` 坐标对应它自己那套 `Prguse.wil`；我方素材是另一版式
 //! （面板间距 552 而非 340、菜单行距 20 而非 38）⇒ 照抄会让点击区、按下态、
 //! 小人、文字**全部错位**（实测踩过）。所以布局全部是**量出来的**，
-//! 见 `core::select_ui` 的表与 `真素材_按钮与背景对齐` 那条测试。
+//! 见 `core::select_ui` 的表与 `真素材_按钮贴合新版背景` 那条测试。
 //!
 //! # 与原版的几处差异（都是有意的）
 //!
 //! 1. **补了键盘**：原版选角只认鼠标。这里 ←→ 选槽、↑↓ 选菜单项、回车确认
 //!    （布局是"左右两槽 + 中间竖排菜单"，键盘正好这么走）。
 //! 2. **[创建人物] / [删除人物] 已接上**（2026-10-08，D-35）：建角开一个对话框
-//!    （姓名/职业/性别，键鼠都能用），删角弹"删了不可恢复"的确认。**[制作群] 仍是占位**。
-//!    ⚠️ 对话框是**自绘的固定几何**（`su::DialogBox`），没照抄原版的窗口素材图号
-//!    （原版 `Prguse[73..78]`，我方素材不是那一套，见 protocol.md §11 与 D-27）。
+//!    （姓名/职业/性别，键鼠都能用），删角弹"删了不可恢复"的确认。
+//!    **[恢复人物] 仍是占位**（新版背景这颗钮顶掉了旧 1.76 的「制作群」，服务端还没有
+//!    找回已删角色的路）。⚠️ 对话框用的是原版窗口素材图号（`Prguse[73..78]`，D-57）。
 //! 3. **空槽点了没反应**（原版会选中它、然后[开始]发一个空名字被服务端拒掉）。
 //! 4. 压暗过渡略去（理由见 `core::select_ui::SlotAnim`）。
 
@@ -382,12 +382,8 @@ impl Select {
                 return Some((Hit::Sel(i), *r));
             }
         }
-        // ⚠️ 「开始」那颗**石台**（83×40）比钮本身（44×21）大得多 ⇒ 先按台子判一次，
-        // 否则"看得见台子、点不中"（用户 2026-10-09 第 1 条里那份观感）。
-        let plate = su::start_plate_at(l.menu[0]);
-        if plate.hit(p) {
-            return Some((Hit::Menu(0), plate));
-        }
+        // 菜单/开始钮：命中矩形就是按钮图本身（新版 ui1 按钮图自带石台，
+        // 图多大命中区就多大 —— 不再有"看得见台子、点不中"的问题）。
         for (i, r) in l.menu.iter().enumerate() {
             if r.hit(p) {
                 return Some((Hit::Menu(i), *r));
@@ -559,8 +555,8 @@ impl Select {
                 su::Menu::Start => self.start(),
                 su::Menu::CreateChar => self.open_newchar(),
                 su::Menu::DeleteChar => self.ask_delete(),
-                su::Menu::Credits => {
-                    self.say("这套素材这里写的是「制作群」（原版那个位置是 credits）。未接。");
+                su::Menu::RestoreChar => {
+                    self.say("「恢复人物」（找回已删除的角色）暂未开放。");
                     Action::None
                 }
                 su::Menu::Exit => Action::Exit,
@@ -822,20 +818,20 @@ mod tests {
         s.on_key(crate::app_state::SceneKey::Escape); // 关掉它
         assert!(!s.newchar_open() && s.msg.is_none());
 
-        // 第 2 项 = 删除角色：弹确认（措辞照原版），ESC 取消
+        // 第 2 项 = 恢复人物：占位（服务端还没有找回已删角色的路）
+        s.on_key(crate::app_state::SceneKey::Down);
+        s.on_key(crate::app_state::SceneKey::Enter);
+        assert!(s.msg.clone().unwrap().contains("恢复人物"));
+
+        // 第 3 项 = 删除角色：弹确认（措辞照原版），ESC 取消
+        s.on_key(crate::app_state::SceneKey::Escape); // 关掉"恢复人物"那句
         s.on_key(crate::app_state::SceneKey::Down);
         s.on_key(crate::app_state::SceneKey::Enter);
         assert!(s.msg.clone().unwrap().contains("删除角色是不可以恢复的"));
         s.on_key(crate::app_state::SceneKey::Escape);
         assert!(s.msg.is_none() && s.pending.is_none(), "取消要把确认清干净");
 
-        // 第 3 项 = 制作群
-        s.on_key(crate::app_state::SceneKey::Down);
-        s.on_key(crate::app_state::SceneKey::Enter);
-        assert!(s.msg.clone().unwrap().contains("制作群"));
-
         // 第 4 项 = 退出
-        s.on_key(crate::app_state::SceneKey::Escape); // 关掉"制作群"那句
         s.on_key(crate::app_state::SceneKey::Down);
         assert_eq!(s.on_key(crate::app_state::SceneKey::Enter), Action::Exit);
     }
@@ -944,7 +940,8 @@ mod tests {
         // ① 删角的确认：点 [Ok] = 真删
         let mut s = Select::new(vec![c(1, "甲"), c(2, "乙")]);
         s.on_key(crate::app_state::SceneKey::Down);
-        s.on_key(crate::app_state::SceneKey::Down); // 菜单光标到「删除人物」
+        s.on_key(crate::app_state::SceneKey::Down);
+        s.on_key(crate::app_state::SceneKey::Down); // 菜单光标到「删除人物」（开始/创建/恢复之后）
         assert_eq!(
             s.on_key(crate::app_state::SceneKey::Enter),
             Action::None,
@@ -1109,6 +1106,7 @@ mod tests {
         let mut s = Select::new(vec![c(1, "甲"), c(2, "乙")]);
         s.on_key(crate::app_state::SceneKey::Down);
         s.on_key(crate::app_state::SceneKey::Down);
+        s.on_key(crate::app_state::SceneKey::Down); // 菜单光标到「删除人物」（开始/创建/恢复之后）
         assert_eq!(
             s.on_key(crate::app_state::SceneKey::Enter),
             Action::None,

@@ -157,8 +157,18 @@ pub enum Ev {
     /// 收到一条信封。**调用方负责解释它**（`core::world::World::apply`）。
     Envelope(Box<Envelope>),
     /// 连接结束（正常关闭 / 出错），附原因。
+    ///
+    /// **正常收尾**（对端 EOF / 帧边界上的 `Closed`）的原因为 [`NORMAL_CLOSE`]（空串）：
+    /// 服务端退出、发完 `Disconnect` 后关连接都是正常结束，界面**不要**拿它弹提示
+    ///（用户 2026-10-17：别显示"服务端关闭了连接"）。
     Closed(String),
 }
+
+/// [`Ev::Closed`] 的**正常收尾**哨兵（空串）。
+///
+/// 🔴 别把空串当成"没原因"随手填个默认文案 —— 正常关连接不该出现在玩家眼前，
+/// 终端日志另说（调用方自己打一行即可）。
+pub const NORMAL_CLOSE: &str = "";
 
 /// 一条后台会话。字段直接是 channel 两端 —— 刻意**不加一层封装方法**：
 /// 调用方要的是"发命令 / 收事件"，多一层只会让 `try_iter` 这类批量消费变别扭。
@@ -413,16 +423,37 @@ fn write_body(stream: &mut TcpStream, seq: &mut u32, body: Body) -> Result<(), p
     proto::write_frame(stream, &env)
 }
 
-/// 把连接层错误转成给人看的一句话。
+/// 把连接层错误转成给人看的一句话；**正常收尾**返回 [`NORMAL_CLOSE`]（空串）。
 fn describe(e: &NetError) -> String {
     match e {
         NetError::Io(io) if io.kind() == std::io::ErrorKind::UnexpectedEof => {
-            "服务端关闭了连接".to_string()
+            NORMAL_CLOSE.to_string()
         }
         // 帧边界上的关闭：服务端"发完 `Disconnect` 就关连接"走的就是这条 —— **正常收尾**。
         // ⚠️ 早先它被 `read_exact` 报成"分帧: 长度域不完整: failed to fill whole buffer"，
         // 看着像分帧被撕坏了（2026-10-08 用户正是拿着这条日志来问的）。
-        NetError::Frame(proto::FrameError::Closed) => "服务端关闭了连接".to_string(),
+        NetError::Frame(proto::FrameError::Closed) => NORMAL_CLOSE.to_string(),
         other => other.to_string(),
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **正常收尾不给玩家看**（用户 2026-10-17）：对端 EOF 与帧边界上的关闭都必须
+    /// 落成 `NORMAL_CLOSE`（空串），别退回到"服务端关闭了连接"那种吓人的文案。
+    #[test]
+    fn 正常收尾不产生提示文案() {
+        let eof = NetError::Io(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+        assert_eq!(describe(&eof), NORMAL_CLOSE);
+        let boundary = NetError::Frame(proto::FrameError::Closed);
+        assert_eq!(describe(&boundary), NORMAL_CLOSE);
+        assert!(
+            NORMAL_CLOSE.is_empty(),
+            "哨兵本身就得是空串（调用方按空判正常）"
+        );
+        // 真错误仍然要有话 —— 别把这条纪律做成"所有错误都吞掉"
+        let refused = NetError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+        assert!(!describe(&refused).is_empty());
     }
 }

@@ -821,8 +821,8 @@ pub(crate) fn item_name(id: &str) -> &str {
         "select.info.right" => "右侧角色文字",
         "select.menu.start" => "开始按钮",
         "select.menu.create" => "创建人物按钮",
+        "select.menu.restore" => "恢复人物按钮",
         "select.menu.delete" => "删除人物按钮",
-        "select.menu.credits" => "制作群按钮",
         "select.menu.exit" => "退出按钮",
         "select.newchar" => "新建角色窗口",
         "select.newchar.name" => "新建角色姓名框",
@@ -850,11 +850,11 @@ fn scene_measure(lib: &'static str, index: u32) -> Option<(u32, u32)> {
         ("Prguse", 53) => Some((128, 33)),
         ("Prguse", 360) => Some((452, 179)),
         ("Prguse", 363) => Some((80, 34)),
-        ("Prguse", 66 | 67) => Some((76, 33)),
-        ("Prguse", 68) => Some((44, 21)),
-        ("Prguse", 69 | 70) => Some((120, 21)),
-        ("Prguse", 71) => Some((92, 20)),
-        ("Prguse", 72) => Some((56, 20)),
+        ("ui1", 2852) => Some((88, 41)),
+        ("ui1", 2854) => Some((102, 45)),
+        ("ui1", 2856) => Some((102, 46)),
+        ("ui1", 2858) | ("ui1", 2860) | ("ui1", 2862) => Some((145, 25)),
+        ("ui1", 2864) => Some((67, 24)),
         ("ChrSel", 24) => Some((496, 361)),
         _ => None,
     } {
@@ -993,15 +993,16 @@ fn scene_default_tree(scope: EditorScope) -> crate::widget::WidgetTree {
                     },
                 ));
             }
-            let door_size = scene_measure("ChrSel", 24).unwrap();
+            // ⚠️ 尺寸用 `DOOR_SIZE` 而**不是**素材的 496×361：门帧是 800 版美术，
+            // 1024 底图的门洞只有它的 1.15 倍（不是 1.28）⇒ 按素材原尺寸画会撑出洞口。
             tree.push(scene_node(
                 "login.door",
                 None,
                 LRect::new(
                     mir2_core::login_ui::Layout::DOOR_AT.0,
                     mir2_core::login_ui::Layout::DOOR_AT.1,
-                    door_size.0 as f32,
-                    door_size.1 as f32,
+                    mir2_core::login_ui::Layout::DOOR_SIZE.0,
+                    mir2_core::login_ui::Layout::DOOR_SIZE.1,
                 ),
                 10,
                 true,
@@ -1070,8 +1071,8 @@ fn scene_default_tree(scope: EditorScope) -> crate::widget::WidgetTree {
             for (i, id) in [
                 "select.menu.start",
                 "select.menu.create",
+                "select.menu.restore",
                 "select.menu.delete",
-                "select.menu.credits",
                 "select.menu.exit",
             ]
             .into_iter()
@@ -1600,8 +1601,8 @@ impl LayoutDocument {
         for (index, id) in [
             "select.menu.start",
             "select.menu.create",
+            "select.menu.restore",
             "select.menu.delete",
-            "select.menu.credits",
             "select.menu.exit",
         ]
         .into_iter()
@@ -1858,7 +1859,16 @@ mod layout_tests {
         }
         let login = layout.login_layout(core_login_layout());
         assert_eq!(login.dialog, core_login_layout().dialog);
-        assert_eq!(layout.login_door(), LRect::new(153.0, 96.0, 496.0, 361.0));
+        // 门框按 1.15 拟合到 1024 底图（不是素材原尺寸 496×361），见 `login_ui::Layout::DOOR_SIZE`
+        assert_eq!(
+            layout.login_door(),
+            LRect::new(
+                mir2_core::login_ui::Layout::DOOR_AT.0,
+                mir2_core::login_ui::Layout::DOOR_AT.1,
+                mir2_core::login_ui::Layout::DOOR_SIZE.0,
+                mir2_core::login_ui::Layout::DOOR_SIZE.1,
+            )
+        );
         let select = layout.select_layout(core_select_layout());
         assert_eq!(select.bg, (0.0, 0.0));
         assert_eq!(
@@ -1869,8 +1879,8 @@ mod layout_tests {
         for (index, id) in [
             "select.menu.start",
             "select.menu.create",
+            "select.menu.restore",
             "select.menu.delete",
-            "select.menu.credits",
             "select.menu.exit",
         ]
         .into_iter()

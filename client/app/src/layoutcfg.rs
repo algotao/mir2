@@ -232,12 +232,15 @@ pub(crate) fn save(path: &Path, cur: &LayoutDocument) -> std::io::Result<bool> {
     Ok(true)
 }
 
-/// 整数就不带小数点（手改文件时好读）。
+/// 整数就不带小数点（手改文件时好读）；非整数用 `f32` 的**最短往返**表示。
+///
+/// ⚠️ 别改成 `{:.1}`：设计空间里存在 160.625 这种坐标（门框按 1.15 拟合后就不是整数了），
+/// 只留一位小数会在"存盘→读回"时漂 0.025，解析矩形和默认值不再相等。
 fn num(v: f32) -> String {
     if v.fract() == 0.0 && v.abs() < 1e7 {
         format!("{}", v as i64)
     } else {
-        format!("{:.1}", v)
+        format!("{v}")
     }
 }
 

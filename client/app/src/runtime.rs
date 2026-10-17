@@ -412,8 +412,8 @@ pub(crate) fn run_app<T>(
                     "select.info.right",
                     "select.menu.start",
                     "select.menu.create",
+                    "select.menu.restore",
                     "select.menu.delete",
-                    "select.menu.credits",
                     "select.menu.exit",
                 ];
                 if let Some(select) = app.select_scene.as_ref() {

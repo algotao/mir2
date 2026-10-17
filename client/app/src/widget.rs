@@ -432,9 +432,11 @@ impl EditSession {
         let snap = |v: f32| (v / step).round() * step;
         let (dx, dy) = (snap(pointer.0 - self.from.0), snap(pointer.1 - self.from.1));
         let rect = match self.mode {
+            // 只吸附**位移**、不吸附绝对坐标：默认版式里存在 165.625 这种"拟合坐标"
+            //（门框按 1.15 折回设计空间），绝对吸附会把它吸成整数，一拖就丢精度。
             EditMode::Move if self.policy.movable => crate::layout::LRect::new(
-                snap(self.start.x + dx),
-                snap(self.start.y + dy),
+                self.start.x + dx,
+                self.start.y + dy,
                 self.start.w,
                 self.start.h,
             ),

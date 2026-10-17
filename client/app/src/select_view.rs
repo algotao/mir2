@@ -26,6 +26,34 @@ pub(crate) fn msgbox_geom(ui: &mut UiCache, dir: &Path, win: (u32, u32)) -> Opti
     Some(crate::layout::layout_document().select_msgbox(su::MsgBox::build(win, frame, ok)))
 }
 
+/// 画一颗 **ui1 原生按钮**（1024 原生图，图里自带石台/底纹/文字）。
+///
+/// `r` 是设计空间矩形（`core::select_ui` 已按实测原生坐标 ×25/32 折算）；
+/// `draw_ui_src` 内部 ×1.28 折回画布后，目标矩形正好等于这张图被切出来的那块原生区域
+/// ⇒ **1:1 无缩放**，与背景上烘焙的同一块逐像素重合（真素材回归：
+/// `core::select_ui::tests::真素材_按钮贴合新版背景`）。
+fn draw_native_btn<'a, T>(
+    ui: &mut UiCache<'a>,
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    dir: &Path,
+    btn: (&'static str, u32),
+    r: su::Rect,
+) {
+    let Some((w, h)) = ui.size(dir, btn.0, btn.1) else {
+        return; // 清单已校验；真缺图时宁可不画，也不拉伸别的图顶上
+    };
+    let _ = ui.draw_ui_src(
+        canvas,
+        tc,
+        dir,
+        btn.0,
+        btn.1,
+        (0.0, 0.0, w as f32, h as f32),
+        (r.x, r.y, r.w, r.h),
+    );
+}
+
 /// 视图专属的惰性素材几何缓存；不属于角色选择状态。
 #[derive(Default)]
 pub(crate) struct ViewState {
@@ -69,7 +97,7 @@ impl Select {
             return text.draw_ui(
                 canvas,
                 tc,
-                "选角必需素材缺失：需要 ui1[2851] 与 Prguse[66..72]（清单已校验）",
+                "选角必需素材缺失：需要 ui1[2851] 与 ui1[2852..2865]（清单已校验）",
                 16.0,
                 16.0,
                 (255, 220, 220),
@@ -104,21 +132,15 @@ impl Select {
             "必需素材 ui1[2851] 选角背景缺失"
         );
 
-        // 「开始」那颗**石台**：只存在于新版底图 `Prguse2[480]` 里，1.76 的底图没有 ⇒ 裁过来叠上。
-        // 用户 2026-10-09 要的（官方选角图里"开始"下面垫着台子）；出处与量法见
-        // `core::select_ui::START_PLATE`。画在**底图之上、小人之下**（台子是面板的一部分）。
-        {
-            let p = su::start_plate_at(l.menu[0]);
-            let (sx, sy, sw, sh) = su::START_PLATE_SRC;
-            let _ = ui.draw_ui_src(
-                canvas,
-                tc,
-                dir,
-                su::Art::START_PLATE.0,
-                su::Art::START_PLATE.1,
-                (sx, sy, sw, sh),
-                (p.x, p.y, p.w, p.h),
-            );
+        // 七颗界面按钮（2026-10-13 起用 ui1 原生图）：常态整图 1:1 贴回背景上的实测位置。
+        // 图里自带石台/底纹/文字（就是从这套 1024 美术里切出来的），×1.28 折回画布后
+        // 正好逐像素覆盖背景上烘焙的同一块 —— 不缩放、不重采样，也不再需要搬石台的补丁。
+        // 画在**底图之上、小人之下**（按钮与凹槽不重叠，顺序只影响编辑器层级观感）。
+        for (i, r) in l.sel.iter().enumerate() {
+            draw_native_btn(ui, canvas, tc, dir, su::Art::SEL_UP[i], *r);
+        }
+        for (i, r) in l.menu.iter().enumerate() {
+            draw_native_btn(ui, canvas, tc, dir, su::Art::MENU_UP[i], *r);
         }
 
         for slot in 0..su::Art::SLOTS {
@@ -191,7 +213,7 @@ impl Select {
             )?;
         }
 
-        // 按下态 / 键盘高亮：**只在按住或键盘选中时**叠那张图
+        // 按下态 / 键盘高亮：**只在按住或键盘选中时**把那张图换成按下态（常态图号 +1）
         //（原版 `DscSelect1DirectPaint` 只认 `Downed`；键盘是我们的扩展）
         let down: Option<Hit> = match widget_ui.held() {
             Some(crate::Press::Select(h)) => Some(h),
@@ -204,45 +226,18 @@ impl Select {
             // 点角色本体：不额外叠图（选中的反馈就是"这个小人不石化/开始摆手"）
             Some(Hit::Slot(_)) => {}
             Some(Hit::Sel(i)) => {
-                let r = l.sel[i];
-                ui.draw_tint(
-                    canvas,
-                    tc,
-                    dir,
-                    su::Art::SEL_DOWN[i].0,
-                    su::Art::SEL_DOWN[i].1,
-                    r.x,
-                    r.y,
-                    C_SEL_HL,
-                );
+                let (name, idx) = su::Art::SEL_UP[i];
+                draw_native_btn(ui, canvas, tc, dir, (name, idx + 1), l.sel[i]);
             }
             Some(Hit::Menu(i)) => {
-                let r = l.menu[i];
-                ui.draw_tint(
-                    canvas,
-                    tc,
-                    dir,
-                    su::Art::MENU_DOWN[i].0,
-                    su::Art::MENU_DOWN[i].1,
-                    r.x,
-                    r.y,
-                    C_SEL_HL,
-                );
+                let (name, idx) = su::Art::MENU_UP[i];
+                draw_native_btn(ui, canvas, tc, dir, (name, idx + 1), l.menu[i]);
             }
             None => {
-                // 键盘光标那一项也高亮（否则键盘用户看不出选中的是哪一项）
+                // 键盘光标那一项也亮起按下态（否则键盘用户看不出选中的是哪一项）
                 let i = self.menu_cursor;
-                let r = l.menu[i];
-                ui.draw_tint(
-                    canvas,
-                    tc,
-                    dir,
-                    su::Art::MENU_DOWN[i].0,
-                    su::Art::MENU_DOWN[i].1,
-                    r.x,
-                    r.y,
-                    (170, 170, 170),
-                );
+                let (name, idx) = su::Art::MENU_UP[i];
+                draw_native_btn(ui, canvas, tc, dir, (name, idx + 1), l.menu[i]);
             }
         }
 
@@ -278,6 +273,11 @@ fn draw_newchar<'a, T>(
     hover: Option<su::DialogHit>,
 ) -> Result<(), sdl3::Error> {
     // ① 窗底图（`Prguse[73]`，静态必需素材；不以空窗或自绘板兜底）。
+    //
+    // ⚠️ `b.frame` 是**设计空间**（800×600）矩形 ⇒ 必须走 `draw_ui_src`（内部 ×1.28），
+    // 不能走 `draw_src`（画布像素）。2026-10-17 之前这里用的是 `draw_src`：
+    // 窗底按 1:1 画在画布左上角，而职业/性别/关闭按钮都按设计空间 ×1.28 ⇒
+    // 窗口"不居中、关闭按钮飞出去"（用户报的那两条）。
     let (iw, ih) = ui
         .size(dir, su::Art::NEW_CHR_BG.0, su::Art::NEW_CHR_BG.1)
         .expect("素材清单要求 Prguse[73] 建角窗背景");
@@ -286,15 +286,14 @@ fn draw_newchar<'a, T>(
         (b.frame.w, b.frame.h),
         "建角窗素材尺寸与布局不一致"
     );
-    let _ = ui.draw_src(
+    let _ = ui.draw_ui_src(
         canvas,
         tc,
         dir,
         su::Art::NEW_CHR_BG.0,
         su::Art::NEW_CHR_BG.1,
-        FRect::new(0.0, 0.0, iw as f32, ih as f32),
-        FRect::new(b.frame.x, b.frame.y, iw as f32, ih as f32),
-        255,
+        (0.0, 0.0, iw as f32, ih as f32),
+        (b.frame.x, b.frame.y, b.frame.w, b.frame.h),
     );
     // ② 职业 / 性别的高亮（选中**或**悬停）
     for (i, r) in b.job.iter().enumerate() {

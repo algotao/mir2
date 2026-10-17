@@ -99,8 +99,8 @@ impl LayoutEdit {
                 "select.info.right",
                 "select.menu.start",
                 "select.menu.create",
+                "select.menu.restore",
                 "select.menu.delete",
-                "select.menu.credits",
                 "select.menu.exit",
             ]),
         };
@@ -651,10 +651,10 @@ mod tests {
         e.mouse_move((86.0 + 5.0, 653.0 + 5.0)); // 位移 5 ⇒ 吸附到 8
         e.mouse_up();
         let after = layout_document().get("orb").unwrap();
-        // ⚠️ 吸附是把落点对齐到 8 的**倍数**（不是"位移 8"）⇒ 期望要按吸附算
-        let snap = |v: f32| (v / 8.0).round() * 8.0;
-        assert_eq!(after.x, snap(before.x + 8.0));
-        assert_eq!(after.y, snap(before.y + 8.0));
+        // 吸附的是**位移**（5 → 8），不是绝对落点：默认版式里有 165.625 这类拟合坐标，
+        // 按绝对坐标吸附会在第一次拖动时把它抹成整数（见 `EditSession::update`）。
+        assert_eq!(after.x, before.x + 8.0);
+        assert_eq!(after.y, before.y + 8.0);
         assert_eq!(after.w, before.w, "移动不该改大小");
         e.undo();
         assert_eq!(layout_document().get("orb").unwrap(), before);
@@ -1085,7 +1085,8 @@ mod tests {
         e.mouse_up();
         let dialog1 = layout_document().select_dialog_box();
         assert_eq!(dialog1.frame.x, d.x - 9.0);
-        assert_eq!(dialog1.frame.y, (d.y + 11.0).round());
+        // 只吸附位移、不吸附绝对坐标：建角窗默认 y 是 91.5（居中），拖动后保留 0.5
+        assert_eq!(dialog1.frame.y, d.y + 11.0);
         assert_eq!(dialog1.name.x, dialog0.name.x - 9.0);
         assert_eq!(dialog1.name.y, dialog0.name.y + (dialog1.frame.y - d.y));
     }

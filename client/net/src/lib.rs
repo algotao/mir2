@@ -15,7 +15,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 pub mod session;
-pub use session::{Cmd, Ev, Session};
+pub use session::{Cmd, Ev, Session, NORMAL_CLOSE};
 
 use mir2_protocol as proto;
 use proto::envelope::Body;
