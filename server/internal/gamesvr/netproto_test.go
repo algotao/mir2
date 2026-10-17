@@ -1032,7 +1032,10 @@ func TestProtoRustCombat(t *testing.T) {
 		t.Errorf("剧本没打通过标记，输出：\n%s", out.String())
 	}
 	// 伤害值必须是**真的算出来的**（不是 0）：DC 20-25 减怪物 AC 之后仍应 > 0。
-	if !strings.Contains(out.String(), "伤害：") {
+	//
+	// ⚠️ 断言的是 e2e 客户端"世界状态通过：… 伤害=N …"那行里的计数
+	// （客户端重构后不再单独打"伤害："前缀；`-expect-damage 1` 失败会先让进程退非 0）。
+	if !strings.Contains(out.String(), "伤害=1") {
 		t.Errorf("输出里没有伤害事件：\n%s", out.String())
 	}
 	t.Logf("Rust 战斗剧本输出：\n%s", out.String())
@@ -1757,8 +1760,10 @@ func TestProtoRustPickup(t *testing.T) {
 	if !strings.Contains(out.String(), "世界状态通过") {
 		t.Errorf("剧本没打通过标记，输出：\n%s", out.String())
 	}
-	if !strings.Contains(out.String(), "背包：") {
-		t.Errorf("输出里没有背包断言：\n%s", out.String())
+	// 背包件数由 e2e 的 `-expect-bag 1` 断言（不满足进程直接退非 0，上面 `cmd.Run()` 就红了）；
+	// 输出里再确认"捡起"这一步真的发生过。
+	if !strings.Contains(out.String(), "捡起") {
+		t.Errorf("输出里没有捡起事件：\n%s", out.String())
 	}
 }
 
@@ -1886,7 +1891,7 @@ func TestGrantExpLevelUpResetsBar(t *testing.T) {
 	defer entity.SetLevelNeed(nil)
 
 	p := &Player{
-		Obj:  &entity.Object{},
+		Obj: &entity.Object{},
 		Char: &storage.Character{Data: &pb.CharacterData{
 			Abil: &pb.Ability{Level: 1, Hp: 20, MaxHp: 20, Mp: 5, MaxMp: 5},
 		}},

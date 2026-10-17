@@ -35,8 +35,12 @@ import (
 //
 //  1. `market_def/<ID>-<地图>.txt` 的 **`[goods]` 段** —— 1.76 每个商人自带货架，
 //     这是"这家店卖什么"的权威答案（例如 7Gst 陈家铺老板卖蜡烛/火把/地牢逃脱卷）。
-//  2. 没有 `[goods]`（部分是空段）⇒ 按**商人代码首位数字**分类（见 `merchantCategory`）。
+//     ⚠️ 权威到**不回落**：段里有内容、却一条都解析不到时是数据错 ⇒ 空货架 + 日志，
+//     不会偷偷换成"按品类铺一屋子"。
+//  2. 没有 `[goods]`、或**段是空的** ⇒ 按**商人代码首位数字**分类（见 `merchantCategory`）。
+//     1.76 有 63 家是这样的空段（仓库/向导/未配货的店），这是它的正常形态。
 //  3. 都没有 ⇒ **不卖东西**（不再"猜一个杂货铺糊上去"）。
+//  4. 脚本货架**不限件数**（`maxGoods` 只约束 ② 的自动铺货）；买窗还要求脚本头声明 `@buy`。
 //
 // 🔴 别再按店名/店员名的关键词猜品类：名字里根本没有品类词
 //（用户 2026-10-17 的原话："店和能卖东西类型的关联，不应该是通过店名关键词，
@@ -80,28 +84,63 @@ func merchantCategory(id string) []uint8 {
 	return nil // 9 = 向导/教头/活动 NPC：不卖东西
 }
 
-// maxGoods 是单个商店的商品上限（物品表有 686 条，全列太长）。
+// maxGoods 是**按代码分类自动铺货**时的上限（物品表有 686 条，全列太长）。
+//
+// ⚠️ 脚本 `[goods]` **不受**这个上限约束：那是店主自己列的清单（1.76 里最多 44 条），
+// 砍掉尾部就是"脚本里有、店里买不到"（2026-10-17 审计：`7Bst-0` 的比奇传送石/随机传送石/
+// 装备修理锤、`7Mst-3` 的传送石就这样消失过）。
 const maxGoods = 20
+
+// shopStock 是**脚本没写数量**时的默认货架存量。
+//
+// 原版这栏是商品栈里的件数（`nStock := List14.Count`）；我们按模板即时生成（没有货架实例、
+// 永不缺货），所以存量只给客户端显示/回发（`SendBuyItem(..., pg.Stock, ...)`），
+// 服务端不靠它扣库存（买入按名字解析，见 `handleBuyItem`）。
+const shopStock = 100
+
+// shopShelf 是货架上的一格：商品模板 + 报给客户端的存量。
+type shopShelf struct {
+	Item  *data.StdItem
+	Stock int
+}
 
 // shopGoods 返回某商人的货架（规则见文件头的优先级说明）。
 func (s *Server) shopGoods(npc *data.NPC) []*data.StdItem {
+	shelf := s.shopShelves(npc)
+	out := make([]*data.StdItem, 0, len(shelf))
+	for _, g := range shelf {
+		out = append(out, g.Item)
+	}
+	return out
+}
+
+// shopShelves 是 `shopGoods` 的带存量版本（下发商品列表要用脚本里的"数量"）。
+func (s *Server) shopShelves(npc *data.NPC) []shopShelf {
 	// ① `[goods]` 段是权威货架
 	if sc := s.npcScript(npc.ID, npc.MapID); sc != nil && len(sc.Goods) > 0 {
-		out := make([]*data.StdItem, 0, len(sc.Goods))
+		out := make([]shopShelf, 0, len(sc.Goods))
 		for _, g := range sc.Goods {
-			if len(out) >= maxGoods {
-				break
-			}
 			// 名字必须与物品表**完全一致**（脚本是人工录的，宁可少卖也不猜近义名）
 			it := s.data.tables.Items.GetByName(g.Name)
 			if it == nil || it.Price == 0 {
 				continue
 			}
-			out = append(out, it)
+			stock := g.Count
+			if stock <= 0 {
+				stock = shopStock // 这一行没写数量 ⇒ 用默认值，别报"存量 0"
+			}
+			out = append(out, shopShelf{Item: it, Stock: stock})
 		}
-		if len(out) > 0 {
-			return out
+		// ⚠️ **不回落**：脚本列了货架就按脚本走。一条都解析不出来是**数据错**（名字写错/没标价），
+		// 记日志让人去修，别偷偷换成"按品类铺一屋子" —— 那正是用户报的串味
+		//（审计实例：`1Bme-0102` 把"干肉"写成"干肉产品"，屠夫于是卖起全部肉类）。
+		//
+		// `[goods]` 段存在但**为空**是另一回事（63 家仓库/向导/未配货的店）⇒ 走 ② 按代码分类。
+		if len(out) == 0 {
+			log.Printf("商店 %s(%s)：[goods] 列了 %d 条，但一条都对不上物品表（名字写错或没标价）⇒ 空货架",
+				npc.Name, npc.ID, len(sc.Goods))
 		}
+		return out
 	}
 
 	// ② 没有 [goods] ⇒ 按商人代码首位数字
@@ -112,7 +151,7 @@ func (s *Server) shopGoods(npc *data.NPC) []*data.StdItem {
 	if len(want) == 0 {
 		return nil // ③ 不知道卖什么 ⇒ 就不卖
 	}
-	out := make([]*data.StdItem, 0, maxGoods)
+	out := make([]shopShelf, 0, maxGoods)
 	for _, it := range s.data.tables.Items.All() {
 		if len(out) >= maxGoods {
 			break
@@ -125,7 +164,7 @@ func (s *Server) shopGoods(npc *data.NPC) []*data.StdItem {
 		if strings.Contains(it.Name, entity.GoldName) {
 			continue
 		}
-		out = append(out, it)
+		out = append(out, shopShelf{Item: it, Stock: shopStock})
 	}
 	return out
 }
@@ -211,14 +250,6 @@ func (s *Server) sendGoods(c net.Conn, p *Player, npc *entity.Monster, def *data
 	s.sendGoodsMode(c, p, npc, def, shopModeBuy)
 }
 
-// shopStock 是商品列表里报给客户端的"货架存量"。
-//
-// 原版这栏是商品栈里的件数（`nStock := List14.Count`，ObjNpc.pas:1455 附近），
-// 客户端点了商品之后会把它当 `Param/Tag` 回发（`SendBuyItem(g_nCurMerchant, pg.Stock, pg.Name)`，
-// FState.pas:5244）。我们的商品是**按模板即时生成**的（没有货架实例、永不缺货），
-// 所以这一栏只是给客户端显示/回发用，服务端不依赖它（买入按名字解析，见 handleBuyItem）。
-const shopStock = 100
-
 // sendGoodsMode 下发商品列表（带**买/卖**模式）。
 //
 // ⚠️ body 是**文本**（`名称/子菜单/价格/存量/` 重复），不是二进制数组 ——
@@ -229,7 +260,14 @@ const shopStock = 100
 //
 // ⚠️ `mode`（买/卖）只进**新协议**：legacy 客户端自己按入口弹窗，不需要这一位。
 func (s *Server) sendGoodsMode(c net.Conn, p *Player, npc *entity.Monster, def *data.NPC, mode uint32) {
-	goods := s.shopGoods(def)
+	// ⚠️ 买窗要求脚本头声明 `@buy`：否则窗能开、每点一次都是"这个商人不做买卖"
+	// （2026-10-17 审计：`英雄使者-0` 头行只有 `(@makedrug @@CreateHero)`，却有 44 条 `[goods]`）。
+	// 卖窗不看这一位（它由 `@sell` 入口触发，成交时 `handleSellItem` 还会再查一遍）。
+	if mode == shopModeBuy && !s.merchantScriptAllows(p, def, "@buy") {
+		log.Printf("%s 的脚本头没声明 @buy ⇒ 不发买窗（%s）", npc.Name, whoStr(p))
+		return
+	}
+	goods := s.shopShelves(def)
 	// 没有货架（仓库/向导/未知 NPC）⇒ 不弹空商店窗（原来会糊一个空列表给客户端）
 	if len(goods) == 0 {
 		return
@@ -238,13 +276,13 @@ func (s *Server) sendGoodsMode(c net.Conn, p *Player, npc *entity.Monster, def *
 	// `npcSay` 同一条纪律：proto 玩家的 legacy 下行是被丢弃的，只发 legacy 等于没发）。
 	if sink := p.protoOut; sink != nil {
 		items := make([]*protocol.ShopItem, 0, len(goods))
-		for _, it := range goods {
+		for _, g := range goods {
 			items = append(items, &protocol.ShopItem{
-				Name:    it.Name,
-				Price:   uint64(it.Price),
-				Stock:   shopStock,
-				Submenu: shopSubmenu(it) != 0, // legacy 是 1/0，新协议是 bool
-				DuraMax: uint32(it.DuraMax),   // 第三栏"持久"（原版买窗的列）
+				Name:    g.Item.Name,
+				Price:   uint64(g.Item.Price),
+				Stock:   uint32(g.Stock),
+				Submenu: shopSubmenu(g.Item) != 0, // legacy 是 1/0，新协议是 bool
+				DuraMax: uint32(g.Item.DuraMax),   // 第三栏"持久"（原版买窗的列）
 			})
 		}
 		sink.enqueue(&protocol.Envelope{Body: &protocol.Envelope_ShopList{
@@ -256,8 +294,8 @@ func (s *Server) sendGoodsMode(c net.Conn, p *Player, npc *entity.Monster, def *
 		return
 	}
 	var b strings.Builder
-	for _, it := range goods {
-		fmt.Fprintf(&b, "%s/%d/%d/%d/", it.Name, shopSubmenu(it), it.Price, shopStock)
+	for _, g := range goods {
+		fmt.Fprintf(&b, "%s/%d/%d/%d/", g.Item.Name, shopSubmenu(g.Item), g.Item.Price, g.Stock)
 	}
 	s.send(c, proto.SM_SENDGOODSLIST, int32(npc.ID), uint16(len(goods)), 0, 0, b.String())
 	log.Printf("%s 打开商店 %s（legacy，%d 件商品）", p.Char.Name, npc.Name, len(goods))

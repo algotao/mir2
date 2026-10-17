@@ -1,4 +1,4 @@
-;科目  肉块  , 干肉产品
+;科目  肉块  , 干肉
 (@trading @buy @sell @makedrug @storage @getback @upgradenow @getbackupgnow @repair @s_repair @@sendmsg)
 %100
 +40
@@ -35,4 +35,4 @@
 
 [goods]
 ;  科目   数量        时间(hour)
-干肉产品    1000            1
+干肉    1000            1

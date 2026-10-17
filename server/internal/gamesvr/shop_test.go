@@ -1,6 +1,7 @@
 package gamesvr
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/algotao/mir2/server/internal/data"
 	"github.com/algotao/mir2/server/internal/entity"
 	"github.com/algotao/mir2/server/internal/proto"
+	"github.com/algotao/mir2/server/internal/script"
 	pb "github.com/algotao/mir2/server/internal/storage/pb"
 	"github.com/algotao/mir2/server/internal/wire"
 	"github.com/algotao/mir2/server/protocol"
@@ -624,6 +626,134 @@ func TestShopGoodsUsesScriptGoods(t *testing.T) {
 	for _, it := range got {
 		if it.Name == "木剑" {
 			t.Error("[goods] 之外的商品混进货架了")
+		}
+	}
+}
+
+// TestShopGoodsScriptNotTruncated 脚本货架**不受 maxGoods 限制**（2026-10-17 审计）：
+// 真实数据里 `7Bst-0` 有 23 条、`9snpc1-0` 36 条、`英雄使者-0` 44 条，旧实现按 20 砍尾
+// ⇒ 后面几件"脚本里有、店里买不到"（比奇传送石/随机传送石/装备修理锤就这么消失过）。
+func TestShopGoodsScriptNotTruncated(t *testing.T) {
+	const n = 25
+	items := make([]*data.StdItem, 0, n)
+	for i := 0; i < n; i++ {
+		it := wuItem(int32(i+1), fmt.Sprintf("杂货%d", i), 3, data.MinMax{})
+		it.Price = 10
+		items = append(items, it)
+	}
+	s, _, _, _ := shopTestServer(t, "", items...)
+
+	dir := t.TempDir()
+	var b strings.Builder
+	b.WriteString("(@buy)\r\n\r\n[@main]\r\n你好\\ \\\r\n\r\n[goods]\r\n")
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "杂货%d\t%d\t1\r\n", i, 100+i)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "7Gst-0.txt"), []byte(b.String()), 0o600); err != nil {
+		t.Fatalf("写脚本失败: %v", err)
+	}
+	s.npc.scriptDir = dir
+
+	got := s.shopGoods(&data.NPC{ID: "7Gst", Name: "陈家铺老板", MapID: "0", IsMerchant: true})
+	if len(got) != n {
+		t.Fatalf("货架 = %d 件，期望 %d（脚本 [goods] 不该被 maxGoods 截断）", len(got), n)
+	}
+	if got[len(got)-1].Name != fmt.Sprintf("杂货%d", n-1) {
+		t.Errorf("最后一件 = %q，期望 杂货%d（尾部被砍了）", got[len(got)-1].Name, n-1)
+	}
+}
+
+// TestShopGoodsScriptUnresolvedDoesNotFallBack `[goods]` 有内容、却一条都解析不到 ⇒ **空货架**。
+//
+// 旧实现会回落到"按商人代码分类"：`1Bme-0102` 把"干肉"写成"干肉产品"以后，
+// 屠夫就卖起**全部**肉类 —— 正是用户报的那类串味。宁可空，也不要换一套品类糊上去。
+func TestShopGoodsScriptUnresolvedDoesNotFallBack(t *testing.T) {
+	sword := wuItem(1, "木剑", 5, data.MinMax{})
+	sword.Price = 100
+	s, _, _, _ := shopTestServer(t, "", sword)
+
+	dir := t.TempDir()
+	body := "(@buy)\r\n\r\n[@main]\r\n你好\\ \\\r\n\r\n[goods]\r\n不存在的神器\t10\t1\r\n"
+	if err := os.WriteFile(filepath.Join(dir, "2Gwe-0.txt"), []byte(body), 0o600); err != nil {
+		t.Fatalf("写脚本失败: %v", err)
+	}
+	s.npc.scriptDir = dir
+
+	got := s.shopGoods(&data.NPC{ID: "2Gwe", Name: "精武馆老板", MapID: "0", IsMerchant: true})
+	if len(got) != 0 {
+		t.Fatalf("[goods] 一条都解析不到时不该回落成按品类铺货，实得 %d 件（%+v）", len(got), got)
+	}
+}
+
+// TestSendGoodsNeedsBuyTag 脚本头**没** `@buy` ⇒ 不发买窗。
+//
+// 否则窗能开、每点一次都是"这个商人不做买卖"（审计实例：`英雄使者-0` 的头行只有
+// `(@makedrug @@CreateHero)`，却有 44 条 `[goods]`）。
+func TestSendGoodsNeedsBuyTag(t *testing.T) {
+	s, p, npc, sink := protoShopServer(t, "@trading", shopItem())
+
+	s.openShop(nil, p, npc.ID)
+
+	if lists := drainShopLists(sink); len(lists) != 0 {
+		t.Fatalf("脚本头没 @buy 却发了 %d 条 ShopList（窗里能点、点了必失败）", len(lists))
+	}
+}
+
+// TestSendGoodsStockFromScript 商品列表的"存量"取脚本里的数量（官方 `List14.Count`）；
+// 这一行没写数量才用默认 100。旧实现一律写死 100，界面上是假存量。
+func TestSendGoodsStockFromScript(t *testing.T) {
+	candle := wuItem(1, "蜡烛", 3, data.MinMax{})
+	candle.Price = 10
+	s, p, npc, sink := protoShopServer(t, "@trading @buy", candle)
+
+	dir := t.TempDir()
+	body := "(@trading @buy)\r\n\r\n[@main]\r\n你好\\ \\\r\n\r\n[goods]\r\n蜡烛\t7\t1\r\n"
+	if err := os.WriteFile(filepath.Join(dir, "2Gwe-0.txt"), []byte(body), 0o600); err != nil {
+		t.Fatalf("写脚本失败: %v", err)
+	}
+	s.npc.scriptDir = dir
+	// `shopTestServer` 可能已经把旧脚本读进缓存 ⇒ 清掉再开
+	s.npc.mu.Lock()
+	s.npc.scripts = map[string]*script.Script{}
+	s.npc.mu.Unlock()
+
+	s.openShop(nil, p, npc.ID)
+
+	list := lastShopList(sink)
+	if list == nil {
+		t.Fatal("没收到 ShopList")
+	}
+	if len(list.GetItems()) != 1 || list.GetItems()[0].GetStock() != 7 {
+		t.Fatalf("商品列表 = %+v，期望一件「蜡烛」、存量 7（来自 [goods] 的数量列）", list.GetItems())
+	}
+}
+
+// lastShopList 从 sink 里捞**最后**一条 `ShopList`（没有 ⇒ nil）。
+func lastShopList(sink *protoSink) *protocol.ShopList {
+	var out *protocol.ShopList
+	for {
+		select {
+		case env := <-sink.ch:
+			if l := env.GetShopList(); l != nil {
+				out = l
+			}
+		default:
+			return out
+		}
+	}
+}
+
+// drainShopLists 取走 sink 里所有 `ShopList`（断言"不该发"时用）。
+func drainShopLists(sink *protoSink) []*protocol.ShopList {
+	var out []*protocol.ShopList
+	for {
+		select {
+		case env := <-sink.ch:
+			if l := env.GetShopList(); l != nil {
+				out = append(out, l)
+			}
+		default:
+			return out
 		}
 	}
 }

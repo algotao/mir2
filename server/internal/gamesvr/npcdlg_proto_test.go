@@ -41,7 +41,7 @@ func TestProtoNpcDialog(t *testing.T) {
 	s.npc.defs = []*data.NPC{{
 		ID: "1Bme", Name: "屠夫", MapID: "0", X: 2, Y: 1, IsMerchant: true, RaceImg: 11,
 	}}
-	sc, err := script.Parse("1Bme-0", strings.NewReader(`
+	sc, err := script.Parse("1Bme-0", strings.NewReader(`(@trading @buy @sell)
 [@main]
 要不要来点肉？\
 <我要买/@buy>\
@@ -157,7 +157,7 @@ func TestProtoShopOpensFromDialogEntry(t *testing.T) {
 	s, store, addr := protoContractServer(t)
 	sessionID, charID := seedAccount(t, store)
 
-	// 屠夫（名字带"肉" ⇒ 商品分类能匹配上，见 `shopCategory`）+ 带 @buy 入口的脚本。
+	// 屠夫（代码 1Bme ⇒ 1=肉，见 `merchantCategory`）+ 带 @buy 入口的脚本。
 	// 玩家在 (1,1)，NPC 放 (2,1)：距离 1，满足 `onNpcClick` 的 ≤ 8 校验。
 	npc := newTestMonster(proto.NpcIDBase+1, "屠夫", 999999)
 	npc.IsNPC = true
@@ -167,7 +167,7 @@ func TestProtoShopOpensFromDialogEntry(t *testing.T) {
 	s.npc.defs = []*data.NPC{{
 		ID: "1Bme", Name: "屠夫", MapID: "0", X: 2, Y: 1, IsMerchant: true, RaceImg: 11,
 	}}
-	sc, err := script.Parse("1Bme-0", strings.NewReader(`
+	sc, err := script.Parse("1Bme-0", strings.NewReader(`(@trading @buy @sell)
 [@main]
 要不要来点肉？\
 <我要买/@buy>\
@@ -387,7 +387,7 @@ func TestProtoSellEntryOpensSellWindow(t *testing.T) {
 	s.npc.defs = []*data.NPC{{
 		ID: "1Bme", Name: "屠夫", MapID: "0", X: 2, Y: 1, IsMerchant: true, RaceImg: 11,
 	}}
-	sc, err := script.Parse("1Bme-0", strings.NewReader(`
+	sc, err := script.Parse("1Bme-0", strings.NewReader(`(@trading @buy @sell)
 [@main]
 要买还是要卖？\
 <我要买/@buy>\
@@ -431,7 +431,7 @@ func TestProtoBuyEntryModeIsBuy(t *testing.T) {
 	s.npc.defs = []*data.NPC{{
 		ID: "1Bme", Name: "屠夫", MapID: "0", X: 2, Y: 1, IsMerchant: true, RaceImg: 11,
 	}}
-	sc, err := script.Parse("1Bme-0", strings.NewReader(`
+	sc, err := script.Parse("1Bme-0", strings.NewReader(`(@trading @buy @sell)
 [@main]
 <我要买/@buy>\
 <算了/@exit>

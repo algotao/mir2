@@ -34,6 +34,48 @@ const sample = `;科目  肉块
 mapmove H001 73 67
 `
 
+// TestParseGoodsSection `[goods]` 是**货架**、不是对话段（D-146）：
+// 注释/空行跳过，`名字 数量 [计费小时]` 进 `Script.Goods`，后面的 `[@标签]` 不被它吞掉。
+func TestParseGoodsSection(t *testing.T) {
+	body := strings.Join([]string{
+		"(@buy @sell)",
+		"",
+		"[@main]",
+		"卖东西\\ \\",
+		"",
+		"[GOODS]", // 大小写不敏感
+		";商品 数量 时间",
+		"蜡烛\t200\t1",
+		"灰色药粉(大量)", // 只写名字：数量/小时记 0，读取方用默认存量
+		"",
+		"[@other]",
+		"别吞我",
+	}, "\r\n")
+
+	sc, err := Parse("7Gst-0", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []GoodsEntry{{Name: "蜡烛", Count: 200, Hours: 1}, {Name: "灰色药粉(大量)"}}
+	if len(sc.Goods) != len(want) {
+		t.Fatalf("Goods = %+v，期望 %+v", sc.Goods, want)
+	}
+	for i := range want {
+		if sc.Goods[i] != want[i] {
+			t.Errorf("Goods[%d] = %+v，期望 %+v", i, sc.Goods[i], want[i])
+		}
+	}
+	if _, ok := sc.Labels["goods"]; ok {
+		t.Error("[goods] 不该被登记成对话段")
+	}
+	if l := sc.Labels["other"]; l == nil || !strings.Contains(l.Say, "别吞我") {
+		t.Errorf("`[goods]` 之后的对话段被吞了：%+v", sc.Labels["other"])
+	}
+	if l := sc.Labels["main"]; l == nil {
+		t.Error("[@main] 没解析出来")
+	}
+}
+
 func TestParseBasic(t *testing.T) {
 	s, err := Parse("sample", strings.NewReader(sample))
 	if err != nil {

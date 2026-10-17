@@ -173,7 +173,9 @@ func Parse(name string, r io.Reader) (*Script, error) {
 			continue
 		}
 		if mode == "goods" {
-			// 列：商品名 数量 [计费小时]；列数不够就跳过这一行（坏行不能拖垮整份脚本）
+			// 列：`商品名 数量 [计费小时]`。商品名必填；数量/小时缺省记 0
+			// （读取方按"没写数量 ⇒ 用默认存量"处理，见 `shopShelves`）。
+			// 坏行（只有空白）跳过，不能拖垮整份脚本。
 			f := strings.Fields(trimmed)
 			if len(f) == 0 {
 				continue
