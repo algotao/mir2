@@ -1111,6 +1111,31 @@ pub(crate) enum MouseUpOutcome {
     Quit,
 }
 
+/// 松开点是否落在任何一个 HUD 窗口上。
+///
+/// 丢弃的判定用：**只有落在地图上**（不在任何窗口里）才算"拖出窗外"。
+fn over_any_window(app: &AppState, x: f32, y: f32) -> bool {
+    let inr = |r: (f32, f32, f32, f32)| x >= r.0 && x < r.0 + r.2 && y >= r.1 && y < r.1 + r.3;
+    if app.win.bag() {
+        let (bx, by) = crate::layout::bag_pos(app.win.shop());
+        if inr((bx, by, crate::layout::BAG_W, crate::layout::BAG_H)) {
+            return true;
+        }
+    }
+    if app.win.shop() && (inr(crate::shop::panel()) || inr(crate::shop::sell_panel())) {
+        return true;
+    }
+    if app.win.status() && inr(crate::status::panel_rect()) {
+        return true;
+    }
+    if app.net.as_ref().is_some_and(|n| n.world.dialog.is_some())
+        && inr(crate::dialog::dialog_panel())
+    {
+        return true;
+    }
+    false
+}
+
 /// 世界模式 MouseUp：通用控件点击优先；未被 UI 消费时再处理单击走一格。
 pub(crate) fn handle_world_mouse_up(
     app: &mut AppState,
@@ -1123,6 +1148,27 @@ pub(crate) fn handle_world_mouse_up(
     if app.layout_edit.on {
         app.layout_edit.mouse_up();
         return MouseUpOutcome::Consumed;
+    }
+    // ⓪′ **拖出窗外 = 丢弃**（D-153）：背包开着、手上有东西、松开点落在**地图**上
+    //（不压任何窗口）⇒ 发 `DropItem`。窗口内松手仍按各窗自己的规则走（移动/交换/
+    // 放进卖窗槽），所以先判 `over_any_window` 再动 `held`。
+    if mouse_btn == MouseButton::Left && app.win.bag() && !over_any_window(app, x, y) {
+        if let Some(slot) = app.drag.take_held() {
+            let (name, count) = app
+                .net
+                .as_ref()
+                .and_then(|n| n.world.bag.get(slot))
+                .and_then(|it| it.as_ref())
+                .map_or((String::new(), 1), |it| (it.name.clone(), it.count.max(1)));
+            if let Some(n) = app.net.as_mut() {
+                n.bag_drop(slot as u32, count);
+                // 本地先回一句；被地图规则拒绝时服务端会再补一条说明
+                //（原版也是"先做动作、服务端纠正"）。
+                n.chat
+                    .push(format!("丢弃 {name} ×{count}"), crate::colors::C_CHAT_SYS);
+            }
+            return MouseUpOutcome::Consumed;
+        }
     }
     // ① **OnClick**：左键按下 + 松开在**同一控件**才执行
     //（规范见 `widget` 模块头的表：拖出控件再松开 / 右键 / 只有

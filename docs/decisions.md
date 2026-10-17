@@ -6219,3 +6219,22 @@ D-148 留的唯一功能缺口：面板只能 `-`/`+`/↑↓ 调，"想买 20 �
 **仍未做**：组队/行会频道的新协议下行（`sendGroupText` / `handleGuildChat` 还只发 legacy）、私聊的"拒绝/黑名单"、聊天区回看滚动。
 
 **验收**：Rust `chat_input` 4 条 + 全套 `cargo test --workspace` **407 个测试全过**；Go 新增 `TestChatChannelText`、`TestProtoSinkChatMessage`，`go test ./server/...` 全过。
+---
+
+## D-153 物品丢弃：拖出背包窗松手（2026-10-17）
+
+之前**没有任何丢弃入口**：背包满了只能卖。协议里 `DropItem` 早就定义了，但两端都没接（客户端连 `Cmd` 都没有，服务端 `Envelope` 分派里也没有分支）——属于"协议有、链路断"。
+
+**交互**（`world_input::handle_world_mouse_up`）
+- 条件：左键松开 + 背包开着 + `drag.held_slot()` 有东西 + 松开点**落在地图上**（`over_any_window` 为假）。
+- `over_any_window` 认的窗口：背包、买/卖窗、状态窗、对话窗。窗口内松手仍走各窗自己的规则（移动/交换/放卖窗槽），**绝不误丢**。
+- 丢弃后 `Drag::take_held()` **只清手上那件**（卖窗圆槽里已放好的 `placed` 不动），再发 `DropItem{slot,count}`；本地先回一句"丢弃 X ×N"，被地图规则拒绝时服务端会补一条说明（原版也是"先动作、服务端纠正"）。
+- `count` 传的是整叠数量，但原版 `CM_DROPITEM` 就是整件/整叠丢 ⇒ 暂不拆分。
+
+**协议/服务端**
+- `client/net`：新增 `Cmd::DropItem{slot,count}` → `Body::DropItem`（`slot` 是**服务端背包下标**，与 `MoveItem` 同一口径）。
+- `netproto.go`：补 `Envelope_DropItem` 分派；`netproto_item.go` 新增 `onDropItem`。
+- `onDropItem` 复用 legacy `handleDropItem`：按 **MakeIndex** 找格（新协议的 `slot` 先翻成实例号）、走地图 `NOTHROWITEM` 拦截、`dropPosition` 螺旋落点、发地面物品、全量刷新背包。空格静默返回（客户端背包偶有差一步）。
+- 地面物品与背包刷新都走已有的 proto 出口（`GroundItemShow` / `BagItems`），不需要新下行。
+
+**验收**：Rust 新增 `bagdrag` 单测（交出手上那件且只交一次），`cargo test --workspace` **408 全过**；Go 新增 `TestProtoDropItem`（故意让 slot=2、MakeIndex=99，证明翻译走 slot 而不是实例号）与 `TestProtoDropItemEmptySlot`，`go test ./server/...` 全过。

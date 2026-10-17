@@ -268,6 +268,8 @@ func (ps *protoSession) dispatch(env *protocol.Envelope) (keep bool) {
 		return ps.onPickupItem(body.PickupItem)
 	case *protocol.Envelope_MoveItem:
 		return ps.onMoveItem(body.MoveItem)
+	case *protocol.Envelope_DropItem:
+		return ps.onDropItem(body.DropItem)
 	case *protocol.Envelope_UseItem:
 		return ps.onUseItem(body.UseItem)
 	case *protocol.Envelope_RepairItem:

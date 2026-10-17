@@ -27,6 +27,32 @@ func (ps *protoSession) onMoveItem(m *protocol.MoveItem) bool {
 	return true
 }
 
+// onDropItem 丢弃背包物品（原版 `CM_DROPITEM`；客户端"拖出背包窗松手"）。
+//
+// 复用 legacy 的 `handleDropItem`：它按 **MakeIndex** 找格、按地图 `NOTHROWITEM`
+// 拦截、走 `dropPosition` 的螺旋落点、发地面物品并全量刷新背包。新协议多带了
+// `count`，但原版这条也是**整件/整叠**丢 ⇒ 暂不做拆分。
+func (ps *protoSession) onDropItem(m *protocol.DropItem) bool {
+	p := ps.player
+	if p == nil || p.Obj == nil || p.Char == nil || p.Char.Data == nil {
+		return ps.rejectOutOfOrder("还没进世界")
+	}
+	it := p.bagAt(int(m.GetSlot()))
+	if it == nil || it.Index == 0 || it.MakeIndex == 0 {
+		// 空格：静默（客户端与服务端背包偶尔差一步，不是错误）
+		return true
+	}
+	name := ""
+	if tmpl := ps.srv.data.tables.Items.Get(int(it.Index) - 1); tmpl != nil {
+		name = tmpl.Name
+	}
+	ps.srv.handleDropItem(nil, p, wire.Packet{
+		Head: proto.MakeDefaultMsg(proto.CM_DROPITEM, it.MakeIndex, 0, 0, 0),
+		Body: name,
+	})
+	return true
+}
+
 // onUseItem 使用背包物品（原版 `CM_EAT`；用户 2026-10-10 规范第 5 条：
 // 包裹中双击物品 = 使用）。服务端吃/用完会发全量背包 + 能力值刷新。
 func (ps *protoSession) onUseItem(m *protocol.UseItem) bool {

@@ -306,3 +306,54 @@ func TestStatusBitsRedName(t *testing.T) {
 		t.Errorf("PKLevel=2 应是红名（bits=%#x）", got)
 	}
 }
+
+// TestProtoDropItem 新协议丢弃：slot → 按 MakeIndex 走 legacy `handleDropItem` 同一条路。
+//
+// 钉住两件事：
+//   - 新协议的 slot 是**背包下标**，不是 MakeIndex（翻译错了会丢错东西）；
+//   - 丢成功后背包那格清空、地上多一件（客户端靠这两个刷新看到结果）。
+func TestProtoDropItem(t *testing.T) {
+	s, m := flagTestServer(t, "[0 比奇省 0]\n")
+	it := &data.StdItem{Index: 1, Name: "金创药(小量)", StdMode: 0}
+	set, err := data.NewStdItemSet([]*data.StdItem{it})
+	if err != nil {
+		t.Fatalf("建物品表失败: %v", err)
+	}
+	s.data.tables = &data.Tables{Items: set}
+
+	p := newTestPlayer(1, "丢弃协议", entity.JobWarr)
+	p.Obj.SetPlace(m, 10, 10, p.Obj.Facing())
+	p.Char.Data.BagItems = make([]*pb.UserItem, proto.MaxEquipSlot)
+	// 故意放在第 3 格：下标与 MakeIndex 不同，才能证明翻译走的是 slot
+	p.Char.Data.BagItems[2] = &pb.UserItem{Index: 1, MakeIndex: 99, Dura: 1, DuraMax: 1}
+
+	ps := &protoSession{srv: s, player: p}
+	if !ps.onDropItem(&protocol.DropItem{Slot: 2, Count: 1}) {
+		t.Fatal("onDropItem 应返回 true（消息已处理）")
+	}
+	// ⚠️ 不能按下标断言：`takeBagItem` 取走后会**前移补位**（背包无空洞）。
+	for _, it := range p.Char.Data.BagItems {
+		if it != nil && it.MakeIndex == 99 {
+			t.Error("丢弃后背包里不该还有 MakeIndex=99")
+		}
+	}
+	if len(s.world.ground) != 1 {
+		t.Fatalf("地上应多一件，实得 %d 件", len(s.world.ground))
+	}
+}
+
+// TestProtoDropItemEmptySlot 空格丢弃 = 静默（客户端与服务端背包偶尔差一步）。
+func TestProtoDropItemEmptySlot(t *testing.T) {
+	s, m := flagTestServer(t, "[0 比奇省 0]\n")
+	p := newTestPlayer(1, "丢弃空格", entity.JobWarr)
+	p.Obj.SetPlace(m, 10, 10, p.Obj.Facing())
+	p.Char.Data.BagItems = make([]*pb.UserItem, proto.MaxEquipSlot)
+
+	ps := &protoSession{srv: s, player: p}
+	if !ps.onDropItem(&protocol.DropItem{Slot: 0, Count: 1}) {
+		t.Fatal("onDropItem 应返回 true")
+	}
+	if len(s.world.ground) != 0 {
+		t.Errorf("空格不该产生地面物品：%d 件", len(s.world.ground))
+	}
+}

@@ -191,6 +191,17 @@ impl BagDrag {
         }
     }
 
+    /// 丢弃（D-153）：把手上那件交出去并清空**只这一只手**。
+    ///
+    /// 卖窗圆槽里的 `placed` 不动 —— 那是另一件已经放好、还没成交的。
+    pub(crate) fn take_held(&mut self) -> Option<usize> {
+        let slot = self.held_slot();
+        if slot.is_some() {
+            self.held = None;
+        }
+        slot
+    }
+
     /// 关窗 / 收摊：手上和槽里都清掉。
     pub(crate) fn clear(&mut self) {
         self.held = None;
@@ -356,5 +367,15 @@ mod tests {
         // 东西没了 ⇒ 清掉（否则会动到别的物品）
         d.rebind(|_| None);
         assert_eq!(d.held_slot(), None);
+    }
+
+    #[test]
+    fn 丢弃交出手上那件且只交一次() {
+        let mut d = BagDrag::new();
+        let b = bag(&[(0, 0), (91, 0)]);
+        assert_eq!(d.click_bag(1, t0(), None, &b), Act::PickUp { slot: 1 });
+        assert_eq!(d.take_held(), Some(1));
+        assert_eq!(d.held_slot(), None, "丢出去之后手上就空了");
+        assert_eq!(d.take_held(), None, "空手再丢不产生第二次丢弃");
     }
 }

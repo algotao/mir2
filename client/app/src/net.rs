@@ -668,6 +668,11 @@ impl Net {
         let _ = self.sess.cmds.send(mir2_net::Cmd::MoveItem { from, to });
     }
 
+    /// 丢弃背包物品（原版 `CM_DROPITEM`）：拖到背包窗外松手。
+    pub(crate) fn bag_drop(&self, slot: u32, count: u32) {
+        let _ = self.sess.cmds.send(mir2_net::Cmd::DropItem { slot, count });
+    }
+
     /// 使用背包物品（双击；服务端吃/用完全量刷新背包与能力值）。
     pub(crate) fn bag_use(&self, slot: u32) {
         let _ = self.sess.cmds.send(mir2_net::Cmd::UseItem { slot });

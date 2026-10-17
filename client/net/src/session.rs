@@ -109,6 +109,10 @@ pub enum Cmd {
     /// 移动/交换背包两格（原版 `CM_MOVEITEM`；放到有东西的格 = 交换）。
     /// 槽位是服务端背包数组的下标（背包无空洞 ⇒ 与客户端格子一一对应）。
     MoveItem { from: u32, to: u32 },
+    /// 丢弃背包物品（原版 `CM_DROPITEM`）：拖到背包窗外松手。
+    ///
+    /// `count` 目前只作记录：原版这条也是**整件/整叠**丢，不做拆分。
+    DropItem { slot: u32, count: u32 },
     /// 使用背包物品（原版 `CM_EAT`；包裹中双击物品 = 使用）。
     UseItem { slot: u32 },
     /// 穿戴背包格里的可穿戴物品；目标装备槽由服务端按 `StdMode` 推导。
@@ -352,6 +356,11 @@ fn writer_loop(stream: &mut TcpStream, cmds: Receiver<Cmd>) {
                 client_tick: 0,
             }),
             Cmd::MoveItem { from, to } => Body::MoveItem(proto::MoveItem { from, to }),
+            Cmd::DropItem { slot, count } => Body::DropItem(proto::DropItem {
+                slot,
+                count,
+                client_tick: 0,
+            }),
             Cmd::UseItem { slot } => Body::UseItem(proto::UseItem {
                 slot,
                 client_tick: 0,
