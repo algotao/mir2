@@ -93,6 +93,7 @@ mod app_state;
 pub(crate) mod assetview;
 mod assetview_state;
 mod bagdrag;
+mod chat_input;
 mod confirm;
 mod hint;
 pub(crate) mod hud;

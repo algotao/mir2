@@ -6198,3 +6198,24 @@ D-148 留的唯一功能缺口：面板只能 `-`/`+`/↑↓ 调，"想买 20 �
 - **UI**（`shop.rs`）：正文那个件数在"正在输入"时后缀一个 `_` 当光标（否则看不出还能继续打）。
 - **口径澄清**：面板仍按用户选的 A **保留**；`submenu` 触发语义未动，模块头已改成"这不是原版、属私服便利"（D-148 的订正）。
 - **验收**：`qty` 新增 3 条单测（打字+退格、超上限夹取、前导零）；`cargo test --workspace` **403 个测试全过**，无警告。
+---
+
+## D-152 世界聊天输入行 + 新协议聊天出口（2026-10-17）
+
+之前客户端在世界里**根本无法输入任何文字**（`TextInput` 只路由给登录/选角），`@` 命令只能靠 Ctrl+H 那颗硬编码的 `@atkmode`；服务端 `onChatInput` 也只放行 `@` 开头的文本。这次把这条链补齐。
+
+**客户端**
+- 状态 `client/app/src/chat_input.rs`（新模块，纯状态）：`ChatInput{ text }`，按**字符**计上限 80（不劈汉字）、忽略换行、`take()` 提交后清空。4 条单测。
+- 打开条件 `world_input::chat_can_open`：世界场景 + 布局编辑器关 + 没有任何模态/窗口（对话、商店、背包、状态、确认、数量面板都没有）⇒ `Enter` 打开。这是"模态优先"的同一套纪律。
+- 键盘：输入行开着时是**全键模态**——`Enter` 发送、`Esc` 取消、`Backspace` 删一个字符，其余键全吞（否则打字时 `W` 会走路、`F9` 开背包）。`TextInput` 事件在 `runtime` 里路由给它（中文/粘贴一次给整段也能进）。
+- 渲染 `hud::draw_chat_input`：占聊天区**最底一行**（白底黑字 + 尾随 `_` 光标），位置读 `layout_document` 的 `chat_box` ⇒ 编辑器挪框它跟着走。画在 HUD 之上、窗口之下（窗口盖住聊天区时该被盖住）。
+- 频道不做按钮：整行原样发（`!` 喊话 / `!!` 组队 / `/名字` 私聊 —— 与 legacy `handleChat` 同一套前缀）。
+
+**服务端**
+- `onChatInput`：**不再拒绝非 `@` 文本**，统一交给 `handleSay`（命令权限门、频道前缀、反刷屏限流都在那一份里）。`channel` 字段优先：`CHAT_CRY`/`CHAT_GROUP`/`CHAT_WHISPER` 折回 `!`/`!!`/`/` 前缀（`chatChannelText`，纯函数可测）。
+- 新协议下行：`protoSink.chat(...)` 发 `ChatMessage`（`sender_name` 与正文**分开**）。三处广播各加一条 proto 分支：`broadcastHear`（普通说话，含发送者自己）、`handleShout`（喊话）、`handleWhisper`（私聊，只发接收者）。
+- 客户端按频道把名字拼回一行：`名字: 文本` / `(!)名字: 文本` / `名字=> 文本`；颜色三档（`C_CHAT_SAY/CRY/WHISPER`，聊天区是白底所以都用深色）。
+
+**仍未做**：组队/行会频道的新协议下行（`sendGroupText` / `handleGuildChat` 还只发 legacy）、私聊的"拒绝/黑名单"、聊天区回看滚动。
+
+**验收**：Rust `chat_input` 4 条 + 全套 `cargo test --workspace` **407 个测试全过**；Go 新增 `TestChatChannelText`、`TestProtoSinkChatMessage`，`go test ./server/...` 全过。

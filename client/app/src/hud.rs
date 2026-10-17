@@ -61,6 +61,29 @@ pub(crate) const CHAT_CAP: usize = 64;
 /// 聊天区一屏几行（原版那块框高 105px ÷ 行距 13 ≈ 8）。
 pub(crate) const CHAT_VIEW_LINES: usize = 8;
 
+/// 画**聊天输入行**（回车打开时）：占聊天区最下面那一行，白底黑字 + 尾随光标。
+///
+/// 位置与聊天文字同源（`layout_document` 的 `chat_box`）⇒ 编辑器里挪了框也跟着走。
+/// 输入时它会压住最后一条聊天记录 —— 原版打字区也占这一行。
+pub(crate) fn draw_chat_input<'a, T>(
+    canvas: &mut WindowCanvas,
+    tc: &'a TextureCreator<T>,
+    texts: &mut font::TextCache<'a>,
+    text: &str,
+) -> Result<(), sdl3::Error> {
+    let c = crate::layout::layout_document()
+        .get("chat_box")
+        .expect("chat box is a HUD child widget");
+    let lh = crate::layout::CHAT_LINE_H;
+    let y = c.y + c.h - lh;
+    canvas.set_blend_mode(BlendMode::None);
+    canvas.set_draw_color(Color::RGB(255, 255, 255));
+    canvas.fill_rect(FRect::new(c.x + 2.0, y - 1.0, c.w - 4.0, lh))?;
+    let shown = format!("{text}_");
+    texts.draw(canvas, tc, &shown, c.x + 4.0, y, (0, 0, 0), None)?;
+    Ok(())
+}
+
 /// 底部操作面板（HUD）：面板 + 血/魔法球 + 等级 + 经验条 + 聊天行 + 地图名/坐标。
 ///
 /// 版式与图号**照抄原版**（`FState.pas` 的 `TFrmDlg.DBottomDirectPaint`，引文见上面那组常量）。

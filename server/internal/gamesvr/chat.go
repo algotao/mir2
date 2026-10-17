@@ -9,6 +9,7 @@ import (
 	"github.com/algotao/mir2/server/internal/proto"
 	"github.com/algotao/mir2/server/internal/tscale"
 	"github.com/algotao/mir2/server/internal/world"
+	"github.com/algotao/mir2/server/protocol"
 )
 
 // 聊天系统（普通 / 喊话 / 私聊 / 组队频道）。
@@ -153,7 +154,12 @@ func (s *Server) handleChat(c net.Conn, p *Player, raw string) {
 // ⚠️ **包含发送者自己**：客户端发完 CM_SAY 不会本地回显，
 // 它自己的聊天框也靠这条包（漏掉自己会表现为"我说话我自己看不见"）。
 func (s *Server) broadcastHear(p *Player, text string, color uint16) {
+	// `text` 是 legacy 口径（"名字:文本"）；新协议把名字与正文分开（`ChatMessage`）。
+	raw := strings.TrimPrefix(text, p.Char.Name+":")
 	s.broadcastToViewers(p.Obj.MapRef(), p.Obj.PosX(), p.Obj.PosY(), func(o *Player) {
+		if sink := o.protoOut; sink != nil {
+			sink.chat(protocol.ChatChannel_CHAT_SAY, uint64(p.Obj.ID), p.Char.Name, raw, uint32(color))
+		}
 		s.send(o.conn, proto.SM_HEAR, int32(p.Obj.ID), color, 0, 1, text)
 	})
 }
@@ -191,6 +197,9 @@ func (s *Server) handleShout(c net.Conn, p *Player, raw string) {
 
 	msg := "(!)" + p.Char.Name + ": " + text
 	s.broadcastInRange(p.Obj.MapRef(), p.Obj.PosX(), p.Obj.PosY(), chatShoutRange, func(o *Player) {
+		if sink := o.protoOut; sink != nil {
+			sink.chat(protocol.ChatChannel_CHAT_CRY, uint64(p.Obj.ID), p.Char.Name, text, uint32(chatColorCry))
+		}
 		s.send(o.conn, proto.SM_HEAR, int32(p.Obj.ID), chatColorCry, 0, 1, msg)
 	})
 }
@@ -218,6 +227,9 @@ func (s *Server) handleWhisper(p *Player, rest string) {
 	color := chatColorWhisper
 	if p.permission > 0 {
 		color = chatColorGMWhisper
+	}
+	if sink := target.protoOut; sink != nil {
+		sink.chat(protocol.ChatChannel_CHAT_WHISPER, uint64(p.Obj.ID), p.Char.Name, text, uint32(color))
 	}
 	s.send(target.conn, proto.SM_WHISPER, int32(target.Obj.ID), color, 0, 1,
 		p.Char.Name+"=> "+text)

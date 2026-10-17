@@ -66,6 +66,21 @@ func (k *protoSink) appear(e *protocol.EntityState) {
 		EntityAppear: &protocol.EntityAppear{Entity: e}}})
 }
 
+// chat 发一条聊天（`ChatMessage`，对应 legacy 的 SM_HEAR / SM_CRY / SM_WHISPER）。
+//
+// `color` 沿用 legacy 的颜色号（客户端按它上色）；`senderName` 与正文分开，
+// 免得客户端还要从 "名字:文本" 里切一刀。
+func (k *protoSink) chat(ch protocol.ChatChannel, senderID uint64, senderName, text string, color uint32) {
+	k.enqueue(&protocol.Envelope{Body: &protocol.Envelope_ChatMessage{
+		ChatMessage: &protocol.ChatMessage{
+			Channel:    ch,
+			SenderId:   senderID,
+			SenderName: senderName,
+			Text:       text,
+			Color:      color,
+		}}})
+}
+
 // disappear 发一条实体消失。
 //
 // ⚠️ 原版的"消失"有几种原因（离开视野/隐身/死亡/下线），但 legacy 的 `sendDisappear`

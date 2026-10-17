@@ -81,6 +81,16 @@ pub(crate) fn handle_key_down(
                 crate::world_input::qty_backspace(app);
             }
         }
+        // **聊天输入行**开着 ⇒ 同样是模态：Enter 发送、Esc 取消、退格删字，
+        // 其余键一律吞掉（否则打字时 W 会走路、F9 会开背包）。
+        Some(Keycode::Escape) if app.chat_input.is_some() => app.chat_input = None,
+        Some(Keycode::Return) | Some(Keycode::KpEnter) if app.chat_input.is_some() => {
+            crate::world_input::chat_send(app)
+        }
+        Some(Keycode::Backspace) if app.chat_input.is_some() => {
+            crate::world_input::chat_backspace(app)
+        }
+        Some(_) if app.chat_input.is_some() => {}
         // ⚠️ **登录/选角里 ESC 先交给场景**（2026-10-09 修）。
         //
         // 这条 arm 排在所有 mode 分支之前，原来无条件 `break 'run` ⇒
@@ -131,6 +141,13 @@ pub(crate) fn handle_key_down(
                 && app.scene != crate::app_state::Scene::Select =>
         {
             return Ok(true)
+        }
+        // 世界场景 **Enter = 打开聊天输入行**（原版回车打字；`chat_can_open`
+        // 会挡掉"有模态/窗口开着"的情况，见 D-152）。
+        Some(Keycode::Return) | Some(Keycode::KpEnter)
+            if crate::world_input::chat_can_open(app) =>
+        {
+            crate::world_input::chat_open(app)
         }
         // 数字键 1..6 = **用快捷栏**（与点那一格同一个动作）
         Some(Keycode::_1) if app.scene == crate::app_state::Scene::World => {

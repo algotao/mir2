@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::actor::{move_ms, next_walk_since, self_move_ms, ActorAnim, SeenEntity, WALK_STEP_MS};
-use crate::colors::{C_CHAT_BAD, C_CHAT_EXP_BG, C_CHAT_EXP_FG, C_CHAT_SYS};
+use crate::colors::{
+    C_CHAT_BAD, C_CHAT_CRY, C_CHAT_EXP_BG, C_CHAT_EXP_FG, C_CHAT_SAY, C_CHAT_SYS, C_CHAT_WHISPER,
+};
 use crate::geom::self_render_pos;
 use crate::hud::Chat;
 
@@ -323,6 +325,29 @@ impl Net {
                             if r.ok { C_CHAT_SYS } else { C_CHAT_BAD },
                         );
                     }
+                    // **聊天**（D-152）：普通说话 / 喊话 / 私聊都走这条 `ChatMessage`。
+                    // 服务端已按"视野内广播、含发送者自己"填好正文 ⇒ 收到就进聊天框。
+                    if let Some(mir2_protocol::envelope::Body::ChatMessage(m)) = env.body.as_ref() {
+                        // `sender_name` 与正文是分开的 ⇒ 这里按频道拼回"人能读的一行"
+                        //（文案与 legacy 的 SM_HEAR/SM_CRY/SM_WHISPER 一致）。
+                        let (line, col) = match mir2_protocol::ChatChannel::try_from(m.channel) {
+                            Ok(mir2_protocol::ChatChannel::ChatCry) => {
+                                (format!("(!){}: {}", m.sender_name, m.text), C_CHAT_CRY)
+                            }
+                            Ok(mir2_protocol::ChatChannel::ChatWhisper) => {
+                                (format!("{}=> {}", m.sender_name, m.text), C_CHAT_WHISPER)
+                            }
+                            _ => {
+                                let line = if m.sender_name.is_empty() {
+                                    m.text.clone()
+                                } else {
+                                    format!("{}: {}", m.sender_name, m.text)
+                                };
+                                (line, C_CHAT_SAY)
+                            }
+                        };
+                        self.chat.push(line, col);
+                    }
                     // 系统提示（原版 `sysMsg`：挖肉的「肉被发现」「什么都没找到」这类）
                     // ⇒ 进聊天框。proto 玩家原来收不到 `sysMsg`，这类反馈全都无声。
                     if let Some(mir2_protocol::envelope::Body::SystemNotice(n)) = env.body.as_ref()
@@ -618,7 +643,8 @@ impl Net {
             .send(mir2_net::Cmd::SetMagicKey { skill_id, key });
     }
 
-    /// 说一句话（目前只用于 `@atkmode` 这类**命令**；普通聊天频道还没开）。
+    /// 说一句话：`@` 命令、普通说话、`!` 喊话、`/名字` 私聊都走这条
+    ///（频道就是文本前缀，见 `chat_input` / D-152）。
     pub(crate) fn say(&self, text: &str) {
         let _ = self.sess.cmds.send(mir2_net::Cmd::Say(text.to_string()));
     }

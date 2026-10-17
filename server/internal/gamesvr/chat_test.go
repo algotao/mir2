@@ -3,6 +3,8 @@ package gamesvr
 import (
 	"testing"
 	"time"
+
+	"github.com/algotao/mir2/server/protocol"
 )
 
 // TestChatSpamStep 守住反刷屏状态机（ObjBase.pas:8614-8631）。
@@ -96,4 +98,51 @@ func isValidUTF8(s string) bool {
 		}
 	}
 	return true
+}
+
+// TestChatChannelText 结构化的频道折回 legacy 的文本前缀（`handleChat` 只认前缀）。
+//
+// 客户端现在只发纯文本（频道靠 `!` / `!!` / `/` 前缀），但协议里的 `channel`
+// 字段必须有确定行为 —— 将来做频道按钮时不再改服务端。
+func TestChatChannelText(t *testing.T) {
+	cases := []struct {
+		ch     protocol.ChatChannel
+		target string
+		text   string
+		want   string
+	}{
+		{protocol.ChatChannel_CHAT_CHANNEL_UNSPECIFIED, "", "你好", "你好"},
+		{protocol.ChatChannel_CHAT_SAY, "", "你好", "你好"},
+		{protocol.ChatChannel_CHAT_CRY, "", "卖装备", "!卖装备"},
+		{protocol.ChatChannel_CHAT_GROUP, "", "集合", "!!集合"},
+		{protocol.ChatChannel_CHAT_WHISPER, "甲", "在吗", "/甲 在吗"},
+	}
+	for _, c := range cases {
+		if got := chatChannelText(c.ch, c.target, c.text); got != c.want {
+			t.Errorf("chatChannelText(%v, %q, %q) = %q，期望 %q", c.ch, c.target, c.text, got, c.want)
+		}
+	}
+}
+
+// TestProtoSinkChatMessage 新协议聊天下行：**名字与正文分开**（客户端拼回一行）。
+func TestProtoSinkChatMessage(t *testing.T) {
+	sink := &protoSink{ch: make(chan *protocol.Envelope, 1)}
+	sink.chat(protocol.ChatChannel_CHAT_SAY, 7, "甲", "你好", 249)
+
+	var env *protocol.Envelope
+	select {
+	case env = <-sink.ch:
+	default:
+		t.Fatal("没有下发任何东西")
+	}
+	m := env.GetChatMessage()
+	if m == nil {
+		t.Fatalf("应为 ChatMessage，实得 %T", env.Body)
+	}
+	if m.GetChannel() != protocol.ChatChannel_CHAT_SAY {
+		t.Errorf("channel = %v，期望 CHAT_SAY", m.GetChannel())
+	}
+	if m.GetSenderId() != 7 || m.GetSenderName() != "甲" || m.GetText() != "你好" {
+		t.Errorf("字段不对：id=%d name=%q text=%q", m.GetSenderId(), m.GetSenderName(), m.GetText())
+	}
 }

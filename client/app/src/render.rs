@@ -114,6 +114,11 @@ pub(crate) fn draw_frame<'a, T>(
                 )?;
             }
         }
+        // **聊天输入行**（D-152）：贴在聊天区最底一行。画在 HUD 之上、窗口之下
+        //（窗口盖住聊天区时，输入行也该被盖住，与原版层序一致）。
+        if let Some(ci) = app.chat_input.as_ref() {
+            hud::draw_chat_input(canvas, tex_creator, names, ci.text())?;
+        }
         let shop_is_sell = app
             .net
             .as_ref()

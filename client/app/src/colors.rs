@@ -82,6 +82,15 @@ pub(crate) const C_CHAT_SYS: Color = Color::RGB(38, 38, 44);
 
 pub(crate) const C_CHAT_BAD: Color = Color::RGB(178, 24, 24);
 
+/// 普通说话（原版 `clWhite`；聊天区是白底 ⇒ 换成墨色）。
+pub(crate) const C_CHAT_SAY: Color = Color::RGB(28, 28, 34);
+
+/// 喊话（原版红色系；白底上压成暗橙）。
+pub(crate) const C_CHAT_CRY: Color = Color::RGB(168, 88, 0);
+
+/// 私聊（原版紫色系；白底上压暗）。
+pub(crate) const C_CHAT_WHISPER: Color = Color::RGB(92, 40, 140);
+
 /// **经验提示**：红底白字（用户 2026-10-12 第 6 条）。
 ///
 /// 原版 `AddChatBoardString('已获得 N 点经验值', clWhite, clRed)`

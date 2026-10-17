@@ -296,6 +296,54 @@ pub(crate) fn qty_backspace(app: &mut AppState) {
     }
 }
 
+// ---------- 聊天输入行（D-152） ----------
+
+/// 回车能不能打开聊天输入行：世界场景、**没有任何模态/窗口挡着**。
+///
+/// 与"点窗口先吞点击"同一条纪律：模态优先，别让聊天框从对话/商店底下冒出来。
+pub(crate) fn chat_can_open(app: &AppState) -> bool {
+    app.scene == crate::app_state::Scene::World
+        && !app.layout_edit.on
+        && app.qty.is_none()
+        && !app.confirm.is_open()
+        && !app.win.bag()
+        && !app.win.status()
+        && !app.win.shop()
+        && app
+            .net
+            .as_ref()
+            .is_some_and(|n| n.world.in_world() && n.world.dialog.is_none())
+}
+
+pub(crate) fn chat_open(app: &mut AppState) {
+    if chat_can_open(app) {
+        app.chat_input = Some(crate::chat_input::ChatInput::new());
+    }
+}
+
+/// 发送（回车）：空行直接关掉；整行原样发（频道靠 `!` / `!!` / `/` 前缀）。
+pub(crate) fn chat_send(app: &mut AppState) {
+    let Some(mut ci) = app.chat_input.take() else {
+        return;
+    };
+    if ci.is_empty() {
+        return; // 回车空行 = 关掉，不发空包
+    }
+    let text = ci.take().trim().to_string();
+    if text.is_empty() {
+        return;
+    }
+    if let Some(n) = app.net.as_ref() {
+        n.say(&text);
+    }
+}
+
+pub(crate) fn chat_backspace(app: &mut AppState) {
+    if let Some(ci) = app.chat_input.as_mut() {
+        ci.backspace();
+    }
+}
+
 pub(crate) fn world_ui_hit(
     app: &AppState,
     ui: &mut ui::UiCache<'_>,

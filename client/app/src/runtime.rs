@@ -286,6 +286,14 @@ pub(crate) fn run_app<T>(
                         s.on_text(&t);
                     }
                 }
+                // **聊天输入行**（D-152）：只在它开着时吃文字（中文/粘贴都是整段）。
+                Event::TextInput { text: t, .. }
+                    if app.scene == crate::app_state::Scene::World && !app.layout_edit.on =>
+                {
+                    if let Some(ci) = app.chat_input.as_mut() {
+                        ci.push_str(&t);
+                    }
+                }
                 _ => {}
             }
         }

@@ -166,10 +166,12 @@ func (ps *protoSession) onSetMagicKey(m *protocol.SetMagicKey) bool {
 
 // onChatInput 处理聊天输入（social.proto 的 `ChatInput`）。
 //
-// ⚠️ 现在只接 **'@' 命令**：Ctrl+H 切攻击模式发的是 `@atkmode`（用户 2026-10-12
-// 第 5 条要底栏显示攻击模式）。复用 legacy 的 `handleSay` —— 命令分发、权限门、
-// 玩家命令白名单都在那一份里，别长出第二套。
-// 普通聊天（说话/喊话）还没有频道 UI ⇒ 先不接，明说一句而不是静默吞掉。
+// **所有文本都交给 legacy 的 `handleSay`**：`@` 命令的分发/权限门、普通说话的
+// 频道前缀（`!` 喊话 / `!!` 组队 / `/名字` 私聊）、反刷屏限流都在那一份里，
+// 别长出第二套。客户端有输入行之后（D-152），普通说话也能走这条路了。
+//
+// `channel` 字段优先于文本前缀：将来客户端做频道按钮时，`CHAT_CRY` + 纯文本
+// 也能被翻译成 legacy 的 `!文本`。
 func (ps *protoSession) onChatInput(m *protocol.ChatInput) bool {
 	p := ps.player
 	if p == nil || p.Obj == nil {
@@ -179,15 +181,27 @@ func (ps *protoSession) onChatInput(m *protocol.ChatInput) bool {
 	if text == "" {
 		return true
 	}
-	if !strings.HasPrefix(text, "@") {
-		ps.srv.notice(p, "聊天频道还没开放（命令要以 @ 开头）")
-		return true
-	}
 	ps.srv.handleSay(nil, p, wire.Packet{
 		Head: proto.MakeDefaultMsg(proto.CM_SAY, 0, 0, 0, 0),
-		Body: text,
+		Body: chatChannelText(m.GetChannel(), m.GetTargetName(), text),
 	})
 	return true
+}
+
+// chatChannelText 把"频道 + 私聊目标"翻译成 legacy 的文本前缀。
+//
+// `handleChat` 只认前缀（`!` 喊话 / `!!` 组队 / `/名字` 私聊）⇒ 新协议的结构化
+// 频道在这里折回文本；`CHAT_SAY`/`UNSPECIFIED` 原样返回（客户端也可能自己带前缀）。
+func chatChannelText(ch protocol.ChatChannel, target, text string) string {
+	switch ch {
+	case protocol.ChatChannel_CHAT_CRY:
+		return "!" + text
+	case protocol.ChatChannel_CHAT_GROUP:
+		return "!!" + text
+	case protocol.ChatChannel_CHAT_WHISPER:
+		return "/" + target + " " + text
+	}
+	return text
 }
 
 // ---------- 战斗 ----------

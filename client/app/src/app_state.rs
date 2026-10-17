@@ -73,6 +73,8 @@ pub(crate) struct AppState {
     pub shop_ui: shopui::ShopUi,
     /// 商店「买几个 / 卖几个」面板开着时的状态（`None` = 没开）。
     pub qty: Option<qty::Qty>,
+    /// 聊天输入行（回车打开；`None` = 没在打字）。
+    pub chat_input: Option<crate::chat_input::ChatInput>,
     pub ui_click: Ui,
     pub drag: bagdrag::BagDrag,
     pub dlg_scroll: scrollview::ScrollView,
@@ -123,6 +125,7 @@ impl AppState {
             shop_seen_seq: 0,
             shop_ui: shopui::ShopUi::new(),
             qty: None,
+            chat_input: None,
             ui_click: Ui::new(),
             drag: bagdrag::BagDrag::new(),
             dlg_scroll: scrollview::ScrollView::new(),
