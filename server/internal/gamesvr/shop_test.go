@@ -24,11 +24,13 @@ func shopTestServer(t *testing.T, cmdLine string, items ...*data.StdItem) (*Serv
 
 	dir := t.TempDir()
 	body := "(" + cmdLine + ")\r\n\r\n[@main]\r\n你好\\ \\\r\n"
-	if err := os.WriteFile(filepath.Join(dir, "9shop-0.txt"), []byte(body), 0o600); err != nil {
+	// ⚠️ 商人代码用 `2Gwe`（2 = 武器）：货架分类看**首位数字**，
+	// 用 `9shop` 这种编码会被判成"特殊 NPC ⇒ 不卖东西"（2026-10-17 改）。
+	if err := os.WriteFile(filepath.Join(dir, "2Gwe-0.txt"), []byte(body), 0o600); err != nil {
 		t.Fatalf("写脚本失败: %v", err)
 	}
 	s.npc.scriptDir = dir
-	s.npc.defs = []*data.NPC{{ID: "9shop", Name: "武器店老板"}}
+	s.npc.defs = []*data.NPC{{ID: "2Gwe", Name: "武器店老板", MapID: "0"}}
 
 	npc := newTestMonster(66, "武器店老板", 10)
 	npc.IsNPC = true
@@ -40,7 +42,7 @@ func shopTestServer(t *testing.T, cmdLine string, items ...*data.StdItem) (*Serv
 
 	rec := &recordingConn{}
 	p.conn = rec
-	p.dialog = &dialog{npcID: npc.ID, scriptName: "9shop", label: "@main"}
+	p.dialog = &dialog{npcID: npc.ID, scriptName: "2Gwe", label: "@main"}
 	p.Char.Data.Gold = 10000
 	return s, p, npc, rec
 }
@@ -536,9 +538,11 @@ func TestShopSellPartialStack(t *testing.T) {
 	}
 }
 
-// TestShopGoodsUsesFirstMatchingCategory 用户 2026-10-12："服装店老板、武器店老板
-// 为什么在卖普通物品" —— 分类必须**只取第一个命中**的，不能把所有命中的累加起来
-// （"武器店老板"会同时命中"武器"和杂货的"店"）。
+// TestShopGoodsUsesFirstMatchingCategory 商人的**代码首位数字**决定卖什么
+// （1 肉 / 2 武器 / 3 衣服 / 4 药 / 5 书 / 6 仓库 / 7 杂货 / 8 首饰 / 9 特殊）。
+//
+// 2026-10-17 之前这里走的是"店名关键词"：名字里"店/商"会滑到杂货，7Gst 又因为后缀
+// "st" 被判成首饰店 —— 用户报的"店和能卖东西类型的关联不该靠店名关键词"。
 func TestShopGoodsUsesFirstMatchingCategory(t *testing.T) {
 	sword := wuItem(1, "木剑", 5, data.MinMax{})
 	sword.Price = 100
@@ -581,6 +585,45 @@ func TestShopGoodsUsesFirstMatchingCategory(t *testing.T) {
 			if !ok {
 				t.Errorf("%s(%s) 的货架混进了 %s（StdMode %d）", c.name, c.id, it.Name, it.StdMode)
 			}
+		}
+	}
+	// 7Gst（陈家铺老板）是 **7 = 杂货**：旧实现看后缀 "st" 把它判成首饰店，
+	// 用户 2026-10-17 报的就是这类串味。名字里也没有任何品类词。
+	if got := s.shopGoods(&data.NPC{ID: "7Gst", Name: "陈家铺老板", IsMerchant: true}); len(got) == 0 {
+		t.Fatal("7Gst 陈家铺老板：杂货货架不该是空的")
+	}
+	// 6Bwh 仓库 / 9Bsender 向导：**不卖东西**（不能糊一个杂货铺上去）
+	for _, id := range []string{"6Bwh", "9Bsender", "", "垃圾收购员"} {
+		if got := s.shopGoods(&data.NPC{ID: id, Name: "仓库保管员"}); len(got) != 0 {
+			t.Errorf("%q 不该有货架，实得 %d 件", id, len(got))
+		}
+	}
+}
+
+// TestShopGoodsUsesScriptGoods `[goods]` 段是**权威货架**：
+// 哪怕商人代码是 2（武器），脚本里只列了蜡烛，就只卖蜡烛。
+func TestShopGoodsUsesScriptGoods(t *testing.T) {
+	sword := wuItem(1, "木剑", 5, data.MinMax{})
+	sword.Price = 100
+	candle := wuItem(2, "蜡烛", 3, data.MinMax{})
+	candle.Price = 10
+	s, _, _, _ := shopTestServer(t, "", sword, candle)
+
+	dir := t.TempDir()
+	body := "(@buy)\r\n\r\n[@main]\r\n卖蜡烛。\\\r\n\r\n[goods]\r\n;名字 数量 小时\r\n蜡烛\t200\t1\r\n"
+	if err := os.WriteFile(filepath.Join(dir, "7Gst-0.txt"), []byte(body), 0o600); err != nil {
+		t.Fatalf("写脚本失败: %v", err)
+	}
+	s.npc.scriptDir = dir
+
+	got := s.shopGoods(&data.NPC{ID: "7Gst", Name: "陈家铺老板", MapID: "0", IsMerchant: true})
+	if len(got) != 1 || got[0].Name != "蜡烛" {
+		t.Fatalf("货架应为脚本 [goods] 里的蜡烛，实得 %+v", got)
+	}
+	// 脚本里没列的东西一件都不许混进来（哪怕同属 7=杂货）
+	for _, it := range got {
+		if it.Name == "木剑" {
+			t.Error("[goods] 之外的商品混进货架了")
 		}
 	}
 }

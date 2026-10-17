@@ -51,11 +51,13 @@ func makeDrugTestServer(t *testing.T) (*Server, *Player, *entity.Monster) {
 	// 脚本：头行声明 @makedrug（原版的 m_boMakeDrug 就是按脚本头置位的）
 	dir := t.TempDir()
 	body := "(@trading @buy @sell @makedrug)\r\n\r\n[@main]\r\n欢迎光临\\ \\\r\n"
-	if err := os.WriteFile(filepath.Join(dir, "9drug-0.txt"), []byte(body), 0o600); err != nil {
+	// ⚠️ 商人代码首位是 **4 = 药**：商品表按代码分类（2026-10-17 改），
+	// 用 `9drug` 这种编码会被判成"特殊 NPC ⇒ 不卖东西" ⇒ 成品不在商品表里、制药必失败。
+	if err := os.WriteFile(filepath.Join(dir, "4Bdu-0.txt"), []byte(body), 0o600); err != nil {
 		t.Fatalf("写脚本失败: %v", err)
 	}
 	s.npc.scriptDir = dir
-	def := &data.NPC{ID: "9drug", Name: "药店老板"}
+	def := &data.NPC{ID: "4Bdu", Name: "药店老板"}
 	s.npc.defs = []*data.NPC{def}
 
 	return finishDrugServer(t, s, p)
@@ -72,7 +74,7 @@ func finishDrugServer(t *testing.T, s *Server, p *Player) (*Server, *Player, *en
 	s.world.monsters[npc.ID] = npc
 	s.mu.Unlock()
 
-	p.dialog = &dialog{npcID: npc.ID, scriptName: "9drug"}
+	p.dialog = &dialog{npcID: npc.ID, scriptName: "4Bdu"}
 	p.Char.Data.Gold = 1000
 	return s, p, npc
 }
@@ -177,7 +179,7 @@ func TestMakeDrugRequiresScriptTag(t *testing.T) {
 	// 换一份不带 @makedrug 的脚本，并清掉脚本缓存
 	dir := t.TempDir()
 	body := "(@trading @buy @sell)\r\n\r\n[@main]\r\n欢迎\\ \\\r\n"
-	if err := os.WriteFile(filepath.Join(dir, "9drug-0.txt"), []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "4Bdu-0.txt"), []byte(body), 0o600); err != nil {
 		t.Fatalf("写脚本失败: %v", err)
 	}
 	s.npc.scriptDir = dir

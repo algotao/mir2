@@ -30,6 +30,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -65,6 +66,13 @@ type Label struct {
 	ElseActs []string
 }
 
+// GoodsEntry 是 `[goods]` 段的一行：`商品名 数量 [计费小时]`。
+type GoodsEntry struct {
+	Name  string
+	Count int
+	Hours int
+}
+
 // Script 是一个 NPC 的完整脚本。
 type Script struct {
 	// Name 取自文件名（对应 merchant.txt 的 ID）。
@@ -75,6 +83,11 @@ type Script struct {
 	Labels map[string]*Label
 	// Order 保持段出现的顺序，便于确定入口段。
 	Order []string
+	// Goods 是 `[goods]` 段列出的**货架**（1.76 每个商人自带的那份清单）。
+	//
+	// ⚠️ 这是"这家店卖什么"的**权威来源** —— 别再用店名/店员名的关键词去猜
+	//（用户 2026-10-17：陈家铺这种名字里根本没有品类词）。
+	Goods []GoodsEntry
 }
 
 // linkRe 匹配 `<文本/@标签>`。
@@ -119,6 +132,12 @@ func Parse(name string, r io.Reader) (*Script, error) {
 				inner = inner[:i]
 			}
 			inner = strings.TrimPrefix(strings.TrimSpace(inner), "@")
+			// `[goods]` 不是对话段，是这家店的**货架**（见 `Script.Goods`）
+			if strings.EqualFold(inner, "goods") {
+				cur = nil
+				mode = "goods"
+				continue
+			}
 			l := &Label{Name: inner}
 			s.Labels[inner] = l
 			s.Order = append(s.Order, inner)
@@ -150,10 +169,26 @@ func Parse(name string, r io.Reader) (*Script, error) {
 			continue
 		}
 
-		if cur == nil {
+		if trimmed == "" {
 			continue
 		}
-		if trimmed == "" {
+		if mode == "goods" {
+			// 列：商品名 数量 [计费小时]；列数不够就跳过这一行（坏行不能拖垮整份脚本）
+			f := strings.Fields(trimmed)
+			if len(f) == 0 {
+				continue
+			}
+			g := GoodsEntry{Name: f[0]}
+			if len(f) > 1 {
+				g.Count, _ = strconv.Atoi(f[1])
+			}
+			if len(f) > 2 {
+				g.Hours, _ = strconv.Atoi(f[2])
+			}
+			s.Goods = append(s.Goods, g)
+			continue
+		}
+		if cur == nil {
 			continue
 		}
 

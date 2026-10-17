@@ -31,106 +31,87 @@ import (
 //	                        （ClMain.pas:6158-6190 按 '/' 切；我们原来发的是
 //	                        二进制 Index+Price，官方客户端解析不了）
 //
-// ⚠️ 商品来源：1.76 的 market_def/<ID>-<地图>.txt 是**脚本**文件
-// （[@main] + #if/#act），商品 [goods] 段在官方配置里基本是注释掉的。
-// 因此这里按 NPC 名称关键字从物品表筛选商品——数据到位后改为读 [goods]。
-
-// shopCategoryDef 是一类商店的匹配规则。
-type shopCategoryDef struct {
-	keywords []string
-	stdModes []uint8
-}
-
-// shopCategory 是"名称关键字 → 售卖的 StdMode"映射。
-var shopCategory = []shopCategoryDef{
-	{[]string{"屠夫", "肉店", "肉"}, []uint8{40, 41}},    // 肉、食品
-	{[]string{"武器", "卫家", "刀", "剑"}, []uint8{5, 6}}, // 武器
-	// ⚠️ "服装"必须写上：官方 NPC 叫"服装店老板"（名字里**没有**"衣"字）⇒ 只写
-	// "衣/衣服"会滑到杂货的"店"上（用户 2026-10-12）。
-	{[]string{"服装", "布衣", "衣服", "衣"}, []uint8{10, 11}}, // 衣服
-	{[]string{"首饰", "饰品", "项链", "戒指"}, []uint8{19, 20, 22, 23, 24, 26}},
-	// 药品。⚠️ 药粉类（灰色药粉/黄色药粉/超级…）与护身符是 **StdMode 25**，
-	// 不加进来的话"制药"的成品一件都不在商品表里 ⇒ `@makedrug` 永远失败
-	//（我们的商品表是按名字关键字 + StdMode 粗分类的近似，原版是每 NPC 的商品文件）。
-	{[]string{"药"}, []uint8{0, 25}},
-	{[]string{"书", "技能"}, []uint8{4}},                     // 技能书
-	{[]string{"杂货", "店", "商"}, []uint8{0, 3, 40, 41, 42}}, // 杂货
-}
-
-// shopKindFromCode 从**商人代码**判商品类别（原版 Merchant.txt 的 NPC 代码，
-// 形如 `2Bwe` / `3Bdr` / `4Bdu`：首位数字是大类，第二个字母是地图，剩下的两个字母
-// 才是"卖什么"）。
+// ⚠️ **商品来源的优先级**（2026-10-17 改）：
 //
-// ⚠️ 这比按名字猜可靠得多（用户 2026-10-12 给的"服装店老板/武器店"都是看错的名字，
-// 真实 NPC 叫"安家布衣"(3Bdr) 与"精武馆老板"(2Gwe) / "卫家店"(2Bwe)）；名字里
-// 根本没有"衣"或"武器"这两个词。返回 nil = 认不出。
-func shopKindFromCode(id string) []uint8 {
-	s := strings.ToLower(strings.TrimSpace(id))
-	if len(s) < 3 {
+//  1. `market_def/<ID>-<地图>.txt` 的 **`[goods]` 段** —— 1.76 每个商人自带货架，
+//     这是"这家店卖什么"的权威答案（例如 7Gst 陈家铺老板卖蜡烛/火把/地牢逃脱卷）。
+//  2. 没有 `[goods]`（部分是空段）⇒ 按**商人代码首位数字**分类（见 `merchantCategory`）。
+//  3. 都没有 ⇒ **不卖东西**（不再"猜一个杂货铺糊上去"）。
+//
+// 🔴 别再按店名/店员名的关键词猜品类：名字里根本没有品类词
+//（用户 2026-10-17 的原话："店和能卖东西类型的关联，不应该是通过店名关键词，
+// 参考提示：陈家铺是个肉店"）。旧实现名字里"店/商"会滑到杂货，7Gst 又因为后缀
+// "st" 被判成首饰店 —— 两处都是猜错的。
+
+// merchantCategory 从**商人代码的首位数字**判商品类别（原版 merchant.txt 的编码）：
+//
+//	1 肉/食品 · 2 武器 · 3 衣服 · 4 药 · 5 技能书 · 6 仓库 · 7 杂货 · 8 首饰 · 9 特殊
+//
+// 例：`1Bme`/`1Gme`/`1Tme` 屠夫、`2Bwe` 卫家店、`3Bdr` 安家布衣、`4Bdu` 赖家店老板、
+// `5Bbo` 陈家铺子老板、`6Bwh` 仓库、`7Gst` 陈家铺老板（杂货）、`8Bri` 戒指店老板。
+//
+// ⚠️ 别再像旧实现那样看**后缀字母**（"st"⇒首饰）：7Gst 是 7=杂货，后缀只是店型缩写，
+// 把 7Gst 判成首饰店正是用户报的那类串味。返回 nil = 不卖东西。
+func merchantCategory(id string) []uint8 {
+	s := strings.TrimSpace(id)
+	if s == "" {
 		return nil
 	}
-	kind := s[2:] // 去掉 "2B" 这类前缀
-	switch {
-	case strings.HasPrefix(kind, "we"), strings.HasPrefix(kind, "blacksmith"):
+	switch s[0] {
+	case '1':
+		return []uint8{40, 41} // 肉、食品
+	case '2':
 		return []uint8{5, 6} // 武器
-	case strings.HasPrefix(kind, "dr"):
+	case '3':
 		return []uint8{10, 11} // 衣服
-	case strings.HasPrefix(kind, "me"):
-		return []uint8{40, 41} // 肉 / 食品
-	case strings.HasPrefix(kind, "du"), strings.HasPrefix(kind, "dm"):
-		return []uint8{0, 25} // 药品（药粉/护身符是 StdMode 25）
-	case strings.HasPrefix(kind, "bo"):
+	case '4':
+		// 药粉类（灰色药粉/黄色药粉…）与护身符是 StdMode 25 ⇒ 必须带上，
+		// 否则"制药"的成品一件都不在货架上（`@makedrug` 永远失败）。
+		return []uint8{0, 25}
+	case '5':
 		return []uint8{4} // 技能书
-	case strings.HasPrefix(kind, "st"), strings.HasPrefix(kind, "br"),
-		strings.HasPrefix(kind, "ne"), strings.HasPrefix(kind, "ri"),
-		strings.HasPrefix(kind, "ac"):
+	case '6':
+		return nil // 仓库：只保管，不卖东西
+	case '7':
+		return []uint8{0, 3, 40, 41, 42} // 杂货
+	case '8':
 		return []uint8{19, 20, 22, 23, 24, 26} // 首饰
-	case strings.HasPrefix(kind, "wh"):
-		return nil // 仓库：保管，不卖东西
 	}
-	return nil
+	return nil // 9 = 向导/教头/活动 NPC：不卖东西
 }
 
 // maxGoods 是单个商店的商品上限（物品表有 686 条，全列太长）。
 const maxGoods = 20
 
-// shopGoods 返回某商人的商品列表。
+// shopGoods 返回某商人的货架（规则见文件头的优先级说明）。
 func (s *Server) shopGoods(npc *data.NPC) []*data.StdItem {
-	// ① **先按商人代码判**（最可靠，见 `shopKindFromCode`）
-	modes := shopKindFromCode(npc.ID)
-
-	// ② 代码认不出 ⇒ 退回按名字关键字（命中第一个就停）。
-	// ⚠️ **命中第一个分类就停**（用户 2026-10-12："服装店/武器店在卖普通物品"）：
-	// 原来会把**所有**命中的分类累加 —— "武器店老板"既命中"武器"又命中"店"（杂货）、
-	// "服装店老板"既命中"衣"又命中"店" ⇒ 武器/衣服和一堆杂物混着卖。
-	// `shopCategory` 的排列顺序就是"具体到宽泛"（杂货的"店/商"在最后）⇒ 取第一个即可。
-	//
-	// ⚠️ **只在代码认不出时才走这条路**：否则"4Bdu 赖家店老板"（药品）会因为名字里
-	// 有个"店"字再叠上杂货 ⇒ 药店里出现肉。
-	if len(modes) == 0 {
-		found := false
-		for _, c := range shopCategory {
-			if found {
+	// ① `[goods]` 段是权威货架
+	if sc := s.npcScript(npc.ID, npc.MapID); sc != nil && len(sc.Goods) > 0 {
+		out := make([]*data.StdItem, 0, len(sc.Goods))
+		for _, g := range sc.Goods {
+			if len(out) >= maxGoods {
 				break
 			}
-			for _, kw := range c.keywords {
-				if strings.Contains(npc.Name, kw) {
-					modes = append(modes, c.stdModes...)
-					found = true
-					break
-				}
+			// 名字必须与物品表**完全一致**（脚本是人工录的，宁可少卖也不猜近义名）
+			it := s.data.tables.Items.GetByName(g.Name)
+			if it == nil || it.Price == 0 {
+				continue
 			}
+			out = append(out, it)
+		}
+		if len(out) > 0 {
+			return out
 		}
 	}
-	if len(modes) == 0 {
-		// 认不出的商人按杂货铺处理
-		modes = []uint8{0, 3, 40, 41}
-	}
-	want := make(map[uint8]bool, len(modes))
-	for _, m := range modes {
+
+	// ② 没有 [goods] ⇒ 按商人代码首位数字
+	want := make(map[uint8]bool)
+	for _, m := range merchantCategory(npc.ID) {
 		want[m] = true
 	}
-
+	if len(want) == 0 {
+		return nil // ③ 不知道卖什么 ⇒ 就不卖
+	}
 	out := make([]*data.StdItem, 0, maxGoods)
 	for _, it := range s.data.tables.Items.All() {
 		if len(out) >= maxGoods {
@@ -215,13 +196,10 @@ func (s *Server) openShopMode(c net.Conn, p *Player, id uint32, mode uint32) {
 	if p.dialog == nil {
 		p.dialog = &dialog{npcID: id}
 	}
-	var def *data.NPC
-	for _, n := range s.npc.defs {
-		if n.Name == npc.Name {
-			def = n
-			break
-		}
-	}
+	// ⚠️ 必须按"名字 + 地图 + 坐标"找定义（`npcDefOf`），不能只按名字取第一个：
+	// 同名商人在不同地图各有一份（屠夫 ×3、戒指店老板 ×3…），取错那份就会
+	// 拿错 ID/地图 ⇒ 找到别人的 `[goods]`，卖错东西。
+	def := s.npcDefOf(npc)
 	if def == nil {
 		def = &data.NPC{Name: npc.Name}
 	}
@@ -252,6 +230,10 @@ const shopStock = 100
 // ⚠️ `mode`（买/卖）只进**新协议**：legacy 客户端自己按入口弹窗，不需要这一位。
 func (s *Server) sendGoodsMode(c net.Conn, p *Player, npc *entity.Monster, def *data.NPC, mode uint32) {
 	goods := s.shopGoods(def)
+	// 没有货架（仓库/向导/未知 NPC）⇒ 不弹空商店窗（原来会糊一个空列表给客户端）
+	if len(goods) == 0 {
+		return
+	}
 	// **新协议**：结构化商品列表（legacy 那条是 '/' 拼的文本，两种都要发 ⇒ 与
 	// `npcSay` 同一条纪律：proto 玩家的 legacy 下行是被丢弃的，只发 legacy 等于没发）。
 	if sink := p.protoOut; sink != nil {
